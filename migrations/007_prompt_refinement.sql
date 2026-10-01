@@ -1,0 +1,1 @@
+ALTER TABLE runs ADD COLUMN refinement_requested INTEGER NOT NULL DEFAULT 0;
