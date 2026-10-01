@@ -20,8 +20,12 @@ $process = Start-Process -FilePath $launcher -ArgumentList '--background' -PassT
 try {
   $ready = $false
   $masterPort = $null
+  $observedPorts = @()
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    foreach ($port in (4317..4348)) {
+    $candidatePorts = @(Get-NetTCPConnection -State Listen -LocalPort (4317..4348) -ErrorAction SilentlyContinue |
+      Select-Object -ExpandProperty LocalPort -Unique)
+    $observedPorts = @($observedPorts + $candidatePorts | Select-Object -Unique)
+    foreach ($port in $candidatePorts) {
       try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 1
         if ($health.service -eq 'turing-terminal' -and $health.version -eq '1.0.0-rc1' -and $health.localOnly -eq $true) {
@@ -37,6 +41,8 @@ try {
   if (-not $ready) {
     Write-Output "Installed launcher: $launcher"
     Write-Output "Installed resources: $(Join-Path $installDirectory 'resources')"
+    Write-Output "Observed listening smoke-test ports: $($observedPorts -join ', ')"
+    Get-NetTCPConnection -State Listen -LocalPort (4317..4348) -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, OwningProcess | Format-Table -AutoSize
     if (Test-Path $masterLog) {
       Write-Output "Desktop Master log: $masterLog"
       Get-Content -Path $masterLog
