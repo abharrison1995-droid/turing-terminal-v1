@@ -53,7 +53,14 @@ try {
     throw 'Desktop Master did not return a valid local health response.'
   }
   $manifest = Invoke-WebRequest -Uri "http://127.0.0.1:$masterPort/manifest.webmanifest" -TimeoutSec 5
-  if ($manifest.StatusCode -ne 200 -or $manifest.Content -notmatch 'Turing Terminal') { throw 'PWA manifest smoke check failed.' }
+  $manifestContent = [string]$manifest.Content
+  $manifestJson = $null
+  try { $manifestJson = $manifestContent | ConvertFrom-Json -ErrorAction Stop } catch { }
+  if ($manifest.StatusCode -ne 200 -or $manifestJson.name -ne 'Turing Terminal') {
+    Write-Output "PWA manifest status: $($manifest.StatusCode)"
+    Write-Output "PWA manifest response: $manifestContent"
+    throw 'PWA manifest smoke check failed.'
+  }
   $frontend = Invoke-WebRequest -Uri "http://127.0.0.1:$masterPort/" -TimeoutSec 5
   if ($frontend.StatusCode -ne 200 -or $frontend.Content -notmatch '/assets/index-') { throw 'Frontend route smoke check failed.' }
 } finally {
