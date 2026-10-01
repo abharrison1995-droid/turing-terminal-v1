@@ -36,6 +36,8 @@ describe('prompt refinement run handoff', () => {
       promptRefinementDefault: false,
       maxRemediationRounds: 0,
       maxParallelAgents: 1,
+      maxDurationMinutes: 120,
+      retryPolicy: { maxRetries: 1, initialDelayMs: 100, maxDelayMs: 100 },
       isolatedWorktree: false,
       version: 1,
       isDefault: false,
@@ -104,6 +106,7 @@ describe('prompt refinement run handoff', () => {
     );
 
     vi.mocked(executeProvider)
+      .mockRejectedValueOnce(new Error('temporary service unavailable (503)'))
       .mockResolvedValueOnce({
         text: JSON.stringify({
           specification: 'Add a user preference setting with a persistent value.',
@@ -127,7 +130,7 @@ describe('prompt refinement run handoff', () => {
 
     const engine = new RunEngine(db, () => undefined);
     engine.start('run');
-    await vi.waitFor(() => expect(executeProvider).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(executeProvider).toHaveBeenCalledTimes(2));
     expect(vi.mocked(executeProvider).mock.calls[0]?.[0].role).toBe('prompt-refinement');
     await vi.waitFor(() => {
       expect(db.prepare("SELECT status FROM runs WHERE id = 'run'").get()).toMatchObject({
@@ -140,6 +143,14 @@ describe('prompt refinement run handoff', () => {
     expect(db.prepare("SELECT refined_specification FROM runs WHERE id = 'run'").get()).toMatchObject({
       refined_specification: 'Add a user preference setting with a persistent value.',
     });
+    expect(
+      db
+        .prepare('SELECT attempt, status, category FROM stage_attempts WHERE stage_id = ? ORDER BY attempt')
+        .all('stage-refine'),
+    ).toEqual([
+      { attempt: 1, status: 'retrying', category: 'provider_transient' },
+      { attempt: 2, status: 'succeeded', category: null },
+    ]);
 
     db.prepare("UPDATE runs SET refined_specification = ?, status = 'queued' WHERE id = 'run'").run(
       'Add a persistent setting to the existing Preferences screen.',
@@ -158,7 +169,7 @@ describe('prompt refinement run handoff', () => {
       });
     });
 
-    const implementerPrompt = vi.mocked(executeProvider).mock.calls[1]?.[0].prompt;
+    const implementerPrompt = vi.mocked(executeProvider).mock.calls[2]?.[0].prompt;
     expect(implementerPrompt).toContain('Add a persistent setting to the existing Preferences screen.');
     expect(implementerPrompt).toContain('User clarification:\nUse the existing Preferences screen.');
     db.close();

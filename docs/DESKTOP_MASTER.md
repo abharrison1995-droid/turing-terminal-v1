@@ -19,8 +19,18 @@ For development, `npm run dev` starts Vite and the service together. The Vite pa
 
 Run, stage, approval, event, usage, rule, and broker operation records persist in SQLite. If the browser closes, a running workflow continues as long as the Node service remains running. If the service stops or the machine restarts, active provider processes are interrupted; startup reconciles their runs to a paused state for explicit inspection and resume. The application does not claim that an in-flight provider request survived a service restart.
 
-## Background startup and packaging
+## Desktop packages and background startup
 
-There is no bundled installer or service-manager integration yet. On Linux, an operator can run `npm start` under a user `systemd` service with `Restart=on-failure`; on Windows, the equivalent is a Task Scheduler logon task running `node dist-server/server/index.js`. Use the repository's absolute path and a dedicated data directory in either configuration. Keep service output and the database directory private. Tailscale Serve must run on the same desktop and proxy to the loopback service.
+Packages require Node.js 22 or newer. Each artifact contains the built app, migrations, and platform-built production dependencies; Node remains an installed runtime requirement.
 
-Automatic installation, upgrades, credential-store integration, Windows/Linux packaging, and unattended startup behavior have not been validated as part of this build.
+On Linux x64, run `npm run package:linux` to build `turing-terminal-linux-x64-v1.0.0.tar.gz`. The package includes `packaging/linux/install-user-service.sh`. Run it as the signed-in desktop user:
+
+```sh
+bash packaging/linux/install-user-service.sh ./turing-terminal-linux-x64-v1.0.0.tar.gz
+```
+
+It installs under `~/.local/share/turing-terminal`, keeps SQLite data under `~/.local/share/turing-terminal-data`, and creates a user-level `systemd` service. Inspect it with `systemctl --user status turing-terminal.service`; stop it with `systemctl --user stop turing-terminal.service`. It does not use root.
+
+On Windows x64, run `npm run package:windows` from PowerShell to build `turing-terminal-windows-x64-v1.0.0.zip`. Extract the archive and run `install-user-startup.ps1` in PowerShell. It installs a per-user Task Scheduler logon task with limited privileges, puts data under `%LOCALAPPDATA%\TuringTerminal\data`, and starts the master hidden from the visible desktop. Remove the `Turing Terminal Master` task in Task Scheduler to stop startup. This Windows package and task have not been physically built or tested in this Linux environment; the GitHub Actions Windows runner is configured to build the ZIP.
+
+The Linux artifact is built and smoke-checked separately before release. Service installation on a physical desktop, unattended restart after sign-in, Windows package generation, and Windows task startup still need platform acceptance. The UI can be opened or reconnected independently while the master remains running. Tailscale Serve must run on the same desktop and proxy to the loopback service.

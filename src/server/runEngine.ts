@@ -31,6 +31,14 @@ import { isSafeProjectCommand } from './commandPolicy.js';
 import { rulesForStage } from './rules.js';
 import { evaluateCondition } from './conditions.js';
 import {
+  classifyProviderFailure,
+  providerFailureMessage,
+  resolveRetryPolicy,
+  retryDelayMs,
+  waitForRetry,
+} from './retryPolicy.js';
+import { getWebPushConfiguration } from './webPush.js';
+import {
   assertProjectPath,
   classifyBrokerOperation,
   hasSuspectedSecret,
@@ -87,6 +95,7 @@ export class RunEngine {
   private readonly approvalWaiters = new Map<string, ApprovalWaiter>();
   private readonly intervening = new Set<string>();
   private readonly providerToolSessions = new Map<string, ProviderToolSession>();
+  private readonly limitExpired = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -226,9 +235,23 @@ export class RunEngine {
     const projectPath = String(project.path);
     const wasPaused = row.status === 'paused';
     if (wasPaused && !resume) return;
+    let overallTimer: ReturnType<typeof setTimeout> | undefined;
 
     try {
       this.updateRun(runId, 'preparing', new Date().toISOString());
+      const persistedStart = this.db.prepare('SELECT started_at FROM runs WHERE id = ?').get(runId) as
+        { started_at: string | null } | undefined;
+      const maxDurationMs = Math.max(1, workflow.maxDurationMinutes || 120) * 60_000;
+      const startedAtMs = persistedStart?.started_at ? Date.parse(persistedStart.started_at) : Date.now();
+      const remainingDurationMs = Math.max(0, maxDurationMs - (Date.now() - startedAtMs));
+      overallTimer = setTimeout(() => {
+        this.limitExpired.add(runId);
+        controller.abort();
+      }, remainingDurationMs);
+      if (remainingDurationMs === 0) {
+        this.limitExpired.add(runId);
+        controller.abort();
+      }
       const working = await this.prepareWorkingCopy(runId, workflow, projectPath);
       this.event(runId, 'working_copy_ready', {
         path: working.path,
@@ -262,6 +285,7 @@ export class RunEngine {
         .all(runId) as Array<Record<string, unknown>>;
       const branchSkippedStages = new Set<string>();
       for (const rowStage of runStages) {
+        if (this.limitExpired.has(runId)) throw new Error('Workflow duration limit reached.');
         if (controller.signal.aborted) throw new Error('Run cancelled by the user.');
         const stageId = String(rowStage.id);
         const stage = workflow.stages.find((candidate) => candidate.id === rowStage.stage_key);
@@ -306,6 +330,16 @@ export class RunEngine {
           providerId: stage.providerId ?? null,
           modelId: stage.modelId ?? null,
         });
+        const stageController = new AbortController();
+        const stageSignal = AbortSignal.any([controller.signal, stageController.signal]);
+        const stageTimeoutMinutes = stage.timeoutMinutes;
+        let stageTimedOut = false;
+        const stageTimer = stageTimeoutMinutes
+          ? setTimeout(() => {
+              stageTimedOut = true;
+              stageController.abort();
+            }, stageTimeoutMinutes * 60_000)
+          : undefined;
         try {
           let output: Record<string, unknown>;
           if (stage.kind === 'conditionalBranch') {
@@ -330,7 +364,7 @@ export class RunEngine {
               stage,
               stage.command,
               working.path,
-              controller.signal,
+              stageSignal,
             );
           } else if (stage.kind === 'build' || stage.kind === 'test') {
             const command =
@@ -338,7 +372,7 @@ export class RunEngine {
                 ? parseJson<string[] | null>(project.build_command_json, null)
                 : parseJson<string[] | null>(project.test_command_json, null);
             output = command
-              ? await this.executeCommand(runId, stageId, stage, command, working.path, controller.signal)
+              ? await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)
               : {
                   skipped: true,
                   reason: `No ${stage.kind} command was detected. Configure a project command to run this stage.`,
@@ -350,7 +384,7 @@ export class RunEngine {
           } else if (
             ['gitCheckpoint', 'gitCommit', 'gitPush', 'gitMerge', 'gitRollback'].includes(stage.kind)
           ) {
-            output = await this.executeGitStage(runId, stageId, stage, workflow, controller.signal);
+            output = await this.executeGitStage(runId, stageId, stage, workflow, stageSignal);
           } else if (stage.kind === 'humanApproval') {
             const approval = await this.requestApproval(
               runId,
@@ -358,7 +392,7 @@ export class RunEngine {
               stage.label,
               'The workflow reached a human approval stage.',
               'medium',
-              controller.signal,
+              stageSignal,
             );
             if (!approval.approved) throw new Error('Approval was denied.');
             output = { approved: true, approvalId: approval.approvalId };
@@ -384,7 +418,7 @@ export class RunEngine {
               instructions,
               workingPath: working.path,
               projectName: String(project.name),
-              signal: controller.signal,
+              signal: stageSignal,
             });
             lastAgentOutput = JSON.stringify(output);
           } else if (AI_KINDS.has(stage.kind)) {
@@ -404,14 +438,7 @@ export class RunEngine {
               projectName: String(project.name),
             });
             if (stage.kind === 'promptRefinement') {
-              const result = await this.callAgent(
-                runId,
-                stageId,
-                stage,
-                prompt,
-                working.path,
-                controller.signal,
-              );
+              const result = await this.callAgent(runId, stageId, stage, prompt, working.path, stageSignal);
               const refinement = parsePromptRefinement(result.text);
               const output = {
                 ...refinement,
@@ -448,7 +475,7 @@ export class RunEngine {
                     stage,
                     `${prompt}\n\nReviewer slot: ${index + 1} of ${count}. Report only distinct findings.`,
                     working.path,
-                    controller.signal,
+                    stageSignal,
                     index + 1,
                   ),
                 ),
@@ -464,14 +491,7 @@ export class RunEngine {
               };
               lastAgentOutput = JSON.stringify(output);
             } else {
-              const result = await this.callAgent(
-                runId,
-                stageId,
-                stage,
-                prompt,
-                working.path,
-                controller.signal,
-              );
+              const result = await this.callAgent(runId, stageId, stage, prompt, working.path, stageSignal);
               lastAgentOutput = result.text;
               output = {
                 text: result.text,
@@ -499,24 +519,35 @@ export class RunEngine {
           this.setStage(stageId, 'passed', output, startedAt);
           this.event(runId, 'stage_completed', { stageId, stageKey: stage.id, title: stage.label, output });
         } catch (error) {
-          const message = safeError(error);
+          const message = stageTimedOut
+            ? `Stage timed out after ${stageTimeoutMinutes} minute${stageTimeoutMinutes === 1 ? '' : 's'}.`
+            : this.limitExpired.has(runId)
+              ? `Maximum workflow duration of ${durationLimitLabel(workflow.maxDurationMinutes)} reached.`
+              : safeError(error);
           this.setStage(
             stageId,
-            controller.signal.aborted ? 'cancelled' : 'failed',
+            controller.signal.aborted && !stageTimedOut ? 'cancelled' : 'failed',
             { error: message },
             startedAt,
             message,
           );
-          this.event(runId, controller.signal.aborted ? 'stage_cancelled' : 'stage_failed', {
-            stageId,
-            stageKey: stage.id,
-            error: message,
-          });
-          if (stage.continueOnFailure && !controller.signal.aborted) {
+          this.event(
+            runId,
+            controller.signal.aborted && !stageTimedOut ? 'stage_cancelled' : 'stage_failed',
+            {
+              stageId,
+              stageKey: stage.id,
+              error: message,
+            },
+          );
+          if (stage.continueOnFailure && !controller.signal.aborted && !stageTimedOut) {
             lastAgentOutput = JSON.stringify({ stageId, stage: stage.label, failed: true, error: message });
+            if (stageTimer) clearTimeout(stageTimer);
             continue;
           }
-          throw error;
+          throw stageTimedOut ? new Error(message, { cause: error }) : error;
+        } finally {
+          if (stageTimer) clearTimeout(stageTimer);
         }
       }
       if (controller.signal.aborted) throw new Error('Run cancelled by the user.');
@@ -525,6 +556,16 @@ export class RunEngine {
       this.emit('run_completed', { runId });
     } catch (error) {
       const message = safeError(error);
+      if (this.limitExpired.delete(runId)) {
+        const reason = `Maximum workflow duration of ${durationLimitLabel(workflow.maxDurationMinutes)} reached. Current Git changes were preserved.`;
+        this.updateRun(runId, 'paused_limit_reached', undefined, new Date().toISOString(), reason);
+        this.event(runId, 'run_paused_limit_reached', {
+          reason,
+          maxDurationMinutes: workflow.maxDurationMinutes,
+        });
+        this.emit('run_updated', { runId, status: 'paused_limit_reached', reason });
+        return;
+      }
       if (this.intervening.delete(runId)) {
         this.db
           .prepare(
@@ -554,6 +595,8 @@ export class RunEngine {
       } else {
         this.failRun(runId, message);
       }
+    } finally {
+      if (overallTimer) clearTimeout(overallTimer);
     }
   }
 
@@ -696,67 +739,116 @@ export class RunEngine {
     signal: AbortSignal,
     reviewerIndex?: number,
   ): Promise<ProviderRunResult & { reviewerIndex?: number }> {
-    const started = Date.now();
-    const runRow = this.db.prepare('SELECT permission_mode FROM runs WHERE id = ?').get(runId) as {
-      permission_mode: string;
-    };
+    const runRow = this.db
+      .prepare('SELECT permission_mode, workflow_snapshot_json FROM runs WHERE id = ?')
+      .get(runId) as { permission_mode: string; workflow_snapshot_json: string };
+    const workflow = JSON.parse(runRow.workflow_snapshot_json) as WorkflowDefinition;
+    const retryPolicy = resolveRetryPolicy(workflow, stage);
+    const reviewerSlot = reviewerIndex ?? 0;
+    const priorAttempts = this.db
+      .prepare('SELECT COUNT(*) AS count FROM stage_attempts WHERE stage_id = ? AND reviewer_index = ?')
+      .get(stageId, reviewerSlot) as { count: number };
+    let attempt = priorAttempts.count + 1;
     const providerRole = stage.kind === 'promptRefinement' ? 'prompt-refinement' : (stage.role ?? stage.kind);
-    const token = randomBytes(32).toString('base64url');
-    const providerToolSession: ProviderToolSession = {
-      id: randomUUID(),
-      token,
-      runId,
-      stageId,
-      backendId: stage.backendId!,
-      providerId: stage.providerId!,
-      modelId: stage.modelId!,
-      role: providerRole,
-      cwd,
-      projectRoot: cwd,
-      permissionMode: runRow.permission_mode as import('../shared/types.js').PermissionMode,
-      signal,
-    };
-    this.providerToolSessions.set(token, providerToolSession);
-    let result: ProviderRunResult;
-    try {
-      result = await executeProvider({
+    for (let retry = 0; ; retry += 1, attempt += 1) {
+      if (signal.aborted) throw new Error('Stage was cancelled before the provider started.');
+      const started = Date.now();
+      const startedAt = new Date(started).toISOString();
+      const attemptId = randomUUID();
+      this.db
+        .prepare(
+          "INSERT INTO stage_attempts (id, run_id, stage_id, reviewer_index, attempt, status, started_at) VALUES (?, ?, ?, ?, ?, 'running', ?)",
+        )
+        .run(attemptId, runId, stageId, reviewerSlot, attempt, startedAt);
+      const token = randomBytes(32).toString('base64url');
+      const providerToolSession: ProviderToolSession = {
+        id: randomUUID(),
+        token,
+        runId,
+        stageId,
         backendId: stage.backendId!,
         providerId: stage.providerId!,
         modelId: stage.modelId!,
-        reasoning: stage.reasoning,
-        permissionMode: providerToolSession.permissionMode,
-        role: providerToolSession.role,
+        role: providerRole,
         cwd,
-        prompt,
-        timeoutMs: 30 * 60 * 1_000,
+        projectRoot: cwd,
+        permissionMode: runRow.permission_mode as import('../shared/types.js').PermissionMode,
         signal,
-        onLog: (line) => this.appendLog(runId, stageId, line),
-        toolBroker: { url: this.providerToolBrokerUrl(), token },
-        onToolRequest: async (toolName, input) => {
-          const outcome = await this.authorizeProviderOperation(providerToolSession, toolName, input);
-          return { approved: outcome.approved, reason: outcome.reason };
-        },
-      });
-    } catch (error) {
-      this.finishProviderToolSession(providerToolSession, null, safeError(error));
-      throw error;
-    } finally {
-      this.providerToolSessions.delete(token);
+      };
+      this.providerToolSessions.set(token, providerToolSession);
+      try {
+        const result = await executeProvider({
+          backendId: stage.backendId!,
+          providerId: stage.providerId!,
+          modelId: stage.modelId!,
+          reasoning: stage.reasoning,
+          permissionMode: providerToolSession.permissionMode,
+          role: providerToolSession.role,
+          cwd,
+          prompt,
+          timeoutMs: 30 * 60 * 1_000,
+          signal,
+          onLog: (line) => this.appendLog(runId, stageId, line),
+          toolBroker: { url: this.providerToolBrokerUrl(), token },
+          onToolRequest: async (toolName, input) => {
+            const outcome = await this.authorizeProviderOperation(providerToolSession, toolName, input);
+            return { approved: outcome.approved, reason: outcome.reason };
+          },
+        });
+        this.finishProviderToolSession(providerToolSession, result.exitCode, null);
+        this.db
+          .prepare("UPDATE stage_attempts SET status = 'succeeded', finished_at = ? WHERE id = ?")
+          .run(new Date().toISOString(), attemptId);
+        this.recordUsage({
+          runId,
+          stageId,
+          providerId: stage.providerId!,
+          modelId: stage.modelId!,
+          backend: stage.backendId!,
+          role: providerRole,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          durationMs: Date.now() - started,
+          provenance: result.usageProvenance,
+        });
+        return { ...result, reviewerIndex };
+      } catch (error) {
+        const message = safeError(error);
+        this.finishProviderToolSession(providerToolSession, null, message);
+        const category = classifyProviderFailure(message);
+        if (category === 'authentication') {
+          this.event(runId, 'provider_auth_expired', { providerId: stage.providerId });
+          this.emit('provider_auth_expired', { runId, providerId: stage.providerId });
+        }
+        const displayMessage = providerFailureMessage(message);
+        const shouldRetry =
+          !signal.aborted && category === 'provider_transient' && retry < retryPolicy.maxRetries;
+        this.db
+          .prepare(
+            'UPDATE stage_attempts SET status = ?, category = ?, error = ?, finished_at = ? WHERE id = ?',
+          )
+          .run(
+            shouldRetry ? 'retrying' : 'failed',
+            category,
+            redactSecrets(displayMessage).slice(0, 4_000),
+            new Date().toISOString(),
+            attemptId,
+          );
+        if (!shouldRetry) throw new Error(displayMessage, { cause: error });
+        const delayMs = retryDelayMs(retryPolicy, retry + 1);
+        this.event(runId, 'provider_retry_scheduled', {
+          stageId,
+          attempt,
+          retry: retry + 1,
+          retryLimit: retryPolicy.maxRetries,
+          category,
+          delayMs,
+        });
+        await waitForRetry(delayMs, signal);
+      } finally {
+        this.providerToolSessions.delete(token);
+      }
     }
-    this.finishProviderToolSession(providerToolSession, result.exitCode, null);
-    this.recordUsage({
-      runId,
-      stageId,
-      providerId: stage.providerId!,
-      modelId: stage.modelId!,
-      backend: stage.backendId!,
-      role: providerRole,
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-      durationMs: Date.now() - started,
-      provenance: result.usageProvenance,
-    });
-    return { ...result, reviewerIndex };
   }
 
   private providerToolBrokerUrl(): string {
@@ -782,6 +874,7 @@ export class RunEngine {
     const id = randomUUID();
     const now = new Date().toISOString();
     const actionJson = redactSecrets(JSON.stringify(summarizeBrokerAction(input))).slice(0, 24_000);
+    const occurredAt = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO execution_operations
@@ -839,12 +932,7 @@ export class RunEngine {
       .prepare(
         `UPDATE execution_operations SET approval_id = ?, status = 'authorized', started_at = ?, result_json = ? WHERE id = ?`,
       )
-      .run(
-        approvalId,
-        new Date().toISOString(),
-        JSON.stringify({ authorization: 'approved', approvalId }),
-        id,
-      );
+      .run(approvalId, occurredAt, JSON.stringify({ authorization: 'approved', approvalId }), id);
     this.event(session.runId, 'execution_operation_authorized', {
       operationId: id,
       stageId: session.stageId,
@@ -2038,6 +2126,7 @@ export class RunEngine {
     const run = this.db.prepare('SELECT project_id FROM runs WHERE id = ?').get(event.runId) as {
       project_id: string;
     };
+    const occurredAt = new Date().toISOString();
     this.db
       .prepare(
         `INSERT INTO usage_events (id, occurred_at, provider_id, model_id, backend, project_id, run_id, stage_id, role, input_tokens, output_tokens, duration_ms, request_count, provenance, equivalent_cost_usd)
@@ -2045,7 +2134,7 @@ export class RunEngine {
       )
       .run(
         randomUUID(),
-        new Date().toISOString(),
+        occurredAt,
         event.providerId,
         event.modelId,
         event.backend,
@@ -2058,6 +2147,75 @@ export class RunEngine {
         event.durationMs,
         event.provenance,
       );
+    if (event.providerId) this.checkQuotaThreshold(event.runId, event.providerId, occurredAt);
+  }
+
+  private checkQuotaThreshold(runId: string, providerId: string, occurredAt: string): void {
+    const quota = this.db
+      .prepare(
+        'SELECT id, allowance, unit, effective_at, reset_at FROM quota_envelopes WHERE provider_id = ?',
+      )
+      .get(providerId) as
+      | {
+          id: string;
+          allowance: number;
+          unit: 'input_tokens' | 'output_tokens' | 'total_tokens' | 'requests' | 'minutes';
+          effective_at: string;
+          reset_at: string;
+        }
+      | undefined;
+    if (!quota || occurredAt < quota.effective_at || occurredAt >= quota.reset_at) return;
+    const sums = this.db
+      .prepare(
+        `SELECT SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens,
+         SUM(request_count) AS requests, SUM(duration_ms) AS duration_ms,
+         SUM(CASE WHEN input_tokens IS NULL OR output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_tokens
+         FROM usage_events WHERE provider_id = ? AND occurred_at >= ? AND occurred_at < ?`,
+      )
+      .get(providerId, quota.effective_at, quota.reset_at) as {
+      input_tokens: number | null;
+      output_tokens: number | null;
+      requests: number | null;
+      duration_ms: number | null;
+      missing_tokens: number | null;
+    };
+    if (
+      (quota.unit === 'input_tokens' || quota.unit === 'output_tokens' || quota.unit === 'total_tokens') &&
+      Number(sums.missing_tokens ?? 0) > 0
+    )
+      return;
+    const used =
+      quota.unit === 'input_tokens'
+        ? Number(sums.input_tokens ?? 0)
+        : quota.unit === 'output_tokens'
+          ? Number(sums.output_tokens ?? 0)
+          : quota.unit === 'total_tokens'
+            ? Number(sums.input_tokens ?? 0) + Number(sums.output_tokens ?? 0)
+            : quota.unit === 'requests'
+              ? Number(sums.requests ?? 0)
+              : Number(sums.duration_ms ?? 0) / 60_000;
+    const ratio = used / quota.allowance;
+    if (ratio < 0.8) return;
+    if (!getWebPushConfiguration().enabled) return;
+    const subscriptionCount = (
+      this.db.prepare('SELECT COUNT(*) AS count FROM push_subscriptions').get() as { count: number }
+    ).count;
+    if (!subscriptionCount) return;
+    const stateKey = `quota:${quota.id}:${quota.reset_at}:80`;
+    const inserted = this.db
+      .prepare(
+        'INSERT INTO push_notification_state (state_key, created_at) VALUES (?, ?) ON CONFLICT DO NOTHING',
+      )
+      .run(stateKey, occurredAt);
+    if (!inserted.changes) return;
+    this.event(runId, 'usage_threshold', { quotaId: quota.id, providerId, resetAt: quota.reset_at });
+    this.emit('usage_threshold', {
+      runId,
+      quotaId: quota.id,
+      providerId,
+      resetAt: quota.reset_at,
+      ratio,
+    });
   }
 
   private setStage(
@@ -2488,6 +2646,10 @@ function parseJson<T>(value: unknown, fallback: T): T {
 
 function safeError(error: unknown): string {
   return redactSecrets(error instanceof Error ? error.message : String(error)).slice(0, 4_000);
+}
+
+function durationLimitLabel(minutes: number): string {
+  return minutes === 1 ? '1 minute' : `${minutes} minutes`;
 }
 function redactRecord<T>(value: T): T {
   if (typeof value === 'string') return redactSecrets(value) as T;

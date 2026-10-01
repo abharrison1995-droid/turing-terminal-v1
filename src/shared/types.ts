@@ -8,6 +8,7 @@ export type RunStatus =
   | 'waiting_for_user'
   | 'retrying'
   | 'paused'
+  | 'paused_limit_reached'
   | 'cancelling'
   | 'cancelled'
   | 'failed'
@@ -100,6 +101,8 @@ export interface WorkflowStage {
   modelId?: string;
   reasoning?: string;
   maxIterations?: number;
+  timeoutMinutes?: number;
+  retryPolicy?: Partial<RetryPolicy>;
   parallelism?: number;
   command?: string[];
   condition?: WorkflowCondition;
@@ -113,6 +116,12 @@ export interface WorkflowStage {
   enabled?: boolean;
 }
 
+export interface RetryPolicy {
+  maxRetries: number;
+  initialDelayMs: number;
+  maxDelayMs: number;
+}
+
 export interface WorkflowDefinition {
   id: string;
   name: string;
@@ -123,6 +132,8 @@ export interface WorkflowDefinition {
   promptRefinementDefault: boolean;
   maxRemediationRounds: number;
   maxParallelAgents: number;
+  maxDurationMinutes: number;
+  retryPolicy: RetryPolicy;
   isolatedWorktree: boolean;
   stages: WorkflowStage[];
   version: number;
@@ -190,6 +201,18 @@ export interface RunStage {
   output: Record<string, unknown> | null;
   error: string | null;
   logs: string;
+  attempts: StageAttempt[];
+}
+
+export interface StageAttempt {
+  id: string;
+  attempt: number;
+  reviewerIndex: number | null;
+  status: 'running' | 'retrying' | 'succeeded' | 'failed';
+  category: string | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 }
 
 export interface RunSummary {
@@ -211,6 +234,8 @@ export interface RunSummary {
   startedAt: string | null;
   completedAt: string | null;
   stages: RunStage[];
+  elapsedMs: number;
+  remainingMs: number | null;
 }
 
 export interface UsageEvent {

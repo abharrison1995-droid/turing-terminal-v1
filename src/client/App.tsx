@@ -45,6 +45,7 @@ import {
   X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import QRCode from 'qrcode';
 import { notificationsForSnapshot } from './notificationEvents.js';
 import type {
   Approval,
@@ -65,6 +66,8 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { makePairingQrUrl, parsePairingRequestId } from './pairingQr.js';
+import { decodeVapidPublicKey, pushSubscriptionStorageKey } from './pushNotifications.js';
 import {
   addMachineProfile,
   importMachineProfilesFromLocation,
@@ -98,6 +101,12 @@ const activeStatuses = new Set([
   'retrying',
   'cancelling',
 ]);
+const quotaProviderOptions = [
+  { id: 'anthropic-subscription', name: 'Claude subscription' },
+  { id: 'openai-codex', name: 'OpenAI Codex subscription' },
+  { id: 'opencode-go', name: 'OpenCode Go' },
+  { id: 'cline-pass', name: 'ClinePass' },
+];
 const stageLabels: Record<StageKind, string> = {
   planner: 'Planner',
   promptRefinement: 'Prompt refinement',
@@ -475,15 +484,23 @@ function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
   const [deviceName, setDeviceName] = useState('My phone');
   const [code, setCode] = useState('');
   const [requestId, setRequestId] = useState('');
+  const [qrRequestId] = useState(() => parsePairingRequestId(window.location.href));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!qrRequestId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete('pairRequest');
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [qrRequestId]);
 
   useEffect(() => {
     if (!requestId || !code) return;
     let live = true;
     const check = async () => {
       try {
-        const result = await api.completePairing(requestId, code);
+        const result = await api.completePairing(requestId, qrRequestId ? undefined : code);
         if (!live || !('deviceId' in result)) return;
         onPaired();
       } catch (reason) {
@@ -500,13 +517,15 @@ function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
       live = false;
       window.clearInterval(timer);
     };
-  }, [requestId, code, onPaired]);
+  }, [requestId, code, qrRequestId, onPaired]);
 
   const claim = async () => {
     setBusy(true);
     setError('');
     try {
-      const result = await api.claimPairing(code.trim().toUpperCase(), deviceName.trim());
+      const result = qrRequestId
+        ? await api.claimPairingRequest(qrRequestId, deviceName.trim())
+        : await api.claimPairing(code.trim().toUpperCase(), deviceName.trim());
       setRequestId(result.requestId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The pairing code could not be used.');
@@ -524,33 +543,39 @@ function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
         <p className="eyebrow">TURING TERMINAL · DEVICE PAIRING</p>
         <h1>Connect this device</h1>
         <p className="pairing-description">
-          Open this page through the desktop’s Tailscale Serve address. Enter the short-lived code shown in
-          Turing Terminal on that desktop. The desktop owner must approve this device before it can view runs.
+          Open this page through the desktop’s Tailscale Serve address. Scan its short-lived QR or enter the
+          fallback code. The desktop owner must approve this device before it can view runs.
         </p>
         <label className="form-field">
           <span>Device name</span>
           <input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} maxLength={80} />
         </label>
-        <label className="form-field">
-          <span>Pairing code</span>
-          <input
-            value={code}
-            onChange={(event) =>
-              setCode(
-                event.target.value
-                  .toUpperCase()
-                  .replace(/[^A-F0-9]/g, '')
-                  .slice(0, 16),
-              )
-            }
-            autoCapitalize="characters"
-            autoComplete="one-time-code"
-            inputMode="text"
-            maxLength={16}
-            placeholder="16-character code"
-            disabled={Boolean(requestId)}
-          />
-        </label>
+        {qrRequestId ? (
+          <div className="inline-callout">
+            QR pairing request detected. The desktop owner must approve this phone.
+          </div>
+        ) : (
+          <label className="form-field">
+            <span>Pairing code</span>
+            <input
+              value={code}
+              onChange={(event) =>
+                setCode(
+                  event.target.value
+                    .toUpperCase()
+                    .replace(/[^A-F0-9]/g, '')
+                    .slice(0, 16),
+                )
+              }
+              autoCapitalize="characters"
+              autoComplete="one-time-code"
+              inputMode="text"
+              maxLength={16}
+              placeholder="16-character code"
+              disabled={Boolean(requestId)}
+            />
+          </label>
+        )}
         {error && (
           <div className="form-error" role="alert">
             {error}
@@ -564,9 +589,9 @@ function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
           <button
             className="primary-button pairing-submit"
             onClick={() => void claim()}
-            disabled={busy || code.length !== 16 || !deviceName.trim()}
+            disabled={busy || (!qrRequestId && code.length !== 16) || !deviceName.trim()}
           >
-            {busy ? 'Checking code…' : 'Request approval'}
+            {busy ? 'Requesting approval…' : 'Request approval'}
           </button>
         )}
         <small className="pairing-expiry-note">
@@ -1045,7 +1070,10 @@ function CommandCenter({
             </div>
             <div className="quiet-note">
               <LockKeyhole size={14} />
-              <span>Provider allowance is unavailable unless the provider reports it.</span>
+              <span>
+                Provider allowance stays unavailable unless reported; Usage supports separate user-configured
+                estimates.
+              </span>
             </div>
             <button className="quiet-button full-width" onClick={() => onNavigate('usage')}>
               Open usage dashboard <ChevronRight size={14} />
@@ -1122,10 +1150,44 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
           {plan.map((stage, index) => (
             <span className="stage-chip" key={stage.id}>
               <i>{index + 1}</i>
-              {stage.label}
+              <span>
+                {stage.label}
+                <small>
+                  {stage.timeoutMinutes ? `${stage.timeoutMinutes} min timeout` : 'run limit'} ·{' '}
+                  {stage.retryPolicy?.maxRetries ?? preview.workflow.retryPolicy.maxRetries} retries
+                </small>
+              </span>
             </span>
           ))}
         </div>
+      </div>
+      <div className="preview-bounds">
+        <span>
+          <strong>Run limit</strong> {preview.workflow.maxDurationMinutes} minutes
+        </span>
+        <span>
+          <strong>Transient retries</strong> up to {preview.workflow.retryPolicy.maxRetries} · starts at{' '}
+          {preview.workflow.retryPolicy.initialDelayMs} ms, capped at{' '}
+          {preview.workflow.retryPolicy.maxDelayMs} ms
+        </span>
+        <span>
+          <strong>Remediation</strong> up to {preview.workflow.maxRemediationRounds} rounds
+        </span>
+        <span>
+          <strong>Parallelism</strong> up to {preview.workflow.maxParallelAgents} agents
+        </span>
+        <span>
+          <strong>Approval gates</strong>{' '}
+          {
+            plan.filter((stage) =>
+              ['humanApproval', 'gitPush', 'gitMerge', 'gitRollback'].includes(stage.kind),
+            ).length
+          }
+        </span>
+        <span>
+          <strong>Target</strong> {preview.machine.name} · {preview.project.name} ·{' '}
+          {preview.branchStrategy === 'worktree' ? 'isolated worktree' : 'project working tree'}
+        </span>
       </div>
       <RuleListDetails rules={preview.effectiveRules} title="Effective run rules" />
       {preview.providerAssignments.length > 0 && (
@@ -1595,6 +1657,77 @@ function WorkflowsPage({
                   }
                 />
               </label>
+              <label className="form-field small-number-field">
+                <span>Maximum workflow minutes</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={draft.maxDurationMinutes}
+                  onChange={(event) =>
+                    changeWorkflow({
+                      maxDurationMinutes: Math.min(1440, Math.max(1, Number(event.target.value))),
+                    })
+                  }
+                />
+              </label>
+              <label className="form-field small-number-field">
+                <span>Transient provider retries</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={draft.retryPolicy.maxRetries}
+                  onChange={(event) =>
+                    changeWorkflow({
+                      retryPolicy: {
+                        ...draft.retryPolicy,
+                        maxRetries: Math.min(5, Math.max(0, Number(event.target.value))),
+                      },
+                    })
+                  }
+                />
+              </label>
+              <label className="form-field small-number-field">
+                <span>Initial retry delay (ms)</span>
+                <input
+                  type="number"
+                  min={100}
+                  max={30000}
+                  step={100}
+                  value={draft.retryPolicy.initialDelayMs}
+                  onChange={(event) =>
+                    changeWorkflow({
+                      retryPolicy: {
+                        ...draft.retryPolicy,
+                        initialDelayMs: Math.min(30000, Math.max(100, Number(event.target.value))),
+                        maxDelayMs: Math.max(draft.retryPolicy.maxDelayMs, Number(event.target.value)),
+                      },
+                    })
+                  }
+                />
+              </label>
+              <label className="form-field small-number-field">
+                <span>Maximum retry delay (ms)</span>
+                <input
+                  type="number"
+                  min={100}
+                  max={120000}
+                  step={500}
+                  value={draft.retryPolicy.maxDelayMs}
+                  onChange={(event) =>
+                    changeWorkflow({
+                      retryPolicy: {
+                        ...draft.retryPolicy,
+                        maxDelayMs: Math.min(
+                          120000,
+                          Math.max(draft.retryPolicy.initialDelayMs, Number(event.target.value)),
+                        ),
+                      },
+                    })
+                  }
+                />
+              </label>
             </div>
             <label className="toggle-line">
               <input
@@ -1914,6 +2047,45 @@ function WorkflowStageEditor({
                 value={stage.parallelism ?? 1}
                 onChange={(event) =>
                   onChange({ parallelism: Math.min(8, Math.max(1, Number(event.target.value))) })
+                }
+              />
+            </label>
+          )}
+          <label className="form-field small-number-field">
+            <span>Stage timeout (minutes)</span>
+            <input
+              type="number"
+              min={1}
+              max={360}
+              value={stage.timeoutMinutes ?? ''}
+              placeholder="No stage override"
+              onChange={(event) =>
+                onChange({
+                  timeoutMinutes: event.target.value
+                    ? Math.min(360, Math.max(1, Number(event.target.value)))
+                    : undefined,
+                })
+              }
+            />
+          </label>
+          {aiStage && (
+            <label className="form-field small-number-field">
+              <span>Retry override</span>
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={stage.retryPolicy?.maxRetries ?? ''}
+                placeholder="Workflow default"
+                onChange={(event) =>
+                  onChange({
+                    retryPolicy: {
+                      ...stage.retryPolicy,
+                      maxRetries: event.target.value
+                        ? Math.min(5, Math.max(0, Number(event.target.value)))
+                        : undefined,
+                    },
+                  })
                 }
               />
             </label>
@@ -2616,6 +2788,13 @@ function RunDetail({
         <span>{run.profile} profile</span>
         <span>{run.permissionMode}</span>
       </div>
+      <div className="run-runtime-summary">
+        <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
+        {run.remainingMs !== null && <span>Run time remaining: {formatMilliseconds(run.remainingMs)}</span>}
+        {run.status === 'paused_limit_reached' && (
+          <strong>Maximum workflow duration reached. The working tree is preserved for inspection.</strong>
+        )}
+      </div>
       {run.summary && (
         <div className="run-summary-banner">
           <strong>Run summary</strong>
@@ -2959,6 +3138,22 @@ function RunStageRow({
         <ChevronDown size={14} className="stage-chevron" />
       </summary>
       <div className="stage-expanded">
+        {stage.attempts.length > 0 && (
+          <div className="attempt-history">
+            <strong>Provider attempts</strong>
+            {stage.attempts.map((attempt) => (
+              <div key={attempt.id}>
+                <span>
+                  Attempt {attempt.attempt}
+                  {attempt.reviewerIndex ? ` · reviewer ${attempt.reviewerIndex}` : ''}
+                </span>
+                <span className={`status-pill status-${attempt.status}`}>{humanStatus(attempt.status)}</span>
+                {attempt.category && <small>{humanize(attempt.category)}</small>}
+                {attempt.error && <small>{attempt.error}</small>}
+              </div>
+            ))}
+          </div>
+        )}
         {stage.error && (
           <div className="stage-error-message">
             <AlertTriangle size={14} />
@@ -3062,6 +3257,22 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
   const [windowSize, setWindowSize] = useState<'today' | '7d' | '30d'>('7d');
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
+  const [quotaMessage, setQuotaMessage] = useState('');
+  const [savingQuota, setSavingQuota] = useState(false);
+  const [quotaDraft, setQuotaDraft] = useState(() => {
+    const now = new Date();
+    return {
+      providerId: '',
+      quotaName: '',
+      windowLabel: 'Weekly',
+      effectiveAt: toDateTimeLocal(now),
+      resetAt: toDateTimeLocal(new Date(now.getTime() + 7 * 86_400_000)),
+      allowance: '',
+      unit: 'total_tokens' as const,
+      notes: '',
+      subscriptionCostUsd: '',
+    };
+  });
   useEffect(() => {
     let live = true;
     void api
@@ -3079,11 +3290,52 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
       live = false;
     };
   }, [windowSize]);
+  useEffect(() => {
+    if (!quotaDraft.providerId && quotaProviderOptions.length)
+      setQuotaDraft((current) => ({ ...current, providerId: quotaProviderOptions[0]!.id }));
+  }, [quotaDraft.providerId]);
   const providers = Array.isArray(data?.providers) ? (data.providers as Array<Record<string, unknown>>) : [];
   const models = Array.isArray(data?.models) ? (data.models as Array<Record<string, unknown>>) : [];
   const projects = Array.isArray(data?.projects) ? (data.projects as Array<Record<string, unknown>>) : [];
   const daily = Array.isArray(data?.daily) ? (data.daily as Array<Record<string, unknown>>) : [];
+  const quotas = Array.isArray(data?.quotas) ? (data.quotas as Array<Record<string, unknown>>) : [];
+  const usageByProvider = new Map(providers.map((provider) => [String(provider.key), provider]));
   const maxDuration = Math.max(1, ...daily.map((item) => Number(item.duration_ms ?? 0)));
+  const saveQuota = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setSavingQuota(true);
+    setQuotaMessage('');
+    try {
+      await api.saveQuotaEnvelope({
+        providerId: quotaDraft.providerId,
+        quotaName: quotaDraft.quotaName.trim(),
+        windowLabel: quotaDraft.windowLabel.trim(),
+        effectiveAt: new Date(quotaDraft.effectiveAt).toISOString(),
+        resetAt: new Date(quotaDraft.resetAt).toISOString(),
+        allowance: Number(quotaDraft.allowance),
+        unit: quotaDraft.unit,
+        notes: quotaDraft.notes,
+        subscriptionCostUsd: quotaDraft.subscriptionCostUsd.trim()
+          ? Number(quotaDraft.subscriptionCostUsd)
+          : null,
+      });
+      setData(await api.usage(windowSize));
+      setQuotaMessage('Quota envelope saved. Its allowance source is user configured.');
+    } catch (reason) {
+      setQuotaMessage(reason instanceof Error ? reason.message : 'Quota envelope could not be saved.');
+    } finally {
+      setSavingQuota(false);
+    }
+  };
+  const removeQuota = async (id: string) => {
+    try {
+      await api.deleteQuotaEnvelope(id);
+      setData(await api.usage(windowSize));
+      setQuotaMessage('Quota envelope removed.');
+    } catch (reason) {
+      setQuotaMessage(reason instanceof Error ? reason.message : 'Quota envelope could not be removed.');
+    }
+  };
   return (
     <main className="page-content">
       <PageHeading
@@ -3106,13 +3358,13 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
       <div className="usage-honesty-banner">
         <div>
           <Radio size={17} />
-          <strong>Measured activity only</strong>
+          <strong>Measured activity · separate configured envelopes</strong>
           <span>
-            Quota remaining, reset time, and subscription allowance are unavailable unless reported by the
-            provider.
+            Quota calculations use your manually entered allowance/reset and this master’s observed usage.
+            They are estimates, not provider telemetry.
           </span>
         </div>
-        <span className="status-pill status-attention">No fabricated quota estimates</span>
+        <span className="status-pill status-attention">Sources stay visible</span>
       </div>
       {error && (
         <div className="form-error">
@@ -3138,10 +3390,235 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
         />
         <Metric
           label="Allowance remaining"
-          value="Unavailable"
-          help="No provider quota endpoint is queried"
+          value={`${quotas.length} configured`}
+          help="Different quota units remain separate; inspect each envelope below"
         />
       </div>
+      <section className="surface-panel quota-envelope-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>User-configured quota envelopes</h2>
+            <p>
+              Enter values you know from your provider account. Turing never fills allowance or reset values
+              for you.
+            </p>
+          </div>
+          <Radio size={16} className="muted-icon" />
+        </div>
+        {quotaMessage && <div className="inline-callout quota-feedback">{quotaMessage}</div>}
+        <form className="quota-envelope-form" onSubmit={(event) => void saveQuota(event)}>
+          <label className="form-field">
+            <span>Provider</span>
+            <select
+              required
+              value={quotaDraft.providerId}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, providerId: event.target.value })}
+            >
+              {quotaProviderOptions.map((provider) => (
+                <option value={provider.id} key={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Quota name</span>
+            <input
+              required
+              maxLength={100}
+              value={quotaDraft.quotaName}
+              placeholder="Claude weekly allowance"
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, quotaName: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Window label</span>
+            <input
+              required
+              maxLength={80}
+              value={quotaDraft.windowLabel}
+              placeholder="Weekly"
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, windowLabel: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Allowance</span>
+            <input
+              required
+              type="number"
+              min="0.000001"
+              step="any"
+              value={quotaDraft.allowance}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, allowance: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Unit</span>
+            <select
+              value={quotaDraft.unit}
+              onChange={(event) =>
+                setQuotaDraft({ ...quotaDraft, unit: event.target.value as typeof quotaDraft.unit })
+              }
+            >
+              <option value="total_tokens">Total tokens</option>
+              <option value="input_tokens">Input tokens</option>
+              <option value="output_tokens">Output tokens</option>
+              <option value="requests">Requests (local)</option>
+              <option value="minutes">Process minutes (local)</option>
+            </select>
+          </label>
+          <label className="form-field">
+            <span>Effective from</span>
+            <input
+              required
+              type="datetime-local"
+              value={quotaDraft.effectiveAt}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, effectiveAt: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Reset at</span>
+            <input
+              required
+              type="datetime-local"
+              value={quotaDraft.resetAt}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, resetAt: event.target.value })}
+            />
+          </label>
+          <label className="form-field">
+            <span>Subscription cost per month (USD, optional)</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={quotaDraft.subscriptionCostUsd}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, subscriptionCostUsd: event.target.value })}
+            />
+          </label>
+          <label className="form-field quota-notes-field">
+            <span>Notes</span>
+            <textarea
+              maxLength={1_000}
+              rows={2}
+              value={quotaDraft.notes}
+              onChange={(event) => setQuotaDraft({ ...quotaDraft, notes: event.target.value })}
+            />
+          </label>
+          <button className="primary-button" type="submit" disabled={savingQuota || !quotaDraft.providerId}>
+            <Save size={14} /> {savingQuota ? 'Saving…' : 'Save envelope'}
+          </button>
+        </form>
+        {quotas.length ? (
+          <div className="quota-envelope-list">
+            {quotas.map((quota) => {
+              const forecast = quota.forecast as Record<string, unknown>;
+              const providerUsage = usageByProvider.get(String(quota.providerId));
+              const estimatedCost =
+                providerUsage?.costProvenance === 'estimated' &&
+                typeof providerUsage.estimatedCostUsd === 'number'
+                  ? providerUsage.estimatedCostUsd
+                  : null;
+              const subscriptionCost =
+                typeof quota.subscriptionCostUsd === 'number' ? quota.subscriptionCostUsd : null;
+              const monthlyRatio =
+                windowSize === '30d' && estimatedCost !== null && subscriptionCost
+                  ? estimatedCost / subscriptionCost
+                  : null;
+              return (
+                <article className="quota-envelope-card" key={String(quota.id)}>
+                  <div className="quota-envelope-heading">
+                    <div>
+                      <strong>{String(quota.quotaName)}</strong>
+                      <small>
+                        {String(quota.providerId)} · {String(quota.windowLabel)}
+                      </small>
+                    </div>
+                    <span className="status-pill status-attention">USER CONFIGURED</span>
+                  </div>
+                  <div className="quota-envelope-values">
+                    <span>
+                      Allowance{' '}
+                      <strong>
+                        {Number(quota.allowance).toLocaleString()} {quotaUnitLabel(String(quota.unit))}
+                      </strong>
+                    </span>
+                    <span>
+                      Observed{' '}
+                      <strong>
+                        {forecast.observedUsed === null
+                          ? 'Unavailable'
+                          : `${Number(forecast.observedUsed).toLocaleString()} ${quotaUnitLabel(String(quota.unit))}`}
+                      </strong>
+                      <small>{humanize(String(forecast.usageProvenance ?? 'unavailable'))}</small>
+                    </span>
+                    <span>
+                      Estimated remaining{' '}
+                      <strong>
+                        {forecast.remaining === null
+                          ? 'Unavailable'
+                          : `${Number(forecast.remaining).toLocaleString()} ${quotaUnitLabel(String(quota.unit))}`}
+                      </strong>
+                    </span>
+                    <span>
+                      Average burn{' '}
+                      <strong>
+                        {forecast.averagePerDay === null
+                          ? 'Unavailable'
+                          : `${Number(forecast.averagePerDay).toLocaleString(undefined, { maximumFractionDigits: 1 })} / day`}
+                      </strong>
+                    </span>
+                    <span>
+                      Projected exhaustion{' '}
+                      <strong>
+                        {forecast.projectedExhaustionAt
+                          ? formatDate(String(forecast.projectedExhaustionAt))
+                          : 'Not enough measured burn data'}
+                      </strong>
+                      <small>
+                        {forecast.likelyBeforeReset === null
+                          ? 'Cannot compare with reset'
+                          : forecast.likelyBeforeReset
+                            ? 'Likely before reset'
+                            : 'Not projected before reset'}
+                      </small>
+                    </span>
+                    <span>
+                      Reset <strong>{formatDate(String(quota.resetAt))}</strong>
+                      <small>USER CONFIGURED</small>
+                    </span>
+                    <span>
+                      Forecast confidence{' '}
+                      <strong>{humanize(String(forecast.confidence ?? 'unavailable'))}</strong>
+                      <small>Based on {String(forecast.sampleCount ?? 0)} local usage events</small>
+                    </span>
+                    <span>
+                      API-equivalent value{' '}
+                      <strong>
+                        {estimatedCost === null
+                          ? 'Unavailable for this model/window'
+                          : `$${estimatedCost.toFixed(2)} USD · ESTIMATED`}
+                      </strong>
+                      <small>
+                        {monthlyRatio === null
+                          ? 'Requires 30-day view, matching public price, and monthly subscription cost'
+                          : `${monthlyRatio.toFixed(2)}× configured monthly cost`}
+                      </small>
+                    </span>
+                  </div>
+                  {typeof quota.notes === 'string' && quota.notes && (
+                    <p className="quota-notes">{quota.notes}</p>
+                  )}
+                  <button className="text-button" onClick={() => void removeQuota(String(quota.id))}>
+                    Remove envelope
+                  </button>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="empty-inline">No manual quota envelopes configured.</div>
+        )}
+      </section>
       <div className="usage-two-column">
         <section className="surface-panel usage-table-panel">
           <div className="panel-title-row">
@@ -3230,8 +3707,9 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
       <div className="usage-footnote">
         <Shield size={14} />
         <span>
-          API-equivalent cost, subscription value ratio, remaining allowance, and exhaustion forecasts are
-          unavailable until there is verified provider pricing and telemetry.
+          API-equivalent values use exact public model prices when available and locally observed token
+          counts. They are ESTIMATED, omit unavailable cache/token detail, and are not billed spend. Quota
+          forecasts use USER CONFIGURED limits plus this master’s recorded usage.
         </span>
       </div>
     </main>
@@ -3484,6 +3962,31 @@ function SettingsPage({
   const [notifications, setNotifications] = useState(
     () => typeof Notification !== 'undefined' && Notification.permission === 'granted',
   );
+  const [pushConfig, setPushConfig] = useState<{
+    enabled: boolean;
+    publicKey: string | null;
+    reason: string | null;
+  } | null>(null);
+  const pushStorageKey = pushSubscriptionStorageKey(window.location.origin);
+  const [pushSubscribed, setPushSubscribed] = useState(() =>
+    Boolean(window.localStorage.getItem(pushStorageKey)),
+  );
+  const [pushBusy, setPushBusy] = useState(false);
+  const [pushNotice, setPushNotice] = useState('');
+  useEffect(() => {
+    let live = true;
+    void api
+      .webPushConfig()
+      .then((config) => {
+        if (live) setPushConfig(config);
+      })
+      .catch((reason) => {
+        if (live) setPushNotice(reason instanceof Error ? reason.message : 'Push readiness is unavailable.');
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
   const updateMachineName = async () => {
     try {
       await api.renameMachine(name);
@@ -3505,6 +4008,61 @@ function SettingsPage({
         ? 'Browser notifications enabled for this browser.'
         : 'Notification permission was not granted.',
     );
+  };
+  const enableClosedPush = async () => {
+    setPushBusy(true);
+    setPushNotice('');
+    try {
+      if (!pushConfig?.enabled || !pushConfig.publicKey)
+        throw new Error(pushConfig?.reason ?? 'Closed-client Web Push is not configured on this master.');
+      if (!('serviceWorker' in navigator) || !('PushManager' in window))
+        throw new Error('This browser does not support Web Push. Open-client notifications may still work.');
+      if (Notification.permission !== 'granted') {
+        const permission = await Notification.requestPermission();
+        setNotifications(permission === 'granted');
+        if (permission !== 'granted') throw new Error('Notification permission was not granted.');
+      }
+      const registration = await navigator.serviceWorker.ready;
+      const subscription =
+        (await registration.pushManager.getSubscription()) ??
+        (await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: decodeVapidPublicKey(pushConfig.publicKey),
+        }));
+      const value = subscription.toJSON();
+      if (!value.endpoint || !value.keys?.p256dh || !value.keys.auth)
+        throw new Error('The browser returned an incomplete Web Push subscription.');
+      const saved = await api.savePushSubscription({
+        endpoint: value.endpoint,
+        keys: { p256dh: value.keys.p256dh, auth: value.keys.auth },
+      });
+      window.localStorage.setItem(pushStorageKey, saved.id);
+      setPushSubscribed(true);
+      setPushNotice('Closed-client Web Push is enabled for this browser.');
+    } catch (reason) {
+      setPushNotice(reason instanceof Error ? reason.message : 'Web Push could not be enabled.');
+    } finally {
+      setPushBusy(false);
+    }
+  };
+  const disableClosedPush = async () => {
+    setPushBusy(true);
+    try {
+      const id = window.localStorage.getItem(pushStorageKey);
+      if (id) await api.deletePushSubscription(id);
+      if ('serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        await subscription?.unsubscribe();
+      }
+      window.localStorage.removeItem(pushStorageKey);
+      setPushSubscribed(false);
+      setPushNotice('Closed-client Web Push was disabled for this browser.');
+    } catch (reason) {
+      setPushNotice(reason instanceof Error ? reason.message : 'Web Push could not be disabled.');
+    } finally {
+      setPushBusy(false);
+    }
   };
   return (
     <main className="page-content">
@@ -3570,6 +4128,7 @@ function SettingsPage({
             </div>
           ))}
         </section>
+        <TailscaleReadinessCard />
         <section className="surface-panel settings-section">
           <div className="panel-title-row">
             <div>
@@ -3608,7 +4167,10 @@ function SettingsPage({
           <div className="toggle-line">
             <span className="notification-setting-copy">
               <strong>{notifications ? 'Notifications enabled' : 'Notifications disabled'}</strong>
-              <small>Permission and delivery are browser-specific. Native push is not configured.</small>
+              <small>
+                Browser notifications appear while Turing Terminal is open. Closed-client Web Push is
+                configured separately below.
+              </small>
             </span>
             <button
               className="secondary-button"
@@ -3619,6 +4181,34 @@ function SettingsPage({
               {notifications ? 'Enabled' : 'Enable notifications'}
             </button>
           </div>
+          <div className="toggle-line push-notification-line">
+            <span className="notification-setting-copy">
+              <strong>{pushSubscribed ? 'Closed-client push enabled' : 'Closed-client push'}</strong>
+              <small>
+                {pushConfig?.enabled
+                  ? 'The master sends standards-based Web Push. Browser vendor push relays deliver while this page is closed.'
+                  : (pushConfig?.reason ?? 'Checking master push configuration…')}
+              </small>
+            </span>
+            {pushSubscribed ? (
+              <button
+                className="secondary-button"
+                onClick={() => void disableClosedPush()}
+                disabled={pushBusy}
+              >
+                {pushBusy ? 'Disabling…' : 'Disable push'}
+              </button>
+            ) : (
+              <button
+                className="secondary-button"
+                onClick={() => void enableClosedPush()}
+                disabled={pushBusy || !pushConfig?.enabled}
+              >
+                <Bell size={14} /> {pushBusy ? 'Enabling…' : 'Enable closed-client push'}
+              </button>
+            )}
+          </div>
+          {pushNotice && <div className="inline-callout quota-feedback">{pushNotice}</div>}
         </section>
       </div>
       <div className="settings-boundary">
@@ -3632,10 +4222,100 @@ function SettingsPage({
   );
 }
 
+function TailscaleReadinessCard() {
+  const [state, setState] = useState<Awaited<ReturnType<typeof api.tailscaleReadiness>>['tailscale'] | null>(
+    null,
+  );
+  const [error, setError] = useState('');
+  const refresh = useCallback(() => {
+    setError('');
+    void api
+      .tailscaleReadiness()
+      .then((result) => setState(result.tailscale))
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : 'Tailscale readiness check failed.'),
+      );
+  }, []);
+  useEffect(() => refresh(), [refresh]);
+  return (
+    <section className="surface-panel settings-section tailscale-readiness">
+      <div className="panel-title-row">
+        <div>
+          <h2>Tailscale readiness</h2>
+          <p>Local CLI check for this master; the Serve identity is checked on the request itself.</p>
+        </div>
+        <RefreshCw size={16} className="muted-icon" />
+      </div>
+      {error ? (
+        <div className="form-error">{error}</div>
+      ) : state ? (
+        <>
+          <div className="settings-readonly-row">
+            <span>Connection</span>
+            <strong className={state.connectionHealth === 'ready' ? 'readiness-good' : 'readiness-attention'}>
+              {state.message}
+            </strong>
+          </div>
+          <div className="settings-readonly-row">
+            <span>Tailscale</span>
+            <strong>
+              {state.installed
+                ? state.running
+                  ? 'Installed · running'
+                  : 'Installed · stopped'
+                : 'Not installed'}
+            </strong>
+          </div>
+          {state.hostname && (
+            <div className="settings-readonly-row">
+              <span>This machine</span>
+              <strong>
+                {state.hostname}
+                {state.ips.length ? ` · ${state.ips.join(', ')}` : ''}
+              </strong>
+            </div>
+          )}
+          <div className="settings-readonly-row">
+            <span>Serve → loopback master</span>
+            <strong>
+              {state.serveConfigured === null
+                ? 'Could not inspect'
+                : state.serveConfigured
+                  ? 'Configured'
+                  : 'Not configured'}
+            </strong>
+          </div>
+          <div className="settings-readonly-row">
+            <span>Identity header on this request</span>
+            <strong>{state.identityHeaderPresent ? 'Present' : 'Not present · local request'}</strong>
+          </div>
+          <small className="readiness-footnote">
+            {state.identityObservation} Peer devices and tailnet account details are never returned.
+          </small>
+        </>
+      ) : (
+        <div className="settings-readonly-row">
+          <span>Connection</span>
+          <strong>Checking…</strong>
+        </div>
+      )}
+      <button className="secondary-button align-right" onClick={refresh}>
+        <RefreshCw size={14} /> Check again
+      </button>
+    </section>
+  );
+}
+
 function PairingSettings({ onNotice }: { onNotice: (message: string) => void }) {
   const [requests, setRequests] = useState<Awaited<ReturnType<typeof api.pairingRequests>>['requests']>([]);
   const [devices, setDevices] = useState<Awaited<ReturnType<typeof api.pairedDevices>>['devices']>([]);
-  const [newCode, setNewCode] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [newCode, setNewCode] = useState<{
+    id: string;
+    code: string;
+    expiresAt: string;
+    qrDataUrl: string | null;
+  } | null>(null);
+  const [serveOrigin, setServeOrigin] = useState(window.location.origin);
   const [busy, setBusy] = useState(false);
   const load = useCallback(async () => {
     try {
@@ -3651,13 +4331,45 @@ function PairingSettings({ onNotice }: { onNotice: (message: string) => void }) 
     const timer = window.setInterval(() => void load(), 4_000);
     return () => window.clearInterval(timer);
   }, [load]);
+  useEffect(() => {
+    if (!newCode) return;
+    let live = true;
+    const qrUrl = makePairingQrUrl(serveOrigin, newCode.id);
+    if (!qrUrl) {
+      setNewCode((current) =>
+        current?.id === newCode.id && current.qrDataUrl !== null ? { ...current, qrDataUrl: null } : current,
+      );
+      return () => {
+        live = false;
+      };
+    }
+    void QRCode.toDataURL(qrUrl, { width: 240, margin: 2 })
+      .then((qrDataUrl) => {
+        if (!live) return;
+        setNewCode((current) =>
+          current?.id === newCode.id && current.qrDataUrl !== qrDataUrl ? { ...current, qrDataUrl } : current,
+        );
+      })
+      .catch(() => {
+        if (live)
+          setNewCode((current) => (current?.id === newCode.id ? { ...current, qrDataUrl: null } : current));
+      });
+    return () => {
+      live = false;
+    };
+  }, [newCode, serveOrigin]);
   const createRequest = async () => {
     setBusy(true);
     try {
       const result = await api.createPairingRequest();
-      setNewCode({ code: result.request.code, expiresAt: result.request.expiresAt });
+      setNewCode({
+        id: result.request.id,
+        code: result.request.code,
+        expiresAt: result.request.expiresAt,
+        qrDataUrl: null,
+      });
       await load();
-      onNotice('One-time pairing code created. Share it only with the device you are pairing.');
+      onNotice('Short-lived pairing QR and fallback code created. Use them only on the device being paired.');
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'Pairing request could not be created.');
     } finally {
@@ -3671,6 +4383,15 @@ function PairingSettings({ onNotice }: { onNotice: (message: string) => void }) 
       onNotice('Device pairing approved.');
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'Device pairing could not be approved.');
+    }
+  };
+  const deny = async (id: string) => {
+    try {
+      await api.denyPairingRequest(id);
+      await load();
+      onNotice('Pairing request denied.');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Pairing request could not be denied.');
     }
   };
   const revoke = async (id: string, name: string) => {
@@ -3694,12 +4415,28 @@ function PairingSettings({ onNotice }: { onNotice: (message: string) => void }) 
       <button className="secondary-button" onClick={() => void createRequest()} disabled={busy}>
         <Plus size={14} /> Create pairing code
       </button>
+      <label className="form-field pairing-origin-field">
+        <span>HTTPS Tailscale Serve address for QR</span>
+        <input
+          value={serveOrigin}
+          onChange={(event) => setServeOrigin(event.target.value)}
+          placeholder="https://desktop.example.ts.net"
+          autoCapitalize="none"
+          spellCheck={false}
+        />
+      </label>
       {newCode && (
         <div className="pairing-code-display">
+          {newCode.qrDataUrl ? (
+            <img src={newCode.qrDataUrl} alt="Short-lived Turing Terminal device pairing QR code" />
+          ) : (
+            <small>QR needs an HTTPS Serve origin with no path or query. Use the manual code below.</small>
+          )}
           <strong>{newCode.code}</strong>
           <small>
             Enter this on the phone before {formatDate(newCode.expiresAt)}. Keep this code private.
           </small>
+          <small>QR contains only the Serve origin and short-lived request ID; no code or credentials.</small>
         </div>
       )}
       <div className="pairing-settings-list">
@@ -3715,9 +4452,14 @@ function PairingSettings({ onNotice }: { onNotice: (message: string) => void }) 
               </span>
               <span className={`status-pill status-${request.status}`}>{humanize(request.status)}</span>
               {request.status === 'awaiting_approval' && (
-                <button className="secondary-button" onClick={() => void approve(request.id)}>
-                  Approve
-                </button>
+                <span className="pairing-request-actions">
+                  <button className="secondary-button" onClick={() => void approve(request.id)}>
+                    Approve
+                  </button>
+                  <button className="secondary-button" onClick={() => void deny(request.id)}>
+                    Deny
+                  </button>
+                </span>
               )}
             </div>
           ))
@@ -4112,6 +4854,7 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'waiting_for_approval') return <LockKeyhole size={13} />;
   if (status === 'waiting_for_user') return <Sparkles size={13} />;
   if (status === 'paused') return <Pause size={13} />;
+  if (status === 'paused_limit_reached') return <Clock3 size={13} />;
   return <Clock3 size={13} />;
 }
 function iconForStage(kind: StageKind): LucideIcon {
@@ -4180,6 +4923,25 @@ function formatDuration(start: string | null, end: string | null): string {
   const duration = Math.max(0, (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime());
   const seconds = Math.floor(duration / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+function formatMilliseconds(durationMs: number): string {
+  const seconds = Math.floor(Math.max(0, durationMs) / 1_000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+function toDateTimeLocal(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+function quotaUnitLabel(unit: string): string {
+  return (
+    {
+      input_tokens: 'input tokens',
+      output_tokens: 'output tokens',
+      total_tokens: 'tokens',
+      requests: 'requests',
+      minutes: 'minutes',
+    }[unit] ?? unit
+  );
 }
 function commandText(command: string[] | null): string {
   return command?.join(' ') ?? '';

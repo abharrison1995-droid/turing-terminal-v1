@@ -528,6 +528,8 @@ describe('brokered workflow commands', () => {
       promptRefinementDefault: false,
       maxRemediationRounds: 0,
       maxParallelAgents: 1,
+      maxDurationMinutes: 120,
+      retryPolicy: { maxRetries: 1, initialDelayMs: 1_000, maxDelayMs: 30_000 },
       isolatedWorktree: false,
       stages,
       version: 1,

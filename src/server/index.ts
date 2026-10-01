@@ -2,6 +2,7 @@ import { openDatabase } from './db.js';
 import { createApp } from './app.js';
 import { RunEngine } from './runEngine.js';
 import { assertLoopbackHost } from './networkPolicy.js';
+import { deliverPushNotice } from './webPush.js';
 
 const host = process.env.TT_HOST ?? '127.0.0.1';
 assertLoopbackHost(host);
@@ -10,6 +11,7 @@ const database = openDatabase();
 const subscribers = new Set<(event: string, payload: Record<string, unknown>) => void>();
 const engine = new RunEngine(database, (event, payload) => {
   for (const subscriber of subscribers) subscriber(event, payload);
+  void deliverPushNotice(database, event, payload).catch(() => undefined);
 });
 engine.reconcileInterruptedRuns();
 const app = createApp({ database, engine });

@@ -1,0 +1,19 @@
+[Unit]
+Description=Turing Terminal local workflow master
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory="@APP_DIR@"
+Environment=TT_HOST=127.0.0.1
+Environment=TT_PORT=4317
+Environment=TT_DATA_DIR="@DATA_DIR@"
+ExecStart="@NODE_BIN@" "@APP_DIR@/dist-server/server/index.js"
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

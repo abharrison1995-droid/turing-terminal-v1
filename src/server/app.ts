@@ -18,6 +18,10 @@ import { readGitDiff } from './git.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
 import { listRules, resolveEffectiveRules } from './rules.js';
 import { redactSecrets } from './security.js';
+import { calculateQuotaForecast, type QuotaUnit, type QuotaUsageSample } from './quotaForecast.js';
+import { estimateApiEquivalent } from './pricing.js';
+import { probeTailscale } from './tailscaleReadiness.js';
+import { getWebPushConfiguration, isAllowedPushEndpoint } from './webPush.js';
 
 const execFile = promisify(callbackExecFile);
 const PAIRING_REQUEST_TTL_MS = 5 * 60 * 1_000;
@@ -85,6 +89,14 @@ const stageSchema = z.object({
   modelId: z.string().max(180).optional(),
   reasoning: z.string().max(40).optional(),
   maxIterations: z.number().int().min(1).max(20).optional(),
+  timeoutMinutes: z.number().int().min(1).max(360).optional(),
+  retryPolicy: z
+    .object({
+      maxRetries: z.number().int().min(0).max(5).optional(),
+      initialDelayMs: z.number().int().min(100).max(30_000).optional(),
+      maxDelayMs: z.number().int().min(100).max(120_000).optional(),
+    })
+    .optional(),
   parallelism: z.number().int().min(1).max(8).optional(),
   command: z.array(z.string().max(200)).length(3).optional(),
   condition: z
@@ -118,6 +130,17 @@ const workflowSchema = z.object({
   promptRefinementDefault: z.boolean().default(false),
   maxRemediationRounds: z.number().int().min(0).max(5),
   maxParallelAgents: z.number().int().min(1).max(8),
+  maxDurationMinutes: z.number().int().min(1).max(1_440).default(120),
+  retryPolicy: z
+    .object({
+      maxRetries: z.number().int().min(0).max(5).default(1),
+      initialDelayMs: z.number().int().min(100).max(30_000).default(1_000),
+      maxDelayMs: z.number().int().min(100).max(120_000).default(30_000),
+    })
+    .default({ maxRetries: 1, initialDelayMs: 1_000, maxDelayMs: 30_000 })
+    .refine((policy) => policy.maxDelayMs >= policy.initialDelayMs, {
+      message: 'Maximum retry delay must be at least the initial delay.',
+    }),
   isolatedWorktree: z.boolean(),
   stages: z.array(stageSchema).min(1).max(50),
 });
@@ -148,6 +171,28 @@ const ruleSchema = z.object({
   mandatory: z.boolean().default(false),
   appliesTo: z.array(z.enum(STAGE_KINDS)).max(STAGE_KINDS.length).default([]),
 });
+const quotaEnvelopeSchema = z
+  .object({
+    providerId: z.string().trim().min(1).max(80),
+    quotaName: z.string().trim().min(1).max(100),
+    windowLabel: z.string().trim().min(1).max(80),
+    resetAt: z.string().datetime({ offset: true }),
+    effectiveAt: z.string().datetime({ offset: true }),
+    allowance: z.number().finite().positive().max(1_000_000_000_000_000),
+    unit: z.enum(['input_tokens', 'output_tokens', 'total_tokens', 'requests', 'minutes']),
+    notes: z.string().max(1_000).default(''),
+    subscriptionCostUsd: z.number().finite().min(0).max(1_000_000).nullable().default(null),
+  })
+  .refine((value) => Date.parse(value.resetAt) > Date.parse(value.effectiveAt), {
+    message: 'The reset date must be later than the effective date.',
+  });
+const pushSubscriptionSchema = z.object({
+  endpoint: z.string().min(1).max(2_048).url(),
+  keys: z.object({
+    p256dh: z.string().regex(/^[A-Za-z0-9_-]{80,120}$/),
+    auth: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/),
+  }),
+});
 
 export interface AppOptions {
   database: Db;
@@ -159,7 +204,18 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     logger: {
       level: process.env.TT_LOG_LEVEL ?? 'info',
       redact: {
-        paths: ['req.headers.authorization', 'req.body.password', 'req.body.token', 'req.body.apiKey'],
+        paths: [
+          'req.headers.authorization',
+          'req.headers.cookie',
+          'req.headers.tailscale-user-login',
+          'req.body.password',
+          'req.body.token',
+          'req.body.apiKey',
+          'req.body.code',
+          'req.body.endpoint',
+          'req.body.keys.auth',
+          'req.body.keys.p256dh',
+        ],
         censor: '[REDACTED]',
       },
     },
@@ -175,7 +231,12 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const remote = isRemoteRequest(request.headers, tailscaleLogin);
     if (!remote) return;
     if (!tailscaleLogin) return reply.code(401).send({ error: 'Tailscale Serve user identity is required.' });
-    if (path === '/api/pairing/claim' || path === '/api/pairing/complete') return;
+    if (
+      path === '/api/pairing/claim' ||
+      path === '/api/pairing/claim-request' ||
+      path === '/api/pairing/complete'
+    )
+      return;
     if (path.startsWith('/api/pairing/'))
       return reply
         .code(403)
@@ -206,6 +267,50 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       service: 'turing-terminal',
       version: '1.0.0',
       localOnly: true,
+    };
+  });
+
+  app.get('/api/system/readiness', async (request) => {
+    const tailscale = await probeTailscale();
+    const identityHeaderPresent = getTailscaleLogin(request.headers['tailscale-user-login']) !== null;
+    const masterLoopbackOnly = ['127.0.0.1', 'localhost', '::1'].includes(process.env.TT_HOST ?? '127.0.0.1');
+    const connectionHealth = !tailscale.installed
+      ? 'unavailable'
+      : !tailscale.running
+        ? 'needs_tailscale'
+        : !masterLoopbackOnly
+          ? 'unsafe_master_binding'
+          : tailscale.serveConfigured === false
+            ? 'needs_serve'
+            : tailscale.serveConfigured === null
+              ? 'serve_status_unknown'
+              : identityHeaderPresent
+                ? 'ready'
+                : 'awaiting_remote_identity_check';
+    return {
+      tailscale: {
+        installed: tailscale.installed,
+        running: tailscale.running,
+        hostname: tailscale.hostname,
+        ips: tailscale.ips,
+        serveConfigured: tailscale.serveConfigured,
+        identityHeaderPresent,
+        identityObservation: identityHeaderPresent
+          ? 'Tailscale Serve identity header present on this request.'
+          : 'No Tailscale identity header on this request; verify from a paired phone through Serve.',
+        masterLoopbackOnly,
+        connectionHealth,
+        message: !tailscale.installed
+          ? 'Tailscale not detected — remote phone validation unavailable.'
+          : !tailscale.running
+            ? 'Tailscale is installed but not running.'
+            : connectionHealth === 'needs_serve'
+              ? 'Tailscale is running; configure Serve to proxy HTTPS to 127.0.0.1:4317.'
+              : connectionHealth === 'ready'
+                ? 'Tailscale Serve and its identity header are available on this request.'
+                : 'Check Serve status and verify the identity header from a paired remote phone.',
+      },
+      dataSource: 'local Tailscale CLI; only this machine identity is returned',
     };
   });
 
@@ -245,6 +350,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       expires_at: string;
       claimed_at: string | null;
       approved_at: string | null;
+      denied_at: string | null;
       completed_at: string | null;
     }>;
     return {
@@ -259,11 +365,13 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           ? 'completed'
           : Date.parse(row.expires_at) <= Date.parse(now)
             ? 'expired'
-            : row.approved_at
-              ? 'approved'
-              : row.claimed_at
-                ? 'awaiting_approval'
-                : 'waiting_for_phone',
+            : row.denied_at
+              ? 'denied'
+              : row.approved_at
+                ? 'approved'
+                : row.claimed_at
+                  ? 'awaiting_approval'
+                  : 'waiting_for_phone',
       })),
     };
   });
@@ -274,12 +382,26 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       return reply.code(403).send({ error: 'Approve pairing requests from the desktop master.' });
     const result = db
       .prepare(
-        'UPDATE pairing_requests SET approved_at = ? WHERE id = ? AND claimed_at IS NOT NULL AND approved_at IS NULL AND completed_at IS NULL AND expires_at > ?',
+        'UPDATE pairing_requests SET approved_at = ? WHERE id = ? AND claimed_at IS NOT NULL AND approved_at IS NULL AND denied_at IS NULL AND completed_at IS NULL AND expires_at > ?',
       )
       .run(new Date().toISOString(), id, new Date().toISOString());
     if (!result.changes)
       return reply.code(409).send({ error: 'This request is unclaimed, expired, or already approved.' });
     return { approved: true };
+  });
+
+  app.post('/api/pairing/requests/:id/deny', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply.code(403).send({ error: 'Deny pairing requests from the desktop master.' });
+    const result = db
+      .prepare(
+        'UPDATE pairing_requests SET denied_at = ? WHERE id = ? AND claimed_at IS NOT NULL AND approved_at IS NULL AND denied_at IS NULL AND completed_at IS NULL AND expires_at > ?',
+      )
+      .run(new Date().toISOString(), id, new Date().toISOString());
+    if (!result.changes)
+      return reply.code(409).send({ error: 'This request is no longer awaiting a decision.' });
+    return { denied: true };
   });
 
   app.get('/api/pairing/devices', async (request, reply) => {
@@ -311,6 +433,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       .prepare('UPDATE device_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL')
       .run(new Date().toISOString(), id);
     if (!result.changes) return reply.code(404).send({ error: 'Paired device was not found.' });
+    db.prepare('DELETE FROM push_subscriptions WHERE device_session_id = ?').run(id);
     return { revoked: true };
   });
 
@@ -326,7 +449,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const codeHash = hashPairingSecret(parsed.data.code.toUpperCase());
     const existing = db
       .prepare(
-        'SELECT id, expires_at, tailscale_login, claimed_at, completed_at FROM pairing_requests WHERE code_hash = ?',
+        'SELECT id, expires_at, tailscale_login, claimed_at, completed_at, denied_at FROM pairing_requests WHERE code_hash = ?',
       )
       .get(codeHash) as
       | {
@@ -335,9 +458,15 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           tailscale_login: string | null;
           claimed_at: string | null;
           completed_at: string | null;
+          denied_at: string | null;
         }
       | undefined;
-    if (!existing || Date.parse(existing.expires_at) <= Date.parse(now) || existing.completed_at)
+    if (
+      !existing ||
+      Date.parse(existing.expires_at) <= Date.parse(now) ||
+      existing.completed_at ||
+      existing.denied_at
+    )
       return reply.code(404).send({ error: 'The pairing code is invalid or expired.' });
     if (existing.claimed_at) {
       if (existing.tailscale_login !== tailscaleLogin)
@@ -350,7 +479,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     }
     const result = db
       .prepare(
-        'UPDATE pairing_requests SET device_name = ?, tailscale_login = ?, claimed_at = ? WHERE code_hash = ? AND claimed_at IS NULL AND approved_at IS NULL AND completed_at IS NULL AND expires_at > ?',
+        'UPDATE pairing_requests SET device_name = ?, tailscale_login = ?, claimed_at = ? WHERE code_hash = ? AND claimed_at IS NULL AND approved_at IS NULL AND denied_at IS NULL AND completed_at IS NULL AND expires_at > ?',
       )
       .run(parsed.data.deviceName, tailscaleLogin, now, codeHash, now);
     if (!result.changes) return reply.code(404).send({ error: 'The pairing code is invalid or expired.' });
@@ -359,9 +488,39 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       .send({ requestId: existing.id, status: 'awaiting_desktop_approval', expiresAt: existing.expires_at });
   });
 
+  app.post('/api/pairing/claim-request', async (request, reply) => {
+    const parsed = z
+      .object({ requestId: z.string().uuid(), deviceName: z.string().trim().min(1).max(80) })
+      .safeParse(request.body);
+    const tailscaleLogin = getTailscaleLogin(request.headers['tailscale-user-login']);
+    if (!tailscaleLogin)
+      return reply.code(401).send({ error: 'Open this page through Tailscale Serve to pair it.' });
+    if (!parsed.success) return reply.code(400).send({ error: 'The QR pairing request is invalid.' });
+    const now = new Date().toISOString();
+    const claimed = db
+      .prepare(
+        'UPDATE pairing_requests SET device_name = ?, tailscale_login = ?, claimed_at = ? WHERE id = ? AND claimed_at IS NULL AND approved_at IS NULL AND denied_at IS NULL AND completed_at IS NULL AND expires_at > ?',
+      )
+      .run(parsed.data.deviceName, tailscaleLogin, now, parsed.data.requestId, now);
+    if (!claimed.changes)
+      return reply
+        .code(404)
+        .send({ error: 'This QR request is expired, already used, or no longer available.' });
+    const expiresAt = (
+      db.prepare('SELECT expires_at FROM pairing_requests WHERE id = ?').get(parsed.data.requestId) as {
+        expires_at: string;
+      }
+    ).expires_at;
+    return reply.code(202).send({
+      requestId: parsed.data.requestId,
+      status: 'awaiting_desktop_approval',
+      expiresAt,
+    });
+  });
+
   app.post('/api/pairing/complete', async (request, reply) => {
     const parsed = z
-      .object({ requestId: z.string().uuid(), code: z.string().trim().min(1).max(32) })
+      .object({ requestId: z.string().uuid(), code: z.string().trim().min(1).max(32).optional() })
       .safeParse(request.body);
     const tailscaleLogin = getTailscaleLogin(request.headers['tailscale-user-login']);
     if (!tailscaleLogin)
@@ -369,19 +528,26 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     if (!parsed.success) return reply.code(400).send({ error: 'The pairing request is invalid.' });
     const now = new Date();
     const nowText = now.toISOString();
-    const row = db
-      .prepare('SELECT * FROM pairing_requests WHERE id = ? AND code_hash = ?')
-      .get(parsed.data.requestId, hashPairingSecret(parsed.data.code.toUpperCase())) as
+    const row = (
+      parsed.data.code
+        ? db
+            .prepare('SELECT * FROM pairing_requests WHERE id = ? AND code_hash = ?')
+            .get(parsed.data.requestId, hashPairingSecret(parsed.data.code.toUpperCase()))
+        : db
+            .prepare('SELECT * FROM pairing_requests WHERE id = ? AND claimed_at IS NOT NULL')
+            .get(parsed.data.requestId)
+    ) as
       | {
           id: string;
           device_name: string;
           tailscale_login: string | null;
           expires_at: string;
           approved_at: string | null;
+          denied_at: string | null;
           completed_at: string | null;
         }
       | undefined;
-    if (!row || row.tailscale_login !== tailscaleLogin)
+    if (!row || row.tailscale_login !== tailscaleLogin || row.denied_at)
       return reply.code(404).send({ error: 'The pairing request was not found for this Tailscale user.' });
     if (Date.parse(row.expires_at) <= now.getTime())
       return reply
@@ -407,8 +573,10 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         nowText,
       );
       const completed = db
-        .prepare('UPDATE pairing_requests SET completed_at = ? WHERE id = ? AND completed_at IS NULL')
-        .run(nowText, row.id);
+        .prepare(
+          'UPDATE pairing_requests SET completed_at = ? WHERE id = ? AND approved_at IS NOT NULL AND denied_at IS NULL AND completed_at IS NULL AND expires_at > ?',
+        )
+        .run(nowText, row.id, nowText);
       if (!completed.changes) throw new Error('This pairing request was already completed.');
     });
     transaction();
@@ -802,6 +970,8 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       promptRefinementDefault: source.promptRefinementDefault,
       maxRemediationRounds: source.maxRemediationRounds,
       maxParallelAgents: source.maxParallelAgents,
+      maxDurationMinutes: source.maxDurationMinutes,
+      retryPolicy: source.retryPolicy,
       isolatedWorktree: source.isolatedWorktree,
       stages: source.stages,
     };
@@ -1177,7 +1347,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       since,
       provenance:
         'Locally measured activity; subscription allowance and reset telemetry unavailable unless directly reported.',
-      quotas: [],
+      quotas: listQuotaEnvelopes(db),
       providers,
       models,
       projects,
@@ -1185,6 +1355,108 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       eventCount: events.length,
       raw: events,
     };
+  });
+
+  app.get('/api/usage/quotas', async () => ({ quotas: listQuotaEnvelopes(db) }));
+  app.post('/api/usage/quotas', async (request, reply) => {
+    const parsed = quotaEnvelopeSchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid quota envelope.' });
+    const value = parsed.data;
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO quota_envelopes (id, provider_id, quota_name, window_label, reset_at, allowance, unit, notes,
+       effective_at, subscription_cost_usd, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(provider_id) DO UPDATE SET quota_name = excluded.quota_name,
+       window_label = excluded.window_label, reset_at = excluded.reset_at, allowance = excluded.allowance,
+       unit = excluded.unit, notes = excluded.notes, effective_at = excluded.effective_at,
+       subscription_cost_usd = excluded.subscription_cost_usd, updated_at = excluded.updated_at`,
+    ).run(
+      randomUUID(),
+      value.providerId,
+      value.quotaName,
+      value.windowLabel,
+      new Date(value.resetAt).toISOString(),
+      value.allowance,
+      value.unit,
+      redactSecrets(value.notes).slice(0, 1_000),
+      new Date(value.effectiveAt).toISOString(),
+      value.subscriptionCostUsd,
+      now,
+      now,
+    );
+    const saved = db
+      .prepare('SELECT id FROM quota_envelopes WHERE provider_id = ?')
+      .get(value.providerId) as {
+      id: string;
+    };
+    return reply.code(201).send({ quota: listQuotaEnvelopes(db).find((item) => item.id === saved.id) });
+  });
+  app.delete('/api/usage/quotas/:id', async (request, reply) => {
+    const result = db
+      .prepare('DELETE FROM quota_envelopes WHERE id = ?')
+      .run((request.params as { id: string }).id);
+    if (!result.changes) return reply.code(404).send({ error: 'Quota envelope was not found.' });
+    return { deleted: true };
+  });
+
+  app.get('/api/notifications/config', async () => {
+    const config = getWebPushConfiguration();
+    return {
+      enabled: config.enabled,
+      publicKey: config.enabled ? config.publicKey : null,
+      reason: config.enabled
+        ? null
+        : 'Configure a VAPID public/private key pair and subject on the master to enable closed-client Web Push.',
+    };
+  });
+  app.post('/api/notifications/subscriptions', async (request, reply) => {
+    const config = getWebPushConfiguration();
+    if (!config.enabled) return reply.code(503).send({ error: 'Web Push is not configured on this master.' });
+    const parsed = pushSubscriptionSchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: 'Unsupported or invalid browser push subscription.' });
+    if (!isAllowedPushEndpoint(parsed.data.endpoint))
+      return reply.code(400).send({ error: 'Unsupported or invalid browser push subscription.' });
+    const value = parsed.data;
+    const tailscaleLogin = getTailscaleLogin(request.headers['tailscale-user-login']);
+    const deviceToken = readCookie(request.headers.cookie, '__Host-turing-device');
+    const session =
+      tailscaleLogin && deviceToken
+        ? (db
+            .prepare(
+              'SELECT id FROM device_sessions WHERE token_hash = ? AND tailscale_login = ? AND revoked_at IS NULL AND expires_at > ?',
+            )
+            .get(hashPairingSecret(deviceToken), tailscaleLogin, new Date().toISOString()) as
+            { id: string } | undefined)
+        : undefined;
+    if (isRemoteRequest(request.headers, tailscaleLogin) && !session)
+      return reply.code(401).send({ error: 'Pair this device with the desktop before enabling Web Push.' });
+    const existing = db
+      .prepare('SELECT id FROM push_subscriptions WHERE endpoint = ?')
+      .get(value.endpoint) as { id: string } | undefined;
+    if (!existing) {
+      const count = (
+        db.prepare('SELECT COUNT(*) AS count FROM push_subscriptions').get() as { count: number }
+      ).count;
+      if (count >= 20)
+        return reply.code(429).send({ error: 'This master already has the maximum 20 push subscriptions.' });
+    }
+    const id = existing?.id ?? randomUUID();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO push_subscriptions (id, device_session_id, endpoint, p256dh, auth, created_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(endpoint) DO UPDATE SET device_session_id = excluded.device_session_id,
+       p256dh = excluded.p256dh, auth = excluded.auth, last_seen_at = excluded.last_seen_at`,
+    ).run(id, session?.id ?? null, value.endpoint, value.keys.p256dh, value.keys.auth, now, now);
+    return reply.code(existing ? 200 : 201).send({ id, subscribed: true });
+  });
+  app.delete('/api/notifications/subscriptions/:id', async (request) => {
+    const id = (request.params as { id: string }).id;
+    const result = db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(id);
+    return { deleted: result.changes > 0 };
   });
 
   app.patch('/api/settings/machine', async (request, reply) => {
@@ -1408,6 +1680,12 @@ function groupUsage(events: Array<Record<string, unknown>>, field: string) {
       inputTokens: number;
       outputTokens: number;
       tokenEvents: number;
+      usageSamples: number;
+      estimatedCostUsd: number;
+      pricedEvents: number;
+      priceSources: Set<string>;
+      effectiveDates: Set<string>;
+      cachedInputAssumedZero: boolean;
     }
   >();
   for (const event of events) {
@@ -1419,28 +1697,112 @@ function groupUsage(events: Array<Record<string, unknown>>, field: string) {
       inputTokens: 0,
       outputTokens: 0,
       tokenEvents: 0,
+      usageSamples: 0,
+      estimatedCostUsd: 0,
+      pricedEvents: 0,
+      priceSources: new Set(),
+      effectiveDates: new Set(),
+      cachedInputAssumedZero: false,
     };
     current.events += Number(event.request_count ?? 1);
+    current.usageSamples += 1;
     current.durationMs += Number(event.duration_ms ?? 0);
     if (typeof event.input_tokens === 'number') {
       current.inputTokens += event.input_tokens;
       current.tokenEvents += 1;
     }
     if (typeof event.output_tokens === 'number') current.outputTokens += event.output_tokens;
+    if (typeof event.input_tokens === 'number' && typeof event.output_tokens === 'number') {
+      const estimate = estimateApiEquivalent({
+        providerId: typeof event.provider_id === 'string' ? event.provider_id : null,
+        modelId: typeof event.model_id === 'string' ? event.model_id : null,
+        inputTokens: event.input_tokens,
+        outputTokens: event.output_tokens,
+        cachedInputTokens: typeof event.cached_input_tokens === 'number' ? event.cached_input_tokens : null,
+      });
+      if (estimate) {
+        current.estimatedCostUsd += estimate.amount;
+        current.pricedEvents += 1;
+        current.priceSources.add(estimate.pricing.source);
+        current.effectiveDates.add(estimate.pricing.effectiveDate);
+        current.cachedInputAssumedZero ||= estimate.cachedInputAssumedZero;
+      }
+    }
     grouped.set(key, current);
   }
   return [...grouped.values()].map(
-    ({ key, events: count, durationMs, inputTokens, outputTokens, tokenEvents }) => ({
+    ({
+      key,
+      events: count,
+      durationMs,
+      inputTokens,
+      outputTokens,
+      tokenEvents,
+      usageSamples,
+      estimatedCostUsd,
+      pricedEvents,
+      priceSources,
+      effectiveDates,
+      cachedInputAssumedZero,
+    }) => ({
       key,
       events: count,
       durationMs,
       inputTokens: tokenEvents ? inputTokens : null,
       outputTokens: tokenEvents ? outputTokens : null,
-      estimatedCostUsd: null,
-      costProvenance: 'unavailable',
+      estimatedCostUsd: pricedEvents === usageSamples && usageSamples > 0 ? estimatedCostUsd : null,
+      costProvenance: pricedEvents === usageSamples && usageSamples > 0 ? 'estimated' : 'unavailable',
+      pricingSource: priceSources.size === 1 ? [...priceSources][0] : null,
+      pricingEffectiveDate: effectiveDates.size === 1 ? [...effectiveDates][0] : null,
+      cachedInputAssumedZero: pricedEvents > 0 && cachedInputAssumedZero,
       quota: null,
     }),
   );
+}
+
+function listQuotaEnvelopes(db: Db) {
+  const rows = db.prepare('SELECT * FROM quota_envelopes ORDER BY provider_id').all() as Array<
+    Record<string, unknown>
+  >;
+  const now = Date.now();
+  return rows.map((row) => {
+    const samples = db
+      .prepare(
+        'SELECT occurred_at, input_tokens, output_tokens, duration_ms, request_count, provenance FROM usage_events WHERE provider_id = ? AND occurred_at >= ? AND occurred_at < ? AND occurred_at <= ? ORDER BY occurred_at LIMIT 50000',
+      )
+      .all(row.provider_id, row.effective_at, row.reset_at, new Date(now).toISOString()) as Array<
+      Record<string, unknown>
+    >;
+    const forecast = calculateQuotaForecast({
+      allowance: Number(row.allowance),
+      unit: String(row.unit) as QuotaUnit,
+      effectiveAt: String(row.effective_at),
+      resetAt: String(row.reset_at),
+      now,
+      samples: samples.map((sample): QuotaUsageSample => ({
+        occurredAt: String(sample.occurred_at),
+        inputTokens: typeof sample.input_tokens === 'number' ? sample.input_tokens : null,
+        outputTokens: typeof sample.output_tokens === 'number' ? sample.output_tokens : null,
+        durationMs: Number(sample.duration_ms ?? 0),
+        requestCount: Number(sample.request_count ?? 1),
+        provenance: String(sample.provenance ?? 'unavailable'),
+      })),
+    });
+    return {
+      id: String(row.id),
+      providerId: String(row.provider_id),
+      quotaName: String(row.quota_name),
+      windowLabel: String(row.window_label),
+      resetAt: String(row.reset_at),
+      allowance: Number(row.allowance),
+      unit: String(row.unit),
+      notes: String(row.notes ?? ''),
+      effectiveAt: String(row.effective_at),
+      subscriptionCostUsd: typeof row.subscription_cost_usd === 'number' ? row.subscription_cost_usd : null,
+      provenance: 'user_configured' as const,
+      forecast,
+    };
+  });
 }
 
 function jsonOrNull(value: unknown): string | null {

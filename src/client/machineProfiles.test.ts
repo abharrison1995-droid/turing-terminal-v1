@@ -88,6 +88,20 @@ describe('device-local machine profiles', () => {
     ]);
   });
 
+  it('keeps distinct stable master IDs even when separate machines share a hostname', () => {
+    const sharedHostnameProfile = { ...machine, hostname: 'shared-host' };
+    const profiles = upsertCurrentMachine([sharedHostnameProfile], 'https://desktop-b.tailnet.example', {
+      id: 'machine-b',
+      name: 'Desktop B',
+      hostname: 'shared-host',
+      os: 'windows',
+      status: 'online',
+      lastSeenAt: '2026-10-01T13:00:00.000Z',
+    });
+    expect(profiles).toHaveLength(2);
+    expect(profiles.map((profile) => profile.machineId)).toEqual(['machine-a', 'machine-b']);
+  });
+
   it('transfers only profile metadata when switching and imports it on the target origin', () => {
     const storage = memoryStorage();
     writeMachineProfiles(storage, [machine]);

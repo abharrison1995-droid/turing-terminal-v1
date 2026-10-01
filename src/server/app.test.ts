@@ -92,6 +92,24 @@ describe('local API', () => {
     expect(refreshed.json().project.buildCommand).toEqual(['npm', 'run', 'build']);
   });
 
+  it('reports only the local Tailscale node and this request identity state', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/system/readiness' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().tailscale).toMatchObject({
+      identityHeaderPresent: false,
+      masterLoopbackOnly: true,
+    });
+    expect([
+      'unavailable',
+      'needs_tailscale',
+      'needs_serve',
+      'serve_status_unknown',
+      'awaiting_remote_identity_check',
+      'ready',
+    ]).toContain(response.json().tailscale.connectionHealth);
+    expect(JSON.stringify(response.json())).not.toContain('Peer');
+  });
+
   it('previews missing provider assignments without selecting a substitute', async () => {
     const added = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
     const projectId = added.json().project.id as string;
@@ -106,6 +124,141 @@ describe('local API', () => {
     expect(preview.json().preview.providerAssignments.every((item: { ready: boolean }) => !item.ready)).toBe(
       true,
     );
+  });
+
+  it('validates user-configured quota envelopes, forecasts measured usage, and prices exact public models only', async () => {
+    const now = new Date();
+    const effectiveAt = new Date(now.getTime() - 3 * 86_400_000).toISOString();
+    const resetAt = new Date(now.getTime() + 4 * 86_400_000).toISOString();
+    db.prepare(
+      `INSERT INTO usage_events (id, occurred_at, provider_id, model_id, backend, role, input_tokens,
+       output_tokens, duration_ms, request_count, provenance)
+       VALUES ('usage-price', ?, 'openai-codex', 'gpt-6-luna', 'codex-cli', 'implementer', 1000000, 100000, 1000, 1, 'provider_reported')`,
+    ).run(now.toISOString());
+
+    const invalid = await app.inject({
+      method: 'POST',
+      url: '/api/usage/quotas',
+      payload: {
+        providerId: 'openai-codex',
+        quotaName: 'Weekly allowance',
+        windowLabel: 'Weekly',
+        effectiveAt,
+        resetAt,
+        allowance: -1,
+        unit: 'total_tokens',
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+
+    const saved = await app.inject({
+      method: 'POST',
+      url: '/api/usage/quotas',
+      payload: {
+        providerId: 'openai-codex',
+        quotaName: 'Weekly allowance',
+        windowLabel: 'Weekly',
+        effectiveAt,
+        resetAt,
+        allowance: 2_000_000,
+        unit: 'total_tokens',
+        notes: 'Entered from provider account manually.',
+        subscriptionCostUsd: 20,
+      },
+    });
+    expect(saved.statusCode).toBe(201);
+    expect(saved.json().quota).toMatchObject({
+      provenance: 'user_configured',
+      forecast: {
+        provenance: 'user_configured',
+        usageProvenance: 'provider_measured',
+        observedUsed: 1_100_000,
+        remaining: 900_000,
+      },
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM quota_envelopes').get()).toMatchObject({ count: 1 });
+
+    const usage = await app.inject({ method: 'GET', url: '/api/usage?window=30d' });
+    const model = usage.json().models.find((item: { key: string }) => item.key === 'gpt-6-luna');
+    expect(model.costProvenance).toBe('estimated');
+    expect(model.estimatedCostUsd).toBeCloseTo(0.15);
+    expect(model.pricingSource).toContain('developers.openai.com');
+
+    const removed = await app.inject({ method: 'DELETE', url: `/api/usage/quotas/${saved.json().quota.id}` });
+    expect(removed.statusCode).toBe(200);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM quota_envelopes').get()).toMatchObject({ count: 0 });
+  });
+
+  it('validates Web Push subscriptions, blocks abuse endpoints, and caps stored subscriptions', async () => {
+    const prior = {
+      publicKey: process.env.TT_WEB_PUSH_PUBLIC_KEY,
+      privateKey: process.env.TT_WEB_PUSH_PRIVATE_KEY,
+      subject: process.env.TT_WEB_PUSH_SUBJECT,
+    };
+    process.env.TT_WEB_PUSH_PUBLIC_KEY = 'A'.repeat(87);
+    process.env.TT_WEB_PUSH_PRIVATE_KEY = 'B'.repeat(43);
+    process.env.TT_WEB_PUSH_SUBJECT = 'mailto:operator@example.test';
+    try {
+      const config = await app.inject({ method: 'GET', url: '/api/notifications/config' });
+      expect(config.json()).toMatchObject({ enabled: true, publicKey: 'A'.repeat(87) });
+      expect(JSON.stringify(config.json())).not.toContain('B'.repeat(43));
+
+      const remoteWithoutPairedSession = await app.inject({
+        method: 'POST',
+        url: '/api/notifications/subscriptions',
+        headers: {
+          origin: 'https://desktop.tailnet-example.ts.net',
+          'tailscale-user-login': 'alex@example.com',
+        },
+        payload: {
+          endpoint: 'https://fcm.googleapis.com/fcm/send/secret-endpoint',
+          keys: { p256dh: 'A'.repeat(87), auth: 'B'.repeat(22) },
+        },
+      });
+      expect(remoteWithoutPairedSession.statusCode).toBe(401);
+
+      const invalid = await app.inject({
+        method: 'POST',
+        url: '/api/notifications/subscriptions',
+        payload: {
+          endpoint: 'https://127.0.0.1:4317/api/health',
+          keys: { p256dh: 'A'.repeat(87), auth: 'B'.repeat(22) },
+        },
+      });
+      expect(invalid.statusCode).toBe(400);
+
+      for (let index = 0; index < 20; index += 1) {
+        const response = await app.inject({
+          method: 'POST',
+          url: '/api/notifications/subscriptions',
+          payload: {
+            endpoint: `https://fcm.googleapis.com/fcm/send/test-${index}`,
+            keys: { p256dh: 'A'.repeat(87), auth: 'B'.repeat(22) },
+          },
+        });
+        expect(response.statusCode).toBe(201);
+        expect(JSON.stringify(response.json())).not.toContain('test-');
+      }
+      const overflow = await app.inject({
+        method: 'POST',
+        url: '/api/notifications/subscriptions',
+        payload: {
+          endpoint: 'https://fcm.googleapis.com/fcm/send/test-overflow',
+          keys: { p256dh: 'A'.repeat(87), auth: 'B'.repeat(22) },
+        },
+      });
+      expect(overflow.statusCode).toBe(429);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM push_subscriptions').get()).toMatchObject({
+        count: 20,
+      });
+    } finally {
+      if (prior.publicKey === undefined) delete process.env.TT_WEB_PUSH_PUBLIC_KEY;
+      else process.env.TT_WEB_PUSH_PUBLIC_KEY = prior.publicKey;
+      if (prior.privateKey === undefined) delete process.env.TT_WEB_PUSH_PRIVATE_KEY;
+      else process.env.TT_WEB_PUSH_PRIVATE_KEY = prior.privateKey;
+      if (prior.subject === undefined) delete process.env.TT_WEB_PUSH_SUBJECT;
+      else process.env.TT_WEB_PUSH_SUBJECT = prior.subject;
+    }
   });
 
   it('skips an unconfigured prompt refiner when refinement is off and requires it when enabled', async () => {
@@ -287,6 +440,127 @@ describe('local API', () => {
     expect(revoked.statusCode).toBe(401);
   });
 
+  it('enforces QR pairing expiry, denial, single-use claiming, desktop approval, and device revocation', async () => {
+    const tailscaleHeaders = { 'tailscale-user-login': 'alex@example.com' };
+    const expired = await app.inject({ method: 'POST', url: '/api/pairing/requests' });
+    const expiredId = expired.json().request.id as string;
+    db.prepare('UPDATE pairing_requests SET expires_at = ? WHERE id = ?').run(
+      new Date(Date.now() - 1_000).toISOString(),
+      expiredId,
+    );
+    const expiredClaim = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/claim-request',
+      headers: tailscaleHeaders,
+      payload: { requestId: expiredId, deviceName: 'Expired phone' },
+    });
+    expect(expiredClaim.statusCode).toBe(404);
+
+    const denied = await app.inject({ method: 'POST', url: '/api/pairing/requests' });
+    const deniedId = denied.json().request.id as string;
+    const deniedClaim = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/claim-request',
+      headers: tailscaleHeaders,
+      payload: { requestId: deniedId, deviceName: 'Unrecognized phone' },
+    });
+    expect(deniedClaim.statusCode).toBe(202);
+    expect(
+      (await app.inject({ method: 'POST', url: `/api/pairing/requests/${deniedId}/deny` })).statusCode,
+    ).toBe(200);
+    const deniedCompletion = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/complete',
+      headers: tailscaleHeaders,
+      payload: { requestId: deniedId },
+    });
+    expect(deniedCompletion.statusCode).toBe(404);
+
+    const created = await app.inject({ method: 'POST', url: '/api/pairing/requests' });
+    const requestId = created.json().request.id as string;
+    const withoutIdentity = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/claim-request',
+      payload: { requestId, deviceName: 'Phone' },
+    });
+    expect(withoutIdentity.statusCode).toBe(401);
+    const claimed = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/claim-request',
+      headers: tailscaleHeaders,
+      payload: { requestId, deviceName: 'QR phone' },
+    });
+    expect(claimed.statusCode).toBe(202);
+    expect(claimed.json()).not.toHaveProperty('code');
+    const replay = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/claim-request',
+      headers: tailscaleHeaders,
+      payload: { requestId, deviceName: 'Second phone' },
+    });
+    expect(replay.statusCode).toBe(404);
+    const crossIdentity = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/complete',
+      headers: { 'tailscale-user-login': 'other@example.com' },
+      payload: { requestId },
+    });
+    expect(crossIdentity.statusCode).toBe(404);
+    const pending = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/complete',
+      headers: tailscaleHeaders,
+      payload: { requestId },
+    });
+    expect(pending.statusCode).toBe(202);
+    expect(
+      (await app.inject({ method: 'POST', url: `/api/pairing/requests/${requestId}/approve` })).statusCode,
+    ).toBe(200);
+    const completed = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/complete',
+      headers: tailscaleHeaders,
+      payload: { requestId },
+    });
+    expect(completed.statusCode).toBe(201);
+    expect(completed.json()).not.toHaveProperty('token');
+    const deviceId = completed.json().deviceId as string;
+    const cookie = (completed.headers['set-cookie'] as string).split(';')[0]!;
+    const completedReplay = await app.inject({
+      method: 'POST',
+      url: '/api/pairing/complete',
+      headers: tailscaleHeaders,
+      payload: { requestId },
+    });
+    expect(completedReplay.statusCode).toBe(409);
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/dashboard',
+          headers: { ...tailscaleHeaders, cookie },
+        })
+      ).statusCode,
+    ).toBe(200);
+    db.prepare(
+      `INSERT INTO push_subscriptions (id, device_session_id, endpoint, p256dh, auth, created_at, last_seen_at)
+       VALUES ('push-revocation', ?, 'https://fcm.googleapis.com/fcm/send/revocation-test', ?, ?, ?, ?)`,
+    ).run(deviceId, 'A'.repeat(87), 'B'.repeat(22), new Date().toISOString(), new Date().toISOString());
+    await app.inject({ method: 'DELETE', url: `/api/pairing/devices/${deviceId}` });
+    expect(
+      db.prepare("SELECT id FROM push_subscriptions WHERE id = 'push-revocation'").get(),
+    ).toBeUndefined();
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/dashboard',
+          headers: { ...tailscaleHeaders, cookie },
+        })
+      ).statusCode,
+    ).toBe(401);
+  });
+
   it('executes a notification stage and persists a browser-delivery event', async () => {
     const added = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
     const projectId = added.json().project.id as string;
@@ -340,6 +614,62 @@ describe('local API', () => {
     expect(JSON.parse(event.payload_json)).toMatchObject({
       title: 'Turing workflow notice',
       message: 'The workflow reached its checkpoint.',
+    });
+  });
+
+  it('keeps a master-owned approval run alive while the browser is disconnected and serves it on reconnect', async () => {
+    const added = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
+    const workflow = await app.inject({
+      method: 'POST',
+      url: '/api/workflows',
+      payload: {
+        name: 'Reconnect acceptance',
+        description: 'Single approval gate to check master-owned state.',
+        template: 'test',
+        executionProfile: 'economy',
+        permissionMode: 'normal',
+        maxRemediationRounds: 0,
+        maxParallelAgents: 1,
+        isolatedWorktree: false,
+        stages: [{ id: 'approval', label: 'Reconnect gate', kind: 'humanApproval' }],
+      },
+    });
+    const started = await app.inject({
+      method: 'POST',
+      url: '/api/runs',
+      payload: {
+        task: 'Verify the master continues while no browser is polling.',
+        projectId: added.json().project.id,
+        workflowId: workflow.json().workflow.id,
+      },
+    });
+    const runId = started.json().run.id as string;
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({
+        status: 'waiting_for_approval',
+      });
+    });
+
+    await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+    expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({
+      status: 'waiting_for_approval',
+    });
+    const reconnected = await app.inject({ method: 'GET', url: `/api/runs/${runId}` });
+    expect(reconnected.statusCode).toBe(200);
+    expect(reconnected.json().run.status).toBe('waiting_for_approval');
+
+    const approvalId = (db.prepare('SELECT id FROM approvals WHERE run_id = ?').get(runId) as { id: string })
+      .id;
+    const decision = await app.inject({
+      method: 'POST',
+      url: `/api/approvals/${approvalId}/decision`,
+      payload: { approved: true },
+    });
+    expect(decision.statusCode).toBe(200);
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({
+        status: 'completed',
+      });
     });
   });
 

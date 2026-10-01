@@ -47,6 +47,8 @@ export const api = {
       promptRefinementDefault: workflow.promptRefinementDefault,
       maxRemediationRounds: workflow.maxRemediationRounds,
       maxParallelAgents: workflow.maxParallelAgents,
+      maxDurationMinutes: workflow.maxDurationMinutes,
+      retryPolicy: workflow.retryPolicy,
       isolatedWorktree: workflow.isolatedWorktree,
       stages: workflow.stages,
     };
@@ -112,6 +114,39 @@ export const api = {
       json('POST', { approved }),
     ),
   usage: (window: 'today' | '7d' | '30d') => call<Record<string, unknown>>(`/api/usage?window=${window}`),
+  saveQuotaEnvelope: (quota: {
+    providerId: string;
+    quotaName: string;
+    windowLabel: string;
+    resetAt: string;
+    effectiveAt: string;
+    allowance: number;
+    unit: 'input_tokens' | 'output_tokens' | 'total_tokens' | 'requests' | 'minutes';
+    notes: string;
+    subscriptionCostUsd: number | null;
+  }) => call<{ quota: Record<string, unknown> }>('/api/usage/quotas', json('POST', quota)),
+  deleteQuotaEnvelope: (id: string) => call<{ deleted: boolean }>(`/api/usage/quotas/${id}`, json('DELETE')),
+  tailscaleReadiness: () =>
+    call<{
+      tailscale: {
+        installed: boolean;
+        running: boolean;
+        hostname: string | null;
+        ips: string[];
+        serveConfigured: boolean | null;
+        identityHeaderPresent: boolean;
+        identityObservation: string;
+        masterLoopbackOnly: boolean;
+        connectionHealth: string;
+        message: string;
+      };
+    }>('/api/system/readiness'),
+  webPushConfig: () =>
+    call<{ enabled: boolean; publicKey: string | null; reason: string | null }>('/api/notifications/config'),
+  savePushSubscription: (subscription: { endpoint: string; keys: { p256dh: string; auth: string } }) =>
+    call<{ id: string; subscribed: boolean }>('/api/notifications/subscriptions', json('POST', subscription)),
+  deletePushSubscription: (id: string) =>
+    call<{ deleted: boolean }>(`/api/notifications/subscriptions/${encodeURIComponent(id)}`, json('DELETE')),
   renameMachine: (name: string) => call('/api/settings/machine', json('PATCH', { name })),
   pairingRequests: () =>
     call<{
@@ -143,6 +178,8 @@ export const api = {
     }>('/api/pairing/requests', json('POST')),
   approvePairingRequest: (id: string) =>
     call<{ approved: boolean }>(`/api/pairing/requests/${id}/approve`, json('POST')),
+  denyPairingRequest: (id: string) =>
+    call<{ denied: boolean }>(`/api/pairing/requests/${id}/deny`, json('POST')),
   revokePairedDevice: (id: string) =>
     call<{ revoked: boolean }>(`/api/pairing/devices/${id}`, json('DELETE')),
   claimPairing: (code: string, deviceName: string) =>
@@ -150,10 +187,15 @@ export const api = {
       '/api/pairing/claim',
       json('POST', { code, deviceName }),
     ),
-  completePairing: (requestId: string, code: string) =>
+  claimPairingRequest: (requestId: string, deviceName: string) =>
+    call<{ requestId: string; status: string; expiresAt: string }>(
+      '/api/pairing/claim-request',
+      json('POST', { requestId, deviceName }),
+    ),
+  completePairing: (requestId: string, code?: string) =>
     call<
       { status: 'waiting_for_desktop_approval' } | { deviceId: string; machineId: string; expiresAt: string }
-    >('/api/pairing/complete', json('POST', { requestId, code })),
+    >('/api/pairing/complete', json('POST', { requestId, ...(code ? { code } : {}) })),
   exportWorkflows: (workflows: WorkflowDefinition[]) => ({
     version: 1,
     exportedAt: new Date().toISOString(),

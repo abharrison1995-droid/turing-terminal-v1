@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['turing.svg'],
+      includeAssets: ['turing.svg', 'push-handler.js'],
       manifest: {
         name: 'Turing Terminal',
         short_name: 'Turing',
@@ -19,6 +19,7 @@ export default defineConfig({
         icons: [{ src: '/turing.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
       },
       workbox: {
+        importScripts: ['/push-handler.js'],
         navigateFallback: '/index.html',
         globPatterns: ['**/*.{js,css,html,svg,woff2}'],
         runtimeCaching: [

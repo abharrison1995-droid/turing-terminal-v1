@@ -1,5 +1,7 @@
 import type { WorkflowDefinition, WorkflowStage } from './types.js';
 
+const defaultRetryPolicy = { maxRetries: 1, initialDelayMs: 1_000, maxDelayMs: 30_000 };
+
 const stage = (
   id: string,
   label: string,
@@ -26,6 +28,8 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     promptRefinementDefault: false,
     maxRemediationRounds: 1,
     maxParallelAgents: 1,
+    maxDurationMinutes: 120,
+    retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
     version: 1,
     isDefault: true,
@@ -46,6 +50,8 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     promptRefinementDefault: false,
     maxRemediationRounds: 2,
     maxParallelAgents: 1,
+    maxDurationMinutes: 120,
+    retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
     version: 1,
     isDefault: true,
@@ -70,6 +76,8 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     promptRefinementDefault: false,
     maxRemediationRounds: 3,
     maxParallelAgents: 3,
+    maxDurationMinutes: 180,
+    retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
     version: 1,
     isDefault: true,
@@ -96,6 +104,8 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     promptRefinementDefault: false,
     maxRemediationRounds: 0,
     maxParallelAgents: 3,
+    maxDurationMinutes: 60,
+    retryPolicy: defaultRetryPolicy,
     isolatedWorktree: false,
     version: 1,
     isDefault: true,
@@ -114,6 +124,8 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     promptRefinementDefault: false,
     maxRemediationRounds: 2,
     maxParallelAgents: 1,
+    maxDurationMinutes: 120,
+    retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
     version: 1,
     isDefault: true,

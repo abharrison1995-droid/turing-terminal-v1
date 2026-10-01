@@ -1,4 +1,11 @@
-import type { Approval, ProjectProfile, RunStage, RunSummary, WorkflowDefinition } from '../shared/types.js';
+import type {
+  Approval,
+  ProjectProfile,
+  RunStage,
+  RunSummary,
+  StageAttempt,
+  WorkflowDefinition,
+} from '../shared/types.js';
 import type { Db } from './db.js';
 
 type Row = Record<string, unknown>;
@@ -45,6 +52,14 @@ export function toWorkflow(row: Row): WorkflowDefinition {
     promptRefinementDefault: Boolean(config.promptRefinementDefault),
     maxRemediationRounds: Number(config.maxRemediationRounds ?? 0),
     maxParallelAgents: Number(config.maxParallelAgents ?? 1),
+    maxDurationMinutes: Number(config.maxDurationMinutes ?? 120),
+    retryPolicy: {
+      maxRetries: Number((config.retryPolicy as Record<string, unknown> | undefined)?.maxRetries ?? 1),
+      initialDelayMs: Number(
+        (config.retryPolicy as Record<string, unknown> | undefined)?.initialDelayMs ?? 1_000,
+      ),
+      maxDelayMs: Number((config.retryPolicy as Record<string, unknown> | undefined)?.maxDelayMs ?? 30_000),
+    },
     isolatedWorktree: Boolean(config.isolatedWorktree),
     stages: Array.isArray(config.stages) ? (config.stages as WorkflowDefinition['stages']) : [],
     version: Number(row.version),
@@ -54,7 +69,7 @@ export function toWorkflow(row: Row): WorkflowDefinition {
   };
 }
 
-export function toStage(row: Row): RunStage {
+export function toStage(row: Row, attempts: StageAttempt[] = []): RunStage {
   return {
     id: String(row.id),
     runId: String(row.run_id),
@@ -71,11 +86,22 @@ export function toStage(row: Row): RunStage {
     output: parseNullableJson<Record<string, unknown>>(row.output_json),
     error: nullable(row.error),
     logs: String(row.logs ?? ''),
+    attempts,
   };
 }
 
 export function toRun(db: Db, row: Row): RunSummary {
   const stages = db.prepare('SELECT * FROM stages WHERE run_id = ? ORDER BY sequence').all(row.id) as Row[];
+  const snapshot = parseJson<Record<string, unknown>>(row.workflow_snapshot_json, {});
+  const maxDurationMinutes = Number(snapshot.maxDurationMinutes ?? 120);
+  const startedAt = nullable(row.started_at);
+  const completedAt = nullable(row.completed_at);
+  const elapsedMs = startedAt
+    ? Math.max(0, Date.parse(completedAt ?? new Date().toISOString()) - Date.parse(startedAt))
+    : 0;
+  const remainingMs = Number.isFinite(maxDurationMinutes)
+    ? Math.max(0, maxDurationMinutes * 60_000 - elapsedMs)
+    : null;
   return {
     id: String(row.id),
     machineId: String(row.machine_id),
@@ -94,7 +120,27 @@ export function toRun(db: Db, row: Row): RunSummary {
     createdAt: String(row.created_at),
     startedAt: nullable(row.started_at),
     completedAt: nullable(row.completed_at),
-    stages: stages.map(toStage),
+    stages: stages.map((stage) => {
+      const attempts = db
+        .prepare('SELECT * FROM stage_attempts WHERE stage_id = ? ORDER BY reviewer_index, attempt')
+        .all(stage.id) as Row[];
+      return toStage(stage, attempts.map(toStageAttempt));
+    }),
+    elapsedMs,
+    remainingMs: ['completed', 'failed', 'cancelled'].includes(String(row.status)) ? null : remainingMs,
+  };
+}
+
+function toStageAttempt(row: Row): StageAttempt {
+  return {
+    id: String(row.id),
+    attempt: Number(row.attempt),
+    reviewerIndex: row.reviewer_index === null ? null : Number(row.reviewer_index),
+    status: String(row.status) as StageAttempt['status'],
+    category: nullable(row.category),
+    error: nullable(row.error),
+    startedAt: String(row.started_at),
+    finishedAt: nullable(row.finished_at),
   };
 }
 

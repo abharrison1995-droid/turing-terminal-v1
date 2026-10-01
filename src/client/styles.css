@@ -845,6 +845,7 @@ button:disabled {
 .status-queued,
 .status-preparing,
 .status-paused,
+.status-paused_limit_reached,
 .status-cancelling,
 .status-cancelled,
 .status-skipped,
@@ -931,6 +932,15 @@ button:disabled {
   font-family: var(--mono);
   font-size: 8px;
   font-style: normal;
+}
+.stage-chip > span {
+  display: grid;
+  gap: 3px;
+}
+.stage-chip small {
+  color: #8594a2;
+  font-size: 7px;
+  white-space: nowrap;
 }
 .assignment-summary {
   display: grid;
@@ -1251,9 +1261,128 @@ button:disabled {
   background: #342b1c;
 }
 .run-glyph-cancelled,
-.run-glyph-paused {
+.run-glyph-paused,
+.run-glyph-paused_limit_reached {
   color: #bec8d2;
   background: #252d36;
+}
+
+.preview-bounds,
+.run-runtime-summary,
+.attempt-history {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink-secondary);
+  font-size: 11px;
+}
+.preview-bounds {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 8px 0 14px;
+}
+.preview-bounds strong,
+.run-runtime-summary strong,
+.attempt-history > strong {
+  color: var(--ink);
+}
+.run-runtime-summary {
+  grid-template-columns: repeat(auto-fit, minmax(130px, max-content));
+  align-items: center;
+  margin: 0 0 14px;
+}
+.run-runtime-summary strong {
+  grid-column: 1 / -1;
+  color: #f0cd8d;
+}
+.attempt-history > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+.attempt-history small {
+  overflow-wrap: anywhere;
+}
+.quota-envelope-panel {
+  margin: 18px 0;
+  padding: 16px;
+}
+.quota-envelope-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px 0 18px;
+}
+.quota-notes-field {
+  grid-column: span 2;
+}
+.quota-envelope-list {
+  display: grid;
+  gap: 12px;
+}
+.quota-envelope-card {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-raised);
+}
+.quota-envelope-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.quota-envelope-heading > div,
+.quota-envelope-values > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.quota-envelope-heading small,
+.quota-envelope-values small,
+.quota-notes {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+.quota-envelope-values {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.quota-envelope-values > span {
+  color: var(--ink-muted);
+  font-size: 10px;
+}
+.quota-envelope-values strong {
+  color: var(--ink);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.quota-feedback {
+  margin: 10px 0;
+}
+@media (max-width: 900px) {
+  .quota-envelope-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .quota-envelope-values {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .quota-envelope-form,
+  .quota-envelope-values,
+  .preview-bounds {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .quota-notes-field {
+    grid-column: auto;
+  }
 }
 .run-row-main {
   display: flex;
@@ -2776,6 +2905,9 @@ button:disabled {
 .pairing-settings {
   grid-column: 1 / -1;
 }
+.pairing-origin-field {
+  max-width: 520px;
+}
 .pairing-code-display {
   display: grid;
   gap: 5px;
@@ -2783,6 +2915,13 @@ button:disabled {
   background: #111920;
   border: 1px solid #38536b;
   border-radius: 8px;
+}
+.pairing-code-display img {
+  width: min(240px, 100%);
+  height: auto;
+  padding: 7px;
+  background: #fff;
+  border-radius: 5px;
 }
 .pairing-code-display strong {
   color: #e4eef8;
@@ -2834,6 +2973,10 @@ button:disabled {
 .pairing-device-row > small {
   flex: 0 0 auto;
 }
+.pairing-request-actions {
+  display: flex;
+  gap: 6px;
+}
 
 .settings-grid {
   display: grid;
@@ -2865,6 +3008,17 @@ button:disabled {
   font-size: 8px;
   font-weight: 400;
   text-align: right;
+}
+.readiness-good {
+  color: var(--green) !important;
+}
+.readiness-attention {
+  color: var(--amber) !important;
+}
+.readiness-footnote {
+  color: var(--ink-muted);
+  font-size: 8px;
+  line-height: 1.5;
 }
 .settings-provider-row {
   display: flex;

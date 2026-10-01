@@ -5,6 +5,9 @@ dist-server/
 .env.*
 !.env.example
 .turing-data/
+artifacts/
+*.tar.gz
+*.zip
 *.sqlite
 *.sqlite-*
 *.db

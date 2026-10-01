@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardSnapshot } from '../shared/types';
@@ -8,6 +8,7 @@ import type { DashboardSnapshot } from '../shared/types';
 const dashboard = vi.fn<() => Promise<DashboardSnapshot>>();
 const claimPairing = vi.fn();
 const completePairing = vi.fn();
+const claimPairingRequest = vi.fn();
 vi.mock('./api', () => ({
   api: {
     dashboard: () => dashboard(),
@@ -32,6 +33,7 @@ vi.mock('./api', () => ({
     usage: vi.fn(),
     renameMachine: vi.fn(),
     claimPairing: (...args: unknown[]) => claimPairing(...args),
+    claimPairingRequest: (...args: unknown[]) => claimPairingRequest(...args),
     completePairing: (...args: unknown[]) => completePairing(...args),
     exportWorkflows: vi.fn(),
   },
@@ -42,6 +44,7 @@ import App from './App';
 describe('Turing Terminal shell', () => {
   afterEach(() => {
     cleanup();
+    window.history.replaceState({}, '', '/');
     vi.unstubAllGlobals();
   });
 
@@ -95,6 +98,23 @@ describe('Turing Terminal shell', () => {
     await user.click(screen.getByRole('button', { name: 'Request approval' }));
     expect(await screen.findByText(/Waiting for desktop approval/)).toBeTruthy();
     expect(claimPairing).toHaveBeenCalledWith('0123456789ABCDEF', 'My phone');
+  });
+
+  it('claims a QR pairing request and removes its UUID from the browser address', async () => {
+    const user = userEvent.setup();
+    const requestId = 'b6d4143b-0c1d-4c58-87c3-d8202c8c2ad1';
+    window.history.pushState({}, '', `/?pairRequest=${requestId}`);
+    dashboard.mockRejectedValue(new Error('Pair this device with the desktop before using it.'));
+    claimPairingRequest.mockResolvedValue({ requestId, status: 'awaiting_desktop_approval' });
+    completePairing.mockResolvedValue({ status: 'waiting_for_desktop_approval' });
+    render(<App />);
+
+    expect(await screen.findByText(/QR pairing request detected/)).toBeTruthy();
+    await waitFor(() => expect(window.location.search).toBe(''));
+    await user.click(screen.getByRole('button', { name: 'Request approval' }));
+    expect(claimPairingRequest).toHaveBeenCalledWith(requestId, 'My phone');
+    cleanup();
+    window.history.replaceState({}, '', '/');
   });
 
   it('saves a second master profile without saving any authentication token', async () => {
