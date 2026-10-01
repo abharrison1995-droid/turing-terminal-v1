@@ -22,6 +22,7 @@ import { calculateQuotaForecast, type QuotaUnit, type QuotaUsageSample } from '.
 import { estimateApiEquivalent } from './pricing.js';
 import { probeTailscale } from './tailscaleReadiness.js';
 import { getWebPushConfiguration, isAllowedPushEndpoint } from './webPush.js';
+import { APP_VERSION } from '../shared/version.js';
 
 const execFile = promisify(callbackExecFile);
 const PAIRING_REQUEST_TTL_MS = 5 * 60 * 1_000;
@@ -222,6 +223,18 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     bodyLimit: 1_000_000,
   });
 
+  // Only the packaged Tauri UI receives cross-origin access to the loopback
+  // Master. Mobile PWA requests remain same-origin through Tailscale Serve.
+  app.addHook('onRequest', async (request, reply) => {
+    const origin = request.headers.origin;
+    if (origin !== 'tauri://localhost' && origin !== 'http://tauri.localhost') return;
+    reply.header('access-control-allow-origin', origin);
+    reply.header('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    reply.header('access-control-allow-headers', 'content-type');
+    reply.header('vary', 'Origin');
+    if (request.method === 'OPTIONS') return reply.code(204).send();
+  });
+
   app.addHook('preHandler', async (request, reply) => {
     const path = new URL(request.url, 'http://localhost').pathname;
     if (!path.startsWith('/api/')) return;
@@ -265,7 +278,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     return {
       ok: true,
       service: 'turing-terminal',
-      version: '1.0.0',
+      version: APP_VERSION,
       localOnly: true,
     };
   });
@@ -305,7 +318,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           : !tailscale.running
             ? 'Tailscale is installed but not running.'
             : connectionHealth === 'needs_serve'
-              ? 'Tailscale is running; configure Serve to proxy HTTPS to 127.0.0.1:4317.'
+              ? `Tailscale is running; configure Serve to proxy HTTPS to 127.0.0.1:${process.env.TT_PORT ?? '4317'}.`
               : connectionHealth === 'ready'
                 ? 'Tailscale Serve and its identity header are available on this request.'
                 : 'Check Serve status and verify the identity header from a paired remote phone.',
@@ -1513,7 +1526,7 @@ function isRemoteRequest(headers: FastifyRequest['headers'], tailscaleLogin: str
 
 function isLoopbackHostname(hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  return ['localhost', '127.0.0.1', '::1'].includes(normalized);
+  return ['localhost', '127.0.0.1', '::1', 'tauri.localhost'].includes(normalized);
 }
 
 function hashPairingSecret(value: string): string {

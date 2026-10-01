@@ -1,0 +1,110 @@
+name: Desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags: [v1.0.0-rc1]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install Tauri and smoke-test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl file libayatana-appindicator3-dev libfuse2 libgtk-3-dev libssl-dev libwebkit2gtk-4.1-dev librsvg2-dev libxdo-dev patchelf xvfb xauth
+      - run: npm ci
+      - name: Validate application and production dependencies
+        run: |
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+          npm audit --omit=dev
+      - name: Build Linux installers
+        run: npm run desktop:build:linux
+      - name: Smoke-test installed DEB and portable AppImage
+        shell: bash
+        run: |
+          deb="$(find src-tauri/target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          appimage="$(find src-tauri/target/release/bundle/appimage -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$deb"
+          test -n "$appimage"
+          bash scripts/smoke-linux-packages.sh "$deb" "$appimage"
+      - name: Collect Linux packages
+        run: npm run desktop:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turing-terminal-linux-rc1
+          path: |
+            dist/release/1.0.0-rc1/*.deb
+            dist/release/1.0.0-rc1/*.AppImage
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - run: npm ci
+      - name: Build Windows NSIS installer
+        run: npm run desktop:build:windows
+      - name: Smoke-test quiet install, startup, PWA route, and uninstall
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'NSIS installer was not generated.' }
+          ./scripts/smoke-windows-installer.ps1 $installer.FullName
+      - name: Collect Windows installer
+        run: npm run desktop:release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: turing-terminal-windows-rc1
+          path: dist/release/1.0.0-rc1/*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  release-bundle:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: turing-terminal-linux-rc1
+          path: dist/release/1.0.0-rc1/staging/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: turing-terminal-windows-rc1
+          path: dist/release/1.0.0-rc1/staging/windows
+      - run: node scripts/merge-release.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Turing-Terminal-1.0.0-rc1
+          path: dist/release/1.0.0-rc1
+          if-no-files-found: error
+          retention-days: 30

@@ -11,67 +11,15 @@ Turing Terminal runs coding workflows from a private desktop master. It connects
 
 The master, project files, provider sign-ins, and run history stay on your computer. Remote phone access is optional and uses Tailscale Serve plus explicit device approval.
 
-## Install on Linux
-
-Requirements: Linux x64, Node.js 22 or newer, npm, Git, and a signed-in desktop user session with systemd.
-
-Clone the repository and build the package:
-
-```sh
-git clone https://github.com/abharrison1995-droid/turing-terminal-v1.git
-cd turing-terminal-v1
-npm ci
-npm run package:linux
-```
-
-Install and start the per-user master service:
-
-```sh
-bash packaging/linux/install-user-service.sh ./turing-terminal-linux-x64-v1.0.0.tar.gz
-```
-
-Open **http://127.0.0.1:4317** in your browser. The service starts in your user session and keeps running when you close the browser.
-
-Useful service commands:
-
-```sh
-systemctl --user status turing-terminal.service
-systemctl --user restart turing-terminal.service
-journalctl --user -u turing-terminal.service -f
-systemctl --user stop turing-terminal.service
-```
-
-The installer stores the app in `~/.local/share/turing-terminal` and private run data in `~/.local/share/turing-terminal-data`. It does not require root.
-
 ## Install on Windows
 
-Requirements: 64-bit Windows, Node.js 22 or newer, npm, Git, and PowerShell.
+Download `Turing-Terminal-Setup-x64-1.0.0-rc1.exe` from a successful **Desktop installers** workflow run in this private repository. Double-click the installer, then launch **Turing Terminal** from the Start Menu. This release candidate is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning. See [Windows installation](docs/INSTALL_WINDOWS.md).
 
-From PowerShell, clone the repository and build the Windows package:
+## Install on Linux
 
-```powershell
-git clone https://github.com/abharrison1995-droid/turing-terminal-v1.git
-Set-Location .\turing-terminal-v1
-npm ci
-npm run package:windows
-```
+Download `turing-terminal_1.0.0-rc1_amd64.deb` and open it with your distribution's software installer, or use the portable `Turing-Terminal-x86_64-1.0.0-rc1.AppImage`. The app appears in your application menu after the `.deb` install. See [Linux installation](docs/INSTALL_LINUX.md).
 
-Extract the package and install the per-user startup task:
-
-```powershell
-Expand-Archive -LiteralPath .\turing-terminal-windows-x64-v1.0.0.zip -DestinationPath .\turing-terminal-windows
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\turing-terminal-windows\install-user-startup.ps1 -PackageDirectory .\turing-terminal-windows
-```
-
-Open **http://127.0.0.1:4317** in your browser. The master starts hidden when you sign in and runs with your normal user privileges. Its data is stored under `%LOCALAPPDATA%\TuringTerminal\data`.
-
-To stop the startup task, open Task Scheduler and remove **Turing Terminal Master**, or run:
-
-```powershell
-Unregister-ScheduledTask -TaskName 'Turing Terminal Master' -Confirm:$false
-```
-
-The package commands build platform-specific production dependencies on the machine where you run them. The Linux package has been built and smoke-tested; build the Windows package on Windows.
+Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. The repository is private, so downloading its Actions artifacts requires a GitHub account with repository access. RC1 is for acceptance testing; physical Windows/Linux and phone pairing checks remain pending.
 
 ## How to use Turing Terminal
 
@@ -80,7 +28,7 @@ The package commands build platform-specific production dependencies on the mach
 3. **Choose a workflow.** Start with a saved workflow or create one. Assign a detected provider and model to each AI stage; add build/test steps, approval gates, or other stages as needed.
 4. **Review the preview.** Check the target machine and project, permission mode, provider/model assignments, approval gates, retry bounds, and runtime limits before starting.
 5. **Start and supervise the run.** Follow stage progress, respond to approval or clarification requests, and inspect the final diff and review findings. Runs belong to the desktop master, so closing the browser does not stop them.
-6. **Use the phone (optional).** On the desktop, configure Tailscale Serve with `tailscale serve --bg 4317`, open the Serve address on your phone, create a pairing QR in **Settings → Paired devices**, and approve the phone on the desktop. See [Mobile setup](docs/MOBILE.md).
+6. **Use the phone (optional).** Install and sign in to Tailscale separately. In desktop **Settings**, note the Master port, configure Tailscale Serve to proxy HTTPS to `127.0.0.1:<that-port>`, open the Serve address on your phone, create a pairing QR in **Settings → Paired devices**, and approve the phone on the desktop. See [Mobile setup](docs/MOBILE.md).
 
 Provider sign-in and workflow data live on the master computer. Read [Security](docs/SECURITY.md) before running workflows against important projects.
 
@@ -95,6 +43,8 @@ npm run dev
 
 Open **http://127.0.0.1:5173**. The API listens on **http://127.0.0.1:4317**. The master binds to loopback; do not expose its port directly to a LAN or the public internet.
 
+Build native packages on their target operating system with `npm run desktop:build:linux` or `npm run desktop:build:windows`. See [Packaging](docs/PACKAGING.md) and [Releasing](docs/RELEASING.md).
+
 Check the project with:
 
 ```sh
@@ -108,6 +58,10 @@ npm run build
 ## Documentation
 
 - [Desktop Master and packaging](docs/DESKTOP_MASTER.md)
+- [Install on Windows](docs/INSTALL_WINDOWS.md)
+- [Install on Linux](docs/INSTALL_LINUX.md)
+- [Packaging details](docs/PACKAGING.md)
+- [Release process](docs/RELEASING.md)
 - [Provider setup](docs/PROVIDERS.md)
 - [Provider capability matrix](docs/PROVIDER_CAPABILITY_MATRIX.md)
 - [Security and trust boundaries](docs/SECURITY.md)

@@ -310,6 +310,9 @@ summary:focus-visible {
   flex-basis: 6px;
   box-shadow: none;
 }
+.connection-state-error .presence-dot {
+  background: var(--red);
+}
 .icon-button {
   position: relative;
   display: inline-grid;
@@ -3801,4 +3804,61 @@ button:disabled {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+.desktop-readiness-tags {
+  margin: 10px 0 4px;
+}
+.capability-tags span.readiness-available {
+  color: var(--green);
+}
+.capability-tags span.readiness-missing {
+  color: var(--amber);
+}
+.desktop-diagnostics-actions,
+.desktop-startup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+.desktop-startup-loading,
+.desktop-startup-error {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  color: var(--ink);
+  background: var(--canvas);
+}
+.desktop-startup-card {
+  width: min(100%, 560px);
+  padding: 28px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px #0008;
+}
+.desktop-startup-card h1 {
+  margin: 8px 0;
+  font-size: 24px;
+}
+.desktop-startup-card > p:not(.eyebrow) {
+  color: var(--ink-secondary);
+  overflow-wrap: anywhere;
+}
+.desktop-startup-card small {
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.desktop-startup-mark {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  color: var(--accent-strong);
+  background: var(--accent-wash);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  font-weight: 800;
 }

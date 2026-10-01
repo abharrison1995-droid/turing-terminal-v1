@@ -9,9 +9,10 @@ import type {
   TuringRule,
   WorkflowDefinition,
 } from '../shared/types';
+import { masterApiUrl } from './desktop';
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(masterApiUrl(path), {
     ...init,
     headers: {
       'content-type': 'application/json',

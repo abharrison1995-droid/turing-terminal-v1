@@ -47,6 +47,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import QRCode from 'qrcode';
 import { notificationsForSnapshot } from './notificationEvents.js';
+import { APP_VERSION } from '../shared/version';
 import type {
   Approval,
   DashboardSnapshot,
@@ -66,6 +67,7 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { desktop, isDesktopShell, masterApiUrl, setMasterApiBase, type DesktopRuntime } from './desktop';
 import { makePairingQrUrl, parsePairingRequestId } from './pairingQr.js';
 import { decodeVapidPublicKey, pushSubscriptionStorageKey } from './pushNotifications.js';
 import {
@@ -194,7 +196,7 @@ function App() {
 
   useEffect(() => {
     if (!selectedRunId) return;
-    const events = new EventSource(`/api/events?runId=${encodeURIComponent(selectedRunId)}`);
+    const events = new EventSource(masterApiUrl(`/api/events?runId=${encodeURIComponent(selectedRunId)}`));
     const refreshOnRunEvent = () => void refresh(true);
     const notifyFromStage = (event: Event) => {
       if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
@@ -233,6 +235,16 @@ function App() {
   const changePage = (next: Page) => {
     setPage(next);
     setMobileMenuOpen(false);
+  };
+  const restartDesktopMaster = async () => {
+    try {
+      const runtime = await desktop.restartMaster();
+      setMasterApiBase(runtime.masterUrl);
+      setError('');
+      void refresh(true);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Turing Terminal Master could not be restarted.');
+    }
   };
   const pageLabel = navItems.find((item) => item.id === page)?.label ?? 'Command Center';
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
@@ -287,7 +299,7 @@ function App() {
           <ChevronDown size={14} />
         </div>
         <div className="sidebar-foot">
-          TURING TERMINAL <span>V1.0.0</span>
+          TURING TERMINAL <span>{APP_VERSION.toUpperCase()}</span>
         </div>
       </aside>
 
@@ -310,8 +322,9 @@ function App() {
             <strong>{pageLabel}</strong>
           </div>
           <div className="topbar-right">
-            <span className="connection-state">
-              <span className="presence-dot" /> Desktop master online
+            <span className={`connection-state ${error ? 'connection-state-error' : ''}`}>
+              <span className="presence-dot" />{' '}
+              {error ? 'Desktop Master unavailable' : 'Desktop Master online'}
             </span>
             <button
               className="icon-button notification-button"
@@ -336,6 +349,11 @@ function App() {
             <button onClick={() => void refresh()}>
               <RefreshCw size={14} /> Retry
             </button>
+            {isDesktopShell() && (
+              <button onClick={() => void restartDesktopMaster()}>
+                <RefreshCw size={14} /> Restart Master
+              </button>
+            )}
           </div>
         )}
         {notice && (
@@ -4071,6 +4089,7 @@ function SettingsPage({
         description="Local master identity, provider health, and safety boundaries."
       />
       <div className="settings-grid">
+        <DesktopSettingsCard />
         <section className="surface-panel settings-section">
           <div className="panel-title-row">
             <div>
@@ -4168,8 +4187,9 @@ function SettingsPage({
             <span className="notification-setting-copy">
               <strong>{notifications ? 'Notifications enabled' : 'Notifications disabled'}</strong>
               <small>
-                Browser notifications appear while Turing Terminal is open. Closed-client Web Push is
-                configured separately below.
+                {isDesktopShell()
+                  ? 'Browser notifications appear while the desktop app is open. Use the paired mobile PWA for closed-client Web Push.'
+                  : 'Browser notifications appear while Turing Terminal is open. Closed-client Web Push is configured separately below.'}
               </small>
             </span>
             <button
@@ -4181,34 +4201,45 @@ function SettingsPage({
               {notifications ? 'Enabled' : 'Enable notifications'}
             </button>
           </div>
-          <div className="toggle-line push-notification-line">
-            <span className="notification-setting-copy">
-              <strong>{pushSubscribed ? 'Closed-client push enabled' : 'Closed-client push'}</strong>
-              <small>
-                {pushConfig?.enabled
-                  ? 'The master sends standards-based Web Push. Browser vendor push relays deliver while this page is closed.'
-                  : (pushConfig?.reason ?? 'Checking master push configuration…')}
-              </small>
-            </span>
-            {pushSubscribed ? (
-              <button
-                className="secondary-button"
-                onClick={() => void disableClosedPush()}
-                disabled={pushBusy}
-              >
-                {pushBusy ? 'Disabling…' : 'Disable push'}
-              </button>
-            ) : (
-              <button
-                className="secondary-button"
-                onClick={() => void enableClosedPush()}
-                disabled={pushBusy || !pushConfig?.enabled}
-              >
-                <Bell size={14} /> {pushBusy ? 'Enabling…' : 'Enable closed-client push'}
-              </button>
-            )}
-          </div>
-          {pushNotice && <div className="inline-callout quota-feedback">{pushNotice}</div>}
+          {isDesktopShell() ? (
+            <div className="settings-boundary">
+              <Bell size={15} />
+              <span>
+                Closed-client Web Push remains available from the paired mobile PWA in your browser.
+              </span>
+            </div>
+          ) : (
+            <>
+              <div className="toggle-line push-notification-line">
+                <span className="notification-setting-copy">
+                  <strong>{pushSubscribed ? 'Closed-client push enabled' : 'Closed-client push'}</strong>
+                  <small>
+                    {pushConfig?.enabled
+                      ? 'The master sends standards-based Web Push. Browser vendor push relays deliver while this page is closed.'
+                      : (pushConfig?.reason ?? 'Checking master push configuration…')}
+                  </small>
+                </span>
+                {pushSubscribed ? (
+                  <button
+                    className="secondary-button"
+                    onClick={() => void disableClosedPush()}
+                    disabled={pushBusy}
+                  >
+                    {pushBusy ? 'Disabling…' : 'Disable push'}
+                  </button>
+                ) : (
+                  <button
+                    className="secondary-button"
+                    onClick={() => void enableClosedPush()}
+                    disabled={pushBusy || !pushConfig?.enabled}
+                  >
+                    <Bell size={14} /> {pushBusy ? 'Enabling…' : 'Enable closed-client push'}
+                  </button>
+                )}
+              </div>
+              {pushNotice && <div className="inline-callout quota-feedback">{pushNotice}</div>}
+            </>
+          )}
         </section>
       </div>
       <div className="settings-boundary">
@@ -4219,6 +4250,164 @@ function SettingsPage({
         </span>
       </div>
     </main>
+  );
+}
+
+function DesktopSettingsCard() {
+  const [runtime, setRuntime] = useState<DesktopRuntime | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const refresh = useCallback(() => {
+    if (!isDesktopShell()) return;
+    void desktop
+      .runtime()
+      .then(setRuntime)
+      .catch((reason) =>
+        setError(reason instanceof Error ? reason.message : 'Desktop status could not be read.'),
+      );
+  }, []);
+  useEffect(() => {
+    if (!isDesktopShell()) return;
+    refresh();
+    const timer = window.setInterval(refresh, 5_000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+  if (!isDesktopShell()) return null;
+
+  const toggleKeepOpen = async () => {
+    if (!runtime) return;
+    setBusy(true);
+    setError('');
+    try {
+      await desktop.setKeepMasterOnClose(!runtime.keepMasterOnClose);
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The close preference could not be saved.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const toggleLogin = async () => {
+    if (!runtime) return;
+    setBusy(true);
+    setError('');
+    try {
+      await desktop.setStartAtLogin(!runtime.startAtLogin);
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The sign-in preference could not be saved.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const restartMaster = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await desktop.restartMaster();
+      refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The Desktop Master could not be restarted.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="surface-panel settings-section">
+      <div className="panel-title-row">
+        <div>
+          <h2>Desktop application</h2>
+          <p>Bundled Master process, startup options, and local system readiness.</p>
+        </div>
+        <Monitor size={17} className="muted-icon" />
+      </div>
+      {runtime ? (
+        <>
+          <div className="settings-readonly-row">
+            <span>Desktop Master</span>
+            <strong>
+              {runtime.status}
+              {runtime.port ? ` · 127.0.0.1:${runtime.port}` : ''}
+            </strong>
+          </div>
+          <div className="settings-readonly-row">
+            <span>Version</span>
+            <strong>{runtime.version}</strong>
+          </div>
+          <div className="settings-readonly-row">
+            <span>Application data</span>
+            <strong>{runtime.dataPath}</strong>
+          </div>
+          <div className="settings-readonly-row">
+            <span>System readiness</span>
+            <strong>
+              {runtime.tools.filter((tool) => tool.installed).length}/{runtime.tools.length} optional tools
+              found
+            </strong>
+          </div>
+          <div className="capability-tags desktop-readiness-tags">
+            {runtime.tools.map((tool) => (
+              <span key={tool.id} className={tool.installed ? 'readiness-available' : 'readiness-missing'}>
+                {tool.installed ? '✓' : '○'} {tool.name}
+              </span>
+            ))}
+          </div>
+          <div className="toggle-line">
+            <span className="notification-setting-copy">
+              <strong>Keep Master running when this window closes</strong>
+              <small>
+                On by default. Turn it off to stop a Master started by this app when the window closes.
+              </small>
+            </span>
+            <button
+              className="secondary-button"
+              onClick={() => void toggleKeepOpen()}
+              disabled={busy || !runtime}
+            >
+              {runtime.keepMasterOnClose ? 'On' : 'Off'}
+            </button>
+          </div>
+          <div className="toggle-line">
+            <span className="notification-setting-copy">
+              <strong>Start Turing Terminal when I sign in</strong>
+              <small>
+                Runs in the background at login. Optional tools are never installed automatically.
+              </small>
+            </span>
+            <button
+              className="secondary-button"
+              onClick={() => void toggleLogin()}
+              disabled={busy || !runtime}
+            >
+              {runtime.startAtLogin ? 'On' : 'Off'}
+            </button>
+          </div>
+          {runtime.error && <div className="form-error">{runtime.error}</div>}
+          {error && <div className="form-error">{error}</div>}
+          <div className="desktop-diagnostics-actions">
+            <button
+              className="secondary-button"
+              onClick={() => void restartMaster()}
+              disabled={busy || (runtime.status === 'Running' && !runtime.startedByApp)}
+            >
+              <RefreshCw size={14} /> Restart Master
+            </button>
+            <button className="secondary-button" onClick={() => void desktop.openLogFolder()}>
+              Open log folder
+            </button>
+          </div>
+          <small>Logs: {runtime.logPath}</small>
+          {runtime.tools.some((tool) => !tool.installed) && (
+            <p>
+              Missing optional command-line tools only disable their related integrations. Install and sign in
+              to a tool to make it available.
+            </p>
+          )}
+        </>
+      ) : (
+        <p>{error || 'Loading desktop status…'}</p>
+      )}
+    </section>
   );
 }
 

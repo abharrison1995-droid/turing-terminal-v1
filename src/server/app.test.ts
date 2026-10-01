@@ -45,6 +45,7 @@ vi.mock('./providers.js', () => ({
 }));
 
 import { createApp } from './app.js';
+import { APP_VERSION } from '../shared/version.js';
 import { openDatabase } from './db.js';
 import { executeProvider } from './providers.js';
 import { RunEngine } from './runEngine.js';
@@ -76,7 +77,7 @@ describe('local API', () => {
   it('serves health and persists a project profile that can be refreshed', async () => {
     const health = await app.inject({ method: 'GET', url: '/api/health' });
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toMatchObject({ ok: true, localOnly: true });
+    expect(health.json()).toMatchObject({ ok: true, localOnly: true, version: APP_VERSION });
     expect(health.headers['access-control-allow-origin']).toBe('*');
 
     const added = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
@@ -90,6 +91,31 @@ describe('local API', () => {
     expect(refreshed.statusCode).toBe(200);
     expect(refreshed.json().project.languages).toContain('Python');
     expect(refreshed.json().project.buildCommand).toEqual(['npm', 'run', 'build']);
+  });
+
+  it('allows only the packaged desktop origin to preflight the loopback API', async () => {
+    const desktop = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/dashboard',
+      headers: { origin: 'tauri://localhost', 'access-control-request-method': 'GET' },
+    });
+    expect(desktop.statusCode).toBe(204);
+    expect(desktop.headers['access-control-allow-origin']).toBe('tauri://localhost');
+
+    const windowsDesktop = await app.inject({
+      method: 'GET',
+      url: '/api/dashboard',
+      headers: { origin: 'http://tauri.localhost' },
+    });
+    expect(windowsDesktop.statusCode).toBe(200);
+    expect(windowsDesktop.headers['access-control-allow-origin']).toBe('http://tauri.localhost');
+
+    const unrelated = await app.inject({
+      method: 'OPTIONS',
+      url: '/api/dashboard',
+      headers: { origin: 'https://example.invalid', 'access-control-request-method': 'GET' },
+    });
+    expect(unrelated.headers['access-control-allow-origin']).toBeUndefined();
   });
 
   it('reports only the local Tailscale node and this request identity state', async () => {
