@@ -367,7 +367,7 @@ fn spawn_master(paths: &Paths, port: u16) -> Result<Child, String> {
     let stderr = log.try_clone().map_err(|error| error.to_string())?;
     let mut command = Command::new(&paths.node);
     command
-        .arg(paths.app_root.join("dist-server/server/index.js"))
+        .arg("dist-server/server/index.js")
         .current_dir(&paths.app_root)
         .env("TT_HOST", "127.0.0.1")
         .env("TT_PORT", port.to_string())
