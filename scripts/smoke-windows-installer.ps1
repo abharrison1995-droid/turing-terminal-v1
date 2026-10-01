@@ -53,7 +53,11 @@ try {
     throw 'Desktop Master did not return a valid local health response.'
   }
   $manifest = Invoke-WebRequest -Uri "http://127.0.0.1:$masterPort/manifest.webmanifest" -TimeoutSec 5
-  $manifestContent = [string]$manifest.Content
+  if ($manifest.Content -is [byte[]]) {
+    $manifestContent = [System.Text.Encoding]::UTF8.GetString($manifest.Content)
+  } else {
+    $manifestContent = [string]$manifest.Content
+  }
   $manifestJson = $null
   try { $manifestJson = $manifestContent | ConvertFrom-Json -ErrorAction Stop } catch { }
   if ($manifest.StatusCode -ne 200 -or $manifestJson.name -ne 'Turing Terminal') {
