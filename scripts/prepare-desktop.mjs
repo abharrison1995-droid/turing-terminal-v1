@@ -33,7 +33,10 @@ try {
   await cp(join(root, 'dist'), join(app, 'dist'), { recursive: true });
   await cp(join(root, 'dist-server'), join(app, 'dist-server'), { recursive: true });
   await cp(join(root, 'migrations'), join(app, 'migrations'), { recursive: true });
-  await execFileAsync(npmCommand, ['ci', '--omit=dev', '--no-audit', '--no-fund'], {
+  // better-sqlite3 ships N-API prebuilds for supported platforms. Skip its
+  // implicit node-gyp source build so Windows packaging does not require a
+  // Visual Studio C++ toolchain on the runner.
+  await execFileAsync(npmCommand, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
     cwd: app,
     ...(process.platform === 'win32' ? { shell: true } : {}),
   });

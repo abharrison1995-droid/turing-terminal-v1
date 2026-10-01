@@ -36,8 +36,9 @@ Provider sign-in and workflow data live on the master computer. Read [Security](
 
 To run the development UI and local master instead of installing a package:
 
+Install dependencies with `npm ci` on Linux or macOS, or `npm ci --ignore-scripts` in Windows PowerShell. Then start the app:
+
 ```sh
-npm ci
 npm run dev
 ```
 

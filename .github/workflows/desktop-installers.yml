@@ -67,7 +67,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-      - run: npm ci
+      - name: Install JavaScript dependencies without native source builds
+        run: npm ci --ignore-scripts
       - name: Build Windows NSIS installer
         run: npm run desktop:build:windows
       - name: Smoke-test quiet install, startup, PWA route, and uninstall

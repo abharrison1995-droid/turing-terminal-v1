@@ -21,12 +21,14 @@ npm run desktop:release
 On Windows PowerShell:
 
 ```powershell
-npm ci
+npm ci --ignore-scripts
 npm run desktop:build:windows
 npm run desktop:release
 ```
 
 Linux produces a Debian package and AppImage. Windows produces a per-user NSIS setup executable. Build scripts do not call AI providers or need provider credentials. The AppImage bundles the app runtime and WebKit/GTK libraries; compatibility still depends on the host system's glibc baseline and graphics drivers. CI builds Linux packages on Ubuntu 22.04.
+
+The Windows source-build command skips npm install scripts because the packaged SQLite dependency includes Windows x64 Node-API binaries; this avoids requiring Visual Studio C++ build tools just to build the desktop shell.
 
 The desktop shell depends on the operating system's WebView implementation. Debian packages declare GTK 3 and WebKitGTK 4.1. The Windows installer uses the WebView2 bootstrapper if the Microsoft WebView2 runtime is missing. Node.js is included; Git, Tailscale, OpenCode, Codex, Claude Code, and Cline remain optional external tools.
 
