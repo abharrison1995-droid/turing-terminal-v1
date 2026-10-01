@@ -3,6 +3,7 @@ $installer = (Resolve-Path $args[0]).Path
 $installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\Turing Terminal'
 $launcher = Join-Path $installDirectory 'turing-terminal.exe'
 $uninstaller = Join-Path $installDirectory 'uninstall.exe'
+$masterLog = Join-Path $env:LOCALAPPDATA 'TuringTerminal\logs\desktop-master.log'
 $occupiedPorts = Get-NetTCPConnection -State Listen -LocalPort (4317..4348) -ErrorAction SilentlyContinue
 if ($occupiedPorts) { throw 'A local service is already listening on a Turing Terminal smoke-test port (4317-4348).' }
 
@@ -18,16 +19,36 @@ $uninstaller = Join-Path $installDirectory 'uninstall.exe'
 $process = Start-Process -FilePath $launcher -ArgumentList '--background' -PassThru
 try {
   $ready = $false
+  $masterPort = $null
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    try {
-      $health = Invoke-RestMethod -Uri 'http://127.0.0.1:4317/api/health' -TimeoutSec 2
-      if ($health.service -eq 'turing-terminal' -and $health.version -eq '1.0.0-rc1' -and $health.localOnly -eq $true) { $ready = $true; break }
-    } catch { Start-Sleep -Seconds 1 }
+    foreach ($port in (4317..4348)) {
+      try {
+        $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 1
+        if ($health.service -eq 'turing-terminal' -and $health.version -eq '1.0.0-rc1' -and $health.localOnly -eq $true) {
+          $ready = $true
+          $masterPort = $port
+          break
+        }
+      } catch { }
+    }
+    if ($ready) { break }
+    Start-Sleep -Seconds 1
   }
-  if (-not $ready) { throw 'Desktop Master did not return a valid local health response.' }
-  $manifest = Invoke-WebRequest -Uri 'http://127.0.0.1:4317/manifest.webmanifest' -TimeoutSec 5
+  if (-not $ready) {
+    Write-Output "Installed launcher: $launcher"
+    Write-Output "Installed resources: $(Join-Path $installDirectory 'resources')"
+    if (Test-Path $masterLog) {
+      Write-Output "Desktop Master log: $masterLog"
+      Get-Content -Path $masterLog
+    } else {
+      Write-Output "Desktop Master log was not created: $masterLog"
+    }
+    Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*dist-server*server*index.js*' } | Select-Object ProcessId, ParentProcessId, CommandLine | Format-List
+    throw 'Desktop Master did not return a valid local health response.'
+  }
+  $manifest = Invoke-WebRequest -Uri "http://127.0.0.1:$masterPort/manifest.webmanifest" -TimeoutSec 5
   if ($manifest.StatusCode -ne 200 -or $manifest.Content -notmatch 'Turing Terminal') { throw 'PWA manifest smoke check failed.' }
-  $frontend = Invoke-WebRequest -Uri 'http://127.0.0.1:4317/' -TimeoutSec 5
+  $frontend = Invoke-WebRequest -Uri "http://127.0.0.1:$masterPort/" -TimeoutSec 5
   if ($frontend.StatusCode -ne 200 -or $frontend.Content -notmatch '/assets/index-') { throw 'Frontend route smoke check failed.' }
 } finally {
   function Get-DescendantProcessIds([int] $ParentId) {
