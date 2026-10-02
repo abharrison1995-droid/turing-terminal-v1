@@ -47,7 +47,7 @@ vi.mock('./providers.js', () => ({
 import { createApp } from './app.js';
 import { APP_VERSION } from '../shared/version.js';
 import { openDatabase } from './db.js';
-import { executeProvider } from './providers.js';
+import { discoverProviders, executeProvider } from './providers.js';
 import { RunEngine } from './runEngine.js';
 
 describe('local API', () => {
@@ -720,6 +720,11 @@ describe('local API', () => {
     });
     expect(result.statusCode).toBe(202);
     expect(result.json().run.permissionMode).toBe('yolo');
+    const runId = result.json().run.id as string;
+    await vi.waitFor(() => {
+      const status = (db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string }).status;
+      expect(['failed', 'completed']).toContain(status);
+    });
   });
 
   it('keeps the internal provider broker closed to stale or guessed session tokens', async () => {
@@ -851,5 +856,232 @@ describe('local API', () => {
       { id: globalRuleId, content: 'Use clear names in new code.' },
       { id: projectRuleId, content: 'Keep generated fixtures small.' },
     ]);
+  });
+
+  it('accepts an OpenCode Go-only workflow with exact per-stage variants and usage attribution', async () => {
+    const exactModelId = 'opencode-go/kimi-k3';
+    const provider = {
+      id: 'opencode', name: 'OpenCode', cli: 'opencode', detected: true, version: 'test-opencode',
+      authentication: 'connected' as const, subscriptionAuthenticated: null, authMechanism: 'test', note: 'test', checkedAt: new Date().toISOString(),
+      capabilities: { authentication: true, subscriptionAuth: true, modelDiscovery: true, execution: true, streaming: true, cancellation: true, usageTelemetry: true, remainingAllowance: false, resetTelemetry: false, structuredOutput: false, sessionResume: true, toolMediation: true },
+      models: [{ id: exactModelId, name: 'Kimi K3', providerId: 'opencode-go', subscriptionBacked: true, variantIds: ['high', 'max'], capabilities: { tools: true, variants: ['high', 'max'] } }],
+    };
+    vi.mocked(discoverProviders).mockResolvedValue([provider]);
+    const project = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
+    const profile = await app.inject({ method: 'POST', url: '/api/connection-profiles', payload: {
+      name: 'OpenCode Go — Alex', backendId: 'opencode', providerId: 'opencode-go', billingLane: 'opencode-go-subscription', metadata: { accountLabel: 'Alex' },
+    } });
+    expect(profile.statusCode).toBe(201);
+    const profileId = profile.json().profile.id as string;
+    const secretProfile = await app.inject({ method: 'POST', url: '/api/connection-profiles', payload: {
+      name: 'Must not retain a secret', backendId: 'opencode', providerId: 'opencode-go',
+      billingLane: 'opencode-go-subscription', metadata: { api_key: 'example-secret-value-that-must-not-persist' },
+    } });
+    expect(secretProfile.statusCode).toBe(400);
+    const preset = await app.inject({ method: 'POST', url: '/api/model-presets', payload: {
+      name: 'ChatGPT Luna High Reasoning',
+      configuration: {
+        backendId: 'codex-cli', providerId: 'openai-codex',
+        billingLane: 'chatgpt-subscription', modelId: 'gpt-6-luna',
+        reasoning: 'high', nativeSettings: { reasoningEffort: 'high' },
+      },
+    } });
+    expect(preset.statusCode).toBe(201);
+    expect(preset.json().preset.configuration).toMatchObject({ modelId: 'gpt-6-luna', reasoning: 'high', nativeSettings: { reasoningEffort: 'high' } });
+    const row = db.prepare("SELECT config_json FROM workflows WHERE id = 'quick-fix'").get() as { config_json: string };
+    const config = JSON.parse(row.config_json) as Record<string, unknown>;
+    config.isolatedWorktree = false;
+    config.subscriptionOnly = true;
+    config.lockProviders = true;
+    config.stages = [
+      { id: 'planner', label: 'Planner', kind: 'planner', backendId: 'opencode', connectionProfileId: profileId, providerId: 'opencode-go', billingLane: 'opencode-go-subscription', modelId: exactModelId, modelDisplayName: 'Kimi K3', variantId: 'high', contextPolicy: { strategy: 'focused', maxEstimatedTokens: 8000, maxFiles: 12, maxFileBytes: 20_000 } },
+      { id: 'review', label: 'Reviewer', kind: 'reviewer', backendId: 'opencode', connectionProfileId: profileId, providerId: 'opencode-go', billingLane: 'opencode-go-subscription', modelId: exactModelId, modelDisplayName: 'Kimi K3', variantId: 'max', contextPolicy: { strategy: 'changed-files', maxEstimatedTokens: 8000, maxFiles: 12, maxFileBytes: 20_000 } },
+    ];
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(config));
+    const preview = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: { task: 'Document provider model routing.', projectId: project.json().project.id, workflowId: 'quick-fix' } });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().preview).toMatchObject({
+      subscriptionOnly: true,
+      lockProviders: true,
+      providerAssignments: [
+        { providerId: 'opencode-go', modelId: exactModelId, variantId: 'high', billingLane: 'opencode-go-subscription', connectionProfileName: 'OpenCode Go — Alex', ready: true },
+        { providerId: 'opencode-go', modelId: exactModelId, variantId: 'max', billingLane: 'opencode-go-subscription', ready: true },
+      ],
+    });
+    expect(preview.json().preview.billingSummary.find((item: { billingLane: string }) => item.billingLane === 'opencode-go-subscription').stages).toEqual(['Planner', 'Reviewer']);
+    expect(preview.json().preview.billingSummary.find((item: { billingLane: string }) => item.billingLane === 'opencode-metered').stages).toEqual([]);
+    expect(preview.json().preview.providerFallbackStatus).toMatchObject([{ status: 'unknown' }]);
+    expect(preview.json().preview.warnings).toContain('Provider-side PAYG fallback status cannot be verified by Turing Terminal.');
+
+    const adapterCalls: Array<{ backendId: string; providerId: string; modelId: string; variantId?: string; billingLane?: string; subscriptionOnly?: boolean }> = [];
+    vi.mocked(executeProvider).mockImplementation(async (request) => {
+      adapterCalls.push(request);
+      return { text: request.role === 'reviewer' ? '{"findings":[]}' : 'PlanArtifact', inputTokens: 120, outputTokens: 20, usageProvenance: 'provider_reported', exitCode: 0, stdout: 'ok' };
+    });
+    const started = await app.inject({ method: 'POST', url: '/api/runs', payload: { task: 'Document provider model routing.', projectId: project.json().project.id, workflowId: 'quick-fix' } });
+    expect(started.statusCode).toBe(202);
+    const runId = started.json().run.id as string;
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM usage_events WHERE run_id = ?').get(runId)).toMatchObject({ count: 2 });
+      expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({ status: 'completed' });
+    });
+    expect(adapterCalls.map((call) => [call.backendId, call.providerId, call.modelId, call.variantId, call.billingLane, call.subscriptionOnly])).toEqual([
+      ['opencode', 'opencode-go', exactModelId, 'high', 'opencode-go-subscription', true],
+      ['opencode', 'opencode-go', exactModelId, 'max', 'opencode-go-subscription', true],
+    ]);
+    expect(db.prepare('SELECT backend, provider_id, model_id, billing_lane, variant_id FROM usage_events WHERE run_id = ? ORDER BY rowid').all(runId)).toEqual([
+      { backend: 'opencode', provider_id: 'opencode-go', model_id: exactModelId, billing_lane: 'opencode-go-subscription', variant_id: 'high' },
+      { backend: 'opencode', provider_id: 'opencode-go', model_id: exactModelId, billing_lane: 'opencode-go-subscription', variant_id: 'max' },
+    ]);
+    const historicalStages = db.prepare('SELECT model_id, variant_id, model_snapshot_json FROM stages WHERE run_id = ? ORDER BY sequence').all(runId) as Array<{ model_id: string; variant_id: string; model_snapshot_json: string }>;
+    expect(historicalStages.map((stage) => [stage.model_id, stage.variant_id, JSON.parse(stage.model_snapshot_json)])).toEqual([
+      [exactModelId, 'high', expect.objectContaining({ providerId: 'opencode-go', billingLane: 'opencode-go-subscription', variantId: 'high', status: 'current' })],
+      [exactModelId, 'max', expect.objectContaining({ providerId: 'opencode-go', billingLane: 'opencode-go-subscription', variantId: 'max', status: 'current' })],
+    ]);
+    const usage = await app.inject({ method: 'GET', url: '/api/usage?window=today' });
+    expect(usage.json().raw).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage_title: 'Planner', billing_lane: 'opencode-go-subscription', variant_id: 'high' }),
+      expect.objectContaining({ stage_title: 'Reviewer', billing_lane: 'opencode-go-subscription', variant_id: 'max' }),
+    ]));
+  });
+
+  it('keeps ClinePass pinned to its subscription lane and blocks usage billing in Subscription Only mode', async () => {
+    vi.mocked(discoverProviders).mockResolvedValue([{
+      id: 'cline', name: 'Cline', cli: 'cline', detected: true, version: 'test-cline', authentication: 'unknown', subscriptionAuthenticated: null, authMechanism: 'test', note: 'catalog unavailable', checkedAt: new Date().toISOString(),
+      capabilities: { authentication: true, subscriptionAuth: true, modelDiscovery: false, execution: true, streaming: true, cancellation: true, usageTelemetry: false, remainingAllowance: false, resetTelemetry: false, structuredOutput: false, sessionResume: false, toolMediation: true }, models: [],
+    }]);
+    const project = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
+    const profile = await app.inject({ method: 'POST', url: '/api/connection-profiles', payload: {
+      name: 'ClinePass — Alex', backendId: 'cline', providerId: 'cline-pass', billingLane: 'clinepass-subscription', metadata: { accountLabel: 'Alex' },
+    } });
+    const profileId = profile.json().profile.id as string;
+    const row = db.prepare("SELECT config_json FROM workflows WHERE id = 'quick-fix'").get() as { config_json: string };
+    const config = JSON.parse(row.config_json) as Record<string, unknown>;
+    config.isolatedWorktree = false;
+    config.subscriptionOnly = true;
+    config.lockProviders = true;
+    config.stages = [{ id: 'planner', label: 'Planner', kind: 'planner', backendId: 'cline', connectionProfileId: profileId, providerId: 'cline-pass', billingLane: 'clinepass-subscription', modelId: 'cline-pass/kimi-k3' }];
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(config));
+    const preview = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: { task: 'Make a bounded plan.', projectId: project.json().project.id, workflowId: 'quick-fix' } });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().preview.providerAssignments[0]).toMatchObject({ providerId: 'cline-pass', billingLane: 'clinepass-subscription', modelId: 'cline-pass/kimi-k3', ready: true });
+    expect(preview.json().preview.billingSummary.find((item: { billingLane: string }) => item.billingLane === 'cline-usage-billing').stages).toEqual([]);
+    let executed: { providerId: string; modelId: string; billingLane?: string; subscriptionOnly?: boolean } | null = null;
+    vi.mocked(executeProvider).mockImplementation(async (request) => {
+      executed = request;
+      return { text: 'PlanArtifact', inputTokens: 90, outputTokens: 10, usageProvenance: 'provider_reported', exitCode: 0, stdout: 'ok' };
+    });
+    const started = await app.inject({ method: 'POST', url: '/api/runs', payload: { task: 'Make a bounded plan.', projectId: project.json().project.id, workflowId: 'quick-fix' } });
+    expect(started.statusCode).toBe(202);
+    const runId = started.json().run.id as string;
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM usage_events WHERE run_id = ?').get(runId)).toMatchObject({ count: 1 });
+      expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({ status: 'completed' });
+    });
+    expect(executed).toMatchObject({ providerId: 'cline-pass', modelId: 'cline-pass/kimi-k3', billingLane: 'clinepass-subscription', subscriptionOnly: true });
+    expect(db.prepare('SELECT billing_lane, provider_id, model_id FROM usage_events WHERE run_id = ?').get(runId)).toEqual({ billing_lane: 'clinepass-subscription', provider_id: 'cline-pass', model_id: 'cline-pass/kimi-k3' });
+    const savedWorkflow = JSON.parse((db.prepare("SELECT config_json FROM workflows WHERE id = 'quick-fix'").get() as { config_json: string }).config_json) as { stages: Array<Record<string, unknown>> };
+    Object.assign(savedWorkflow, { subscriptionOnly: true });
+    savedWorkflow.stages[0] = {
+      ...savedWorkflow.stages[0], connectionProfileId: undefined, providerId: 'cline',
+      modelId: 'cline/usage-model', billingLane: 'cline-usage-billing',
+    };
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(savedWorkflow));
+    const blockedMetered = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: {
+      task: 'Check the explicit Cline usage lane.', projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(blockedMetered.json().preview.providerAssignments[0]).toMatchObject({ ready: false, billingLane: 'cline-usage-billing' });
+    Object.assign(savedWorkflow, { subscriptionOnly: false });
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(savedWorkflow));
+    const explicitMetered = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: {
+      task: 'Check the explicit Cline usage lane.', projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(explicitMetered.json().preview.providerAssignments[0]).toMatchObject({ ready: true, providerId: 'cline', modelId: 'cline/usage-model', billingLane: 'cline-usage-billing' });
+    const meteredStart = await app.inject({ method: 'POST', url: '/api/runs', payload: {
+      task: 'Check the explicit Cline usage lane.', projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(meteredStart.statusCode).toBe(202);
+    const meteredRunId = meteredStart.json().run.id as string;
+    await vi.waitFor(() => {
+      expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(meteredRunId)).toMatchObject({ status: 'completed' });
+    });
+    expect(executed).toMatchObject({ providerId: 'cline', modelId: 'cline/usage-model', billingLane: 'cline-usage-billing', subscriptionOnly: false });
+    expect(db.prepare('SELECT billing_lane, provider_id, model_id FROM usage_events WHERE run_id = ?').get(meteredRunId)).toEqual({ billing_lane: 'cline-usage-billing', provider_id: 'cline', model_id: 'cline/usage-model' });
+
+    savedWorkflow.stages[0] = { ...savedWorkflow.stages[0], providerId: 'cline-pass', billingLane: 'cline-usage-billing' };
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(savedWorkflow));
+    const mismatchedLane = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: {
+      task: 'Check lane safety.', projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(mismatchedLane.json().preview.providerAssignments[0]).toMatchObject({ ready: false, billingLane: 'cline-usage-billing' });
+    expect(mismatchedLane.json().preview.warnings).toEqual(expect.arrayContaining([expect.stringContaining('does not match the configured') ]));
+  });
+
+  it('inherits workflow routes, applies a ClinePass reviewer override, and blocks an over-budget preview', async () => {
+    vi.mocked(executeProvider).mockClear();
+    const openCodeModel = 'opencode-go/kimi-k3';
+    vi.mocked(discoverProviders).mockResolvedValue([
+      {
+        id: 'opencode', name: 'OpenCode', cli: 'opencode', detected: true, version: 'test-opencode',
+        authentication: 'connected', subscriptionAuthenticated: null, authMechanism: 'test', note: 'test', checkedAt: new Date().toISOString(),
+        capabilities: { authentication: true, subscriptionAuth: true, modelDiscovery: true, execution: true, streaming: true, cancellation: true, usageTelemetry: true, remainingAllowance: false, resetTelemetry: false, structuredOutput: false, sessionResume: true, toolMediation: true },
+        models: [{ id: openCodeModel, name: 'Kimi K3', providerId: 'opencode-go', subscriptionBacked: true }],
+      },
+      {
+        id: 'cline', name: 'Cline', cli: 'cline', detected: true, version: 'test-cline',
+        authentication: 'unknown', subscriptionAuthenticated: null, authMechanism: 'test', note: 'test', checkedAt: new Date().toISOString(),
+        capabilities: { authentication: true, subscriptionAuth: true, modelDiscovery: false, execution: true, streaming: true, cancellation: true, usageTelemetry: false, remainingAllowance: false, resetTelemetry: false, structuredOutput: false, sessionResume: false, toolMediation: true },
+        models: [],
+      },
+    ]);
+    const project = await app.inject({ method: 'POST', url: '/api/projects', payload: { path: projectPath } });
+    const openCodeProfile = await app.inject({ method: 'POST', url: '/api/connection-profiles', payload: {
+      name: 'OpenCode Go — Alex', backendId: 'opencode', providerId: 'opencode-go', billingLane: 'opencode-go-subscription', metadata: {},
+    } });
+    const clineProfile = await app.inject({ method: 'POST', url: '/api/connection-profiles', payload: {
+      name: 'ClinePass — Alex', backendId: 'cline', providerId: 'cline-pass', billingLane: 'clinepass-subscription', metadata: {},
+    } });
+    const row = db.prepare("SELECT config_json FROM workflows WHERE id = 'quick-fix'").get() as { config_json: string };
+    const config = JSON.parse(row.config_json) as Record<string, unknown>;
+    config.isolatedWorktree = false;
+    config.subscriptionOnly = true;
+    config.defaultModelConfiguration = {
+      backendId: 'opencode', connectionProfileId: openCodeProfile.json().profile.id,
+      providerId: 'opencode-go', billingLane: 'opencode-go-subscription', modelId: openCodeModel,
+    };
+    config.stageDefaults = {
+      reviewer: {
+        backendId: 'cline', connectionProfileId: clineProfile.json().profile.id,
+        providerId: 'cline-pass', billingLane: 'clinepass-subscription', modelId: 'cline-pass/kimi-k3',
+      },
+    };
+    config.stages = [
+      { id: 'plan', label: 'Planner', kind: 'planner' },
+      { id: 'review', label: 'Reviewer', kind: 'reviewer', contextPolicy: { maxEstimatedTokens: 1_000, onLimitExceeded: 'stop' } },
+    ];
+    db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(config));
+    const task = 'Keep the configured subscription route and inspect the relevant implementation carefully. '.repeat(100);
+    const preview = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: {
+      task,
+      projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().preview).toMatchObject({
+      canStart: false,
+      providerAssignments: [
+        { backendId: 'opencode', providerId: 'opencode-go', modelId: openCodeModel, billingLane: 'opencode-go-subscription', ready: true },
+        { backendId: 'cline', providerId: 'cline-pass', modelId: 'cline-pass/kimi-k3', billingLane: 'clinepass-subscription', ready: true },
+      ],
+    });
+    expect(preview.json().preview.providerAssignments[1].context).toMatchObject({
+      estimateOnly: true, maxEstimatedTokens: 1_000, onLimitExceeded: 'stop',
+    });
+    expect(preview.json().preview.contextWarnings).toEqual(expect.arrayContaining([expect.stringContaining('Reviewer: estimated initial context')]));
+    const blockedStart = await app.inject({ method: 'POST', url: '/api/runs', payload: {
+      task,
+      projectId: project.json().project.id, workflowId: 'quick-fix',
+    } });
+    expect(blockedStart.statusCode).not.toBe(202);
+    expect(executeProvider).not.toHaveBeenCalled();
   });
 });

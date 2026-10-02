@@ -461,6 +461,8 @@ describe('brokered workflow commands', () => {
     expect(engine.decideApproval(approval.id, true)).toBe(true);
     const result = await execution;
     expect(result.exitCode).toBe(0);
+    expect(result.outputSummary).toContain('build-ok');
+    expect(result).not.toHaveProperty('output');
     expect(
       database
         .prepare(

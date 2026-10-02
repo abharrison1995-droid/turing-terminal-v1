@@ -1,6 +1,6 @@
 # Workflows
 
-A saved workflow is an ordered list of stages. At run creation Turing copies the workflow into a snapshot, so later edits do not rewrite a run already in progress. Preview resolves the selected project, provider assignments, model IDs, permission label, branch strategy, and warnings before the user starts a run.
+A saved workflow is an ordered list of stages with bounded loops, parallel review, and conditional branches. At run creation Turing copies the workflow and resolved model metadata into a snapshot, so later edits or provider catalog changes do not rewrite history. Preview resolves each stage's connection, backend, provider/billing lane, exact model and variant, context policy and estimate, permission label, branch strategy, and warnings before the user starts a run.
 
 ## Stage behavior
 
@@ -26,11 +26,35 @@ A saved workflow is an ordered list of stages. At run creation Turing copies the
 
 Review stages require machine-readable output. Malformed reviewer output fails the stage and remains in its persisted output for inspection; it is not counted as an empty review. Review findings are deduplicated by description. Each remediation pass reopens findings that still appear in the subsequent review.
 
+The optional **Orchestrator** is a configured AI stage for interpreting plans, choosing among workflow-defined branches, consolidating structured handoffs, or deciding whether a bounded remediation round is warranted. Turing's deterministic engine remains the state machine. The Orchestrator cannot create agents or stages, reroute providers/models, raise limits, bypass approvals, or call tools outside the execution broker.
+
 Prompt refinement is off by default. Add and configure a Prompt refinement stage in the workflow editor, then enable the workflow default or turn it on for an individual run. The refinement stage must be the first enabled stage. The run remains in `waiting_for_user` until the user edits or accepts the proposed specification and continues, or cancels the run. The pause and draft are persisted across service restarts. Prompt refinement is read-only; it cannot edit project files or run commands. The original request remains in run history, while later workflow stages receive the confirmed specification and any user clarification.
 
-## Profiles and limits
+## Provider, model, and billing configuration
 
-Economy, Balanced, and Maximum currently adjust parallel reviewer count. A workflow's `maxParallelAgents` and each review stage's `parallelism` are capped at eight. Remediation is bounded to zero through five passes. The profile names do not select a model, change provider, or guarantee a particular billing cost.
+Configuration inherits in this order: workflow model defaults, defaults for the stage kind, then fields set on the workflow node. A selected connection profile supplies the backend, provider, and billing lane for that connection. Changing a node's route clears an inherited profile unless another profile is explicitly selected. Exact model IDs and provider-native variants/settings are preserved through execution and in run history.
+
+Connection profiles contain a display name, provider route, optional credential-store reference, and non-secret metadata. They do not store API keys, OAuth tokens, subscription tokens, cookies, or session credentials. Model presets save configuration without credentials. Workflow exports use symbolic connection references; imports map those references to local profiles when a match exists.
+
+Subscription Only and Lock Providers default to ON and can be reviewed at run time. Subscription Only blocks Turing-selected API and metered billing lanes. Lock Providers prevents substitution of the explicitly configured backend/provider/model; a failed assignment stops or pauses according to workflow failure policy. Neither setting can verify a provider's private account-side billing fallback. OpenCode Go Preview explicitly shows that provider-side PAYG fallback cannot be verified; ClinePass and Cline usage billing remain separate lanes. The Preview billing summary lists stages under each selected lane and marks unused lanes.
+
+At Start, the run snapshots model ID, display name, provider, selected variant/settings, reported capabilities, discovery time, adapter version, and available catalog status. Missing from a complete catalog is shown as unavailable; providers without reliable discovery remain last known. Turing does not automatically migrate unavailable or deprecated models. Run Again With Same Configuration validates the historical configuration before replay; Duplicate and Edit creates a copy for user repair. A historical run retains the model snapshot it actually used.
+
+When repairing a duplicate, the model editor suggests models discovered for the selected backend where catalog discovery is supported; choosing a discovered model also applies its reported provider ID. Other providers accept an exact model ID. The final provider/model/connection combination is checked in Run Preview, and the user makes the replacement choice.
+
+Every AI stage may include custom instructions. They follow mandatory Turing security and permission enforcement, mandatory rules, built-in role instructions, advisory rules, and workflow instructions. Text instructions cannot grant broker permissions or bypass approval gates. The full order is documented in [Phase 3.6 configuration](phase3.6-provider-model-context.md#instruction-precedence).
+
+## Context policy and structured handoffs
+
+The default strategy is **Focused**, with a 32,000 estimated-token limit, up to 24 files, 80 KB per file, and compaction of optional context when safe. The defaults favor diff/artifact reuse over repeated full transcripts; the current diff and build/test summaries are included according to each stage policy. Available strategies are Focused, Changed Files, Artifacts Only, and Full Project / Broad. Per-stage policy can set file/token/size limits, include/exclude globs, diff/test/build output and prior artifacts, and whether prior stage transcripts are included. Prior transcripts are off by default. Full Project / Broad is an explicit choice, not the default.
+
+Run Preview labels input sizes **ESTIMATED**. The estimate is not an exact provider token count and may not include provider-internal system context. Tool reads and outputs are also budgeted. On over-limit context, the default behavior compacts optional artifacts, diffs, and summaries; mandatory task, security, rules, and role instructions are retained. Ask and Stop modes prevent the stage from proceeding when its configured budget is exceeded.
+
+Handoffs use bounded artifacts such as `PlanArtifact`, `ImplementationResult`, `ReviewFinding[]`, and concise `TestResult`/build summaries rather than replaying whole conversations or raw successful logs. Previous AI-stage responses are available only by explicit per-stage opt-in. Context limits constrain Turing-prepared content and brokered tool results; they cannot report tokens hidden inside a provider's CLI implementation.
+
+## Execution profiles and limits
+
+`Economy`, `Balanced`, and `Maximum` execution profiles currently adjust parallel reviewer count. A workflow's `maxParallelAgents` and each review stage's `parallelism` are capped at eight. Remediation is bounded to zero through five passes. The profile names do not select a model, change provider, or guarantee a particular billing cost.
 
 Provider assignments are explicit per AI stage. Turing will not silently fall back to another provider or model if an assignment is missing, the CLI disappears, or OpenCode no longer reports that model.
 
@@ -42,4 +66,4 @@ Only package scripts matching `npm|pnpm|yarn|bun run build|test|lint` can be con
 
 Git workflow stages require a clean starting repository and isolated worktree execution. Commit and checkpoint reject out-of-project paths, sensitive filenames, symlinked changes, and content matching known credential patterns. Turing-managed commit, push, and merge operations suppress repository hooks; commit signing is disabled for these commits. Merge requires an earlier commit stage, an unchanged clean source checkout, and a fast-forward; the approval includes a redacted diff preview. Push requires an earlier commit, a clean run worktree, and approval in all modes. Rollback always requires approval. It resets only the Turing run branch and restores the registered project subtree; ignored files are preserved. Operation, approval, result, and commit/tree IDs are stored in run history.
 
-The workflow editor supports editing, reordering, duplicating, importing, and exporting saved workflows. Exported JSON contains workflow configuration and should be reviewed before importing into another installation.
+The workflow editor supports editing, reordering, duplicating, importing, and exporting saved workflows. History supports **Run Again With Same Configuration** and **Duplicate and Edit**; replay stops if the stored provider/model assignment cannot be validated. Exported configuration contains no credentials and should still be reviewed before importing into another installation. See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for the complete field and precedence reference.

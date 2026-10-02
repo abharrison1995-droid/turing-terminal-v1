@@ -4,12 +4,32 @@ import {
   parseCodexAuthStatus,
   parseCodexModels,
   parseCodexOutput,
+  parseOpenCodeModels,
+  openCodeModelSelector,
   parseProviderOutput,
   safeClaudeSubscriptionEnvironment,
   safeCodexSubscriptionEnvironment,
 } from './providers.js';
 
 describe('provider output contract', () => {
+  it('preserves an OpenCode native provider/model#variant selector exactly', () => {
+    expect(openCodeModelSelector('openai/gpt-5.2', 'high')).toBe('openai/gpt-5.2#high');
+    expect(openCodeModelSelector('openai/gpt-5.2')).toBe('openai/gpt-5.2');
+  });
+
+  it('discovers exact OpenCode variants and safe capability metadata from verbose catalog output', () => {
+    const models = parseOpenCodeModels(`opencode-go/kimi-k3\n{\n  "name": "Kimi K3",\n  "variants": {\n    "high": { "settings": { "reasoningEffort": "high" } },\n    "max": { "settings": { "reasoningEffort": "max" } }\n  },\n  "capabilities": { "tools": true, "input": ["text"], "output": ["text"], "secret": "must-not-be-retained" },\n  "apiKey": "must-not-be-retained"\n}\n`);
+    expect(models).toEqual([{
+      id: 'opencode-go/kimi-k3',
+      name: 'Kimi K3',
+      providerId: 'opencode-go',
+      subscriptionBacked: true,
+      variantIds: ['high', 'max'],
+      capabilities: { tools: true, input: ['text'], output: ['text'] },
+      supportsTools: true,
+    }]);
+  });
+
   it('accepts ChatGPT sign-in and discovers only visible Codex app-server models', () => {
     expect(parseCodexAuthStatus('Logged in using ChatGPT')).toBe('chatgpt');
     expect(parseCodexAuthStatus('Logged in using API key')).toBe('api_key');

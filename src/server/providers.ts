@@ -9,6 +9,7 @@ import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import type { ModelOption, ProviderCapabilities, ProviderStatus } from '../shared/types.js';
 import type { PermissionMode } from '../shared/types.js';
+import type { BillingLane } from '../shared/types.js';
 import { redactSecrets, safeChildEnvironment } from './security.js';
 
 const execFile = promisify(callbackExecFile);
@@ -23,6 +24,10 @@ export interface ProviderRunRequest {
   permissionMode: PermissionMode;
   role: string;
   reasoning?: string;
+  variantId?: string;
+  nativeSettings?: Record<string, string | number | boolean | null>;
+  billingLane?: BillingLane;
+  subscriptionOnly?: boolean;
   cwd: string;
   prompt: string;
   timeoutMs: number;
@@ -163,7 +168,7 @@ const adapters: ProviderAdapter[] = [
     discover: async () => {
       const version = await commandOutput('opencode', ['--version']);
       if (!version) return missingAdapter('OpenCode');
-      const modelOutput = await commandOutput('opencode', ['models']);
+      const modelOutput = await commandOutput('opencode', ['models', '--verbose'], { timeoutMs: 20_000, maxBuffer: 12_000_000 });
       const models = parseOpenCodeModels(modelOutput ?? '');
       const authOutput = await commandOutput('opencode', ['auth', 'list', '--format', 'json']);
       const authentication: ProviderStatus['authentication'] =
@@ -248,7 +253,11 @@ export async function discoverProviders(): Promise<ProviderStatus[]> {
         note: result.note,
         checkedAt,
         capabilities: { ...adapter.capabilities, ...result.capabilities },
-        models: result.models,
+        models: result.models.map((model) => ({
+          ...model,
+          discoveredAt: checkedAt,
+          adapterVersion: result.version,
+        })),
       };
     }),
   );
@@ -284,16 +293,26 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
     );
   if (adapter.id === 'codex-cli' && request.providerId !== 'openai-codex')
     throw new Error('Select ChatGPT subscription authentication; OpenAI API providers are disabled.');
+  if (!providerBillingLaneMatches(request.backendId, request.providerId, request.billingLane))
+    throw new Error(`Provider ${request.providerId} cannot execute through billing lane ${request.billingLane ?? 'unknown'}.`);
   if (adapter.id === 'opencode') {
     const selectedModel = status.models.find((model) => model.id === request.modelId);
-    if (!selectedModel?.subscriptionBacked)
-      throw new Error(
-        'Select a model backed by OpenAI Codex subscription or OpenCode Go. Direct OpenAI/Anthropic API models are disabled.',
-      );
+    if (!selectedModel)
+      throw new Error('The exact OpenCode model is not present in the current catalog.');
+    if (!request.modelId.startsWith(`${request.providerId}/`))
+      throw new Error('Use the exact provider-native OpenCode model ID, including its provider prefix.');
+    if (request.modelId.includes('#'))
+      throw new Error('Store the OpenCode base model ID and provider-native variant in their separate fields.');
+    if (request.billingLane && ['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) && !selectedModel.subscriptionBacked)
+      throw new Error('The selected model is not reported as backed by the configured subscription lane.');
+    if (request.billingLane && !['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) && selectedModel.subscriptionBacked)
+      throw new Error('A subscription-backed model cannot be relabeled as a metered or API billing lane.');
+    if (request.variantId && !selectedModel.variantIds?.includes(request.variantId))
+      throw new Error(`Variant “${request.variantId}” was not reported as supported for this exact model.`);
   }
-  if (adapter.id === 'cline' && !['openai-codex', 'cline-pass'].includes(request.providerId))
+  if (adapter.id === 'cline' && !['openai-codex', 'cline-pass'].includes(request.providerId) && !['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(request.billingLane ?? ''))
     throw new Error(
-      'Select ClinePass or OpenAI Codex subscription authentication; API providers are disabled.',
+      'Select ClinePass, OpenAI Codex subscription authentication, or explicitly configure the Cline usage-billing lane.',
     );
   if (adapter.id === 'codex-cli') {
     const selectedModel = status.models.find((model) => model.id === request.modelId);
@@ -306,6 +325,19 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
     throw new Error(
       `Choose an explicit model for ${adapter.name}; Turing will not select one automatically.`,
     );
+  if (request.subscriptionOnly && !['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription'].includes(request.billingLane ?? ''))
+    throw new Error(`Billing lane “${request.billingLane}” is blocked by Subscription Only mode.`);
+  const selectedModel = status.models.find((model) => model.id === request.modelId);
+  const requestedEffort = request.reasoning ?? (typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined);
+  const supportedNativeKeys = adapter.id === 'codex-cli' ? ['reasoningEffort'] : [];
+  const unsupportedNativeKeys = Object.keys(request.nativeSettings ?? {}).filter((key) => !supportedNativeKeys.includes(key));
+  if (unsupportedNativeKeys.length)
+    throw new Error(`Provider-native setting(s) ${unsupportedNativeKeys.join(', ')} are not exposed as capabilities for this backend/model and will not be sent.`);
+  const nativeEffort = typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined;
+  if (request.reasoning && nativeEffort && request.reasoning !== nativeEffort)
+    throw new Error('Choose one provider-native reasoning value; conflicting reasoning settings were configured.');
+  if (requestedEffort && (adapter.id !== 'codex-cli' || !selectedModel?.reasoningLevels?.includes(requestedEffort)))
+    throw new Error(`Provider-native reasoning value “${requestedEffort}” is not reported as supported for this backend/model.`);
   if (adapter.id === 'claude-code' && !supportsRestrictedClaudeCode(status.version))
     throw new Error(
       'Claude Code 2.1.248 or later is required for Turing-managed tool mediation. Update Claude Code before running this workflow.',
@@ -314,6 +346,22 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
   if (!runtimeCapabilities.toolMediation)
     throw new Error(`${adapter.name} does not have an execution mediation bridge in this installation.`);
   return adapter.execute(request);
+}
+
+function providerBillingLaneMatches(backendId: string, providerId: string, lane?: BillingLane): boolean {
+  if (backendId === 'opencode' && providerId === 'opencode-go') return lane === 'opencode-go-subscription';
+  if (backendId === 'opencode' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'opencode' && providerId === 'openai') return lane === 'openai-api';
+  if (backendId === 'opencode' && providerId === 'anthropic') return lane === 'anthropic-api';
+  if (backendId === 'opencode' && providerId) return lane === 'opencode-metered';
+  if (backendId === 'cline' && providerId === 'cline-pass') return lane === 'clinepass-subscription';
+  if (backendId === 'cline' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'cline' && providerId === 'cline') return lane === 'cline-usage-billing';
+  if (backendId === 'cline' && providerId === 'openai') return lane === 'openai-api';
+  if (backendId === 'cline' && providerId === 'anthropic') return lane === 'anthropic-api';
+  if (backendId === 'codex-cli' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'claude-code' && providerId === 'anthropic-subscription') return lane === 'claude-subscription';
+  return false;
 }
 
 function supportsCodexBroker(version: string | null): boolean {
@@ -489,7 +537,8 @@ async function runCodexCli(request: ProviderRunRequest): Promise<ProviderRunResu
     '--config',
     `mcp_servers=${tomlInline(serverConfig)}`,
   ];
-  if (request.reasoning) args.push('--config', `model_reasoning_effort=${JSON.stringify(request.reasoning)}`);
+  const codexEffort = request.reasoning ?? (typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined);
+  if (codexEffort) args.push('--config', `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
   args.push(request.prompt);
   try {
     const result = await runChild('codex', args, {
@@ -605,9 +654,17 @@ function missingAdapter(name: string) {
   };
 }
 
-async function commandOutput(command: string, args: string[]): Promise<string | null> {
+async function commandOutput(
+  command: string,
+  args: string[],
+  limits: { timeoutMs?: number; maxBuffer?: number } = {},
+): Promise<string | null> {
   try {
-    const result = await execFile(command, args, { timeout: 8_000, windowsHide: true, maxBuffer: 2_000_000 });
+    const result = await execFile(command, args, {
+      timeout: limits.timeoutMs ?? 8_000,
+      windowsHide: true,
+      maxBuffer: limits.maxBuffer ?? 2_000_000,
+    });
     return result.stdout;
   } catch {
     return null;
@@ -624,22 +681,69 @@ async function commandOutputIncludingStderr(command: string, args: string[]): Pr
   }
 }
 
-function parseOpenCodeModels(output: string): ModelOption[] {
-  const ids = new Set<string>();
-  for (const match of output.matchAll(/\b([\w.-]+\/[\w./:+-]+)\b/g)) ids.add(match[1]);
-  return [...ids].map((id) => ({
-    id,
-    name: id,
-    providerId: id.split('/')[0],
-    subscriptionBacked: id.startsWith('openai-codex/') || id.startsWith('opencode-go/'),
-  }));
+export function parseOpenCodeModels(output: string): ModelOption[] {
+  const lines = output.replace(/\u001b\[[0-9;]*m/g, '').split(/\r?\n/);
+  const models = new Map<string, ModelOption>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const id = lines[index]?.trim().match(/^([\w.-]+\/[\w./:+-]+)$/)?.[1];
+    if (!id) continue;
+    let metadata: Record<string, unknown> = {};
+    let endIndex = index;
+    for (let next = index + 1; next < lines.length && !lines[next]?.trim(); next += 1) endIndex = next;
+    const jsonStart = lines[endIndex + 1]?.trim() === '{' ? endIndex + 1 : -1;
+    if (jsonStart >= 0) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let json = '';
+      let finished = false;
+      for (let next = jsonStart; next < lines.length && !finished; next += 1) {
+        const line = lines[next] ?? '';
+        json += `${line}\n`;
+        for (const character of line) {
+          if (inString) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') inString = false;
+          } else if (character === '"') inString = true;
+          else if (character === '{') depth += 1;
+          else if (character === '}' && --depth === 0) finished = true;
+        }
+        endIndex = next;
+      }
+      try {
+        if (finished) metadata = JSON.parse(json) as Record<string, unknown>;
+      } catch {
+        metadata = {};
+      }
+      index = endIndex;
+    }
+    const variants = metadata.variants;
+    const variantIds = Array.isArray(variants)
+      ? variants.flatMap((variant) => variant && typeof variant === 'object' && typeof (variant as Record<string, unknown>).id === 'string' ? [(variant as Record<string, unknown>).id as string] : [])
+      : variants && typeof variants === 'object'
+        ? Object.keys(variants as Record<string, unknown>)
+        : [];
+    const reportedCapabilities = metadata.capabilities;
+    const capabilities = reportedCapabilities && typeof reportedCapabilities === 'object'
+      ? Object.fromEntries(Object.entries(reportedCapabilities as Record<string, unknown>).filter(([key]) => ['tools', 'input', 'output'].includes(key)))
+      : {};
+    models.set(id, {
+      id,
+      name: typeof metadata.name === 'string' ? metadata.name : id,
+      providerId: id.split('/')[0] ?? '',
+      subscriptionBacked: id.startsWith('openai-codex/') || id.startsWith('opencode-go/'),
+      ...(variantIds.length ? { variantIds } : {}),
+      ...(Object.keys(capabilities).length ? { capabilities } : {}),
+      ...(typeof capabilities.tools === 'boolean' ? { supportsTools: capabilities.tools } : {}),
+    });
+  }
+  return [...models.values()];
 }
 
 async function runOpenCode(request: ProviderRunRequest): Promise<ProviderRunResult> {
-  const model = request.modelId.includes('/') ? request.modelId : `${request.providerId}/${request.modelId}`;
   const broker = createMcpConfig(request.toolBroker);
-  const args = ['run', '--format', 'json', '--dir', request.cwd, '--model', model];
-  if (request.reasoning) args.push('--variant', request.reasoning);
+  const args = ['run', '--format', 'json', '--dir', request.cwd, '--model', openCodeModelSelector(request.modelId, request.variantId)];
   if (request.permissionMode === 'yolo') args.push('--auto');
   args.push(request.prompt);
   try {
@@ -653,6 +757,10 @@ async function runOpenCode(request: ProviderRunRequest): Promise<ProviderRunResu
   } finally {
     rmSync(broker.directory, { recursive: true, force: true });
   }
+}
+
+export function openCodeModelSelector(modelId: string, variantId?: string): string {
+  return variantId ? `${modelId}#${variantId}` : modelId;
 }
 
 async function runClaudeCode(request: ProviderRunRequest): Promise<ProviderRunResult> {
@@ -675,7 +783,8 @@ async function runClaudeCode(request: ProviderRunRequest): Promise<ProviderRunRe
     '--max-turns',
     '30',
   ];
-  if (request.reasoning) args.push('--effort', request.reasoning);
+  const effort = typeof request.nativeSettings?.effort === 'string' ? request.nativeSettings.effort : undefined;
+  if (effort) args.push('--effort', effort);
   args.push(request.prompt);
   try {
     const result = await runChild('claude', args, {
@@ -710,7 +819,8 @@ async function runCline(request: ProviderRunRequest): Promise<ProviderRunResult>
     '--auto-approve',
     'false',
   ];
-  if (request.reasoning) args.push('--thinking', request.reasoning);
+  const thinking = typeof request.nativeSettings?.thinking === 'string' ? request.nativeSettings.thinking : undefined;
+  if (thinking) args.push('--thinking', thinking);
   if (['planner', 'reviewer', 'consolidator', 'final-gate'].includes(request.role)) args.push('--plan');
   args.push(request.prompt);
   // The current Cline CLI exposes a documented desktop file-based tool

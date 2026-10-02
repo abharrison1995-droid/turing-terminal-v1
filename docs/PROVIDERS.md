@@ -1,12 +1,12 @@
 # Provider setup and limits
 
-Turing launches the provider's installed command line program. Sign in through that provider's own supported flow first. The stage editor requires an explicit backend, provider identifier, and model identifier; it does not choose a fallback model. Install and update provider tools using their official instructions.
+Turing launches the provider's installed command line program. Sign in through that provider's own supported flow first. Each stage resolves an execution backend, optional connection profile, provider/billing lane, and exact model configuration through workflow defaults, stage-kind defaults, and node overrides. Turing does not choose fallback models. Connection profiles and presets store references/configuration, not provider credentials. Install and update provider tools using their official instructions.
 
 ## OpenCode
 
-Install OpenCode, then use `opencode auth` to connect the provider. Turing reads `opencode models` and uses the selected model with `opencode run --format json`. The discovered model list is refreshed once per minute. An empty list means the backend is detected but the model catalog could not be read; check `opencode models` in a terminal.
+Install OpenCode, then use `opencode auth` to connect the provider. Turing reads `opencode models --verbose` for exact model IDs, reported variants, capabilities, and other safe catalog metadata. It starts a run with the provider-native `provider/model#variant` selector when a variant is selected; history separately retains the base model ID and exact variant. The discovered model list is refreshed once per minute. An empty list means the backend is detected but the model catalog could not be read; check `opencode models --verbose` in a terminal.
 
-OpenCode documents ChatGPT Plus as a supported OAuth provider. OpenCode Go is a separate OpenCode subscription and gives OpenCode its own credential; it is not an OpenAI API key. OpenCode's provider documentation says Claude Pro/Max credentials may not be used through the Anthropic plugin. Turing does not route Claude subscription credentials through OpenCode.
+OpenCode documents ChatGPT Plus as a supported OAuth provider. OpenCode Go is a separate OpenCode subscription and gives OpenCode its own credential; it is not an OpenAI API key. Turing distinguishes the OpenCode Go subscription lane from OpenCode metered/Console billing. Subscription Only blocks Turing-selected metered routes. OpenCode may also support account-side overflow from subscription limits into a Console balance; Turing cannot inspect or disable that setting, and Preview explicitly reports its status as unverifiable. OpenCode's provider documentation says Claude Pro/Max credentials may not be used through the Anthropic plugin. Turing does not route Claude subscription credentials through OpenCode.
 
 ## OpenAI Codex CLI
 
@@ -22,7 +22,7 @@ The adapter uses `claude -p` with streaming JSON output, `--restricted`, no buil
 
 ## Cline
 
-Install the official Cline CLI and sign in through its documented provider or OAuth flow. Enter the provider and model IDs that Cline accepts, such as `openai-codex`. Turing does not infer a Cline model catalog or verify an account's subscription tier.
+Install the official Cline CLI and sign in through its documented provider or OAuth flow. Use provider ID `cline-pass` for ClinePass and provider ID `cline` for Cline usage billing. Enter the exact model ID accepted by that provider. These routes are separate; failure or exhaustion of ClinePass does not select the usage-billing lane. Subscription Only blocks Cline usage billing, while a deliberate non-subscription workflow can select it. Turing does not infer a Cline model catalog or verify an account's subscription tier.
 
 The current adapter launches Cline in JSON mode with automatic approval disabled and bridges its documented file-based approval IPC to Turing's permission engine. Each request is authorized by the Turing broker policy before a decision file is written. Cline does not return per-tool stdout/stderr through that approval interface, so the audit record cannot claim a specific tool result. ClinePass availability and remaining allowance belong to Cline's own dashboard; Turing does not query them.
 
@@ -31,6 +31,8 @@ The current adapter launches Cline in JSON mode with automatic approval disabled
 Provider detection means only that the CLI can be launched and returns a version. `authentication: unknown` means Turing cannot confirm the active account. A locally observed run duration is not provider usage. Token counts appear only when the provider emits them in a parseable event; quota, reset time, and cost remain unavailable when no documented source supplies them.
 
 Provider support changes over time. The [capability matrix](PROVIDER_CAPABILITY_MATRIX.md) lists the official documentation reviewed for this release. Check those sources again when updating a CLI adapter. Turing does not scrape subscription websites or reuse credentials from provider-owned stores.
+
+Connection checks use authentication status, CLI status, and model discovery where those mechanisms are available. They do not send a generation prompt. Run Preview shows each stage's exact route and groups stages under the selected billing lane. Subscription Only blocks Turing-managed OpenAI/Anthropic API routes, Cline usage billing, OpenCode metered routes, and other configured PAYG routes. It cannot guarantee the provider will not bill through an account-side fallback that Turing cannot inspect. See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for route rules, context defaults, snapshots, and run-history behavior.
 
 ## Official sources
 

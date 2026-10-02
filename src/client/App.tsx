@@ -50,6 +50,7 @@ import { notificationsForSnapshot } from './notificationEvents.js';
 import { APP_VERSION } from '../shared/version';
 import type {
   Approval,
+  ConnectionProfile,
   DashboardSnapshot,
   ExecutionOperation,
   ExecutionProfile,
@@ -59,6 +60,8 @@ import type {
   ProviderStatus,
   RunPreview,
   RunSummary,
+  ModelConfiguration,
+  ModelPreset,
   StageKind,
   WorkflowCondition,
   WorkflowConditionPath,
@@ -118,6 +121,7 @@ const stageLabels: Record<StageKind, string> = {
   reviewer: 'Reviewer',
   parallelReview: 'Parallel review',
   consolidate: 'Consolidation',
+  orchestrator: 'AI Orchestrator',
   remediation: 'Remediation',
   finalGate: 'Final gate',
   gitCheckpoint: 'Git checkpoint',
@@ -670,6 +674,8 @@ function CommandCenter({
   const [task, setTask] = useState('');
   const [profile, setProfile] = useState<ExecutionProfile>('balanced');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('normal');
+  const [subscriptionOnly, setSubscriptionOnly] = useState(true);
+  const [lockProviders, setLockProviders] = useState(true);
   const [refinePrompt, setRefinePrompt] = useState(
     snapshot.workflows.find((workflow) => workflow.id === workflowId)?.promptRefinementDefault ?? false,
   );
@@ -687,12 +693,21 @@ function CommandCenter({
 
   const selectedProject = snapshot.projects.find((project) => project.id === projectId);
   const selectedWorkflow = snapshot.workflows.find((workflow) => workflow.id === workflowId);
+  useEffect(() => {
+    if (!selectedWorkflow) return;
+    setSubscriptionOnly(selectedWorkflow.subscriptionOnly);
+    setLockProviders(selectedWorkflow.lockProviders);
+  }, [selectedWorkflow?.id, selectedWorkflow?.version, selectedWorkflow?.updatedAt]);
   const missingAssignments =
     selectedWorkflow?.stages.filter(
       (stage) =>
         stage.enabled !== false &&
         isAiStage(stage.kind) &&
-        !(stage.backendId && stage.providerId && stage.modelId),
+        !(
+          (stage.backendId ?? selectedWorkflow?.stageDefaults?.[stage.kind]?.backendId ?? selectedWorkflow?.defaultModelConfiguration?.backendId) &&
+          (stage.providerId ?? selectedWorkflow?.stageDefaults?.[stage.kind]?.providerId ?? selectedWorkflow?.defaultModelConfiguration?.providerId) &&
+          (stage.modelId ?? selectedWorkflow?.stageDefaults?.[stage.kind]?.modelId ?? selectedWorkflow?.defaultModelConfiguration?.modelId)
+        ),
     ) ?? [];
 
   const makePreview = async (event: React.FormEvent) => {
@@ -708,6 +723,8 @@ function CommandCenter({
         permissionMode,
         enigmaConfirmed,
         refinePrompt,
+        subscriptionOnly,
+        lockProviders,
       });
       setPreview(response.preview);
       onNotice('Run preview is ready. Check its project, stages, and Git strategy before starting.');
@@ -730,6 +747,8 @@ function CommandCenter({
         permissionMode,
         enigmaConfirmed,
         refinePrompt,
+        subscriptionOnly,
+        lockProviders,
       });
       setPreview(null);
       onNotice('Run accepted by the desktop master.');
@@ -927,6 +946,34 @@ function CommandCenter({
                   Workflow default: {selectedWorkflow?.promptRefinementDefault ? 'On' : 'Off'}. Review the
                   draft and answer real ambiguities before approving the run.
                 </small>
+              </span>
+            </label>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={subscriptionOnly}
+                onChange={(event) => {
+                  setSubscriptionOnly(event.target.checked);
+                  setPreview(null);
+                }}
+              />
+              <span>
+                <strong>Subscription only for this run</strong>
+                <small>Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be unverifiable.</small>
+              </span>
+            </label>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={lockProviders}
+                onChange={(event) => {
+                  setLockProviders(event.target.checked);
+                  setPreview(null);
+                }}
+              />
+              <span>
+                <strong>Lock configured providers and models</strong>
+                <small>Failures pause at the configured stage; Turing does not substitute a model or reasoning setting.</small>
               </span>
             </label>
             {permissionMode === 'enigma' && (
@@ -1180,6 +1227,8 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
         </div>
       </div>
       <div className="preview-bounds">
+        <span><strong>Billing mode</strong> {preview.subscriptionOnly ? 'Subscription Only' : 'Metered routes permitted by configuration'}</span>
+        <span><strong>Provider lock</strong> {preview.lockProviders ? 'On · exact configured routes' : 'Off'}</span>
         <span>
           <strong>Run limit</strong> {preview.workflow.maxDurationMinutes} minutes
         </span>
@@ -1207,6 +1256,30 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
           {preview.branchStrategy === 'worktree' ? 'isolated worktree' : 'project working tree'}
         </span>
       </div>
+      <section className="surface-panel billing-preview-panel">
+        <div className="section-title-row">
+          <div>
+            <h3>Subscriptions / Billing Used</h3>
+            <p>Turing-selected route by stage</p>
+          </div>
+          <LockKeyhole size={16} className="muted-icon" />
+        </div>
+        <div className="billing-lane-list">
+          {preview.billingSummary.map((lane) => (
+            <div key={lane.billingLane}>
+              <strong>{billingLaneLabel(lane.billingLane)}</strong>
+              <span>{lane.stages.length ? lane.stages.join(', ') : 'Not used'}</span>
+            </div>
+          ))}
+          <div>
+            <strong>Metered / PAYG routes</strong>
+            <span>{preview.billingSummary.some((lane) => ['opencode-metered', 'cline-usage-billing', 'openai-api', 'anthropic-api'].includes(lane.billingLane) && lane.stages.length) ? 'Configured' : 'NONE'}</span>
+          </div>
+        </div>
+        {preview.providerFallbackStatus.map((fallback) => (
+          <p className="quiet-note" key={fallback.backendId}>{fallback.backendId}: {fallback.message}</p>
+        ))}
+      </section>
       <RuleListDetails rules={preview.effectiveRules} title="Effective run rules" />
       {preview.providerAssignments.length > 0 && (
         <div className="assignment-summary">
@@ -1216,9 +1289,19 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
               {item.stage}
               <strong>
                 {item.ready
-                  ? `${item.backendId} · ${item.providerId}/${item.modelId}`
+                  ? `${item.backendId} · ${item.providerId}/${item.modelId}${item.variantId ? ` · variant ${item.variantId}` : ''}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
                   : 'Needs provider/model setup'}
               </strong>
+              {item.ready && (
+                <small className="assignment-native-config">
+                  {billingLaneLabel(item.billingLane ?? 'unknown')} · {(item.catalogStatus ?? 'last-known').toUpperCase()}
+                  {item.reasoning ? ` · provider reasoning ${item.reasoning}` : ''}
+                  {item.nativeSettings && Object.keys(item.nativeSettings).length
+                    ? ` · ${Object.entries(item.nativeSettings).map(([key, value]) => `${key}=${value}`).join(', ')}`
+                    : ''}
+                </small>
+              )}
+              <small>{item.context.label} · ESTIMATED initial input ~{item.context.estimatedInputTokens.toLocaleString()} tokens · configured limit {item.context.maxEstimatedTokens.toLocaleString()}</small>
             </div>
           ))}
         </div>
@@ -1234,8 +1317,7 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
         </ul>
       )}
       <p className="preview-footnote">
-        <Shield size={14} /> Credentials remain on the desktop. No OpenAI or Anthropic API-key fallback is
-        enabled.
+        <Shield size={14} /> Credentials remain in desktop-side credential storage. Turing does not select OpenAI or Anthropic API billing. OpenCode Go provider-side PAYG fallback is shown as unknown unless a supported check can verify it.
       </p>
     </section>
   );
@@ -1425,6 +1507,19 @@ function WorkflowsPage({
   const [busy, setBusy] = useState(false);
   const [dragged, setDragged] = useState<string | null>(null);
   const [validationMessage, setValidationMessage] = useState('');
+  const [connectionProfiles, setConnectionProfiles] = useState<ConnectionProfile[]>([]);
+  const [modelPresets, setModelPresets] = useState<ModelPreset[]>([]);
+  const [profileName, setProfileName] = useState('');
+  const [profileBackend, setProfileBackend] = useState('opencode');
+  const [profileProvider, setProfileProvider] = useState('opencode-go');
+  const [profileLane, setProfileLane] = useState<ConnectionProfile['billingLane']>('opencode-go-subscription');
+
+  useEffect(() => {
+    void Promise.all([api.connectionProfiles(), api.modelPresets()]).then(([connections, presets]) => {
+      setConnectionProfiles(connections.profiles);
+      setModelPresets(presets.presets);
+    }).catch((error) => onNotice(error instanceof Error ? error.message : 'Configuration catalog could not be loaded.'));
+  }, []);
 
   useEffect(() => {
     if (!workflows.some((workflow) => workflow.id === selectedId)) setSelectedId(workflows[0]?.id ?? '');
@@ -1496,6 +1591,44 @@ function WorkflowsPage({
       onNotice(error instanceof Error ? error.message : 'Workflow could not be duplicated.');
     }
   };
+  const saveConnection = async () => {
+    try {
+      const response = await api.saveConnectionProfile({
+        name: profileName.trim(),
+        backendId: profileBackend,
+        providerId: profileProvider.trim(),
+        billingLane: profileLane,
+        credentialStoreRef: null,
+        metadata: {},
+      });
+      setConnectionProfiles((current) => [...current, response.profile]);
+      setProfileName('');
+      onNotice('Connection profile saved. Credentials remain managed by the provider CLI or desktop credential store.');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Connection profile could not be saved.');
+    }
+  };
+  const savePreset = async (name: string, configuration: ModelConfiguration) => {
+    const response = await api.createModelPreset(name, configuration);
+    setModelPresets((current) => [...current, response.preset]);
+    onNotice(`Model preset “${name}” saved without credentials.`);
+  };
+  const promoteStageToDefault = (stageId: string, kind: StageKind, configuration: ModelConfiguration) => {
+    setDraft((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        stageDefaults: { ...current.stageDefaults, [kind]: configuration },
+        stages: current.stages.map((item) => {
+          if (item.id !== stageId) return item;
+          const inherited = { ...item };
+          for (const key of ['backendId', 'connectionProfileId', 'providerId', 'billingLane', 'modelId', 'modelDisplayName', 'variantId', 'nativeSettings', 'reasoning', 'modelSnapshot'])
+            delete (inherited as Record<string, unknown>)[key];
+          return inherited;
+        }),
+      };
+    });
+  };
   const addStage = () => {
     const kind: StageKind = 'reviewer';
     const id = `${kind}-${Math.random().toString(36).slice(2, 7)}`;
@@ -1522,14 +1655,36 @@ function WorkflowsPage({
       const workflow = parsed.workflows?.[0] ?? parsed.workflow;
       if (!workflow?.name || !Array.isArray(workflow.stages))
         throw new Error('The selected file does not contain a workflow definition.');
+      const remapConnection = <T extends { connectionProfileId?: string }>(configuration: (T & { connectionReference?: string }) | undefined) => {
+        if (!configuration) return configuration;
+        const { connectionReference, ...cleanConfiguration } = configuration;
+        const match = connectionReference
+          ? connectionProfiles.find((connection) => `${connection.backendId}:${connection.providerId}:${connection.billingLane}` === connectionReference)
+          : undefined;
+        return { ...cleanConfiguration, connectionProfileId: match?.id };
+      };
+      const importedStages = workflow.stages.map((stage) => remapConnection(stage as WorkflowStage & { connectionReference?: string }) as WorkflowStage);
+      const importedStageDefaults = workflow.stageDefaults
+        ? Object.fromEntries(Object.entries(workflow.stageDefaults).map(([kind, configuration]) => [kind, remapConnection(configuration as (typeof configuration & { connectionReference?: string }))])) as WorkflowDefinition['stageDefaults']
+        : undefined;
       const created = await api.saveWorkflow(
-        { ...workflow, id: '', version: 1, isDefault: false, createdAt: '', updatedAt: '' },
+        {
+          ...workflow,
+          defaultModelConfiguration: remapConnection(workflow.defaultModelConfiguration as (typeof workflow.defaultModelConfiguration & { connectionReference?: string })),
+          stageDefaults: importedStageDefaults,
+          stages: importedStages,
+          id: '',
+          version: 1,
+          isDefault: false,
+          createdAt: '',
+          updatedAt: '',
+        },
         true,
       );
       onSaved();
       setSelectedId(created.workflow.id);
       setDraft(created.workflow);
-      onNotice('Workflow imported. Review its provider/model assignments before running.');
+      onNotice('Workflow imported. Connection references were matched to local profiles where available; review provider/model assignments before running.');
     } catch (error) {
       onNotice(error instanceof Error ? error.message : 'Workflow import failed.');
     }
@@ -1759,6 +1914,38 @@ function WorkflowsPage({
               </span>
             </label>
             <label className="toggle-line">
+              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
+              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
+            </label>
+            <label className="toggle-line">
+              <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
+              <span><strong>Lock Providers</strong><small>ON by default. A failed stage pauses; Turing does not substitute providers, models, or native reasoning values.</small></span>
+            </label>
+            <div className="form-grid-two workflow-options-grid">
+              <label className="form-field">
+                <span>Default context strategy</span>
+                <select value={draft.contextPolicy.strategy} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'] } })}>
+                  <option value="focused">AUTO / Focused</option><option value="changed-files">Changed Files</option><option value="artifacts-only">Artifacts Only</option><option value="full-project">Full Project / Broad</option>
+                </select>
+              </label>
+              <label className="form-field small-number-field"><span>Default estimated token limit</span><input type="number" min={1000} max={500000} value={draft.contextPolicy.maxEstimatedTokens} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))) } })} /></label>
+              <label className="form-field small-number-field"><span>Default max files</span><input type="number" min={1} max={500} value={draft.contextPolicy.maxFiles} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) } })} /></label>
+              <label className="form-field small-number-field"><span>Default max file size (bytes)</span><input type="number" min={1024} max={2000000} value={draft.contextPolicy.maxFileBytes} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFileBytes: Math.min(2000000, Math.max(1024, Number(event.target.value))) } })} /></label>
+            </div>
+            <div className="form-grid-two workflow-default-model">
+              <label className="form-field"><span>Workflow default connection profile</span><select value={draft.defaultModelConfiguration?.connectionProfileId ?? ''} onChange={(event) => {
+                const selected = connectionProfiles.find((profile) => profile.id === event.target.value);
+                changeWorkflow({ defaultModelConfiguration: selected
+                  ? { ...draft.defaultModelConfiguration, connectionProfileId: selected.id, backendId: selected.backendId, providerId: selected.providerId, billingLane: selected.billingLane }
+                  : { ...draft.defaultModelConfiguration, connectionProfileId: undefined, backendId: undefined, providerId: undefined, billingLane: undefined } });
+              }}><option value="">No workflow-level connection</option>{connectionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {billingLaneLabel(profile.billingLane)}</option>)}</select></label>
+              <label className="form-field"><span>Workflow default exact model ID</span><input value={draft.defaultModelConfiguration?.modelId ?? ''} onChange={(event) => changeWorkflow({ defaultModelConfiguration: { ...draft.defaultModelConfiguration, modelId: event.target.value || undefined } })} placeholder="provider-native/model-id" maxLength={180} /></label>
+            </div>
+            <label className="form-field">
+              <span>Workflow instructions</span>
+              <textarea rows={3} maxLength={8000} value={draft.globalInstructions ?? ''} onChange={(event) => changeWorkflow({ globalInstructions: event.target.value })} placeholder="Workflow-specific instructions. These stay below Turing security rules and mandatory Global/Project Rules." />
+            </label>
+            <label className="toggle-line">
               <input
                 type="checkbox"
                 checked={draft.promptRefinementDefault}
@@ -1775,6 +1962,18 @@ function WorkflowsPage({
               </span>
             </label>
           </div>
+
+          <section className="surface-panel connection-profile-panel">
+            <div className="section-title-row"><div><h2>Connection profiles</h2><p>Reusable account and billing lane references. Credentials stay in provider CLIs or secure desktop storage.</p></div><LockKeyhole size={16} className="muted-icon" /></div>
+            <div className="form-grid-two">
+              <label className="form-field"><span>Profile name</span><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="OpenCode Go — Alex" maxLength={100} /></label>
+              <label className="form-field"><span>Execution backend</span><select value={profileBackend} onChange={(event) => setProfileBackend(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
+              <label className="form-field"><span>Provider / billing lane ID</span><input value={profileProvider} onChange={(event) => setProfileProvider(event.target.value)} placeholder="opencode-go or cline-pass" maxLength={80} /></label>
+              <label className="form-field"><span>Billing lane</span><select value={profileLane} onChange={(event) => setProfileLane(event.target.value as ConnectionProfile['billingLane'])}>{['opencode-go-subscription','clinepass-subscription','chatgpt-subscription','claude-subscription','opencode-metered','cline-usage-billing','openai-api','anthropic-api','unknown'].map((lane) => <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>)}</select></label>
+            </div>
+            <button className="secondary-button" disabled={!profileName.trim() || !profileProvider.trim()} onClick={() => void saveConnection()}><Plus size={14} />Save connection profile</button>
+            {connectionProfiles.length > 0 && <div className="connection-profile-list">{connectionProfiles.map((connection) => <span key={connection.id}>{connection.name} · {connection.backendId} · {billingLaneLabel(connection.billingLane)}</span>)}</div>}
+          </section>
 
           <div className="stage-editor-heading">
             <div>
@@ -1798,6 +1997,13 @@ function WorkflowsPage({
                 count={draft.stages.length}
                 stages={draft.stages}
                 providers={providers}
+                connectionProfiles={connectionProfiles}
+                modelPresets={modelPresets}
+                workflowContextPolicy={draft.contextPolicy}
+                workflowDefaultModelConfiguration={draft.defaultModelConfiguration}
+                stageDefaultModelConfiguration={draft.stageDefaults?.[stage.kind]}
+                onSavePreset={(name, configuration) => void savePreset(name, configuration).catch((error) => onNotice(error instanceof Error ? error.message : 'Preset could not be saved.'))}
+                onPromoteToStageDefault={(kind, configuration) => promoteStageToDefault(stage.id, kind, configuration)}
                 onChange={(patch) => changeStage(stage.id, patch)}
                 onMove={(direction) => {
                   const target = draft.stages[index + direction];
@@ -1847,6 +2053,13 @@ function WorkflowStageEditor({
   count,
   stages,
   providers,
+  connectionProfiles,
+  modelPresets,
+  workflowContextPolicy,
+  workflowDefaultModelConfiguration,
+  stageDefaultModelConfiguration,
+  onSavePreset,
+  onPromoteToStageDefault,
   onChange,
   onMove,
   onRemove,
@@ -1859,6 +2072,13 @@ function WorkflowStageEditor({
   count: number;
   stages: WorkflowStage[];
   providers: ProviderStatus[];
+  connectionProfiles: ConnectionProfile[];
+  modelPresets: ModelPreset[];
+  workflowContextPolicy: WorkflowDefinition['contextPolicy'];
+  workflowDefaultModelConfiguration?: ModelConfiguration;
+  stageDefaultModelConfiguration?: ModelConfiguration;
+  onSavePreset: (name: string, configuration: ModelConfiguration) => void;
+  onPromoteToStageDefault: (kind: StageKind, configuration: ModelConfiguration) => void;
   onChange: (patch: Partial<WorkflowStage>) => void;
   onMove: (direction: number) => void;
   onRemove: () => void;
@@ -1867,8 +2087,10 @@ function WorkflowStageEditor({
   onDrop: () => void;
 }) {
   const Icon = iconForStage(stage.kind);
-  const backend = providers.find((provider) => provider.id === stage.backendId);
+  const configuredStage = { ...workflowDefaultModelConfiguration, ...stageDefaultModelConfiguration, ...stage };
+  const backend = providers.find((provider) => provider.id === configuredStage.backendId);
   const discovered = backend?.models ?? [];
+  const selectedModel = discovered.find((model) => model.id === configuredStage.modelId);
   const modelListId = `models-${stage.id}`;
   const aiStage = isAiStage(stage.kind);
   const updateCondition = (condition: NonNullable<WorkflowStage['condition']>) => onChange({ condition });
@@ -1981,12 +2203,24 @@ function WorkflowStageEditor({
           {aiStage && (
             <>
               <label className="form-field">
+                <span>Connection / subscription profile</span>
+                <select value={configuredStage.connectionProfileId ?? ''} onChange={(event) => {
+                  const connection = connectionProfiles.find((profile) => profile.id === event.target.value);
+                  onChange(connection ? { connectionProfileId: connection.id, backendId: connection.backendId, providerId: connection.providerId, billingLane: connection.billingLane } : { connectionProfileId: undefined, billingLane: undefined });
+                }}>
+                  <option value="">No saved profile · manual connection</option>
+                  {connectionProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name} · {profile.backendId} · {billingLaneLabel(profile.billingLane)}</option>)}
+                </select>
+              </label>
+              <label className="form-field">
                 <span>Execution backend</span>
                 <select
-                  value={stage.backendId ?? ''}
+                  value={configuredStage.backendId ?? ''}
                   onChange={(event) =>
                     onChange({
                       backendId: event.target.value || undefined,
+                      connectionProfileId: undefined,
+                      billingLane: undefined,
                       providerId:
                         event.target.value === 'claude-code'
                           ? 'anthropic-subscription'
@@ -2009,29 +2243,59 @@ function WorkflowStageEditor({
               <label className="form-field">
                 <span>Provider</span>
                 <input
-                  value={stage.providerId ?? ''}
-                  onChange={(event) => onChange({ providerId: event.target.value })}
+                  value={configuredStage.providerId ?? ''}
+                  onChange={(event) => onChange({ providerId: event.target.value, connectionProfileId: undefined, billingLane: undefined })}
                   placeholder={
                     stage.backendId === 'cline'
-                      ? 'openai-codex or cline-pass'
+                      ? 'cline, cline-pass, openai-codex, openai, or anthropic'
                       : stage.backendId === 'claude-code'
                         ? 'anthropic-subscription'
                         : stage.backendId === 'codex-cli'
                           ? 'openai-codex'
-                          : 'openai, openai-codex, opencode-go'
+                          : 'openai, anthropic, openai-codex, opencode-go'
                   }
                 />
+              </label>
+              <label className="form-field">
+                <span>Provider / billing lane</span>
+                <select
+                  value={configuredStage.billingLane ?? inferClientBillingLane(configuredStage.backendId, configuredStage.providerId)}
+                  disabled={Boolean(configuredStage.connectionProfileId)}
+                  onChange={(event) => onChange({ billingLane: event.target.value as NonNullable<WorkflowStage['billingLane']> })}
+                >
+                  {billingLanesForBackend(configuredStage.backendId).map((lane) => (
+                    <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>
+                  ))}
+                </select>
               </label>
               <label className="form-field stage-model-field">
                 <span>Model {discovered.length > 0 && <small>· discovered</small>}</span>
                 <input
                   list={discovered.length ? modelListId : undefined}
-                  value={stage.modelId ?? ''}
+                  value={configuredStage.modelId ?? ''}
                   onChange={(event) => {
                     const modelId = event.target.value;
                     const discoveredModel = discovered.find((model) => model.id === modelId);
                     onChange({
                       modelId,
+                      modelDisplayName: discoveredModel?.name ?? configuredStage.modelDisplayName,
+                      ...(discoveredModel ? { modelSnapshot: {
+                        providerId: discoveredModel.providerId,
+                        modelId: discoveredModel.id,
+                        displayName: discoveredModel.name,
+                        ...(configuredStage.variantId ? { variantId: configuredStage.variantId } : {}),
+                        capabilities: {
+                          ...(discoveredModel.capabilities ?? {}),
+                          ...(discoveredModel.reasoningLevels ? { reasoningLevels: discoveredModel.reasoningLevels } : {}),
+                          ...(discoveredModel.variantIds ? { variants: discoveredModel.variantIds } : {}),
+                          supportsTools: discoveredModel.supportsTools ?? discoveredModel.capabilities?.tools ?? null,
+                        },
+                        discoveredAt: discoveredModel.discoveredAt ?? backend?.checkedAt ?? new Date().toISOString(),
+                        adapterVersion: discoveredModel.adapterVersion ?? backend?.version ?? null,
+                        status: 'current' as const,
+                      } } : {}),
+                      ...(discoveredModel?.reasoningLevels?.includes(configuredStage.reasoning ?? '') ? {} : { reasoning: undefined }),
+                      variantId: undefined,
                       ...(discoveredModel ? { providerId: discoveredModel.providerId } : {}),
                     });
                   }}
@@ -2045,6 +2309,7 @@ function WorkflowStageEditor({
                           : 'Choose a model reported by OpenCode'
                   }
                 />
+                {stage.modelSnapshot && <small className={`model-catalog-status model-status-${stage.modelSnapshot.status}`}>{stage.modelSnapshot.status.toUpperCase()} · last catalog {stage.modelSnapshot.discoveredAt ?? 'unknown'} · adapter {stage.modelSnapshot.adapterVersion ?? 'unknown'}</small>}
                 <datalist id={modelListId}>
                   {discovered.map((model) => (
                     <option value={model.id} key={model.id}>
@@ -2053,6 +2318,41 @@ function WorkflowStageEditor({
                   ))}
                 </datalist>
               </label>
+              <label className="form-field">
+                <span>Saved model preset</span>
+                <select value="" onChange={(event) => {
+                  const preset = modelPresets.find((item) => item.id === event.target.value);
+                  if (preset) onChange(preset.configuration);
+                }}>
+                  <option value="">Choose preset to apply</option>
+                  {modelPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+              <button type="button" className="quiet-button" onClick={() => {
+                const name = window.prompt('Name this model configuration preset:');
+                if (name?.trim()) onSavePreset(name.trim(), {
+                  backendId: configuredStage.backendId,
+                  connectionProfileId: configuredStage.connectionProfileId,
+                  providerId: configuredStage.providerId,
+                  billingLane: configuredStage.billingLane,
+                  modelId: configuredStage.modelId,
+                  modelDisplayName: configuredStage.modelDisplayName,
+                  variantId: configuredStage.variantId,
+                  reasoning: configuredStage.reasoning,
+                  nativeSettings: configuredStage.nativeSettings,
+                });
+              }} disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId}><Save size={13} />Save model preset</button>
+              <button type="button" className="quiet-button" disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId} onClick={() => onPromoteToStageDefault(stage.kind, {
+                backendId: configuredStage.backendId,
+                connectionProfileId: configuredStage.connectionProfileId,
+                providerId: configuredStage.providerId,
+                billingLane: configuredStage.billingLane,
+                modelId: configuredStage.modelId,
+                modelDisplayName: configuredStage.modelDisplayName,
+                variantId: configuredStage.variantId,
+                reasoning: configuredStage.reasoning,
+                nativeSettings: configuredStage.nativeSettings,
+              })}><Save size={13} />Use for all matching stages</button>
             </>
           )}
           {stage.kind === 'parallelReview' && (
@@ -2294,21 +2594,49 @@ function WorkflowStageEditor({
               Continue to conditional stages after failure
             </label>
           )}
-          {aiStage && (
+          {aiStage && selectedModel?.variantIds && selectedModel.variantIds.length > 0 && (
             <label className="form-field reasoning-field">
-              <span>Reasoning level</span>
-              <select
-                value={stage.reasoning ?? ''}
-                onChange={(event) => onChange({ reasoning: event.target.value || undefined })}
-              >
+                <span>Provider-native variant</span>
+              <select value={configuredStage.variantId ?? ''} onChange={(event) => onChange({ variantId: event.target.value || undefined })}>
                 <option value="">Provider default</option>
-                {['minimal', 'low', 'medium', 'high', 'xhigh'].map((level) => (
-                  <option value={level} key={level}>
-                    {capitalize(level)}
-                  </option>
-                ))}
+                {selectedModel.variantIds.map((variant) => <option value={variant} key={variant}>{variant}</option>)}
               </select>
             </label>
+          )}
+          {aiStage && selectedModel?.reasoningLevels && selectedModel.reasoningLevels.length > 0 && (
+            <label className="form-field reasoning-field">
+              <span>Provider-native reasoning</span>
+              <select value={configuredStage.reasoning ?? ''} onChange={(event) => onChange({ reasoning: event.target.value || undefined })}>
+                <option value="">Provider default</option>
+                {selectedModel.reasoningLevels.map((level) => <option value={level} key={level}>{level}</option>)}
+              </select>
+            </label>
+          )}
+          {aiStage && (
+            <>
+              <label className="form-field">
+                <span>Custom stage instructions</span>
+                <textarea rows={3} maxLength={8_000} value={stage.customInstructions ?? ''} onChange={(event) => onChange({ customInstructions: event.target.value })} placeholder="Optional instructions for this stage. They remain below mandatory security, Global Rules, Project Rules, and Turing role instructions." />
+              </label>
+              <div className="form-grid-two stage-context-controls">
+                <label className="form-field"><span>Context strategy</span><select value={stage.contextPolicy?.strategy ?? workflowContextPolicy.strategy} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'] } })}><option value="focused">AUTO / Focused</option><option value="changed-files">Changed Files</option><option value="artifacts-only">Artifacts Only</option><option value="full-project">Full Project / Broad</option></select></label>
+                <label className="form-field small-number-field"><span>Estimated token limit</span><input type="number" min={1000} max={500000} value={stage.contextPolicy?.maxEstimatedTokens ?? workflowContextPolicy.maxEstimatedTokens} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))) } })} /></label>
+                <label className="form-field small-number-field"><span>Maximum files</span><input type="number" min={1} max={500} value={stage.contextPolicy?.maxFiles ?? workflowContextPolicy.maxFiles} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) } })} /></label>
+                <label className="form-field small-number-field"><span>Maximum file size (bytes)</span><input type="number" min={1024} max={2000000} value={stage.contextPolicy?.maxFileBytes ?? workflowContextPolicy.maxFileBytes} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, maxFileBytes: Math.min(2000000, Math.max(1024, Number(event.target.value))) } })} /></label>
+                <label className="form-field"><span>Include globs (one per line)</span><textarea rows={2} value={(stage.contextPolicy?.includeGlobs ?? workflowContextPolicy.includeGlobs).join('\n')} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, includeGlobs: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) } })} placeholder="src/**/*.ts" /></label>
+                <label className="form-field"><span>Exclude globs (one per line)</span><textarea rows={2} value={(stage.contextPolicy?.excludeGlobs ?? workflowContextPolicy.excludeGlobs).join('\n')} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, excludeGlobs: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) } })} placeholder="node_modules/**" /></label>
+              </div>
+              <div className="context-inclusion-flags">
+                {([
+                  ['includeCurrentDiff', 'Include current diff'],
+                  ['includeTestOutput', 'Include structured test summary'],
+                  ['includeBuildOutput', 'Include structured build summary'],
+                  ['includePreviousArtifact', 'Include previous stage artifact'],
+                ] as const).map(([key, label]) => <label className="rule-flag" key={key}><input type="checkbox" checked={stage.contextPolicy?.[key] ?? (key === 'includeCurrentDiff' ? ['reviewer', 'parallelReview', 'finalGate', 'consolidate'].includes(stage.kind) && workflowContextPolicy[key] : workflowContextPolicy[key])} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, [key]: event.target.checked } })} />{label}</label>)}
+                <label className="rule-flag"><input type="checkbox" checked={stage.contextPolicy?.includePreviousTranscript ?? workflowContextPolicy.includePreviousTranscript} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, includePreviousTranscript: event.target.checked } })} />Include prior AI stage responses (larger context)</label>
+                <label className="form-field"><span>Over budget</span><select value={stage.contextPolicy?.onLimitExceeded ?? workflowContextPolicy.onLimitExceeded} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, onLimitExceeded: event.target.value as 'compact' | 'ask' | 'stop' } })}><option value="compact">Compact optional context</option><option value="ask">Require user review</option><option value="stop">Stop stage</option></select></label>
+              </div>
+            </>
           )}
         </div>
         <div className="stage-node-foot">
@@ -2322,8 +2650,8 @@ function WorkflowStageEditor({
           </label>
           <span>
             {aiStage
-              ? stage.backendId && stage.providerId && stage.modelId
-                ? `${stage.backendId} · ${stage.providerId}/${stage.modelId}`
+              ? configuredStage.backendId && configuredStage.providerId && configuredStage.modelId
+                ? `${configuredStage.backendId} · ${configuredStage.providerId}/${configuredStage.modelId}`
                 : 'Provider and model required'
               : stage.kind === 'build' || stage.kind === 'test'
                 ? 'Uses detected project command'
@@ -2340,6 +2668,9 @@ function WorkflowStageEditor({
                           : 'No model assignment required'}
           </span>
         </div>
+        {aiStage && stage.modelSnapshot?.status === 'unavailable' && (
+          <div className="inline-callout model-repair-note"><AlertTriangle size={14} /><span><strong>Model unavailable</strong><small>Choose a currently discovered model from this provider. Turing will not migrate the historical assignment automatically.</small></span></div>
+        )}
       </div>
     </article>
   );
@@ -2769,6 +3100,29 @@ function RunDetail({
       onNotice(error instanceof Error ? error.message : 'Run could not be resumed.');
     }
   };
+  const replay = async () => {
+    const enigmaConfirmed = run.permissionMode !== 'enigma' || window.confirm('This historical run used ENIGMA. Activate ENIGMA for this new run?');
+    if (!enigmaConfirmed) return;
+    try {
+      const response = await api.replayRun(run.id, enigmaConfirmed);
+      onRefresh();
+      onNotice(`Run restarted with its historical provider/model configuration as ${response.run.id}.`);
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Historical configuration could not be replayed.');
+    }
+  };
+  const duplicateWorkflow = async () => {
+    try {
+      const response = await api.duplicateRunWorkflow(run.id);
+      onRefresh();
+      const unavailable = response.providerAssignments.filter((assignment) => !assignment.ready);
+      onNotice(unavailable.length
+        ? `Workflow duplicated for editing. ${unavailable.length} stage model assignment(s) need repair before running.`
+        : 'Workflow duplicated with its historical configuration. Review and edit it in Workflow Studio.');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Historical workflow could not be duplicated.');
+    }
+  };
   const findings = details?.findings ?? [];
   const gitOperations = details?.gitOperations ?? [];
   return (
@@ -2805,6 +3159,10 @@ function RunDetail({
         </span>
         <span>{run.profile} profile</span>
         <span>{run.permissionMode}</span>
+      </div>
+      <div className="run-history-actions">
+        <button className="secondary-button" onClick={() => void replay()} disabled={isActive}><RefreshCw size={14} />Run Again With Same Configuration</button>
+        <button className="secondary-button" onClick={() => void duplicateWorkflow()}><Plus size={14} />Duplicate and Edit</button>
       </div>
       <div className="run-runtime-summary">
         <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
@@ -3135,7 +3493,7 @@ function RunStageRow({
           <strong>{stage.title}</strong>
           <small>
             {stage.backendId && stage.providerId && stage.modelId
-              ? `${stage.backendId} · ${stage.providerId}/${stage.modelId}`
+              ? `${stage.backendId} · ${stage.providerId}/${stage.modelId}${stage.variantId ? ` · variant ${stage.variantId}` : ''}${stage.reasoning ? ` · native reasoning ${stage.reasoning}` : ''}`
               : stage.kind === 'test' || stage.kind === 'build'
                 ? 'Project command'
                 : stage.kind === 'gitCheckpoint'
@@ -3156,6 +3514,16 @@ function RunStageRow({
         <ChevronDown size={14} className="stage-chevron" />
       </summary>
       <div className="stage-expanded">
+        {stage.backendId && stage.modelId && (
+          <div className="stage-model-history">
+            <strong>Provider/model snapshot</strong>
+            <span>{stage.modelSnapshot?.connectionProfileName ?? stage.connectionProfileId ?? 'No saved connection profile'} · {billingLaneLabel(stage.billingLane ?? 'unknown')}</span>
+            <span>{stage.modelSnapshot?.status?.toUpperCase() ?? 'LAST KNOWN'} · discovered {stage.modelSnapshot?.discoveredAt ?? 'unknown'} · adapter {stage.modelSnapshot?.adapterVersion ?? 'unknown'}</span>
+            {stage.reasoning && <span>Provider-native reasoning: {stage.reasoning}</span>}
+            {stage.variantId && <span>Provider-native variant: {stage.variantId}</span>}
+            {stage.nativeSettings && Object.keys(stage.nativeSettings).length > 0 && <pre>{JSON.stringify(stage.nativeSettings, null, 2)}</pre>}
+          </div>
+        )}
         {stage.attempts.length > 0 && (
           <div className="attempt-history">
             <strong>Provider attempts</strong>
@@ -3317,6 +3685,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
   const projects = Array.isArray(data?.projects) ? (data.projects as Array<Record<string, unknown>>) : [];
   const daily = Array.isArray(data?.daily) ? (data.daily as Array<Record<string, unknown>>) : [];
   const quotas = Array.isArray(data?.quotas) ? (data.quotas as Array<Record<string, unknown>>) : [];
+  const rawEvents = Array.isArray(data?.raw) ? (data.raw as Array<Record<string, unknown>>) : [];
   const usageByProvider = new Map(providers.map((provider) => [String(provider.key), provider]));
   const maxDuration = Math.max(1, ...daily.map((item) => Number(item.duration_ms ?? 0)));
   const saveQuota = async (event: React.FormEvent) => {
@@ -3412,6 +3781,34 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           help="Different quota units remain separate; inspect each envelope below"
         />
       </div>
+      <section className="surface-panel usage-table-panel usage-attribution-panel">
+        <div className="panel-title-row">
+          <div>
+            <h2>Recent stage usage attribution</h2>
+            <p>Recorded route and billing lane for each workflow stage call</p>
+          </div>
+          <Activity size={16} className="muted-icon" />
+        </div>
+        <div className="usage-table">
+          <div className="usage-table-head">
+            <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
+          </div>
+          {rawEvents.slice(0, 30).map((event) => (
+            <div className="usage-table-row" key={String(event.id)}>
+              <span className="usage-key">
+                <strong>{String(event.stage_title ?? event.stage_id ?? 'Unattributed process')}</strong>
+                <small>{String(event.backend_id ?? 'local')} · {String(event.provider_id ?? 'unknown')}/{String(event.model_id ?? 'unknown')}{event.variant_id ? ` · ${String(event.variant_id)}` : ''}</small>
+              </span>
+              <span>{billingLaneLabel(String(event.billing_lane ?? 'unknown'))}</span>
+              <span>{formatDate(String(event.occurred_at ?? ''))}</span>
+              <span>{event.input_tokens === null || event.input_tokens === undefined
+                ? 'Unavailable'
+                : `${Number(event.input_tokens).toLocaleString()} in · ${Number(event.output_tokens ?? 0).toLocaleString()} out`}</span>
+            </div>
+          ))}
+          {!rawEvents.length && <p className="empty-state">No provider stage calls recorded in this time window.</p>}
+        </div>
+      </section>
       <section className="surface-panel quota-envelope-panel">
         <div className="panel-title-row">
           <div>
@@ -5056,6 +5453,7 @@ function iconForStage(kind: StageKind): LucideIcon {
     reviewer: Search,
     parallelReview: Search,
     consolidate: GitCompareArrows,
+    orchestrator: Sparkles,
     remediation: RefreshCw,
     finalGate: Shield,
     gitCheckpoint: GitCommitHorizontal,
@@ -5077,6 +5475,7 @@ function isAiStage(kind: StageKind): boolean {
     'reviewer',
     'parallelReview',
     'consolidate',
+    'orchestrator',
     'remediation',
     'finalGate',
   ].includes(kind);
@@ -5091,6 +5490,34 @@ function humanize(value: string): string {
 }
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+function billingLaneLabel(lane: string): string {
+  return ({
+    'opencode-go-subscription': 'OpenCode Go Subscription',
+    'opencode-metered': 'OpenCode PAYG / Console balance',
+    'clinepass-subscription': 'ClinePass Subscription',
+    'cline-usage-billing': 'Cline usage billing',
+    'chatgpt-subscription': 'ChatGPT Subscription',
+    'claude-subscription': 'Claude Subscription',
+    'openai-api': 'OpenAI API',
+    'anthropic-api': 'Anthropic API',
+    'unknown': 'Unknown billing lane',
+    'not-used': 'Not used',
+  } as Record<string, string>)[lane] ?? lane;
+}
+function inferClientBillingLane(backendId?: string, providerId?: string): NonNullable<WorkflowStage['billingLane']> {
+  if (backendId === 'opencode') return providerId === 'opencode-go' ? 'opencode-go-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'opencode-metered';
+  if (backendId === 'cline') return providerId === 'cline-pass' ? 'clinepass-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'cline-usage-billing';
+  if (backendId === 'codex-cli') return 'chatgpt-subscription';
+  if (backendId === 'claude-code') return 'claude-subscription';
+  return 'unknown';
+}
+function billingLanesForBackend(backendId?: string): Array<NonNullable<WorkflowStage['billingLane']>> {
+  if (backendId === 'opencode') return ['opencode-go-subscription', 'chatgpt-subscription', 'opencode-metered', 'openai-api', 'anthropic-api'];
+  if (backendId === 'cline') return ['clinepass-subscription', 'chatgpt-subscription', 'cline-usage-billing', 'openai-api', 'anthropic-api'];
+  if (backendId === 'codex-cli') return ['chatgpt-subscription'];
+  if (backendId === 'claude-code') return ['claude-subscription'];
+  return ['unknown'];
 }
 function shortTask(value: string): string {
   return value.length > 72 ? `${value.slice(0, 69)}…` : value;

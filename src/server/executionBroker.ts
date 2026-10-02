@@ -147,7 +147,7 @@ export function classifyBrokerOperation(
   const normalizedCommand = command?.join(' ') ?? '';
   if (
     request.role &&
-    ['planner', 'prompt-refinement', 'reviewer', 'parallelReview', 'consolidator', 'final-gate'].includes(
+    ['planner', 'prompt-refinement', 'reviewer', 'parallelReview', 'consolidator', 'final-gate', 'orchestrator'].includes(
       request.role,
     ) &&
     (!isReadTool(tool) || command !== null)

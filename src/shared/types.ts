@@ -31,6 +31,7 @@ export type StageKind =
   | 'reviewer'
   | 'parallelReview'
   | 'consolidate'
+  | 'orchestrator'
   | 'remediation'
   | 'finalGate'
   | 'gitCheckpoint'
@@ -58,6 +59,10 @@ export interface ModelOption {
   providerId: string;
   subscriptionBacked?: boolean;
   reasoningLevels?: string[];
+  variantIds?: string[];
+  capabilities?: Record<string, unknown>;
+  discoveredAt?: string;
+  adapterVersion?: string | null;
   supportsTools?: boolean;
 }
 
@@ -91,6 +96,67 @@ export interface ProviderStatus {
   models: ModelOption[];
 }
 
+export type BillingLane =
+  | 'opencode-go-subscription'
+  | 'opencode-metered'
+  | 'clinepass-subscription'
+  | 'cline-usage-billing'
+  | 'chatgpt-subscription'
+  | 'claude-subscription'
+  | 'openai-api'
+  | 'anthropic-api'
+  | 'unknown';
+
+export type ContextStrategy = 'focused' | 'changed-files' | 'artifacts-only' | 'full-project';
+
+export interface ContextPolicy {
+  strategy: ContextStrategy;
+  maxFiles: number;
+  maxEstimatedTokens: number;
+  maxFileBytes: number;
+  includeGlobs: string[];
+  excludeGlobs: string[];
+  includeCurrentDiff: boolean;
+  includeTestOutput: boolean;
+  includeBuildOutput: boolean;
+  includePreviousArtifact: boolean;
+  includePreviousTranscript: boolean;
+  onLimitExceeded: 'compact' | 'ask' | 'stop';
+}
+
+export interface ModelConfiguration {
+  backendId?: string;
+  connectionProfileId?: string;
+  providerId?: string;
+  billingLane?: BillingLane;
+  modelId?: string;
+  modelDisplayName?: string;
+  variantId?: string;
+  reasoning?: string;
+  /** Exact adapter-native fields (for example effort, thinking budget, or variant). */
+  nativeSettings?: Record<string, string | number | boolean | null>;
+}
+
+export interface ConnectionProfile {
+  id: string;
+  name: string;
+  backendId: string;
+  providerId: string;
+  billingLane: BillingLane;
+  credentialStoreRef: string | null;
+  metadata: Record<string, string | number | boolean | null>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelPreset {
+  id: string;
+  name: string;
+  configuration: ModelConfiguration;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WorkflowStage {
   id: string;
   label: string;
@@ -98,8 +164,27 @@ export interface WorkflowStage {
   role?: string;
   backendId?: string;
   providerId?: string;
+  billingLane?: BillingLane;
   modelId?: string;
   reasoning?: string;
+  connectionProfileId?: string;
+  modelDisplayName?: string;
+  variantId?: string;
+  nativeSettings?: Record<string, string | number | boolean | null>;
+  modelSnapshot?: {
+    providerId: string;
+    modelId: string;
+    displayName: string;
+    connectionProfileName?: string | null;
+    billingLane?: BillingLane;
+    variantId?: string;
+    capabilities: Record<string, unknown>;
+    discoveredAt: string | null;
+    adapterVersion: string | null;
+    status: 'current' | 'last-known' | 'unavailable' | 'deprecated';
+  };
+  customInstructions?: string;
+  contextPolicy?: Partial<ContextPolicy>;
   maxIterations?: number;
   timeoutMinutes?: number;
   retryPolicy?: Partial<RetryPolicy>;
@@ -135,6 +220,12 @@ export interface WorkflowDefinition {
   maxDurationMinutes: number;
   retryPolicy: RetryPolicy;
   isolatedWorktree: boolean;
+  subscriptionOnly: boolean;
+  lockProviders: boolean;
+  defaultModelConfiguration?: ModelConfiguration;
+  stageDefaults?: Partial<Record<StageKind, ModelConfiguration>>;
+  globalInstructions?: string;
+  contextPolicy: ContextPolicy;
   stages: WorkflowStage[];
   version: number;
   isDefault: boolean;
@@ -195,6 +286,12 @@ export interface RunStage {
   backendId: string | null;
   providerId: string | null;
   modelId: string | null;
+  connectionProfileId?: string | null;
+  billingLane?: BillingLane | null;
+  variantId?: string | null;
+  modelSnapshot?: WorkflowStage['modelSnapshot'] | null;
+  reasoning?: string | null;
+  nativeSettings?: Record<string, string | number | boolean | null>;
   status: StageStatus;
   startedAt: string | null;
   finishedAt: string | null;
@@ -226,6 +323,8 @@ export interface RunSummary {
   profile: ExecutionProfile;
   permissionMode: PermissionMode;
   refinePrompt: boolean;
+  subscriptionOnly?: boolean;
+  lockProviders?: boolean;
   status: RunStatus;
   branch: string | null;
   worktreePath: string | null;
@@ -243,6 +342,9 @@ export interface UsageEvent {
   occurredAt: string;
   providerId: string | null;
   modelId: string | null;
+  connectionProfileId?: string | null;
+  billingLane?: BillingLane | null;
+  variantId?: string | null;
   backend: string | null;
   projectId: string | null;
   runId: string | null;
@@ -333,6 +435,8 @@ export interface RunPreview {
   profile: ExecutionProfile;
   permissionMode: PermissionMode;
   refinePrompt: boolean;
+  subscriptionOnly: boolean;
+  lockProviders: boolean;
   effectiveRules: TuringRule[];
   branchStrategy: 'worktree' | 'current-branch';
   expectedAiStages: number;
@@ -343,6 +447,25 @@ export interface RunPreview {
     backendId: string | null;
     providerId: string | null;
     modelId: string | null;
+    modelDisplayName?: string | null;
+    variantId?: string | null;
+    connectionProfileName?: string | null;
+    billingLane?: BillingLane;
+    catalogStatus?: 'current' | 'last-known' | 'unavailable' | 'deprecated';
+    context: {
+      label: string;
+      estimatedInputTokens: number;
+      maxEstimatedTokens: number;
+      maxFiles: number;
+      maxFileBytes: number;
+      onLimitExceeded: 'compact' | 'ask' | 'stop';
+      estimateOnly: true;
+    };
+    reasoning?: string | null;
+    nativeSettings?: Record<string, string | number | boolean | null>;
     ready: boolean;
   }>;
+  billingSummary: Array<{ billingLane: BillingLane | 'not-used'; stages: string[] }>;
+  providerFallbackStatus: Array<{ backendId: string; status: 'known-disabled' | 'known-enabled' | 'unknown'; message: string }>;
+  contextWarnings: string[];
 }

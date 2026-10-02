@@ -10,7 +10,7 @@ import { z } from 'zod';
 import type { StageKind, WorkflowDefinition, WorkflowStage } from '../shared/types.js';
 import { applyExecutionProfile, validateWorkflow } from './workflowValidation.js';
 import type { Db } from './db.js';
-import { getRunRow, localMachine, toApproval, toProject, toRun, toWorkflow } from './serialize.js';
+import { getRunRow, localMachine, toApproval, toConnectionProfile, toModelPreset, toProject, toRun, toWorkflow } from './serialize.js';
 import { scanProject } from './projectScanner.js';
 import { discoverProviders } from './providers.js';
 import { RunEngine } from './runEngine.js';
@@ -38,6 +38,7 @@ const STAGE_KINDS = [
   'reviewer',
   'parallelReview',
   'consolidate',
+  'orchestrator',
   'remediation',
   'finalGate',
   'gitCheckpoint',
@@ -50,6 +51,7 @@ const STAGE_KINDS = [
   'notification',
   'humanApproval',
 ] as const satisfies readonly StageKind[];
+const billingLanes = ['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown'] as const;
 const AI_KINDS = new Set<WorkflowStage['kind']>([
   'planner',
   'promptRefinement',
@@ -57,6 +59,7 @@ const AI_KINDS = new Set<WorkflowStage['kind']>([
   'reviewer',
   'parallelReview',
   'consolidate',
+  'orchestrator',
   'remediation',
   'finalGate',
 ]);
@@ -72,6 +75,7 @@ const stageSchema = z.object({
     'reviewer',
     'parallelReview',
     'consolidate',
+    'orchestrator',
     'remediation',
     'finalGate',
     'gitCheckpoint',
@@ -89,6 +93,38 @@ const stageSchema = z.object({
   providerId: z.string().max(80).optional(),
   modelId: z.string().max(180).optional(),
   reasoning: z.string().max(40).optional(),
+  billingLane: z.enum(billingLanes).optional(),
+  connectionProfileId: z.string().max(100).optional(),
+  modelDisplayName: z.string().max(180).optional(),
+  variantId: z.string().max(80).optional(),
+  modelSnapshot: z.object({
+    providerId: z.string().max(80),
+    modelId: z.string().max(180),
+    displayName: z.string().max(180),
+    connectionProfileName: z.string().max(100).nullable().optional(),
+    billingLane: z.enum(billingLanes).optional(),
+    variantId: z.string().max(80).optional(),
+    capabilities: z.record(z.string(), z.unknown()),
+    discoveredAt: z.string().datetime().nullable(),
+    adapterVersion: z.string().max(120).nullable(),
+    status: z.enum(['current', 'last-known', 'unavailable', 'deprecated']),
+  }).optional(),
+  nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  customInstructions: z.string().max(8_000).optional(),
+  contextPolicy: z.object({
+    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).optional(),
+    maxFiles: z.number().int().min(1).max(500).optional(),
+    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).optional(),
+    maxFileBytes: z.number().int().min(1_024).max(2_000_000).optional(),
+    includeGlobs: z.array(z.string().max(160)).max(100).optional(),
+    excludeGlobs: z.array(z.string().max(160)).max(100).optional(),
+    includeCurrentDiff: z.boolean().optional(),
+    includeTestOutput: z.boolean().optional(),
+    includeBuildOutput: z.boolean().optional(),
+    includePreviousArtifact: z.boolean().optional(),
+    includePreviousTranscript: z.boolean().optional(),
+    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).optional(),
+  }).optional(),
   maxIterations: z.number().int().min(1).max(20).optional(),
   timeoutMinutes: z.number().int().min(1).max(360).optional(),
   retryPolicy: z
@@ -143,7 +179,74 @@ const workflowSchema = z.object({
       message: 'Maximum retry delay must be at least the initial delay.',
     }),
   isolatedWorktree: z.boolean(),
+  subscriptionOnly: z.boolean().default(true),
+  lockProviders: z.boolean().default(true),
+  defaultModelConfiguration: z.object({
+    backendId: z.string().max(80).optional(),
+    connectionProfileId: z.string().max(100).optional(),
+    providerId: z.string().max(80).optional(),
+    billingLane: z.enum(['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown']).optional(),
+    modelId: z.string().max(180).optional(),
+    modelDisplayName: z.string().max(180).optional(),
+    variantId: z.string().max(80).optional(),
+    reasoning: z.string().max(80).optional(),
+    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  }).optional(),
+  stageDefaults: z.record(z.string(), z.object({
+    backendId: z.string().max(80).optional(),
+    connectionProfileId: z.string().max(100).optional(),
+    providerId: z.string().max(80).optional(),
+    billingLane: z.enum(['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown']).optional(),
+    modelId: z.string().max(180).optional(),
+    modelDisplayName: z.string().max(180).optional(),
+    variantId: z.string().max(80).optional(),
+    reasoning: z.string().max(80).optional(),
+    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  })).optional(),
+  globalInstructions: z.string().max(8_000).optional(),
+  contextPolicy: z.object({
+    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).default('focused'),
+    maxFiles: z.number().int().min(1).max(500).default(24),
+    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).default(32_000),
+    maxFileBytes: z.number().int().min(1_024).max(2_000_000).default(80_000),
+    includeGlobs: z.array(z.string().max(160)).max(100).default([]),
+    excludeGlobs: z.array(z.string().max(160)).max(100).default(['.git/**', 'node_modules/**', 'dist/**', 'build/**']),
+    includeCurrentDiff: z.boolean().default(true),
+    includeTestOutput: z.boolean().default(true),
+    includeBuildOutput: z.boolean().default(true),
+    includePreviousArtifact: z.boolean().default(true),
+    includePreviousTranscript: z.boolean().default(false),
+    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).default('compact'),
+  }).default({
+    strategy: 'focused', maxFiles: 24, maxEstimatedTokens: 32_000, maxFileBytes: 80_000,
+    includeGlobs: [], excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
+    includeCurrentDiff: true, includeTestOutput: true, includeBuildOutput: true,
+    includePreviousArtifact: true, includePreviousTranscript: false, onLimitExceeded: 'compact',
+  }),
   stages: z.array(stageSchema).min(1).max(50),
+});
+
+const connectionProfileSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  backendId: z.string().trim().min(1).max(80),
+  providerId: z.string().trim().min(1).max(80),
+  billingLane: z.enum(billingLanes),
+  credentialStoreRef: z.string().max(200).nullable().optional(),
+  metadata: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).default({}),
+});
+const modelPresetSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  configuration: z.object({
+    backendId: z.string().max(80).optional(),
+    connectionProfileId: z.string().max(100).optional(),
+    providerId: z.string().max(80).optional(),
+    billingLane: z.enum(billingLanes).optional(),
+    modelId: z.string().max(180).optional(),
+    modelDisplayName: z.string().max(180).optional(),
+    variantId: z.string().max(80).optional(),
+    reasoning: z.string().max(80).optional(),
+    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  }),
 });
 const projectSchema = z.object({ path: z.string().trim().min(1).max(2_000) });
 const projectPatchSchema = z.object({
@@ -160,6 +263,8 @@ const runInputSchema = z.object({
   permissionMode: z.enum(PERMISSIONS).optional(),
   enigmaConfirmed: z.boolean().optional(),
   refinePrompt: z.boolean().optional(),
+  subscriptionOnly: z.boolean().optional(),
+  lockProviders: z.boolean().optional(),
 });
 const ruleSchema = z.object({
   scope: z.enum(['global', 'project']),
@@ -915,6 +1020,63 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       >
     ).map(toWorkflow),
   }));
+  app.get('/api/connection-profiles', async () => ({
+    profiles: (db.prepare('SELECT * FROM connection_profiles ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>).map(toConnectionProfile),
+  }));
+  app.post('/api/connection-profiles', async (request, reply) => {
+    const parsed = connectionProfileSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (hasCredentialMaterial(parsed.data.metadata))
+      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    const reference = parsed.data.credentialStoreRef ?? null;
+    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
+      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO connection_profiles (id, name, backend_id, provider_id, billing_lane, credential_store_ref, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), now, now);
+    return reply.code(201).send({ profile: toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>) });
+  });
+  app.put('/api/connection-profiles/:id', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    if (!db.prepare('SELECT id FROM connection_profiles WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Connection profile was not found.' });
+    const parsed = connectionProfileSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (hasCredentialMaterial(parsed.data.metadata))
+      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    const reference = parsed.data.credentialStoreRef ?? null;
+    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
+      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    db.prepare('UPDATE connection_profiles SET name = ?, backend_id = ?, provider_id = ?, billing_lane = ?, credential_store_ref = ?, metadata_json = ?, updated_at = ? WHERE id = ?')
+      .run(parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), new Date().toISOString(), id);
+    return { profile: toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>) };
+  });
+  app.delete('/api/connection-profiles/:id', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const inUse = db.prepare("SELECT COUNT(*) AS count FROM workflows WHERE instr(config_json, ?) > 0").get(id) as { count: number };
+    if (inUse.count) return reply.code(409).send({ error: 'This connection profile is referenced by a saved workflow. Remove those references first.' });
+    const result = db.prepare('DELETE FROM connection_profiles WHERE id = ?').run(id);
+    if (!result.changes) return reply.code(404).send({ error: 'Connection profile was not found.' });
+    return reply.code(204).send();
+  });
+  app.get('/api/model-presets', async () => ({
+    presets: (db.prepare('SELECT * FROM model_presets ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>).map(toModelPreset),
+  }));
+  app.post('/api/model-presets', async (request, reply) => {
+    const parsed = modelPresetSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid model preset.' });
+    if (hasCredentialMaterial(parsed.data.configuration)) return reply.code(400).send({ error: 'Model presets cannot contain credential material.' });
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO model_presets (id, name, configuration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, parsed.data.name, JSON.stringify(parsed.data.configuration), now, now);
+    return reply.code(201).send({ preset: toModelPreset(db.prepare('SELECT * FROM model_presets WHERE id = ?').get(id) as Record<string, unknown>) });
+  });
+  app.delete('/api/model-presets/:id', async (request, reply) => {
+    const result = db.prepare('DELETE FROM model_presets WHERE id = ?').run((request.params as { id: string }).id);
+    if (!result.changes) return reply.code(404).send({ error: 'Model preset was not found.' });
+    return reply.code(204).send();
+  });
   app.post('/api/workflows', async (request, reply) => {
     const parsed = workflowSchema.safeParse(request.body);
     if (!parsed.success)
@@ -980,6 +1142,12 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const config = {
       executionProfile: source.executionProfile,
       permissionMode: source.permissionMode,
+      subscriptionOnly: source.subscriptionOnly,
+      lockProviders: source.lockProviders,
+      defaultModelConfiguration: source.defaultModelConfiguration,
+      stageDefaults: source.stageDefaults,
+      globalInstructions: source.globalInstructions,
+      contextPolicy: source.contextPolicy,
       promptRefinementDefault: source.promptRefinementDefault,
       maxRemediationRounds: source.maxRemediationRounds,
       maxParallelAgents: source.maxParallelAgents,
@@ -1029,70 +1197,60 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           'Configure every active AI stage with a detected provider and an explicit model before starting.',
         ].join(' '),
       });
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const workflowSnapshot = preview.workflow;
-    const stageRows = workflowSnapshot.stages;
-    const create = db.transaction(() => {
-      db.prepare(
-        `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile,
-         permission_mode, refinement_requested, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
-      ).run(
-        id,
-        preview.machine.id,
-        preview.project.id,
-        preview.workflow.id,
-        JSON.stringify(workflowSnapshot),
-        preview.task,
-        preview.profile,
-        preview.permissionMode,
-        Number(preview.refinePrompt),
-        now,
-      );
-      db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
-        JSON.stringify(preview.effectiveRules),
-        id,
-      );
-      const insert =
-        db.prepare(`INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, backend_id, provider_id, model_id, status, input_json, logs)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`);
-      stageRows.forEach((stage, sequence) =>
-        insert.run(
-          randomUUID(),
-          id,
-          stage.id,
-          stage.kind,
-          stage.label,
-          sequence,
-          stage.backendId ?? null,
-          stage.providerId ?? null,
-          stage.modelId ?? null,
-          stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt)
-            ? 'skipped'
-            : 'pending',
-          JSON.stringify({ role: stage.role ?? null }),
-        ),
-      );
-      db.prepare(
-        'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
-      ).run(
-        randomUUID(),
-        id,
-        'run_queued',
-        JSON.stringify({
-          projectId: preview.project.id,
-          workflowId: preview.workflow.id,
-          machineId: preview.machine.id,
-          refinePrompt: preview.refinePrompt,
-        }),
-        now,
-      );
+    const run = createQueuedRun(db, engine, preview);
+    return reply.code(202).send({ run });
+  });
+
+  app.post('/api/runs/:id/replay', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!source) return reply.code(404).send({ error: 'Run was not found.' });
+    if (source.permission_mode === 'enigma' && !(request.body as { enigmaConfirmed?: boolean } | undefined)?.enigmaConfirmed)
+      return reply.code(400).send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
+    const historicalWorkflow = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
+    const preview = await makePreview(db, {
+      task: String(source.prompt),
+      projectId: String(source.project_id),
+      workflowId: String(source.workflow_id),
+      profile: String(source.profile) as WorkflowDefinition['executionProfile'],
+      permissionMode: String(source.permission_mode) as WorkflowDefinition['permissionMode'],
+      refinePrompt: Boolean(source.refinement_requested),
+      subscriptionOnly: historicalWorkflow.subscriptionOnly,
+      lockProviders: historicalWorkflow.lockProviders,
+    }, historicalWorkflow);
+    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    if (!preview.canStart) return reply.code(409).send({ error: `Historical configuration cannot be replayed as saved: ${preview.warnings.join(' ')}`, warnings: preview.warnings, providerAssignments: preview.providerAssignments });
+    if (preview.branchStrategy === 'worktree' && preview.project.dirty !== false)
+      return reply.code(409).send({ error: 'The project must be clean before an isolated replay can start.' });
+    const replay = createQueuedRun(db, engine, preview, {
+      rulesSnapshot: safeJson(source.rules_snapshot_json, []),
+      eventType: 'run_replayed',
+      eventDetails: { sourceRunId: id, configurationLocked: preview.lockProviders },
     });
-    create();
-    engine.start(id);
-    const row = getRunRow(db, id)!;
-    return reply.code(202).send({ run: toRun(db, row) });
+    return reply.code(202).send({ run: replay });
+  });
+
+  app.post('/api/runs/:id/duplicate-workflow', async (request, reply) => {
+    const id = (request.params as { id: string }).id;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!source) return reply.code(404).send({ error: 'Run was not found.' });
+    const snapshot = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
+    const preview = await makePreview(db, {
+      task: String(source.prompt), projectId: String(source.project_id), workflowId: String(source.workflow_id),
+      profile: snapshot.executionProfile, permissionMode: snapshot.permissionMode,
+      subscriptionOnly: snapshot.subscriptionOnly, lockProviders: snapshot.lockProviders,
+    }, snapshot);
+    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    const name = `${snapshot.name} copy`;
+    const workflowId = `${slug(snapshot.name) || 'workflow'}-history-${randomUUID().slice(0, 6)}`;
+    const excludedWorkflowFields = new Set(['id', 'name', 'version', 'isDefault', 'createdAt', 'updatedAt']);
+    const configuration = Object.fromEntries(
+      Object.entries(preview.workflow).filter(([key]) => !excludedWorkflowFields.has(key)),
+    );
+    const now = new Date().toISOString();
+    db.prepare('INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)')
+      .run(workflowId, name, snapshot.description, snapshot.template, JSON.stringify(configuration), now, now);
+    return reply.code(201).send({ workflow: toWorkflow(db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as Record<string, unknown>), providerAssignments: preview.providerAssignments });
   });
 
   app.get('/api/runs', async (request) => {
@@ -1338,7 +1496,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     else start.setTime(Date.now() - days * 86_400_000);
     const since = start.toISOString();
     const events = db
-      .prepare('SELECT * FROM usage_events WHERE occurred_at >= ? ORDER BY occurred_at DESC LIMIT 5000')
+      .prepare(`SELECT u.*, s.title AS stage_title FROM usage_events u
+        LEFT JOIN stages s ON s.id = u.stage_id
+        WHERE u.occurred_at >= ? ORDER BY u.occurred_at DESC LIMIT 5000`)
       .all(since) as Array<Record<string, unknown>>;
     const providers = groupUsage(events, 'provider_id');
     const models = groupUsage(events, 'model_id');
@@ -1547,7 +1707,62 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
   return null;
 }
 
-async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
+function createQueuedRun(
+  db: Db,
+  engine: RunEngine,
+  preview: NonNullable<Awaited<ReturnType<typeof makePreview>>>,
+  options: { rulesSnapshot?: unknown; eventType?: string; eventDetails?: Record<string, unknown> } = {},
+) {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const workflowSnapshot = preview.workflow;
+  const create = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile,
+       permission_mode, refinement_requested, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+    ).run(
+      id, preview.machine.id, preview.project.id, preview.workflow.id, JSON.stringify(workflowSnapshot),
+      preview.task, preview.profile, preview.permissionMode, Number(preview.refinePrompt), now,
+    );
+    db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
+      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules), id,
+    );
+    const insert = db.prepare(`INSERT INTO stages
+      (id, run_id, stage_key, kind, title, sequence, backend_id, provider_id, model_id, connection_profile_id, billing_lane, variant_id, model_snapshot_json, status, input_json, logs)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`);
+    workflowSnapshot.stages.forEach((stage, sequence) => insert.run(
+      randomUUID(), id, stage.id, stage.kind, stage.label, sequence,
+      stage.backendId ?? null, stage.providerId ?? null, stage.modelId ?? null,
+      stage.connectionProfileId ?? null, stage.billingLane ?? null, stage.variantId ?? null,
+      stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
+      stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt) ? 'skipped' : 'pending',
+      JSON.stringify({
+        role: stage.role ?? null,
+        reasoning: stage.reasoning ?? null,
+        variantId: stage.variantId ?? null,
+        nativeSettings: stage.nativeSettings ?? {},
+        billingLane: stage.billingLane ?? null,
+        connectionProfileId: stage.connectionProfileId ?? null,
+      }),
+    ));
+    db.prepare('INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(randomUUID(), id, options.eventType ?? 'run_queued', JSON.stringify({
+        projectId: preview.project.id,
+        workflowId: preview.workflow.id,
+        machineId: preview.machine.id,
+        refinePrompt: preview.refinePrompt,
+        subscriptionOnly: preview.subscriptionOnly,
+        lockProviders: preview.lockProviders,
+        ...options.eventDetails,
+      }), now);
+  });
+  create();
+  engine.start(id);
+  return toRun(db, getRunRow(db, id)!);
+}
+
+async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workflowOverride?: WorkflowDefinition) {
   let projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as
     Record<string, unknown> | undefined;
   const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(input.workflowId) as
@@ -1581,7 +1796,7 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     >;
   }
   const project = toProject(projectRow);
-  const source = toWorkflow(workflowRow);
+  const source = workflowOverride ?? toWorkflow(workflowRow);
   const profile = input.profile ?? source.executionProfile;
   const permissionMode = input.permissionMode ?? source.permissionMode;
   const refinePrompt = input.refinePrompt ?? source.promptRefinementDefault;
@@ -1589,10 +1804,27 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     ...source,
     executionProfile: profile,
     permissionMode,
-    stages: applyExecutionProfile(source.stages, profile, source.maxParallelAgents),
+    subscriptionOnly: input.subscriptionOnly ?? source.subscriptionOnly,
+    lockProviders: input.lockProviders ?? source.lockProviders,
+    stages: applyExecutionProfile(source.stages.map((stage) => inheritStageConfiguration(source, stage)), profile, source.maxParallelAgents),
   };
   const effectiveRules = resolveEffectiveRules(db, project.id);
   const providers = await discoverProviders();
+  const connections = (db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>).map(toConnectionProfile);
+  const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
+  const profileMismatch = new Set<string>();
+  workflow.stages = workflow.stages.map((stage) => {
+    if (!AI_KINDS.has(stage.kind)) return stage;
+    const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
+    if (stage.connectionProfileId && !connection) profileMismatch.add(stage.id);
+    if (!connection) return { ...stage, billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId) };
+    return {
+      ...stage,
+      backendId: connection.backendId,
+      providerId: connection.providerId,
+      billingLane: connection.billingLane,
+    };
+  });
   const providerAssignments = workflow.stages
     .filter(
       (stage) =>
@@ -1602,32 +1834,80 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     )
     .map((stage) => {
       const provider = providers.find((candidate) => candidate.id === stage.backendId);
-      const modelExists = provider?.models.length
-        ? provider.models.some((model) => model.id === stage.modelId)
-        : true;
       const selectedModel = provider?.models.find((model) => model.id === stage.modelId);
+      const modelCatalogAvailable = Boolean(provider?.capabilities.modelDiscovery && provider.models.length);
+      const modelExists = modelCatalogAvailable ? Boolean(selectedModel) : Boolean(stage.modelId?.trim());
+      const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
+      const billingLane = stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId);
+      const billingLaneMatchesRoute = routeMatchesBillingLane(stage.backendId, stage.providerId, billingLane);
+      const catalogStatus = selectedModel
+        ? 'current' as const
+        : modelCatalogAvailable
+          ? 'unavailable' as const
+          : stage.modelSnapshot?.status === 'deprecated'
+            ? 'deprecated' as const
+            : stage.modelSnapshot
+              ? 'last-known' as const
+              : 'last-known' as const;
       const subscriptionReady =
         provider?.id === 'claude-code'
           ? provider.subscriptionAuthenticated === true
           : provider?.id === 'codex-cli'
             ? provider.subscriptionAuthenticated === true && selectedModel?.subscriptionBacked === true
             : provider?.id === 'opencode'
-              ? selectedModel?.subscriptionBacked === true
+              ? selectedModel
+                ? isSubscriptionLane(billingLane)
+                  ? selectedModel.subscriptionBacked === true
+                  : selectedModel.subscriptionBacked === false
+                : false
               : provider?.id === 'cline'
-                ? ['openai-codex', 'cline-pass'].includes(stage.providerId ?? '')
-                : false;
+              ? ['openai-codex', 'cline-pass'].includes(stage.providerId ?? '') || ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
+              : false;
+      const subscriptionLane = isSubscriptionLane(billingLane);
+      const laneAllowed = !workflow.subscriptionOnly || subscriptionLane;
+      const modelSnapshot = {
+        providerId: stage.providerId ?? '',
+        modelId: stage.modelId ?? '',
+        displayName: stage.modelDisplayName ?? selectedModel?.name ?? stage.modelId ?? '',
+        connectionProfileName: connection?.name ?? stage.modelSnapshot?.connectionProfileName ?? null,
+        billingLane,
+        ...(stage.variantId ? { variantId: stage.variantId } : {}),
+        capabilities: {
+          ...(selectedModel?.capabilities ?? {}),
+          ...(selectedModel?.reasoningLevels ? { reasoningLevels: selectedModel.reasoningLevels } : {}),
+          ...(selectedModel?.variantIds ? { variants: selectedModel.variantIds } : {}),
+          supportsTools: selectedModel?.supportsTools ?? selectedModel?.capabilities?.tools ?? null,
+        },
+        discoveredAt: selectedModel ? provider?.checkedAt ?? null : stage.modelSnapshot?.discoveredAt ?? null,
+        adapterVersion: provider?.version ?? stage.modelSnapshot?.adapterVersion ?? null,
+        status: catalogStatus,
+      };
+      stage.modelSnapshot = modelSnapshot;
       return {
         stage: stage.label,
         backendId: stage.backendId ?? null,
         providerId: stage.providerId ?? null,
         modelId: stage.modelId ?? null,
+        modelDisplayName: modelSnapshot.displayName,
+        variantId: stage.variantId ?? null,
+        connectionProfileName: connection?.name ?? null,
+        billingLane,
+        reasoning: stage.reasoning ?? null,
+        nativeSettings: stage.nativeSettings ?? {},
+        catalogStatus,
+        context: estimateStageContext(input.task, stage, effectiveRules, workflow.contextPolicy),
         ready: Boolean(
           provider?.detected &&
           provider.capabilities.toolMediation &&
           subscriptionReady &&
+          billingLaneMatchesRoute &&
           stage.providerId?.trim() &&
           stage.modelId?.trim() &&
-          modelExists,
+          modelExists &&
+          laneAllowed &&
+          !profileMismatch.has(stage.id) &&
+          (!stage.variantId || Boolean(selectedModel?.variantIds?.includes(stage.variantId))) &&
+          (!stage.reasoning || !selectedModel?.reasoningLevels || selectedModel.reasoningLevels.includes(stage.reasoning)),
         ),
       };
     });
@@ -1650,6 +1930,34 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     warnings.push(
       'One or more execution backends are missing, have no explicit provider/model, or no longer report the configured model.',
     );
+  for (const assignment of providerAssignments) {
+    if (assignment.backendId && assignment.providerId && !routeMatchesBillingLane(assignment.backendId, assignment.providerId, assignment.billingLane ?? 'unknown'))
+      warnings.push(`${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabelForServer(assignment.billingLane ?? 'unknown')} billing lane.`);
+    if (profileMismatch.has(workflow.stages.find((stage) => stage.label === assignment.stage)?.id ?? ''))
+      warnings.push(`Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`);
+    if ((assignment.billingLane === 'opencode-go-subscription') && !warnings.includes('Provider-side PAYG fallback status cannot be verified by Turing Terminal.'))
+      warnings.push('Provider-side PAYG fallback status cannot be verified by Turing Terminal.');
+    if (assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
+      warnings.push(`${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`);
+  }
+  const billingGroups = new Map<string, string[]>();
+  for (const assignment of providerAssignments) {
+    const lane = assignment.billingLane ?? 'unknown';
+    billingGroups.set(lane, [...(billingGroups.get(lane) ?? []), assignment.stage]);
+  }
+  const usedLanes = [...billingGroups.entries()].map(([billingLane, stages]) => ({ billingLane: billingLane as import('../shared/types.js').BillingLane, stages }));
+  const billingSummary = [
+    ...usedLanes,
+    ...(['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'cline-usage-billing', 'opencode-metered'] as const)
+      .filter((lane) => !billingGroups.has(lane))
+      .map((billingLane) => ({ billingLane, stages: [] as string[] })),
+  ];
+  const providerFallbackStatus = usedLanes
+    .filter((item) => item.billingLane === 'opencode-go-subscription')
+    .map(() => ({ backendId: 'opencode', status: 'unknown' as const, message: 'Provider-side PAYG fallback status cannot be verified by Turing Terminal.' }));
+  const contextWarnings = providerAssignments
+    .filter((assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
+    .map((assignment) => `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`);
   const machineRow = localMachine(db);
   const machine = {
     id: String(machineRow.id),
@@ -1660,6 +1968,9 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     lastSeenAt: new Date().toISOString(),
   };
   const hasRunnableStage = workflow.stages.some((stage) => stage.enabled !== false);
+  const contextBudgetBlocked = providerAssignments.some(
+    (assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens && assignment.context.onLimitExceeded !== 'compact',
+  );
   return {
     project,
     workflow,
@@ -1668,6 +1979,8 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
     profile,
     permissionMode,
     refinePrompt,
+    subscriptionOnly: workflow.subscriptionOnly,
+    lockProviders: workflow.lockProviders,
     effectiveRules,
     branchStrategy:
       workflow.isolatedWorktree && project.gitRoot ? ('worktree' as const) : ('current-branch' as const),
@@ -1677,9 +1990,111 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>) {
       hasRunnableStage &&
       (!refinePrompt || hasPromptRefinementStage) &&
       providerAssignments.every((assignment) => assignment.ready) &&
+      !contextBudgetBlocked &&
       !(workflow.isolatedWorktree && project.gitRoot && project.dirty !== false),
     warnings,
     providerAssignments,
+    billingSummary,
+    providerFallbackStatus,
+    contextWarnings,
+  };
+}
+
+function inheritStageConfiguration(workflow: WorkflowDefinition, stage: WorkflowStage): WorkflowStage {
+  const defaults = {
+    ...(workflow.defaultModelConfiguration ?? {}),
+    ...(workflow.stageDefaults?.[stage.kind] ?? {}),
+  };
+  const inherited = {
+    ...defaults,
+    ...stage,
+  };
+  const nodeChangedConnection = Boolean(
+    (stage.backendId && defaults.backendId && stage.backendId !== defaults.backendId) ||
+      (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
+      (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
+  );
+  return {
+    ...stage,
+    backendId: inherited.backendId,
+    connectionProfileId: stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
+    providerId: inherited.providerId,
+    billingLane: inherited.billingLane,
+    modelId: inherited.modelId,
+    modelDisplayName: inherited.modelDisplayName,
+    variantId: inherited.variantId,
+    reasoning: inherited.reasoning,
+    nativeSettings: inherited.nativeSettings,
+  };
+}
+
+function inferBillingLane(backendId?: string, providerId?: string): import('../shared/types.js').BillingLane {
+  if (backendId === 'opencode') return providerId === 'opencode-go' ? 'opencode-go-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'opencode-metered';
+  if (backendId === 'cline') return providerId === 'cline-pass' ? 'clinepass-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'cline-usage-billing';
+  if (backendId === 'codex-cli') return 'chatgpt-subscription';
+  if (backendId === 'claude-code') return 'claude-subscription';
+  return 'unknown';
+}
+
+function isSubscriptionLane(lane: string): boolean {
+  return ['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription'].includes(lane);
+}
+
+function routeMatchesBillingLane(backendId?: string, providerId?: string, lane?: string): boolean {
+  if (backendId === 'opencode' && providerId === 'opencode-go') return lane === 'opencode-go-subscription';
+  if (backendId === 'opencode' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'opencode' && providerId === 'openai') return lane === 'openai-api';
+  if (backendId === 'opencode' && providerId === 'anthropic') return lane === 'anthropic-api';
+  if (backendId === 'opencode' && providerId) return lane === 'opencode-metered';
+  if (backendId === 'cline' && providerId === 'cline-pass') return lane === 'clinepass-subscription';
+  if (backendId === 'cline' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'cline' && providerId === 'cline') return lane === 'cline-usage-billing';
+  if (backendId === 'cline' && providerId === 'openai') return lane === 'openai-api';
+  if (backendId === 'cline' && providerId === 'anthropic') return lane === 'anthropic-api';
+  if (backendId === 'codex-cli' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
+  if (backendId === 'claude-code' && providerId === 'anthropic-subscription') return lane === 'claude-subscription';
+  return false;
+}
+
+function billingLaneLabelForServer(lane: string): string {
+  return ({
+    'opencode-go-subscription': 'OpenCode Go subscription',
+    'opencode-metered': 'OpenCode metered',
+    'clinepass-subscription': 'ClinePass subscription',
+    'cline-usage-billing': 'Cline usage-billing',
+    'chatgpt-subscription': 'ChatGPT subscription',
+    'claude-subscription': 'Claude subscription',
+    'openai-api': 'OpenAI API',
+    'anthropic-api': 'Anthropic API',
+    unknown: 'unknown',
+  } as Record<string, string>)[lane] ?? lane;
+}
+
+function estimateStageContext(task: string, stage: WorkflowStage, rules: import('../shared/types.js').TuringRule[], workflowPolicy: WorkflowDefinition['contextPolicy']) {
+  const policy = { ...workflowPolicy, ...(stage.contextPolicy ?? {}) };
+  const reviewKinds = ['reviewer', 'parallelReview', 'finalGate', 'consolidate'];
+  const includeCurrentDiff = stage.contextPolicy?.includeCurrentDiff ?? (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
+  const includePreviousTranscript = stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
+  const applicableRules = rules.filter((rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind));
+  const instructions = stage.customInstructions?.length ?? 0;
+  const ruleChars = applicableRules.reduce((total, rule) => total + rule.content.length + rule.name.length + 80, 0);
+  const transcriptAllowance = includePreviousTranscript ? 16_000 : 0;
+  const estimatedInputTokens = Math.ceil((task.length + instructions + ruleChars + (includeCurrentDiff ? 2_000 : 0) + transcriptAllowance + 1_600) / 4);
+  const label = policy.strategy === 'changed-files'
+    ? 'Changed Files + Selected Artifacts'
+    : policy.strategy === 'artifacts-only'
+      ? 'Structured Artifacts + Explicit Files'
+      : policy.strategy === 'full-project'
+        ? 'Broad Project Context'
+        : 'Focused Context';
+  return {
+    label,
+    estimatedInputTokens,
+    maxEstimatedTokens: policy.maxEstimatedTokens,
+    maxFiles: policy.maxFiles,
+    maxFileBytes: policy.maxFileBytes,
+    onLimitExceeded: policy.onLimitExceeded,
+    estimateOnly: true as const,
   };
 }
 
@@ -1829,6 +2244,16 @@ function safeJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function hasCredentialMaterial(value: unknown): boolean {
+  if (typeof value === 'string') return redactSecrets(value) !== value;
+  if (Array.isArray(value)) return value.some(hasCredentialMaterial);
+  if (value && typeof value === 'object')
+    return Object.entries(value as Record<string, unknown>).some(([key, item]) =>
+      /secret|token|api.?key|password|cookie|credential/i.test(key) || hasCredentialMaterial(item),
+    );
+  return false;
 }
 function slug(value: string): string {
   return value

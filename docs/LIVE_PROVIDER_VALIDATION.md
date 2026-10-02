@@ -22,3 +22,7 @@ An earlier three-stage attempt exposed a Codex CLI approval interaction: the non
 - **Result:** The smoke run stopped in the Planner before any provider tokens or Turing broker operations. Claude returned HTTP 429 with a weekly subscription limit and a reset time; reported input/output tokens and cost were both zero. Turing did not fall back to API billing.
 
 The Codex path provides the completed live subscription-backed broker validation. The Claude path remains unvalidated beyond authentication discovery and its quota-exhaustion failure.
+
+## Phase 3.6 provider/model configuration status — 2026-10-02
+
+The Phase 3.6 OpenCode Go and ClinePass subscription-only cases are deterministic automated tests, not live account runs. No live OpenCode Go/ClinePass billing or catalog validation is recorded here. Turing cannot inspect or disable OpenCode's account-side overflow to Console PAYG; Run Preview reports that provider-side fallback status cannot be verified. See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for the saved route and context guarantees covered by tests.

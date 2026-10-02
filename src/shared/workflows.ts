@@ -1,6 +1,20 @@
 import type { WorkflowDefinition, WorkflowStage } from './types.js';
 
 const defaultRetryPolicy = { maxRetries: 1, initialDelayMs: 1_000, maxDelayMs: 30_000 };
+const defaultContextPolicy = {
+  strategy: 'focused' as const,
+  maxFiles: 24,
+  maxEstimatedTokens: 32_000,
+  maxFileBytes: 80_000,
+  includeGlobs: [],
+  excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
+  includeCurrentDiff: true,
+  includeTestOutput: true,
+  includeBuildOutput: true,
+  includePreviousArtifact: true,
+  includePreviousTranscript: false,
+  onLimitExceeded: 'compact' as const,
+};
 
 const stage = (
   id: string,
@@ -31,6 +45,9 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
+    subscriptionOnly: true,
+    lockProviders: true,
+    contextPolicy: defaultContextPolicy,
     version: 1,
     isDefault: true,
     stages: [
@@ -53,6 +70,9 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
+    subscriptionOnly: true,
+    lockProviders: true,
+    contextPolicy: defaultContextPolicy,
     version: 1,
     isDefault: true,
     stages: [
@@ -79,6 +99,9 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 180,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
+    subscriptionOnly: true,
+    lockProviders: true,
+    contextPolicy: defaultContextPolicy,
     version: 1,
     isDefault: true,
     stages: [
@@ -107,6 +130,9 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 60,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: false,
+    subscriptionOnly: true,
+    lockProviders: true,
+    contextPolicy: defaultContextPolicy,
     version: 1,
     isDefault: true,
     stages: [
@@ -127,6 +153,9 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
+    subscriptionOnly: true,
+    lockProviders: true,
+    contextPolicy: defaultContextPolicy,
     version: 1,
     isDefault: true,
     stages: [

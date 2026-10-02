@@ -15,7 +15,7 @@ describe('local database', () => {
     const root = mkdtempSync(join(tmpdir(), 'turing-db-'));
     folders.push(root);
     let db = openDatabase(root);
-    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(11);
+    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(13);
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '009_stage_attempts.sql'").get(),
     ).toBeTruthy();
@@ -24,6 +24,9 @@ describe('local database', () => {
     ).toBeTruthy();
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '011_phase3_notifications.sql'").get(),
+    ).toBeTruthy();
+    expect(
+      db.prepare("SELECT name FROM schema_migrations WHERE name = '013_model_run_snapshots.sql'").get(),
     ).toBeTruthy();
     expect((db.prepare('SELECT COUNT(*) AS count FROM workflows').get() as { count: number }).count).toBe(5);
     expect((db.prepare('SELECT COUNT(*) AS count FROM machines').get() as { count: number }).count).toBe(1);

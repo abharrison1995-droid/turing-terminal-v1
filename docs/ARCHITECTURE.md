@@ -25,11 +25,19 @@ The server is authoritative for run state. UI reloads query persisted state; sta
 
 - React, TypeScript, Vite, and a service-worker-backed PWA provide one UI surface for desktop and mobile browsers.
 - A Node.js/Fastify service performs local filesystem and process operations. It is a better fit than browser code for provider CLIs, repository discovery, and child-process cancellation.
-- SQLite stores projects, workflow definitions, workflow snapshots, runs, stages, usage, approvals, and interventions. Migrations are versioned.
+- SQLite stores projects, workflow definitions and defaults, reusable connection-profile metadata, model presets, workflow/run snapshots, catalog metadata, stages, usage, approvals, and interventions. Migrations are versioned. Provider credentials remain in provider CLIs or separately supported desktop credential storage; profile records hold references and display metadata only.
 - Providers are adapters with explicit capability flags. Missing model/usage/allowance support is represented as unavailable rather than inferred. Codex, Claude Code, and OpenCode disable their native project-action tools and expose only Turing's broker; Cline uses its approval IPC boundary.
 - `child_process.spawn` uses argument arrays with shell expansion disabled for AI CLIs. File reads/writes/deletes and project package scripts pass through a per-run token-protected broker. Operations are checked against project scope, secret rules, and the selected Turing permission mode, then recorded in SQLite.
 - First-class Git workflow operations are handled by the master against the isolated run worktree. Checkpoints, commits, pushes, merges, and restores have a separate durable operation ledger; merge and restore approvals include the operation context, and force-push is not available.
 - The API binds to loopback only. When reached through Tailscale Serve, it requires the Serve user identity and a desktop-approved, expiring device cookie. Pairing administration stays on the desktop. The PWA stores per-device master profiles and switches by navigating to the selected master's own origin; cookies and API requests remain origin-scoped, and there is no cross-machine proxy or failover.
+
+## Provider configuration and context
+
+An AI stage keeps execution backend, connection profile, provider/billing lane, exact model ID, native variant or reasoning settings, and catalog snapshot separate. Workflow defaults inherit into stage-kind defaults and then individual nodes. Profiles select a connection and billing lane without storing credentials. Presets contain model configuration only. Run Preview resolves the final configuration and groups stages by billing lane.
+
+The deterministic workflow engine remains authoritative, including when the optional AI Orchestrator stage is used. Subscription Only and Lock Providers are enabled by default. Provider-side billing remains outside Turing's control where the provider does not expose a supported status mechanism; for OpenCode Go, the UI explicitly reports that account-side PAYG fallback cannot be verified.
+
+Before model execution, the engine prepares bounded context and structured handoff artifacts. Each AI stage has its own strategy, file/token/size limits, inclusion rules, and over-limit behavior. The execution broker applies the same context constraints to later tool reads and outputs. Preview token counts are estimates, not provider-reported exact input usage. See [Phase 3.6 configuration](phase3.6-provider-model-context.md) for defaults and precedence.
 
 ## Run lifecycle
 

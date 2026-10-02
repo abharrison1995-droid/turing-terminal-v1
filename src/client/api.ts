@@ -1,11 +1,14 @@
 import type {
   DashboardSnapshot,
+  ConnectionProfile,
   ExecutionOperation,
   GitOperation,
   ProjectProfile,
   ProviderStatus,
   RunPreview,
   RunSummary,
+  ModelConfiguration,
+  ModelPreset,
   TuringRule,
   WorkflowDefinition,
 } from '../shared/types';
@@ -26,6 +29,27 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 function json(method: string, body?: unknown): RequestInit {
   return { method, body: body === undefined ? undefined : JSON.stringify(body) };
+}
+
+function sanitizeWorkflowExport<T>(value: T): T {
+  if (typeof value === 'string')
+    return value
+      .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
+      .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
+      .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_TOKEN]')
+      .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
+      .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, '[REDACTED_GOOGLE_KEY]')
+      .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]')
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{12,}/gi, '$1[REDACTED_TOKEN]')
+      .replace(/((?:[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*|(?:token|secret|password|api[_-]?key|access[_-]?key|private[_-]?key|credentials?))\s*[:=]\s*["']?)[^\s"',;}]+/gi, '$1[REDACTED]') as T;
+  if (Array.isArray(value)) return value.map(sanitizeWorkflowExport) as T;
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => !/secret|token|api.?key|password|cookie|credential|connectionProfileId|modelSnapshot/i.test(key))
+        .map(([key, item]) => [key, sanitizeWorkflowExport(item)]),
+    ) as T;
+  return value;
 }
 
 export const api = {
@@ -51,6 +75,12 @@ export const api = {
       maxDurationMinutes: workflow.maxDurationMinutes,
       retryPolicy: workflow.retryPolicy,
       isolatedWorktree: workflow.isolatedWorktree,
+      subscriptionOnly: workflow.subscriptionOnly,
+      lockProviders: workflow.lockProviders,
+      defaultModelConfiguration: workflow.defaultModelConfiguration,
+      stageDefaults: workflow.stageDefaults,
+      globalInstructions: workflow.globalInstructions,
+      contextPolicy: workflow.contextPolicy,
       stages: workflow.stages,
     };
     return call<{ workflow: WorkflowDefinition }>(
@@ -60,6 +90,14 @@ export const api = {
   },
   duplicateWorkflow: (id: string) =>
     call<{ workflow: WorkflowDefinition }>(`/api/workflows/${id}/duplicate`, json('POST')),
+  connectionProfiles: () => call<{ profiles: ConnectionProfile[] }>('/api/connection-profiles'),
+  saveConnectionProfile: (profile: Omit<ConnectionProfile, 'id' | 'createdAt' | 'updatedAt'>, id?: string) =>
+    call<{ profile: ConnectionProfile }>(id ? `/api/connection-profiles/${id}` : '/api/connection-profiles', json(id ? 'PUT' : 'POST', profile)),
+  deleteConnectionProfile: (id: string) => call(`/api/connection-profiles/${id}`, json('DELETE')),
+  modelPresets: () => call<{ presets: ModelPreset[] }>('/api/model-presets'),
+  createModelPreset: (name: string, configuration: ModelConfiguration) =>
+    call<{ preset: ModelPreset }>('/api/model-presets', json('POST', { name, configuration })),
+  deleteModelPreset: (id: string) => call(`/api/model-presets/${id}`, json('DELETE')),
   rules: (projectId?: string) =>
     call<{ rules: TuringRule[] }>(
       `/api/rules${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`,
@@ -75,6 +113,8 @@ export const api = {
     permissionMode?: WorkflowDefinition['permissionMode'];
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
+    subscriptionOnly?: boolean;
+    lockProviders?: boolean;
   }) => call<{ preview: RunPreview }>('/api/runs/preview', json('POST', input)),
   startRun: (input: {
     task: string;
@@ -84,6 +124,8 @@ export const api = {
     permissionMode?: WorkflowDefinition['permissionMode'];
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
+    subscriptionOnly?: boolean;
+    lockProviders?: boolean;
   }) => call<{ run: RunSummary }>('/api/runs', json('POST', input)),
   run: (id: string) =>
     call<{
@@ -93,6 +135,10 @@ export const api = {
       gitOperations: GitOperation[];
       events: Array<{ type: string; payload: Record<string, unknown>; createdAt: string }>;
     }>(`/api/runs/${id}`),
+  replayRun: (id: string, enigmaConfirmed = false) =>
+    call<{ run: RunSummary }>(`/api/runs/${id}/replay`, json('POST', { enigmaConfirmed })),
+  duplicateRunWorkflow: (id: string) =>
+    call<{ workflow: WorkflowDefinition; providerAssignments: RunPreview['providerAssignments'] }>(`/api/runs/${id}/duplicate-workflow`, json('POST')),
   executionOperations: (id: string) =>
     call<{ operations: ExecutionOperation[] }>(`/api/runs/${id}/execution-operations`),
   diff: (id: string) =>
@@ -197,9 +243,33 @@ export const api = {
     call<
       { status: 'waiting_for_desktop_approval' } | { deviceId: string; machineId: string; expiresAt: string }
     >('/api/pairing/complete', json('POST', { requestId, ...(code ? { code } : {}) })),
-  exportWorkflows: (workflows: WorkflowDefinition[]) => ({
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    workflows,
-  }),
+  exportWorkflows: (workflows: WorkflowDefinition[]) => {
+    const exportModelConfiguration = (configuration: ModelConfiguration | undefined) => {
+      if (!configuration) return configuration;
+      const { connectionProfileId, ...safeConfiguration } = configuration;
+      return {
+        ...safeConfiguration,
+        ...(connectionProfileId
+          ? { connectionReference: `${configuration.backendId ?? ''}:${configuration.providerId ?? ''}:${configuration.billingLane ?? 'unknown'}` }
+          : {}),
+      };
+    };
+    return {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      workflows: sanitizeWorkflowExport(workflows.map((workflow) => ({
+        ...workflow,
+        defaultModelConfiguration: exportModelConfiguration(workflow.defaultModelConfiguration),
+        stageDefaults: workflow.stageDefaults
+          ? Object.fromEntries(Object.entries(workflow.stageDefaults).map(([kind, configuration]) => [kind, exportModelConfiguration(configuration)]))
+          : undefined,
+        stages: workflow.stages.map((stage) => ({
+          ...stage,
+          ...(stage.connectionProfileId
+            ? { connectionReference: `${stage.backendId ?? ''}:${stage.providerId ?? ''}:${stage.billingLane ?? 'unknown'}` }
+            : {}),
+        })),
+      }))),
+    };
+  },
 };

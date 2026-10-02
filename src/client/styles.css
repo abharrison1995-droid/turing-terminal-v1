@@ -2669,6 +2669,14 @@ button:disabled {
 .usage-table-row:last-child {
   border-bottom: 0;
 }
+.usage-attribution-panel .usage-table {
+  overflow-x: auto;
+}
+.usage-attribution-panel .usage-table-head,
+.usage-attribution-panel .usage-table-row {
+  min-width: 680px;
+  grid-template-columns: minmax(160px, 1.6fr) minmax(125px, 1fr) minmax(125px, 1fr) minmax(130px, 1fr);
+}
 .usage-key {
   display: flex;
   min-width: 0;

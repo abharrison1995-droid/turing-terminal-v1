@@ -25,8 +25,8 @@ Both desktop packages bundle Node.js for Turing Terminal itself. You do not need
 
 1. **Sign in to a provider on the master computer.** Install and authenticate a supported CLI such as OpenAI Codex, Claude Code, OpenCode, or Cline. Turing uses the CLI's supported sign-in flow and does not need provider API keys for the subscription-backed paths.
 2. **Add a project.** In the browser, open **Projects** and register the local project folder that the workflow may access.
-3. **Choose a workflow.** Start with a saved workflow or create one. Assign a detected provider and model to each AI stage; add build/test steps, approval gates, or other stages as needed.
-4. **Review the preview.** Check the target machine and project, permission mode, provider/model assignments, approval gates, retry bounds, and runtime limits before starting.
+3. **Choose a workflow.** Start with a saved workflow or create one. Set workflow-level or stage-kind model defaults, then add per-stage overrides where needed. Add build/test steps, approval gates, or an optional Orchestrator as needed.
+4. **Review the preview.** Check the target machine and project, permission mode, connection profile and billing lane for each AI stage, exact model and variant, context estimates and limits, approval gates, retry bounds, and runtime limits. Subscription Only and Lock Providers are on by default; verify the billing summary before starting.
 5. **Start and supervise the run.** Follow stage progress, respond to approval or clarification requests, and inspect the final diff and review findings. Runs belong to the desktop master, so closing the browser does not stop them.
 6. **Use the phone (optional).** Install and sign in to Tailscale separately. In desktop **Settings**, note the Master port, configure Tailscale Serve to proxy HTTPS to `127.0.0.1:<that-port>`, open the Serve address on your phone, create a pairing QR in **Settings → Paired devices**, and approve the phone on the desktop. See [Mobile setup](docs/MOBILE.md).
 
@@ -65,6 +65,7 @@ npm run build
 - [Release process](docs/RELEASING.md)
 - [Provider setup](docs/PROVIDERS.md)
 - [Provider capability matrix](docs/PROVIDER_CAPABILITY_MATRIX.md)
+- [Phase 3.6 provider, model, context, and billing configuration](docs/phase3.6-provider-model-context.md)
 - [Security and trust boundaries](docs/SECURITY.md)
 - [Workflows](docs/WORKFLOWS.md)
 - [Usage accounting and estimates](docs/USAGE_ACCOUNTING.md)

@@ -11,6 +11,7 @@ const stageKinds = new Set<WorkflowStage['kind']>([
   'reviewer',
   'parallelReview',
   'consolidate',
+  'orchestrator',
   'remediation',
   'finalGate',
   'gitCheckpoint',

@@ -5,6 +5,9 @@ import type {
   RunSummary,
   StageAttempt,
   WorkflowDefinition,
+  ContextPolicy,
+  ConnectionProfile,
+  ModelPreset,
 } from '../shared/types.js';
 import type { Db } from './db.js';
 
@@ -42,6 +45,21 @@ export function toProject(row: Row): ProjectProfile {
 
 export function toWorkflow(row: Row): WorkflowDefinition {
   const config = parseJson<Record<string, unknown>>(row.config_json, {});
+  const defaultContext: ContextPolicy = {
+    strategy: 'focused',
+    maxFiles: 24,
+    maxEstimatedTokens: 32_000,
+    maxFileBytes: 80_000,
+    includeGlobs: [],
+    excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
+    includeCurrentDiff: true,
+    includeTestOutput: true,
+    includeBuildOutput: true,
+    includePreviousArtifact: true,
+    includePreviousTranscript: false,
+    onLimitExceeded: 'compact',
+  };
+  const context = (config.contextPolicy ?? {}) as Partial<ContextPolicy>;
   return {
     id: String(row.id),
     name: String(row.name),
@@ -61,6 +79,12 @@ export function toWorkflow(row: Row): WorkflowDefinition {
       maxDelayMs: Number((config.retryPolicy as Record<string, unknown> | undefined)?.maxDelayMs ?? 30_000),
     },
     isolatedWorktree: Boolean(config.isolatedWorktree),
+    subscriptionOnly: config.subscriptionOnly !== false,
+    lockProviders: config.lockProviders !== false,
+    defaultModelConfiguration: config.defaultModelConfiguration as WorkflowDefinition['defaultModelConfiguration'],
+    stageDefaults: config.stageDefaults as WorkflowDefinition['stageDefaults'],
+    globalInstructions: typeof config.globalInstructions === 'string' ? config.globalInstructions : undefined,
+    contextPolicy: { ...defaultContext, ...context },
     stages: Array.isArray(config.stages) ? (config.stages as WorkflowDefinition['stages']) : [],
     version: Number(row.version),
     isDefault: Boolean(row.is_default),
@@ -69,7 +93,32 @@ export function toWorkflow(row: Row): WorkflowDefinition {
   };
 }
 
+export function toConnectionProfile(row: Row): ConnectionProfile {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    backendId: String(row.backend_id),
+    providerId: String(row.provider_id),
+    billingLane: String(row.billing_lane) as ConnectionProfile['billingLane'],
+    credentialStoreRef: nullable(row.credential_store_ref),
+    metadata: parseJson<Record<string, string | number | boolean | null>>(row.metadata_json, {}),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function toModelPreset(row: Row): ModelPreset {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    configuration: parseJson<ModelPreset['configuration']>(row.configuration_json, {}),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
 export function toStage(row: Row, attempts: StageAttempt[] = []): RunStage {
+  const input = parseJson<Record<string, unknown>>(row.input_json, {});
   return {
     id: String(row.id),
     runId: String(row.run_id),
@@ -80,6 +129,14 @@ export function toStage(row: Row, attempts: StageAttempt[] = []): RunStage {
     backendId: nullable(row.backend_id),
     providerId: nullable(row.provider_id),
     modelId: nullable(row.model_id),
+    connectionProfileId: nullable(row.connection_profile_id),
+    billingLane: nullable(row.billing_lane) as RunStage['billingLane'],
+    variantId: nullable(row.variant_id),
+    modelSnapshot: parseNullableJson<NonNullable<RunStage['modelSnapshot']>>(row.model_snapshot_json),
+    reasoning: typeof input.reasoning === 'string' ? input.reasoning : null,
+    nativeSettings: input.nativeSettings && typeof input.nativeSettings === 'object'
+      ? input.nativeSettings as Record<string, string | number | boolean | null>
+      : {},
     status: String(row.status) as RunStage['status'],
     startedAt: nullable(row.started_at),
     finishedAt: nullable(row.finished_at),
@@ -113,6 +170,8 @@ export function toRun(db: Db, row: Row): RunSummary {
     profile: String(row.profile) as RunSummary['profile'],
     permissionMode: String(row.permission_mode) as RunSummary['permissionMode'],
     refinePrompt: Boolean(row.refinement_requested),
+    subscriptionOnly: snapshot.subscriptionOnly !== false,
+    lockProviders: snapshot.lockProviders !== false,
     status: String(row.status) as RunSummary['status'],
     branch: nullable(row.branch),
     worktreePath: nullable(row.worktree_path),
