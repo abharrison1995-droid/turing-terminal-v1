@@ -8,11 +8,13 @@ web
 
 ## Stack
 
-Delegated by the implementation directive: React and TypeScript for the shared desktop/PWA interface, with a local Node.js service for orchestration and SQLite persistence. A native desktop shell remains an open V1 packaging decision.
+React and TypeScript for one interface shared by the desktop shell and the phone PWA, with a local Node.js master for orchestration and SQLite persistence. The desktop shell is Tauri, packaged for Windows (NSIS installer) and Linux (.deb and AppImage) as 1.0.0-rc1, and it bundles Node. macOS is not packaged.
 
 ## Users
 
 Developers who want to coordinate coding agents and repository workflows from a development computer, with the ability to monitor and control runs from a phone.
+
+V1 is a private tool for its owner and the owner's own machines: the repository is private, installers are unsigned, and each phone is paired and approved per device. Sharing with a team or distributing to other developers is undecided and is not a V1 capability.
 
 ## Product Purpose
 
@@ -39,11 +41,13 @@ The desktop master owns repository access, process execution, provider authentic
 
 ## Brand Commitments
 
-Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. The first implementation should prioritize structure and usability; a later `/impeccable` pass is planned by the user.
+Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. Structure and usability came first; a first `/impeccable` critique and fix pass has since raised the type floor and contrast and fixed layout defects, and further passes are expected.
 
 ## Evidence on Hand
 
 The implementation directive is the product brief. There are no supplied logos, customer claims, benchmark claims, pricing claims, or production usage data. Do not invent them.
+
+Release state is 1.0.0-rc1 for acceptance testing. Physical Windows and Linux installs and phone pairing over Tailscale have not yet been verified on real devices (see README and docs/RELEASE_NOTES_1.0.0-rc1.md), so do not present them as proven.
 
 ## Product Principles
 
@@ -52,3 +56,7 @@ The implementation directive is the product brief. There are no supplied logos, 
 3. The desktop retains credentials and performs repository work.
 4. Important operations have durable state and an audit trail.
 5. The mobile experience controls work without pretending a command was accepted before the desktop confirms it.
+
+## Accessibility & Inclusion
+
+WCAG 2.2 AA is the minimum: 4.5:1 text contrast (3:1 for large text and UI components), visible keyboard focus, full keyboard operability, and adequate target size. The phone, used one-handed and often interrupted, is a primary context, so primary actions must be reachable and legible there. Reduced-motion preferences are honored.
