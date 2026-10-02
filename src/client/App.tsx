@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   Bell,
   Check,
@@ -23,6 +24,7 @@ import {
   LockKeyhole,
   Menu,
   Mic,
+  MoreHorizontal,
   Monitor,
   Pause,
   Play,
@@ -856,8 +858,10 @@ function CommandCenter({
 
   return (
     <main className="page-content command-page">
-      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
       <div className="home-column">
+        {snapshot.approvals.length > 0 && (
+          <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />
+        )}
         <div className="home-intro">
           <h1>What should the agents do?</h1>
           <p>Your task stays on this machine and follows its saved workflow.</p>
@@ -1347,7 +1351,15 @@ function ApprovalInbox({
           <div className="approval-item" key={approval.id}>
             <div className="approval-copy">
               <strong>{approval.operation}</strong>
-              <pre className="approval-reason">{approval.reason}</pre>
+              <p className="approval-reason">
+                {approval.reason.split(/(`[^`]+`)/).map((part, index) =>
+                  part.startsWith('`') && part.endsWith('`') ? (
+                    <code key={index}>{part.slice(1, -1)}</code>
+                  ) : (
+                    part
+                  ),
+                )}
+              </p>
               <small>Risk: {capitalize(approval.risk)}</small>
             </div>
             <div className="approval-actions">
@@ -2891,7 +2903,7 @@ function ProjectProfilePanel({
           {project.gitRoot ? 'Git repository' : 'Folder'}
         </span>
       </div>
-      <div className="metadata-grid">
+      <dl className="metadata-grid">
         <Meta label="Current branch" value={project.branch ?? 'Not detected'} icon={GitBranch} />
         <Meta
           label="Working tree"
@@ -2920,7 +2932,7 @@ function ProjectProfilePanel({
           value={project.instructionFiles.length ? project.instructionFiles.join(', ') : 'None found'}
           icon={CircleHelp}
         />
-      </div>
+      </dl>
       <div className="project-command-editor">
         <div>
           <h3>Project commands</h3>
@@ -3176,14 +3188,11 @@ function RunDetail({
   const gitOperations = details?.gitOperations ?? [];
   return (
     <section className="run-detail-panel surface-panel">
+      <button className="back-link" onClick={onClose}>
+        <ArrowLeft size={15} aria-hidden="true" />
+        All runs
+      </button>
       <div className="run-detail-top">
-        <button
-          className="icon-button tiny-icon run-close-button"
-          aria-label="Close run detail"
-          onClick={onClose}
-        >
-          <X size={15} />
-        </button>
         <div className="run-detail-title">
           <span className={`run-status-glyph run-glyph-${run.status}`}>
             <StatusIcon status={run.status} />
@@ -3196,6 +3205,22 @@ function RunDetail({
           </div>
         </div>
         <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
+        <details className="run-menu">
+          <summary aria-label="Run actions">
+            <MoreHorizontal size={18} />
+          </summary>
+          <div className="run-menu-list">
+            <button className="secondary-button" onClick={() => void replay()} disabled={isActive}>
+              <RefreshCw size={14} />
+              Run Again With Same Configuration
+            </button>
+            <button className="secondary-button" onClick={() => void duplicateWorkflow()}>
+              <Plus size={14} />
+              Duplicate and Edit
+            </button>
+            {isActive && <small>Run again is available once this run finishes.</small>}
+          </div>
+        </details>
       </div>
       <div className="thread-user">
         <p>{run.prompt}</p>
@@ -3211,10 +3236,6 @@ function RunDetail({
         </span>
         <span>{run.profile} profile</span>
         <span>{run.permissionMode}</span>
-      </div>
-      <div className="run-history-actions">
-        <button className="secondary-button" onClick={() => void replay()} disabled={isActive}><RefreshCw size={14} />Run Again With Same Configuration</button>
-        <button className="secondary-button" onClick={() => void duplicateWorkflow()}><Plus size={14} />Duplicate and Edit</button>
       </div>
       <div className="run-runtime-summary">
         <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
@@ -3380,28 +3401,6 @@ function RunDetail({
           </button>
         ) : null}
       </div>
-      {isActive && (
-        <div className="intervention-box">
-          <label className="form-field">
-            <span>Intervene in this run</span>
-            <textarea
-              rows={2}
-              maxLength={4_000}
-              value={intervention}
-              onChange={(event) => setIntervention(event.target.value)}
-              placeholder="Add a constraint or redirect the next stage…"
-            />
-          </label>
-          <button
-            className="secondary-button"
-            onClick={() => void sendIntervention()}
-            disabled={!intervention.trim()}
-          >
-            <Send size={14} />
-            Record intervention
-          </button>
-        </div>
-      )}
       {showDiff && (
         <div className="diff-viewer">
           <div className="diff-viewer-head">
@@ -3419,6 +3418,28 @@ function RunDetail({
           ) : (
             <div className="empty-inline">No tracked changes are present in this working tree.</div>
           )}
+        </div>
+      )}
+      {isActive && (
+        <div className="intervention-box">
+          <label className="form-field">
+            <span className="sr-only">Intervene in this run</span>
+            <textarea
+              rows={2}
+              maxLength={4_000}
+              value={intervention}
+              onChange={(event) => setIntervention(event.target.value)}
+              placeholder="Add a constraint or redirect the next stage…"
+            />
+          </label>
+          <button
+            className="secondary-button"
+            onClick={() => void sendIntervention()}
+            disabled={!intervention.trim()}
+          >
+            <Send size={14} />
+            Record intervention
+          </button>
         </div>
       )}
     </section>
@@ -3811,7 +3832,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           {error}
         </div>
       )}
-      <div className="usage-summary-grid">
+      <dl className="usage-summary-grid">
         <Metric
           label="Local provider/process events"
           value={String(data?.eventCount ?? snapshot.usage.events)}
@@ -3832,7 +3853,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           value={`${quotas.length} configured`}
           help="Different quota units remain separate; inspect each envelope below"
         />
-      </div>
+      </dl>
       <section className="surface-panel usage-table-panel usage-attribution-panel">
         <div className="panel-title-row">
           <div>
@@ -4592,13 +4613,13 @@ function SettingsPage({
                     : 'CLI not detected'}
                 </small>
                 <p>{provider.note}</p>
-                <div className="capability-tags">
+                <p className="capability-line">
+                  Supports:{' '}
                   {Object.entries(provider.capabilities)
                     .filter(([, enabled]) => enabled)
-                    .map(([key]) => (
-                      <span key={key}>{humanize(key)}</span>
-                    ))}
-                </div>
+                    .map(([key]) => humanize(key).toLowerCase())
+                    .join(', ') || 'nothing reported'}
+                </p>
               </div>
             </div>
           ))}
@@ -5462,9 +5483,9 @@ function PermissionInfo({
 
 function Metric({ label, value, help }: { label: string; value: string; help: string }) {
   return (
-    <div className="usage-metric surface-panel">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="usage-metric">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
       <small>{help}</small>
     </div>
   );
@@ -5472,11 +5493,11 @@ function Metric({ label, value, help }: { label: string; value: string; help: st
 function Meta({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
     <div className="metadata-item">
-      <Icon size={15} />
-      <span>
-        <small>{label}</small>
-        <strong>{value}</strong>
-      </span>
+      <dt>
+        <Icon size={14} aria-hidden="true" />
+        {label}
+      </dt>
+      <dd>{value}</dd>
     </div>
   );
 }
