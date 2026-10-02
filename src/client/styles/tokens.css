@@ -1,0 +1,127 @@
+/* ─────────────────────────────────────────────────────────────
+   Design tokens. Every colour, size, radius, shadow and duration
+   used by the app is defined here; components reference tokens only.
+   Surfaces step: canvas → nav → raised surface → secondary surface.
+   Warm orange is the product accent (primary action, selection
+   marks, identity). Status colour is reserved: red = failed,
+   green = completed, amber = assistance required.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* Type */
+  --font-sans:
+    'Geist Variable', 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono:
+    'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --fs-title: 22px; /* page title, 28px line */
+  --fs-section: 15px; /* section heading, 20px line */
+  --fs-body: 14px; /* body, 20px line */
+  --fs-control: 13px; /* controls, 18px line */
+  --fs-meta: 12px; /* metadata, 16px line */
+  --fs-micro: 11px; /* floor: badges and counters only */
+  --fs-input: 16px; /* composer and phone inputs (no mobile zoom) */
+  --fs-code: 18px; /* pairing code */
+  --lh-title: 28px;
+  --lh-section: 20px;
+  --lh-body: 20px;
+  --lh-control: 18px;
+  --lh-meta: 16px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* Surfaces */
+  --canvas: #dce8f4;
+  --nav: #c9dcef;
+  --surface: #f8fafc;
+  --surface-2: #eef4fa;
+  --surface-3: #e4edf7;
+  --selected: #b9d0e8;
+  --hover: rgb(30 60 100 / 7%);
+  --pressed: rgb(30 60 100 / 12%);
+  --scrim: rgb(23 32 42 / 42%);
+  --selection: #f3c9b6;
+  --white: #ffffff;
+  --white-70: rgb(255 255 255 / 70%);
+  --white-45: rgb(255 255 255 / 45%);
+  --scroll-thumb: rgb(35 55 75 / 24%);
+  --scroll-thumb-hover: rgb(35 55 75 / 38%);
+  --red-wash-hover: #fbd5d1;
+
+  /* Text */
+  --ink: #17202a;
+  --ink-2: #3e4b5a;
+  --ink-3: #4f5f72;
+  --ink-disabled: #6f8299;
+  --on-accent: #ffffff;
+
+  /* Lines */
+  --hairline: rgb(35 55 75 / 10%);
+  --line: rgb(35 55 75 / 16%);
+  --control-line: #6f8299;
+
+  /* Accent (warm orange) */
+  --accent: #d97757;
+  --accent-fill: #b5532f;
+  --accent-fill-hover: #a34726;
+  --accent-fill-pressed: #8f3e22;
+  --accent-ink: #a34726;
+  --accent-wash: #fbece5;
+  --focus-ring: #b5532f;
+
+  /* Status */
+  --green: #1e7a4d;
+  --green-wash: #e3f1e8;
+  --green-line: #a9d3bb;
+  --amber: #8a5a00;
+  --amber-wash: #fbefd0;
+  --amber-line: #e3cd8c;
+  --red: #b42318;
+  --red-wash: #fde8e6;
+  --red-line: #efb3ad;
+  --info: #2c5d8f;
+  --icon: #3e4b5a;
+
+  /* Spacing: 4px / 8px rhythm */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+  --page-pad: var(--s-8);
+  --page-max: 1280px;
+
+  /* Geometry */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+  --h-control: 36px;
+  --h-control-sm: 28px;
+  --h-control-lg: 40px;
+  --h-touch: 44px;
+  --nav-width: 264px;
+  --topbar-h: 52px;
+
+  /* Elevation: one level, for floating UI only */
+  --elev-float: 0 1px 2px rgb(23 32 42 / 8%), 0 8px 24px rgb(23 32 42 / 14%);
+
+  /* Motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 160ms;
+  --dur-slow: 180ms;
+
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-body);
+}

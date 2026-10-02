@@ -1,0 +1,304 @@
+.app-shell {
+  display: flex;
+  min-height: 100vh;
+  background: var(--canvas);
+}
+
+/* ───────────── Navigation rail ───────────── */
+.sidebar {
+  position: fixed;
+  z-index: 20;
+  inset: 0 auto 0 0;
+  display: flex;
+  width: var(--nav-width);
+  flex-direction: column;
+  padding: var(--s-3) var(--s-3) var(--s-2);
+  background: var(--nav);
+}
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+  padding: var(--s-1) var(--s-2);
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  text-align: left;
+  cursor: pointer;
+}
+.brand-mark {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--r-sm);
+}
+.brand-mark svg.lucide {
+  width: 14px;
+  height: 14px;
+  color: inherit;
+  stroke-width: 2;
+}
+.brand-name {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+}
+.new-task-button {
+  display: flex;
+  min-height: var(--h-control);
+  align-items: center;
+  gap: var(--s-2);
+  padding: 0 var(--s-3);
+  color: var(--ink);
+  background: var(--surface);
+  border: 0;
+  border-radius: var(--r-md);
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.new-task-button:hover {
+  background: var(--white);
+}
+.new-task-button svg.lucide {
+  color: var(--accent-ink);
+  stroke-width: 2;
+}
+.nav-label {
+  margin: var(--s-4) var(--s-3) var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-meta);
+}
+.task-nav {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  align-content: start;
+  gap: 1px;
+  margin: 0 calc(var(--s-1) * -1);
+  padding: 0 var(--s-1);
+  overflow-y: auto;
+}
+.task-nav-empty {
+  margin: var(--s-1) var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+}
+.task-link,
+.nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--dur) var(--ease),
+    color var(--dur) var(--ease);
+}
+.task-link {
+  min-height: 44px;
+  padding: var(--s-1) var(--s-3);
+}
+.nav-link {
+  min-height: var(--h-control);
+  padding: 0 var(--s-3);
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+}
+.task-link:hover,
+.nav-link:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+.task-link-active,
+.nav-link-active {
+  color: var(--ink);
+  background: var(--selected);
+}
+.task-link-active:hover,
+.nav-link-active:hover {
+  background: var(--selected);
+}
+.task-link-copy {
+  display: grid;
+  min-width: 0;
+}
+.task-link-copy strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-control);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-link-copy small {
+  overflow: hidden;
+  color: var(--ink-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-link-active .task-link-copy small {
+  color: var(--ink-2);
+}
+.primary-nav {
+  display: grid;
+  gap: 1px;
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+}
+.nav-count {
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  margin-left: auto;
+  padding: 0 6px;
+  color: var(--ink);
+  background: var(--white-70);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+}
+.nav-alert-dot,
+.notification-button i {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  background: var(--amber);
+  border-radius: 50%;
+}
+.machine-rail {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+  padding: var(--s-3) var(--s-2) var(--s-1);
+  border-top: 1px solid var(--line);
+}
+.machine-rail-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.machine-rail-copy strong {
+  overflow: hidden;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.machine-rail-copy small {
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+.mobile-scrim,
+.mobile-menu-button.icon-button {
+  display: none;
+}
+
+/* ───────────── Main column ───────────── */
+.app-main {
+  width: calc(100% - var(--nav-width));
+  min-width: 0;
+  min-height: 100vh;
+  margin-left: var(--nav-width);
+}
+.topbar {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: flex;
+  height: var(--topbar-h);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: 0 var(--page-pad);
+  background: rgb(220 232 244 / 90%);
+  backdrop-filter: blur(10px);
+}
+.topbar-title {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: var(--fs-section);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-section);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.connection-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+}
+.notification-button i {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  margin: 0;
+  border: 2px solid var(--canvas);
+  box-sizing: content-box;
+  width: 6px;
+  height: 6px;
+}
+
+/* ───────────── Page frame ───────────── */
+.page-content {
+  width: min(var(--page-max), 100%);
+  margin: 0 auto;
+  padding: var(--s-4) var(--page-pad) var(--s-12);
+}
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-5);
+  margin-bottom: var(--s-6);
+}
+.page-heading h1 {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+  letter-spacing: -0.02em;
+}
+.page-heading p {
+  max-width: 64ch;
+  margin-top: var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+}
+.page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+.topbar-title-quiet {
+  visibility: hidden;
+}

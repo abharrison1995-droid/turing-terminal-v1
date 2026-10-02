@@ -1,0 +1,442 @@
+/* ───────────── Workflow Studio ───────────── */
+.workflow-studio-layout {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--s-8);
+}
+.studio-rail {
+  position: sticky;
+  top: calc(var(--topbar-h) + var(--s-3));
+  display: grid;
+  gap: var(--s-5);
+  max-height: calc(100vh - var(--topbar-h) - var(--s-6));
+  overflow-y: auto;
+}
+.studio-rail-group {
+  display: grid;
+  gap: 1px;
+}
+.studio-rail-label {
+  margin: 0 var(--s-3) var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+}
+.workflow-select-row {
+  min-height: 44px;
+  padding: var(--s-1) var(--s-3);
+}
+.workflow-select-row > span:nth-child(2) {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+.workflow-select-row strong {
+  overflow: hidden;
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-select-row small {
+  color: var(--ink-3);
+}
+.workflow-selected strong {
+  font-weight: var(--fw-semibold);
+}
+.studio-nav {
+  display: grid;
+  gap: 1px;
+}
+.studio-nav a {
+  display: flex;
+  min-height: var(--h-control);
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-3);
+  color: var(--ink-2);
+  border-radius: var(--r-md);
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  text-decoration: none;
+  transition: background-color var(--dur) var(--ease);
+}
+.studio-nav a:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+.studio-nav a[aria-current='true'] {
+  color: var(--ink);
+  background: var(--selected);
+}
+.studio-nav a span {
+  margin-left: auto;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+.studio-nav-chips {
+  display: none;
+}
+.workflow-editor {
+  display: grid;
+  min-width: 0;
+  gap: var(--s-4);
+}
+
+/* Sections */
+.studio-section {
+  min-width: 0;
+  scroll-margin-top: calc(var(--topbar-h) + var(--s-4));
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+.studio-section-title {
+  margin: 0;
+  font-size: inherit;
+  letter-spacing: 0;
+}
+.studio-section-head {
+  display: flex;
+  width: 100%;
+  min-height: 60px;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-5);
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-lg);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.studio-section-head:hover {
+  background: var(--hover);
+}
+.studio-section-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+.studio-section-name {
+  font-size: var(--fs-section);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-section);
+  letter-spacing: -0.01em;
+}
+.studio-section-summary {
+  overflow: hidden;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.studio-section-head > svg.lucide {
+  width: 16px;
+  height: 16px;
+  color: var(--ink-3);
+  transition: transform var(--dur) var(--ease);
+}
+.studio-section-open > .studio-section-title > .studio-section-head > svg.lucide {
+  transform: rotate(180deg);
+}
+.studio-section-open > .studio-section-title > .studio-section-head {
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+.studio-section-body {
+  display: grid;
+  gap: var(--s-4);
+  padding: var(--s-1) var(--s-5) var(--s-5);
+}
+.studio-section-body > .settings-disclosure {
+  margin: 0;
+}
+.workflow-title-fields {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: var(--s-3);
+}
+.toggle-stack {
+  display: grid;
+  gap: var(--s-4);
+}
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-3);
+}
+
+/* Connection profiles */
+.connection-profile-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.connection-profile-list > span {
+  padding: var(--s-1) var(--s-3);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  font-size: var(--fs-meta);
+}
+
+/* Agents (stage sequence) */
+.stage-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-1) 0 0;
+}
+.stage-editor-heading h2 {
+  font-size: var(--fs-section);
+  line-height: var(--lh-section);
+}
+.stage-editor-heading p {
+  max-width: 72ch;
+  margin-top: 2px;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.workflow-stage-list {
+  display: grid;
+  gap: var(--s-2);
+}
+.workflow-stage-node {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: var(--s-3);
+}
+.stage-node-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: var(--s-4);
+}
+.stage-number {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: 50%;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+.stage-node-rail > i {
+  width: 1px;
+  flex: 1;
+  min-height: var(--s-3);
+  margin-top: var(--s-1);
+  background: var(--line);
+}
+.stage-node-body {
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+.workflow-stage-disabled .stage-node-body {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--line);
+}
+.workflow-stage-disabled .stage-node-head,
+.workflow-stage-disabled .stage-summary {
+  opacity: 0.6;
+}
+.stage-node-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-3) var(--s-3) var(--s-4);
+}
+.stage-kind-icon {
+  display: grid;
+  place-items: center;
+  color: var(--icon);
+}
+.stage-name-input {
+  min-width: 0;
+  flex: 1;
+}
+.stage-name-input input {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--h-control-sm);
+  padding: 0 var(--s-2);
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-section);
+  font-weight: var(--fw-semibold);
+}
+.stage-name-input input:hover {
+  border-color: var(--line);
+}
+.stage-name-input input:focus-visible {
+  background: var(--surface);
+  border-color: var(--focus-ring);
+  outline: 0;
+}
+.stage-reorder {
+  display: flex;
+  gap: 1px;
+}
+.stage-expand {
+  display: inline-grid;
+  width: var(--h-control-sm);
+  height: var(--h-control-sm);
+  place-items: center;
+  padding: 0;
+  color: var(--ink-3);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.stage-expand:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+.stage-expand svg.lucide {
+  transition: transform var(--dur) var(--ease);
+}
+.stage-expand[aria-expanded='true'] svg.lucide {
+  transform: rotate(180deg);
+}
+
+/* Scannable summary of one agent */
+.stage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-2);
+  padding: 0 var(--s-4) var(--s-3);
+  margin-top: calc(var(--s-1) * -1);
+}
+.stage-summary .agent-chip {
+  min-height: 24px;
+}
+.stage-summary .agent-chip-label {
+  color: var(--ink-3);
+}
+.stage-summary-note {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.stage-enabled {
+  margin-left: auto;
+}
+.connection-profile-body {
+  display: grid;
+  gap: var(--s-4);
+}
+.stage-summary-required {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--amber);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+}
+.stage-node-config {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-3);
+  padding: var(--s-4);
+  border-top: 1px solid var(--hairline);
+}
+.stage-model-field {
+  grid-column: span 2;
+}
+.reasoning-field {
+  grid-column: span 1;
+}
+.stage-node-config > .stage-wide,
+.stage-node-config > fieldset {
+  grid-column: 1 / -1;
+}
+.stage-advanced {
+  grid-column: 1 / -1;
+}
+.stage-advanced > summary {
+  min-height: var(--h-control);
+  padding-left: 0;
+  color: var(--ink-2);
+}
+.stage-advanced-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-4) var(--s-3);
+  padding-top: var(--s-2);
+}
+.stage-advanced-grid .stage-wide {
+  grid-column: 1 / -1;
+}
+.stage-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.context-inclusion-flags {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-3);
+}
+.condition-skip-targets {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.condition-skip-targets legend {
+  margin-bottom: var(--s-2);
+  padding: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+}
+.model-catalog-status {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+}
+.model-status-unavailable {
+  color: var(--amber);
+}
+.workflow-limits-note {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  padding-right: 0;
+  padding-left: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.workflow-bottom-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.workflow-version {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.studio-template-select {
+  display: none;
+}
