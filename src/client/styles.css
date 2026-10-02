@@ -5310,3 +5310,19 @@ svg.lucide {
 .timeline-index svg.lucide {
   color: inherit;
 }
+
+/* Informational notes are neutral; amber is for assistance required */
+.connection-unavailable {
+  color: var(--ink-secondary);
+  background: #fff;
+  border-color: var(--line);
+}
+.connection-unavailable > span {
+  color: var(--icon);
+  background: transparent;
+  border: 0;
+}
+.connection-unavailable strong,
+.connection-unavailable p {
+  color: var(--ink-secondary);
+}
