@@ -4979,3 +4979,63 @@ button:disabled {
 .usage-metric {
   min-height: 0;
 }
+
+/* Last small fixes from the verdict pass */
+.quota-save-button {
+  align-self: end;
+  justify-self: start;
+  min-height: 38px;
+  padding: 0 16px;
+}
+.wrap-input {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--control-line);
+  border-radius: 8px;
+  font: inherit;
+  field-sizing: content;
+  resize: none;
+}
+.home-intro h1 {
+  text-wrap: balance;
+}
+@media (max-width: 680px) {
+  .launch-blockers {
+    order: 1;
+  }
+  .home-status {
+    order: 2;
+  }
+  .home-providers {
+    order: 3;
+  }
+  .home-tasks {
+    order: 4;
+  }
+  .home-intro {
+    padding: 2vh 0 2px;
+  }
+  .home-intro h1 {
+    font-size: 22px;
+  }
+  .composer textarea {
+    min-height: 48px;
+  }
+  .intervention-box {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 18px;
+  }
+  .intervention-box .secondary-button {
+    min-height: 44px;
+  }
+  .intervention-box textarea {
+    min-height: 40px;
+  }
+}

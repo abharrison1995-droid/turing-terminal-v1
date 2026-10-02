@@ -1775,7 +1775,9 @@ function WorkflowsPage({
               </label>
               <label className="form-field">
                 <span>Purpose</span>
-                <input
+                <textarea
+                  className="wrap-input"
+                  rows={1}
                   value={draft.description}
                   maxLength={500}
                   onChange={(event) => changeWorkflow({ description: event.target.value })}
@@ -3999,7 +4001,11 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
               onChange={(event) => setQuotaDraft({ ...quotaDraft, notes: event.target.value })}
             />
           </label>
-          <button className="primary-button" type="submit" disabled={savingQuota || !quotaDraft.providerId}>
+          <button
+            className="primary-button quota-save-button"
+            type="submit"
+            disabled={savingQuota || !quotaDraft.providerId}
+          >
             <Save size={14} /> {savingQuota ? 'Saving…' : 'Save envelope'}
           </button>
         </form>
