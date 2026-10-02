@@ -3,7 +3,7 @@ name: Desktop installers
 on:
   workflow_dispatch:
   push:
-    tags: [v1.0.0-rc1]
+    tags: [v1.0.0-rc2]
 
 permissions:
   contents: read
@@ -48,10 +48,10 @@ jobs:
         run: npm run desktop:release
       - uses: actions/upload-artifact@v4
         with:
-          name: turing-terminal-linux-rc1
+          name: turing-terminal-linux-rc2
           path: |
-            dist/release/1.0.0-rc1/*.deb
-            dist/release/1.0.0-rc1/*.AppImage
+            dist/release/1.0.0-rc2/*.deb
+            dist/release/1.0.0-rc2/*.AppImage
           if-no-files-found: error
           retention-days: 30
 
@@ -81,8 +81,8 @@ jobs:
         run: npm run desktop:release
       - uses: actions/upload-artifact@v4
         with:
-          name: turing-terminal-windows-rc1
-          path: dist/release/1.0.0-rc1/*.exe
+          name: turing-terminal-windows-rc2
+          path: dist/release/1.0.0-rc2/*.exe
           if-no-files-found: error
           retention-days: 30
 
@@ -96,16 +96,16 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          name: turing-terminal-linux-rc1
-          path: dist/release/1.0.0-rc1/staging/linux
+          name: turing-terminal-linux-rc2
+          path: dist/release/1.0.0-rc2/staging/linux
       - uses: actions/download-artifact@v4
         with:
-          name: turing-terminal-windows-rc1
-          path: dist/release/1.0.0-rc1/staging/windows
+          name: turing-terminal-windows-rc2
+          path: dist/release/1.0.0-rc2/staging/windows
       - run: node scripts/merge-release.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: Turing-Terminal-1.0.0-rc1
-          path: dist/release/1.0.0-rc1
+          name: Turing-Terminal-1.0.0-rc2
+          path: dist/release/1.0.0-rc2
           if-no-files-found: error
           retention-days: 30

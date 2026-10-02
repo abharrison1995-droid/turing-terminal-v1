@@ -1,6 +1,6 @@
 [package]
 name = "turing-terminal"
-version = "1.0.0-rc1"
+version = "1.0.0-rc2"
 description = "Turing Terminal desktop shell"
 authors = ["Turing Terminal"]
 edition = "2021"

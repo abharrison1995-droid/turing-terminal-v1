@@ -58,7 +58,7 @@ smoke_launcher() {
     done
     test "$ready" = true
     grep -q "turing-terminal" "$work/health.json"
-    grep -q "1.0.0-rc1" "$work/health.json"
+    grep -q "1.0.0-rc2" "$work/health.json"
     curl --fail --silent http://127.0.0.1:4317/manifest.webmanifest | grep -q "Turing Terminal"
     curl --fail --silent http://127.0.0.1:4317/ | grep -q "/assets/index-"
   ' _ "$mode" "$launcher"

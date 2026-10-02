@@ -1,10 +1,10 @@
 # Install Turing Terminal on Linux
 
-Turing Terminal 1.0.0-rc1 is a release candidate. The packaged desktop app targets x86_64 Ubuntu, Debian, and Linux Mint.
+Turing Terminal 1.0.0-rc2 is a release candidate. The packaged desktop app targets x86_64 Ubuntu, Debian, and Linux Mint.
 
 ## Ubuntu, Debian, or Linux Mint (`.deb`)
 
-1. Download `turing-terminal_1.0.0-rc1_amd64.deb` from the private repository's matching GitHub Actions build artifact.
+1. Download `turing-terminal_1.0.0-rc2_amd64.deb` from the private repository's matching GitHub Actions build artifact.
 2. Double-click the downloaded file and install it with the distribution's software installer.
 3. Launch **Turing Terminal** from the application menu.
 4. In **Settings → Desktop application**, review system readiness. Git, Tailscale, OpenCode, Codex, Claude Code, and Cline are detected when available. Missing optional tools do not block the app and are not installed by Turing Terminal.
@@ -13,11 +13,11 @@ The package includes the Node.js runtime and app dependencies needed by the Desk
 
 ## Portable AppImage
 
-1. Download `Turing-Terminal-x86_64-1.0.0-rc1.AppImage`.
+1. Download `Turing-Terminal-x86_64-1.0.0-rc2.AppImage`.
 2. In the file manager, open **Properties → Permissions** and allow the file to run as a program.
 3. Double-click the AppImage to launch it.
 
-If your file manager does not provide an executable permission toggle, run `chmod +x Turing-Terminal-x86_64-1.0.0-rc1.AppImage` once, then launch the file. The AppImage bundles the desktop libraries; compatibility still depends on the host glibc baseline and graphics drivers. See [PACKAGING.md](PACKAGING.md) for the build baseline.
+If your file manager does not provide an executable permission toggle, run `chmod +x Turing-Terminal-x86_64-1.0.0-rc2.AppImage` once, then launch the file. The AppImage bundles the desktop libraries; compatibility still depends on the host glibc baseline and graphics drivers. See [PACKAGING.md](PACKAGING.md) for the build baseline.
 
 ## Background behavior and data
 

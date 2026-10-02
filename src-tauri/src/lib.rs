@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 
-const APP_VERSION: &str = "1.0.0-rc1";
+const APP_VERSION: &str = "1.0.0-rc2";
 const FIRST_PORT: u16 = 4317;
 const LAST_PORT: u16 = 4348;
 const START_TIMEOUT: Duration = Duration::from_secs(12);
@@ -656,7 +656,7 @@ mod tests {
         );
         assert!(is_current_turing_health(&health));
         assert!(!is_current_turing_health(
-            r#"{"ok":true,"service":"other","version":"1.0.0-rc1","localOnly":true}"#
+            r#"{"ok":true,"service":"other","version":"1.0.0-rc2","localOnly":true}"#
         ));
         assert!(!is_current_turing_health(
             r#"{"ok":true,"service":"turing-terminal","version":"1.0.0","localOnly":true}"#
