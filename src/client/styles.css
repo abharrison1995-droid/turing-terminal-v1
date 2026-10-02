@@ -5039,3 +5039,274 @@ button:disabled {
     min-height: 40px;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Icons: one system. One outline weight, one neutral colour, three
+   size roles. Colour is reserved for three states: red = failed,
+   green = completed, amber = assistance required.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --icon: #3a4755;
+}
+svg.lucide {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--icon);
+  stroke-width: 1.6;
+}
+/* 18px: icon-only controls */
+.icon-button svg.lucide,
+.send-button svg.lucide,
+.voice-button svg.lucide,
+.run-menu > summary svg.lucide,
+.notification-button svg.lucide {
+  width: 18px;
+  height: 18px;
+}
+/* 14px: inline with 13px text */
+.status-pill svg.lucide,
+.mini-status svg.lucide,
+.text-button svg.lucide,
+.quiet-button svg.lucide,
+.primary-button svg.lucide,
+.secondary-button svg.lucide,
+.back-link svg.lucide,
+.row-chevron,
+.compact-button svg.lucide {
+  width: 14px;
+  height: 14px;
+}
+/* icons that must follow their parent's colour */
+.primary-button svg.lucide,
+.send-button svg.lucide,
+.new-task-button svg.lucide,
+.brand-mark svg.lucide,
+.voice-live svg.lucide,
+.status-pill svg.lucide,
+.mini-status svg.lucide,
+.run-status-glyph svg.lucide,
+.approval-icon svg.lucide,
+.text-button svg.lucide,
+.back-link svg.lucide,
+.danger-button svg.lucide,
+.pill-button svg.lucide,
+.pill-select svg.lucide {
+  color: inherit;
+}
+.pill-select svg.lucide,
+.pill-button svg.lucide {
+  color: var(--icon);
+}
+.global-error svg.lucide,
+.form-error svg.lucide {
+  color: var(--red);
+}
+.launch-blockers li > svg.lucide,
+.approval-icon svg.lucide {
+  color: var(--amber);
+}
+
+/* No tiles behind icons */
+.workflow-row-icon,
+.stage-kind-icon,
+.project-row-symbol,
+.project-banner-symbol,
+.machine-symbol,
+.pairing-mark,
+.desktop-startup-mark,
+.approval-icon,
+.empty-state > span {
+  width: auto;
+  height: auto;
+  min-width: 0;
+  color: var(--icon);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+.approval-icon {
+  color: var(--amber);
+}
+.provider-mark,
+.provider-mark-claude-code,
+.provider-mark-cline {
+  color: var(--ink-secondary);
+  background: #eef4fb;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+.nav-count {
+  color: var(--ink);
+  background: rgb(255 255 255 / 70%);
+}
+
+/* Status colour: only failed, completed and assistance-needed carry it */
+.status-ready,
+.status-online,
+.status-approved,
+.status-attention,
+.status-retrying,
+.status-running,
+.status-unknown,
+.status-queued,
+.status-preparing,
+.status-cancelling,
+.status-cancelled,
+.status-skipped,
+.status-pending,
+.status-denied {
+  color: var(--ink-secondary);
+  background: #eef4fb;
+  border-color: var(--line);
+}
+.status-completed,
+.status-passed {
+  color: #1d6f46;
+  background: var(--green-wash);
+  border-color: #a9d9bc;
+}
+.status-waiting_for_approval,
+.status-waiting_for_user,
+.status-paused,
+.status-paused_limit_reached {
+  color: #7a5200;
+  background: var(--amber-wash);
+  border-color: #e5ce8a;
+}
+.status-failed,
+.status-offline {
+  color: #9a1f24;
+  background: var(--red-wash);
+  border-color: #edb4b1;
+}
+.mini-status-connected,
+.mini-status-missing {
+  color: var(--ink-secondary);
+  background: #eef4fb;
+  border-color: var(--line);
+}
+.run-status-glyph,
+.run-glyph-running,
+.run-glyph-cancelled,
+.run-glyph-completed,
+.run-glyph-passed,
+.run-glyph-failed,
+.run-glyph-paused,
+.run-glyph-paused_limit_reached,
+.run-glyph-waiting_for_approval,
+.run-glyph-waiting_for_user {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+  color: var(--icon);
+  background: transparent;
+  border-radius: 0;
+}
+.run-glyph-completed,
+.run-glyph-passed {
+  color: var(--green);
+}
+.run-glyph-failed {
+  color: var(--red);
+}
+.run-glyph-waiting_for_approval,
+.run-glyph-waiting_for_user,
+.run-glyph-paused,
+.run-glyph-paused_limit_reached {
+  color: var(--amber);
+}
+.stage-label-running,
+.stage-label-skipped {
+  color: var(--ink-muted);
+}
+.stage-label-waiting_for_approval,
+.stage-label-waiting_for_user {
+  color: var(--amber);
+}
+.severity {
+  color: var(--ink-secondary);
+  background: #eef4fb;
+}
+.severity-critical,
+.severity-high {
+  color: var(--red);
+  background: var(--red-wash);
+}
+.presence-dot {
+  background: var(--ink-muted);
+  box-shadow: none;
+}
+.connection-state-error .presence-dot,
+.status-offline .presence-dot {
+  background: var(--red);
+}
+.nav-alert-dot {
+  background: var(--amber);
+}
+.inline-callout > svg.lucide {
+  color: var(--icon);
+}
+
+/* One disclosure chevron */
+.home-providers > summary,
+.rule-snapshot > summary,
+.execution-operation > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+}
+.home-providers > summary {
+  justify-content: center;
+}
+.home-providers > summary::-webkit-details-marker,
+.rule-snapshot > summary::-webkit-details-marker,
+.execution-operation > summary::-webkit-details-marker {
+  display: none;
+}
+.home-providers > summary::before,
+.rule-snapshot > summary::before,
+.execution-operation > summary::before {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-right: 1.6px solid var(--icon);
+  border-bottom: 1.6px solid var(--icon);
+  content: '';
+  transform: rotate(-45deg);
+  transition: transform 0.16s ease-out;
+}
+.home-providers[open] > summary::before,
+.rule-snapshot[open] > summary::before,
+.execution-operation[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+/* Stage icons: bare; colour only for completed, failed, assistance needed */
+.timeline-index,
+.stage-passed .timeline-index,
+.stage-running .timeline-index,
+.stage-failed .timeline-index,
+.stage-waiting_for_approval .timeline-index,
+.stage-waiting_for_user .timeline-index {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+  color: var(--icon);
+  background: transparent;
+  border-radius: 0;
+}
+.stage-passed .timeline-index {
+  color: var(--green);
+}
+.stage-failed .timeline-index {
+  color: var(--red);
+}
+.stage-waiting_for_approval .timeline-index,
+.stage-waiting_for_user .timeline-index {
+  color: var(--amber);
+}
+.timeline-index svg.lucide {
+  color: inherit;
+}

@@ -280,7 +280,7 @@ function App() {
           aria-label="Turing Terminal home"
         >
           <span className="brand-mark">
-            <Command size={16} strokeWidth={2.2} />
+            <Command size={16} />
           </span>
           <span className="brand-name">Turing Terminal</span>
         </button>
@@ -291,7 +291,7 @@ function App() {
             changePage('command');
           }}
         >
-          <Plus size={16} strokeWidth={2.4} /> New task
+          <Plus size={16} /> New task
         </button>
         <nav className="task-nav" aria-label="Tasks">
           {railTasks.length === 0 ? (
@@ -331,7 +331,7 @@ function App() {
               }}
               aria-current={page === id ? 'page' : undefined}
             >
-              <Icon size={16} strokeWidth={1.9} /> <span>{label}</span>
+              <Icon size={16} /> <span>{label}</span>
               {id === 'runs' && activeRuns.length > 0 && (
                 <span className="nav-count">{activeRuns.length}</span>
               )}
@@ -973,7 +973,7 @@ function CommandCenter({
                 disabled={busy || !task.trim() || !projectId || !workflowId}
                 aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
               >
-                {busy ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} strokeWidth={2.4} />}
+                {busy ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} />}
               </button>
             )}
           </div>
@@ -5539,7 +5539,7 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'cancelled') return <Square size={12} />;
   if (status === 'running') return <LoaderCircle size={14} className="spin" />;
   if (status === 'waiting_for_approval') return <LockKeyhole size={13} />;
-  if (status === 'waiting_for_user') return <Sparkles size={13} />;
+  if (status === 'waiting_for_user') return <CircleHelp size={13} />;
   if (status === 'paused') return <Pause size={13} />;
   if (status === 'paused_limit_reached') return <Clock3 size={13} />;
   return <Clock3 size={13} />;
