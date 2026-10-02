@@ -18,7 +18,18 @@ describe('workflow export security', () => {
       billingMode: 'subscriptions-plus-decision-budget',
       meteredBudget: { perRunUsd: 0.05, unknownCostPolicy: 'block' },
       stages: [
-        { id: 'plan', label: 'Plan', kind: 'planner', backendId: 'opencode', providerId: 'opencode-go', billingLane: 'opencode-go-subscription', connectionProfileId: 'local-profile-1', modelId: 'opencode-go/kimi-k3', variantId: 'high', customInstructions: 'Use token=abcdef1234567890 never' },
+        {
+          id: 'plan',
+          label: 'Plan',
+          kind: 'planner',
+          backendId: 'opencode',
+          providerId: 'opencode-go',
+          billingLane: 'opencode-go-subscription',
+          connectionProfileId: 'local-profile-1',
+          modelId: 'opencode-go/kimi-k3',
+          variantId: 'high',
+          customInstructions: 'Use token=abcdef1234567890 never',
+        },
         {
           id: 'gate',
           label: 'Gate',
@@ -30,7 +41,14 @@ describe('workflow export security', () => {
             questionType: 'boolean',
             question: 'Done?',
             inputs: ['task'],
-            routing: { field: 'probability', passAtOrAbove: 0.95, failAtOrBelow: 0.15, onPass: { action: 'continue' }, onFail: { action: 'fail-run' }, onUncertain: { action: 'human-approval' } },
+            routing: {
+              field: 'probability',
+              passAtOrAbove: 0.95,
+              failAtOrBelow: 0.15,
+              onPass: { action: 'continue' },
+              onFail: { action: 'fail-run' },
+              onUncertain: { action: 'human-approval' },
+            },
           },
         },
       ],
@@ -40,10 +58,23 @@ describe('workflow export security', () => {
     expect(text).not.toContain('local-profile-1');
     expect(text).not.toContain('local-openrouter-profile');
     expect(text).not.toContain('abcdef1234567890');
-    const [stagePlan, stageGate] = exported.workflows[0]!.stages as Array<Record<string, unknown> & { decision?: Record<string, unknown> }>;
-    expect(stagePlan).toMatchObject({ modelId: 'opencode-go/kimi-k3', variantId: 'high', connectionReference: 'opencode:opencode-go:opencode-go-subscription' });
-    expect(stageGate!.decision).toMatchObject({ modelId: 'typesafe/jev-1.13', connectionReference: 'openrouter:openrouter:openrouter-metered', routing: { passAtOrAbove: 0.95, failAtOrBelow: 0.15 } });
-    expect(exported.workflows[0]).toMatchObject({ billingMode: 'subscriptions-plus-decision-budget', meteredBudget: { perRunUsd: 0.05 } });
+    const [stagePlan, stageGate] = exported.workflows[0]!.stages as Array<
+      Record<string, unknown> & { decision?: Record<string, unknown> }
+    >;
+    expect(stagePlan).toMatchObject({
+      modelId: 'opencode-go/kimi-k3',
+      variantId: 'high',
+      connectionReference: 'opencode:opencode-go:opencode-go-subscription',
+    });
+    expect(stageGate!.decision).toMatchObject({
+      modelId: 'typesafe/jev-1.13',
+      connectionReference: 'openrouter:openrouter:openrouter-metered',
+      routing: { passAtOrAbove: 0.95, failAtOrBelow: 0.15 },
+    });
+    expect(exported.workflows[0]).toMatchObject({
+      billingMode: 'subscriptions-plus-decision-budget',
+      meteredBudget: { perRunUsd: 0.05 },
+    });
   });
 });
 
@@ -53,10 +84,21 @@ describe('mobile-safe run preview', () => {
       billingMode: 'subscriptions-plus-decision-budget',
       routingSummary: {
         subscriptions: [
-          { billingLane: 'opencode-go-subscription', label: 'OpenCode Go subscription', stages: ['Plan', 'Implement', 'Review'] },
+          {
+            billingLane: 'opencode-go-subscription',
+            label: 'OpenCode Go subscription',
+            stages: ['Plan', 'Implement', 'Review'],
+          },
           { billingLane: 'claude-subscription', label: 'Claude subscription', stages: [] },
         ],
-        metered: [{ billingLane: 'openrouter-metered', label: 'OpenRouter metered', generativeStages: [], decisionStages: ['Gate'] }],
+        metered: [
+          {
+            billingLane: 'openrouter-metered',
+            label: 'OpenRouter metered',
+            generativeStages: [],
+            decisionStages: ['Gate'],
+          },
+        ],
         meteredNone: false,
         runMeteredCapUsd: 0.05,
         dailyBudgetUsd: 1,
@@ -65,7 +107,14 @@ describe('mobile-safe run preview', () => {
         paygFallback: 'none',
         externalDecisionDataPolicy: 'ask-first',
       },
-      providerFallbackStatus: [{ backendId: 'opencode', billingLane: 'opencode-go-subscription', status: 'unknown', message: 'Provider-side PAYG fallback status cannot be verified by Turing Terminal.' }],
+      providerFallbackStatus: [
+        {
+          backendId: 'opencode',
+          billingLane: 'opencode-go-subscription',
+          status: 'unknown',
+          message: 'Provider-side PAYG fallback status cannot be verified by Turing Terminal.',
+        },
+      ],
     } as unknown as RunPreview;
     render(<RoutingSummaryPanel preview={preview} />);
     expect(screen.getByText('Billing routing · Subscriptions + Decision Budget')).toBeTruthy();
@@ -76,9 +125,21 @@ describe('mobile-safe run preview', () => {
     expect(screen.getByText(/UNKNOWN — Provider-side PAYG fallback status cannot be verified/)).toBeTruthy();
     expect(
       decisionAssignmentLine({
-        decision: { engine: 'jev-openrouter', questionType: 'boolean', question: 'Done?', routingField: 'probability', inputs: ['task', 'tests'], external: true, externalDataPolicy: 'ask-first', configHash: 'abcdef0123456789', escalation: null },
+        decision: {
+          engine: 'jev-openrouter',
+          questionType: 'boolean',
+          question: 'Done?',
+          routingField: 'probability',
+          inputs: ['task', 'tests'],
+          external: true,
+          externalDataPolicy: 'ask-first',
+          configHash: 'abcdef0123456789',
+          escalation: null,
+        },
       } as RunPreview['providerAssignments'][number]),
-    ).toBe('Jev via OpenRouter Decisions · boolean · routes on probability · inputs Task specification, Test result · config abcdef0123');
+    ).toBe(
+      'Jev via OpenRouter Decisions · boolean · routes on probability · inputs Task specification, Test result · config abcdef0123',
+    );
   });
 
   it('renders unavailable metrics as Unavailable, never as zero', () => {

@@ -4,12 +4,12 @@ Context is first-class configuration. No stage receives the whole repository, fu
 
 ## Strategies
 
-| Strategy | Repository access | Typical use |
-| --- | --- | --- |
-| **Focused / Auto** (default) | relevant files through the broker, within limits | most stages |
-| **Changed Files** | only paths changed in the working tree, plus include globs | review stages |
-| **Artifacts Only** | structured artifacts; files only if include globs name them | gates, consolidation |
-| **Broad Project** | broad repository access, still within limits | explicitly chosen only |
+| Strategy                     | Repository access                                           | Typical use            |
+| ---------------------------- | ----------------------------------------------------------- | ---------------------- |
+| **Focused / Auto** (default) | relevant files through the broker, within limits            | most stages            |
+| **Changed Files**            | only paths changed in the working tree, plus include globs  | review stages          |
+| **Artifacts Only**           | structured artifacts; files only if include globs name them | gates, consolidation   |
+| **Broad Project**            | broad repository access, still within limits                | explicitly chosen only |
 
 ## Budgets
 
@@ -21,10 +21,10 @@ Run Preview shows each stage's strategy and an **ESTIMATED** initial input (char
 
 ## Over-limit policy
 
-| Policy | Behaviour |
-| --- | --- |
+| Policy                | Behaviour                                                                                                                                                                                                                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Compact** (default) | Optional blocks (prior artifacts, previous responses, diff, build/test summaries, consolidation/remediation finding lists) are shortened head-and-tail with a visible marker. Task, rules, security, and role instructions are never removed. If mandatory content alone exceeds the limit, the stage stops before any provider call. |
-| **Ask** / **Stop** | Start is blocked when the preview estimate exceeds the limit; later tool reads that would exceed it are denied. |
+| **Ask** / **Stop**    | Start is blocked when the preview estimate exceeds the limit; later tool reads that would exceed it are denied.                                                                                                                                                                                                                       |
 
 ## Structured handoffs
 

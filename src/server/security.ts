@@ -4,7 +4,8 @@ export function safeChildEnvironment(source: NodeJS.ProcessEnv = process.env): N
     /(^|_)(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|MANAGEMENT_KEY|PROVISIONING_KEY|PASSPHRASE|CREDENTIALS?|AUTH_CONFIG)(_|$)/i;
   for (const key of Object.keys(env)) {
     // OpenRouter credentials are Turing-held only: no OPENROUTER_* variable ever reaches an agent.
-    if (sensitiveName.test(key) || /^(OPENAI|ANTHROPIC)_BASE_URL$/i.test(key) || /^OPENROUTER_/i.test(key)) delete env[key];
+    if (sensitiveName.test(key) || /^(OPENAI|ANTHROPIC)_BASE_URL$/i.test(key) || /^OPENROUTER_/i.test(key))
+      delete env[key];
   }
   return env;
 }

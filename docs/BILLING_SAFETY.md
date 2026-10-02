@@ -4,16 +4,16 @@ Turing Terminal is built so that accidental spending is difficult. This page des
 
 ## Defaults
 
-| Setting | Default |
-| --- | --- |
-| Billing mode | **Subscriptions Only** |
-| Provider lock | **On** |
-| Decision Layer | Absent — no workflow contains a Decision Gate unless you add one |
-| OpenRouter | Unused until a stage or Decision Gate explicitly selects an OpenRouter connection |
-| Per-run metered cap | None set (metered work is blocked anyway in Subscriptions Only) |
-| Unknown-cost requests | **Block** |
-| External decision data | **Ask before first external send** |
-| OpenAI API / Anthropic API / Cline usage-billing / OpenCode metered fallback | Off — Turing has no automatic fallback path at all |
+| Setting                                                                      | Default                                                                           |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Billing mode                                                                 | **Subscriptions Only**                                                            |
+| Provider lock                                                                | **On**                                                                            |
+| Decision Layer                                                               | Absent — no workflow contains a Decision Gate unless you add one                  |
+| OpenRouter                                                                   | Unused until a stage or Decision Gate explicitly selects an OpenRouter connection |
+| Per-run metered cap                                                          | None set (metered work is blocked anyway in Subscriptions Only)                   |
+| Unknown-cost requests                                                        | **Block**                                                                         |
+| External decision data                                                       | **Ask before first external send**                                                |
+| OpenAI API / Anthropic API / Cline usage-billing / OpenCode metered fallback | Off — Turing has no automatic fallback path at all                                |
 
 ## Billing lanes
 
@@ -28,11 +28,11 @@ A route can only execute through the lane its provider bills through (`routeMatc
 
 The run-level mode is evaluated by one function (`evaluateBillingLane`) used by Run Preview, the run engine, the OpenRouter adapter, and the Decision Layer.
 
-| Mode | Subscription lanes | Metered generative stages | Metered Decision Gates |
-| --- | --- | --- | --- |
-| **Subscriptions Only** | allowed | blocked | blocked |
-| **Subscriptions + Decision Budget** | allowed | blocked | OpenRouter decision calls allowed, **requires a per-run cap** |
-| **Custom** | allowed | explicitly configured lanes (optionally limited to `customAllowedLanes`) | same |
+| Mode                                | Subscription lanes | Metered generative stages                                                | Metered Decision Gates                                        |
+| ----------------------------------- | ------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| **Subscriptions Only**              | allowed            | blocked                                                                  | blocked                                                       |
+| **Subscriptions + Decision Budget** | allowed            | blocked                                                                  | OpenRouter decision calls allowed, **requires a per-run cap** |
+| **Custom**                          | allowed            | explicitly configured lanes (optionally limited to `customAllowedLanes`) | same                                                          |
 
 An unknown lane is blocked in every mode. The legacy `subscriptionOnly` flag still works: `false` maps to Custom; `true` never widens a stricter saved mode.
 
@@ -70,12 +70,12 @@ The input estimate is conservative but is not a tokenizer. A pathological prompt
 
 Turing's fallback policy and the provider's account settings are different things.
 
-| Lane | Provider-side behaviour | What Turing shows |
-| --- | --- | --- |
-| OpenCode Go | The OpenCode console "Use balance" option can continue on Console balance after the Go limits. No supported read-only check exists. | **Unknown** — "Provider-side PAYG fallback status cannot be verified by Turing Terminal." |
-| ClinePass | Overflow behaviour is not documented. Turing never switches ClinePass to Cline usage-billing. | **Unknown** |
-| ChatGPT subscription | Purchased credits are governed by the OpenAI account. | **Unknown** |
-| Claude subscription | Extra-usage settings are governed by the Anthropic account. | **Unknown** |
+| Lane                 | Provider-side behaviour                                                                                                             | What Turing shows                                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| OpenCode Go          | The OpenCode console "Use balance" option can continue on Console balance after the Go limits. No supported read-only check exists. | **Unknown** — "Provider-side PAYG fallback status cannot be verified by Turing Terminal." |
+| ClinePass            | Overflow behaviour is not documented. Turing never switches ClinePass to Cline usage-billing.                                       | **Unknown**                                                                               |
+| ChatGPT subscription | Purchased credits are governed by the OpenAI account.                                                                               | **Unknown**                                                                               |
+| Claude subscription  | Extra-usage settings are governed by the Anthropic account.                                                                         | **Unknown**                                                                               |
 
 Turing never displays "PAYG disabled" because it cannot establish it.
 

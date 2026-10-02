@@ -83,7 +83,8 @@ export function toWorkflow(row: Row): WorkflowDefinition {
     isolatedWorktree: Boolean(config.isolatedWorktree),
     ...billingConfiguration(config),
     lockProviders: config.lockProviders !== false,
-    defaultModelConfiguration: config.defaultModelConfiguration as WorkflowDefinition['defaultModelConfiguration'],
+    defaultModelConfiguration:
+      config.defaultModelConfiguration as WorkflowDefinition['defaultModelConfiguration'],
     stageDefaults: config.stageDefaults as WorkflowDefinition['stageDefaults'],
     globalInstructions: typeof config.globalInstructions === 'string' ? config.globalInstructions : undefined,
     contextPolicy: { ...defaultContext, ...context },
@@ -97,7 +98,9 @@ export function toWorkflow(row: Row): WorkflowDefinition {
 
 function billingConfiguration(config: Record<string, unknown>) {
   const billingMode = resolveBillingMode({
-    billingMode: BILLING_MODES.includes(config.billingMode as BillingMode) ? (config.billingMode as BillingMode) : undefined,
+    billingMode: BILLING_MODES.includes(config.billingMode as BillingMode)
+      ? (config.billingMode as BillingMode)
+      : undefined,
     subscriptionOnly: typeof config.subscriptionOnly === 'boolean' ? config.subscriptionOnly : undefined,
   });
   const budget = (config.meteredBudget ?? {}) as Partial<WorkflowDefinition['meteredBudget']>;
@@ -105,10 +108,14 @@ function billingConfiguration(config: Record<string, unknown>) {
   return {
     billingMode,
     subscriptionOnly: billingMode !== 'custom',
-    ...(Array.isArray(config.customAllowedLanes) ? { customAllowedLanes: config.customAllowedLanes as BillingLane[] } : {}),
+    ...(Array.isArray(config.customAllowedLanes)
+      ? { customAllowedLanes: config.customAllowedLanes as BillingLane[] }
+      : {}),
     meteredBudget: {
       perRunUsd: typeof budget.perRunUsd === 'number' && budget.perRunUsd >= 0 ? budget.perRunUsd : null,
-      unknownCostPolicy: (['block', 'ask', 'allow-with-warning'] as const).includes(budget.unknownCostPolicy as 'block')
+      unknownCostPolicy: (['block', 'ask', 'allow-with-warning'] as const).includes(
+        budget.unknownCostPolicy as 'block',
+      )
         ? (budget.unknownCostPolicy as WorkflowDefinition['meteredBudget']['unknownCostPolicy'])
         : 'block',
     },
@@ -159,9 +166,10 @@ export function toStage(row: Row, attempts: StageAttempt[] = []): RunStage {
     variantId: nullable(row.variant_id),
     modelSnapshot: parseNullableJson<NonNullable<RunStage['modelSnapshot']>>(row.model_snapshot_json),
     reasoning: typeof input.reasoning === 'string' ? input.reasoning : null,
-    nativeSettings: input.nativeSettings && typeof input.nativeSettings === 'object'
-      ? input.nativeSettings as Record<string, string | number | boolean | null>
-      : {},
+    nativeSettings:
+      input.nativeSettings && typeof input.nativeSettings === 'object'
+        ? (input.nativeSettings as Record<string, string | number | boolean | null>)
+        : {},
     status: String(row.status) as RunStage['status'],
     startedAt: nullable(row.started_at),
     finishedAt: nullable(row.finished_at),
@@ -197,8 +205,11 @@ export function toRun(db: Db, row: Row): RunSummary {
     refinePrompt: Boolean(row.refinement_requested),
     subscriptionOnly: snapshot.subscriptionOnly !== false,
     billingMode: resolveBillingMode({
-      billingMode: BILLING_MODES.includes(snapshot.billingMode as BillingMode) ? (snapshot.billingMode as BillingMode) : undefined,
-      subscriptionOnly: typeof snapshot.subscriptionOnly === 'boolean' ? snapshot.subscriptionOnly : undefined,
+      billingMode: BILLING_MODES.includes(snapshot.billingMode as BillingMode)
+        ? (snapshot.billingMode as BillingMode)
+        : undefined,
+      subscriptionOnly:
+        typeof snapshot.subscriptionOnly === 'boolean' ? snapshot.subscriptionOnly : undefined,
     }),
     lockProviders: snapshot.lockProviders !== false,
     status: String(row.status) as RunSummary['status'],

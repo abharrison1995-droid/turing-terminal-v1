@@ -36,7 +36,14 @@ export interface MetricTotal {
   missing: number;
 }
 
-const TOKEN_METRICS = ['inputTokens', 'outputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens', 'totalTokens'] as const;
+const TOKEN_METRICS = [
+  'inputTokens',
+  'outputTokens',
+  'cachedInputTokens',
+  'cacheWriteTokens',
+  'reasoningTokens',
+  'totalTokens',
+] as const;
 type TokenMetric = (typeof TOKEN_METRICS)[number];
 
 export interface UsageAggregate {
@@ -96,7 +103,8 @@ function addMetric(metric: MetricTotal, value: number | null): void {
 
 export function equivalentValue(event: UsageEvent): number | null {
   // Only provider/local-measured tokens are priced; an estimate of an estimate is not defensible.
-  if (event.tokenProvenance !== 'provider_measured' && event.tokenProvenance !== 'locally_measured') return null;
+  if (event.tokenProvenance !== 'provider_measured' && event.tokenProvenance !== 'locally_measured')
+    return null;
   const estimate = estimateApiEquivalent({
     providerId: event.providerId,
     modelId: event.resolvedModelId ?? event.modelId,
@@ -113,20 +121,37 @@ function accumulate(target: UsageAggregate, event: UsageEvent): void {
   target.durationMs += event.durationMs;
   for (const metric of TOKEN_METRICS) addMetric(target[metric], event[metric as TokenMetric]);
   // Actual spend is a metered-lane concept; subscription calls are not counted as missing spend.
-  if (event.actualCostUsd !== null || isMeteredEvent(event)) addMetric(target.actualMeteredCostUsd, event.actualCostUsd);
+  if (event.actualCostUsd !== null || isMeteredEvent(event))
+    addMetric(target.actualMeteredCostUsd, event.actualCostUsd);
   addMetric(target.equivalentValueUsd, equivalentValue(event));
   target.tokenProvenance[event.tokenProvenance] = (target.tokenProvenance[event.tokenProvenance] ?? 0) + 1;
 }
 
 function isMeteredEvent(event: UsageEvent): boolean {
-  return ['openrouter-metered', 'opencode-metered', 'cline-usage-billing', 'openai-api', 'anthropic-api'].includes(event.billingLane ?? '');
+  return [
+    'openrouter-metered',
+    'opencode-metered',
+    'cline-usage-billing',
+    'openai-api',
+    'anthropic-api',
+  ].includes(event.billingLane ?? '');
 }
 
 /** Empty buckets are real zero usage; buckets whose events lack a metric stay null. */
 function finalizeBucket(aggregate: UsageAggregate): UsageAggregate {
   if (aggregate.events > 0) return aggregate;
   const zero = (): MetricTotal => ({ value: 0, reported: 0, missing: 0 });
-  return { ...aggregate, inputTokens: zero(), outputTokens: zero(), cachedInputTokens: zero(), cacheWriteTokens: zero(), reasoningTokens: zero(), totalTokens: zero(), actualMeteredCostUsd: zero(), equivalentValueUsd: zero() };
+  return {
+    ...aggregate,
+    inputTokens: zero(),
+    outputTokens: zero(),
+    cachedInputTokens: zero(),
+    cacheWriteTokens: zero(),
+    reasoningTokens: zero(),
+    totalTokens: zero(),
+    actualMeteredCostUsd: zero(),
+    equivalentValueUsd: zero(),
+  };
 }
 
 export function loadUsageEvents(db: Db, filter: UsageFilter): UsageEvent[] {
@@ -163,7 +188,8 @@ export function loadUsageEvents(db: Db, filter: UsageFilter): UsageEvent[] {
   return rows.map(toUsageEvent);
 }
 
-const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const num = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
 const str = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
 
 export function toUsageEvent(row: Record<string, unknown>): UsageEvent {
@@ -201,7 +227,11 @@ export function toUsageEvent(row: Record<string, unknown>): UsageEvent {
     cacheWriteTokens: num(row.cache_write_tokens),
     reasoningTokens: num(row.reasoning_tokens),
     outputTokens: num(row.output_tokens),
-    totalTokens: num(row.total_tokens) ?? (num(row.input_tokens) !== null && num(row.output_tokens) !== null ? num(row.input_tokens)! + num(row.output_tokens)! : null),
+    totalTokens:
+      num(row.total_tokens) ??
+      (num(row.input_tokens) !== null && num(row.output_tokens) !== null
+        ? num(row.input_tokens)! + num(row.output_tokens)!
+        : null),
     requestCount: Number(row.request_count ?? 1),
     durationMs: Number(row.duration_ms ?? 0),
     latencyMs: num(row.latency_ms),
@@ -218,7 +248,16 @@ export function toUsageEvent(row: Record<string, unknown>): UsageEvent {
   };
 }
 
-function groupBy(events: UsageEvent[], keyOf: (event: UsageEvent) => { key: string; label: string; billingLane?: string | null; providerId?: string | null; modelId?: string | null }): UsageGroupRow[] {
+function groupBy(
+  events: UsageEvent[],
+  keyOf: (event: UsageEvent) => {
+    key: string;
+    label: string;
+    billingLane?: string | null;
+    providerId?: string | null;
+    modelId?: string | null;
+  },
+): UsageGroupRow[] {
   const groups = new Map<string, UsageGroupRow>();
   for (const event of events) {
     const identity = keyOf(event);
@@ -247,7 +286,9 @@ function groupBy(events: UsageEvent[], keyOf: (event: UsageEvent) => { key: stri
     bump(row.reasoning, event.reasoning ?? event.variantId ?? 'provider default');
     bump(row.upstreamProviders, event.upstreamProvider);
   }
-  return [...groups.values()].sort((a, b) => (b.totalTokens.value ?? -1) - (a.totalTokens.value ?? -1) || b.requests - a.requests);
+  return [...groups.values()].sort(
+    (a, b) => (b.totalTokens.value ?? -1) - (a.totalTokens.value ?? -1) || b.requests - a.requests,
+  );
 }
 
 export interface DecisionAnalytics {
@@ -263,7 +304,13 @@ export interface DecisionAnalytics {
   averageBooleanProbability: number | null;
   averageChoiceConfidence: number | null;
   averageScoreConfidence: number | null;
-  byEngineModel: Array<{ key: string; engine: string; modelId: string | null; decisions: number; costUsd: number | null }>;
+  byEngineModel: Array<{
+    key: string;
+    engine: string;
+    modelId: string | null;
+    decisions: number;
+    costUsd: number | null;
+  }>;
 }
 
 export function decisionAnalytics(db: Db, filter: UsageFilter): DecisionAnalytics {
@@ -290,7 +337,9 @@ export function decisionAnalytics(db: Db, filter: UsageFilter): DecisionAnalytic
     values.push(filter.billingLane);
   }
   const rows = db
-    .prepare(`SELECT d.* FROM decision_results d LEFT JOIN runs r ON r.id = d.run_id WHERE ${conditions.join(' AND ')}`)
+    .prepare(
+      `SELECT d.* FROM decision_results d LEFT JOIN runs r ON r.id = d.run_id WHERE ${conditions.join(' AND ')}`,
+    )
     .all(...values) as Array<Record<string, unknown>>;
   const result: DecisionAnalytics = {
     decisions: rows.length,
@@ -310,7 +359,10 @@ export function decisionAnalytics(db: Db, filter: UsageFilter): DecisionAnalytic
   const booleanProbability: number[] = [];
   const choiceConfidence: number[] = [];
   const scoreConfidence: number[] = [];
-  const engines = new Map<string, { key: string; engine: string; modelId: string | null; decisions: number; costUsd: number | null }>();
+  const engines = new Map<
+    string,
+    { key: string; engine: string; modelId: string | null; decisions: number; costUsd: number | null }
+  >();
   for (const row of rows) {
     const type = String(row.question_type);
     const outcome = String(row.outcome);
@@ -323,17 +375,26 @@ export function decisionAnalytics(db: Db, filter: UsageFilter): DecisionAnalytic
         return {};
       }
     })();
-    if (outcome === 'uncertain' || route.action === 'escalate' || route.action === 'human-approval') result.escalated += 1;
+    if (outcome === 'uncertain' || route.action === 'escalate' || route.action === 'human-approval')
+      result.escalated += 1;
     else result.autoRouted += 1;
     addMetric(result.costUsd, num(row.cost_usd));
     addMetric(result.inputTokens, num(row.input_tokens));
     addMetric(result.outputTokens, num(row.output_tokens));
     const engineKind = str(row.confidence_kind);
     if (type === 'boolean' && num(row.probability) !== null) booleanProbability.push(num(row.probability)!);
-    if (type === 'choice' && engineKind === 'engine-distribution' && num(row.confidence) !== null) choiceConfidence.push(num(row.confidence)!);
-    if (type === 'score' && engineKind === 'engine-distribution' && num(row.confidence) !== null) scoreConfidence.push(num(row.confidence)!);
+    if (type === 'choice' && engineKind === 'engine-distribution' && num(row.confidence) !== null)
+      choiceConfidence.push(num(row.confidence)!);
+    if (type === 'score' && engineKind === 'engine-distribution' && num(row.confidence) !== null)
+      scoreConfidence.push(num(row.confidence)!);
     const key = `${String(row.engine)}::${str(row.configured_model_id) ?? ''}`;
-    const engine = engines.get(key) ?? { key, engine: String(row.engine), modelId: str(row.configured_model_id), decisions: 0, costUsd: null };
+    const engine = engines.get(key) ?? {
+      key,
+      engine: String(row.engine),
+      modelId: str(row.configured_model_id),
+      decisions: 0,
+      costUsd: null,
+    };
     engine.decisions += 1;
     if (num(row.cost_usd) !== null) engine.costUsd = (engine.costUsd ?? 0) + num(row.cost_usd)!;
     engines.set(key, engine);
@@ -358,7 +419,10 @@ export function aggregateUsage(events: UsageEvent[], filter: UsageFilter) {
       : Array.from({ length: 24 }, (_, hour) => `${fromDay}T${String(hour).padStart(2, '0')}`);
   const buckets = new Map(bucketKeys.map((key) => [key, emptyAggregate()]));
   for (const event of events) {
-    const key = granularity === 'day' ? localDayKey(event.occurredAt, filter.timeZone) : localHourKey(event.occurredAt, filter.timeZone);
+    const key =
+      granularity === 'day'
+        ? localDayKey(event.occurredAt, filter.timeZone)
+        : localHourKey(event.occurredAt, filter.timeZone);
     let bucket = buckets.get(key);
     if (!bucket) {
       // A DST day can have an extra local hour; keep it rather than dropping usage.
@@ -367,10 +431,14 @@ export function aggregateUsage(events: UsageEvent[], filter: UsageFilter) {
     }
     accumulate(bucket, event);
   }
-  const series = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([bucket, aggregate]) => ({ bucket, ...finalizeBucket(aggregate) }));
+  const series = [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([bucket, aggregate]) => ({ bucket, ...finalizeBucket(aggregate) }));
   const byBillingLane = groupBy(events, (event) => ({
     key: event.billingLane ?? 'unknown',
-    label: billingLaneLabel(event.billingLane ?? (event.workloadType === 'deterministic' ? 'local process' : 'unknown')),
+    label: billingLaneLabel(
+      event.billingLane ?? (event.workloadType === 'deterministic' ? 'local process' : 'unknown'),
+    ),
     billingLane: event.billingLane,
   }));
   const byModel = groupBy(
@@ -388,14 +456,20 @@ export function aggregateUsage(events: UsageEvent[], filter: UsageFilter) {
   return {
     granularity,
     totals,
-    activeModels: new Set(events.filter((event) => event.modelId).map((event) => `${event.billingLane}::${event.modelId}`)).size,
-    activeBillingLanes: new Set(events.filter((event) => event.billingLane).map((event) => event.billingLane)).size,
+    activeModels: new Set(
+      events.filter((event) => event.modelId).map((event) => `${event.billingLane}::${event.modelId}`),
+    ).size,
+    activeBillingLanes: new Set(events.filter((event) => event.billingLane).map((event) => event.billingLane))
+      .size,
     series,
     byBillingLane,
     byModel,
     byProvider: simple((event) => event.providerId, 'local process'),
     byRole: simple((event) => event.role, 'unattributed'),
-    byProject: groupBy(events, (event) => ({ key: event.projectId ?? 'none', label: event.projectName ?? 'Unassigned project' })),
+    byProject: groupBy(events, (event) => ({
+      key: event.projectId ?? 'none',
+      label: event.projectName ?? 'Unassigned project',
+    })),
     byWorkflow: simple((event) => event.workflowId, 'none'),
     byMachine: simple((event) => event.machineId, 'unknown'),
     byWorkload: simple((event) => event.workloadType, 'generative'),
@@ -458,7 +532,10 @@ export const EXPORT_COLUMNS = [
 ] as const;
 
 /** Export rows contain identifiers, configuration, and numbers only — never prompts, outputs, or credentials. */
-export function exportRows(events: UsageEvent[], timeZone: string): Array<Record<(typeof EXPORT_COLUMNS)[number], string | number | null>> {
+export function exportRows(
+  events: UsageEvent[],
+  timeZone: string,
+): Array<Record<(typeof EXPORT_COLUMNS)[number], string | number | null>> {
   const local = new Intl.DateTimeFormat('sv-SE', { timeZone, dateStyle: 'short', timeStyle: 'medium' });
   return events.map((event) => ({
     occurredAtUtc: event.occurredAt,
@@ -512,5 +589,8 @@ export function toCsv(rows: Array<Record<string, string | number | null>>): stri
     const safe = /^[=+\-@\t\r]/.test(text) && typeof value === 'string' ? `'${text}` : text;
     return /[",\r\n]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
   };
-  return [EXPORT_COLUMNS.join(','), ...rows.map((row) => EXPORT_COLUMNS.map((column) => escape(row[column] ?? null)).join(','))].join('\r\n');
+  return [
+    EXPORT_COLUMNS.join(','),
+    ...rows.map((row) => EXPORT_COLUMNS.map((column) => escape(row[column] ?? null)).join(',')),
+  ].join('\r\n');
 }

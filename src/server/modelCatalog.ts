@@ -1,8 +1,18 @@
-import type { ModelOption, ProviderCapabilities, ProviderSpendTelemetry, ProviderStatus } from '../shared/types.js';
+import type {
+  ModelOption,
+  ProviderCapabilities,
+  ProviderSpendTelemetry,
+  ProviderStatus,
+} from '../shared/types.js';
 import { classifyModelIdentity } from '../shared/modelSettings.js';
 import type { Db } from './db.js';
 import { discoverProviders, invalidateProviderCache } from './providers.js';
-import { fetchAccountCredits, fetchKeyTelemetry, fetchOpenRouterCatalog, jevAdapterMetadata } from './openrouter.js';
+import {
+  fetchAccountCredits,
+  fetchKeyTelemetry,
+  fetchOpenRouterCatalog,
+  jevAdapterMetadata,
+} from './openrouter.js';
 import { SecretStore, secretRef } from './secretStore.js';
 import { toConnectionProfile } from './serialize.js';
 import { redactSecrets } from './security.js';
@@ -23,7 +33,15 @@ export function applyCatalogCache(db: Db, providers: ProviderStatus[]): Provider
     if (live.length) {
       db.transaction(() => {
         for (const model of live)
-          upsert.run(provider.id, model.id, model.providerId, model.name, JSON.stringify(model), provider.version, model.discoveredAt ?? provider.checkedAt);
+          upsert.run(
+            provider.id,
+            model.id,
+            model.providerId,
+            model.name,
+            JSON.stringify(model),
+            provider.version,
+            model.discoveredAt ?? provider.checkedAt,
+          );
       })();
       return {
         ...provider,
@@ -37,12 +55,25 @@ export function applyCatalogCache(db: Db, providers: ProviderStatus[]): Provider
       };
     }
     const cached = db
-      .prepare('SELECT model_json, discovered_at FROM model_catalog_cache WHERE backend_id = ? ORDER BY display_name COLLATE NOCASE')
+      .prepare(
+        'SELECT model_json, discovered_at FROM model_catalog_cache WHERE backend_id = ? ORDER BY display_name COLLATE NOCASE',
+      )
       .all(provider.id) as Array<{ model_json: string; discovered_at: string }>;
-    if (!cached.length) return { ...provider, catalogSource: provider.models.length ? 'adapter' : 'none', catalogRefreshedAt: null };
+    if (!cached.length)
+      return {
+        ...provider,
+        catalogSource: provider.models.length ? 'adapter' : 'none',
+        catalogRefreshedAt: null,
+      };
     const models = cached.flatMap((row): ModelOption[] => {
       try {
-        return [{ ...(JSON.parse(row.model_json) as ModelOption), status: 'last-known', discoveredAt: row.discovered_at }];
+        return [
+          {
+            ...(JSON.parse(row.model_json) as ModelOption),
+            status: 'last-known',
+            discoveredAt: row.discovered_at,
+          },
+        ];
       } catch {
         return [];
       }
@@ -81,13 +112,20 @@ export function invalidateOpenRouterCatalog(): void {
 }
 
 export function openRouterProfiles(db: Db) {
-  return (db.prepare("SELECT * FROM connection_profiles WHERE backend_id = 'openrouter' ORDER BY name COLLATE NOCASE").all() as Array<Record<string, unknown>>).map(
-    toConnectionProfile,
-  );
+  return (
+    db
+      .prepare(
+        "SELECT * FROM connection_profiles WHERE backend_id = 'openrouter' ORDER BY name COLLATE NOCASE",
+      )
+      .all() as Array<Record<string, unknown>>
+  ).map(toConnectionProfile);
 }
 
 /** OpenRouter is optional: without a connection profile Turing makes no OpenRouter network request. */
-export async function openRouterProviderStatus(db: Db, options: { fetchImpl?: typeof fetch } = {}): Promise<ProviderStatus> {
+export async function openRouterProviderStatus(
+  db: Db,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<ProviderStatus> {
   const profiles = openRouterProfiles(db);
   const store = SecretStore.forDatabase(db);
   const withKey = profiles.filter((profile) => store.has(secretRef(profile.id, 'inference')));
@@ -113,7 +151,8 @@ export async function openRouterProviderStatus(db: Db, options: { fetchImpl?: ty
     openRouterCatalog = { models, expires: Date.now() + (models.length ? 10 * 60_000 : 60_000), checkedAt };
   }
   const models = [...openRouterCatalog.models];
-  if (models.length && !models.some((model) => model.family === 'decision')) models.push(jevAdapterMetadata());
+  if (models.length && !models.some((model) => model.family === 'decision'))
+    models.push(jevAdapterMetadata());
   return {
     id: 'openrouter',
     name: 'OpenRouter',
@@ -132,7 +171,10 @@ export async function openRouterProviderStatus(db: Db, options: { fetchImpl?: ty
   };
 }
 
-export async function allProviders(db: Db, options: { refresh?: boolean; fetchImpl?: typeof fetch } = {}): Promise<ProviderStatus[]> {
+export async function allProviders(
+  db: Db,
+  options: { refresh?: boolean; fetchImpl?: typeof fetch } = {},
+): Promise<ProviderStatus[]> {
   if (options.refresh) {
     invalidateProviderCache();
     invalidateOpenRouterCatalog();
@@ -142,7 +184,10 @@ export async function allProviders(db: Db, options: { refresh?: boolean; fetchIm
 }
 
 /** Provider-measured key (and optionally account) telemetry. Uses metadata endpoints only — no generation. */
-export async function openRouterTelemetry(db: Db, options: { fetchImpl?: typeof fetch } = {}): Promise<{ telemetry: ProviderSpendTelemetry[]; errors: string[] }> {
+export async function openRouterTelemetry(
+  db: Db,
+  options: { fetchImpl?: typeof fetch } = {},
+): Promise<{ telemetry: ProviderSpendTelemetry[]; errors: string[] }> {
   const store = SecretStore.forDatabase(db);
   const telemetry: ProviderSpendTelemetry[] = [];
   const errors: string[] = [];
@@ -152,14 +197,18 @@ export async function openRouterTelemetry(db: Db, options: { fetchImpl?: typeof 
       try {
         telemetry.push(await fetchKeyTelemetry(inference, profile.id, options.fetchImpl));
       } catch (error) {
-        errors.push(`${profile.name}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+        errors.push(
+          `${profile.name}: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        );
       }
     const management = store.read(secretRef(profile.id, 'management'));
     if (management)
       try {
         telemetry.push(await fetchAccountCredits(management, profile.id, options.fetchImpl));
       } catch (error) {
-        errors.push(`${profile.name} account: ${redactSecrets(error instanceof Error ? error.message : String(error))}`);
+        errors.push(
+          `${profile.name} account: ${redactSecrets(error instanceof Error ? error.message : String(error))}`,
+        );
       }
   }
   return { telemetry, errors };

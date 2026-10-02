@@ -7,7 +7,13 @@ import { relative, resolve, join } from 'node:path';
 import { execFile as callbackExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import type { BillingLane, DecisionGateConfig, StageKind, WorkflowDefinition, WorkflowStage } from '../shared/types.js';
+import type {
+  BillingLane,
+  DecisionGateConfig,
+  StageKind,
+  WorkflowDefinition,
+  WorkflowStage,
+} from '../shared/types.js';
 import {
   ALL_BILLING_LANES,
   BILLING_MODES,
@@ -22,19 +28,43 @@ import {
   routeMatchesBillingLane,
   SUBSCRIPTION_LANES,
 } from '../shared/billing.js';
-import { classifyModelIdentity, reasoningControlFor, validateModelSettings } from '../shared/modelSettings.js';
+import {
+  classifyModelIdentity,
+  reasoningControlFor,
+  validateModelSettings,
+} from '../shared/modelSettings.js';
 import { decisionEngineInfo, validateDecisionGate } from '../shared/decisions.js';
 import { isValidTimeZone, resolveRange, systemTimeZone, type RangePreset } from '../shared/timezone.js';
 import { allProviders, openRouterTelemetry } from './modelCatalog.js';
 import { SecretStore, secretRef } from './secretStore.js';
 import { budgetStatus, getBudgetSettings, saveBudgetSettings } from './meteredBudget.js';
-import { exportRows, loadUsageEvents, queryUsageAnalytics, toCsv, type UsageFilter } from './usageAnalytics.js';
-import { decisionConfigHash, decisionEngine, listDecisionResults, type DecisionContext } from './decisionEngines.js';
+import {
+  exportRows,
+  loadUsageEvents,
+  queryUsageAnalytics,
+  toCsv,
+  type UsageFilter,
+} from './usageAnalytics.js';
+import {
+  decisionConfigHash,
+  decisionEngine,
+  listDecisionResults,
+  type DecisionContext,
+} from './decisionEngines.js';
 import { createMeteringHooks } from './metering.js';
 import { routeDecision } from '../shared/decisions.js';
 import { applyExecutionProfile, validateWorkflow } from './workflowValidation.js';
 import type { Db } from './db.js';
-import { getRunRow, localMachine, toApproval, toConnectionProfile, toModelPreset, toProject, toRun, toWorkflow } from './serialize.js';
+import {
+  getRunRow,
+  localMachine,
+  toApproval,
+  toConnectionProfile,
+  toModelPreset,
+  toProject,
+  toRun,
+  toWorkflow,
+} from './serialize.js';
 import { scanProject } from './projectScanner.js';
 import { RunEngine } from './runEngine.js';
 import { readGitDiff } from './git.js';
@@ -76,7 +106,10 @@ const STAGE_KINDS = [
   'decisionGate',
 ] as const satisfies readonly StageKind[];
 const billingLanes = ALL_BILLING_LANES as unknown as readonly [BillingLane, ...BillingLane[]];
-const nativeSettingsSchema = z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()]));
+const nativeSettingsSchema = z.record(
+  z.string(),
+  z.union([z.string().max(500), z.number(), z.boolean(), z.null()]),
+);
 const modelConfigurationSchema = z.object({
   backendId: z.string().max(80).optional(),
   connectionProfileId: z.string().max(100).optional(),
@@ -89,7 +122,13 @@ const modelConfigurationSchema = z.object({
   nativeSettings: nativeSettingsSchema.optional(),
 });
 const conditionSchema = z.object({
-  path: z.enum(['build.success', 'tests.failed', 'review.openCritical', 'review.openHigh', 'finalGate.status']),
+  path: z.enum([
+    'build.success',
+    'tests.failed',
+    'review.openCritical',
+    'review.openHigh',
+    'finalGate.status',
+  ]),
   operator: z.enum(['equals', 'notEquals', 'greaterThan', 'lessThan']),
   value: z.union([z.boolean(), z.number(), z.string().max(80)]),
 });
@@ -97,7 +136,12 @@ const routeActionSchema = z.object({
   action: z.enum(['continue', 'skip-stages', 'fail-run', 'human-approval', 'escalate']),
   skipStageIds: z.array(z.string().min(1).max(80)).max(50).optional(),
 });
-const decisionEngines = ['deterministic-rules', 'jev-openrouter', 'subscription-llm-judge', 'openrouter-judge'] as const;
+const decisionEngines = [
+  'deterministic-rules',
+  'jev-openrouter',
+  'subscription-llm-judge',
+  'openrouter-judge',
+] as const;
 const engineRouteSchema = z.object({
   engine: z.enum(decisionEngines),
   modelId: z.string().max(180).optional(),
@@ -107,8 +151,12 @@ const engineRouteSchema = z.object({
 const decisionSchema = engineRouteSchema.extend({
   questionType: z.enum(['boolean', 'choice', 'score']),
   question: z.string().trim().min(1).max(2_000),
-  criteria: z.union([z.record(z.string().min(1).max(80), z.string().max(500)), z.array(z.string().max(500)).max(10)]).optional(),
-  inputs: z.array(z.enum(['task', 'plan', 'implementation', 'diff', 'tests', 'build', 'findings', 'finalGate'])).max(8),
+  criteria: z
+    .union([z.record(z.string().min(1).max(80), z.string().max(500)), z.array(z.string().max(500)).max(10)])
+    .optional(),
+  inputs: z
+    .array(z.enum(['task', 'plan', 'implementation', 'diff', 'tests', 'build', 'findings', 'finalGate']))
+    .max(8),
   maxStateChars: z.number().int().min(1_000).max(96_000).optional(),
   rule: conditionSchema.optional(),
   routing: z.object({
@@ -174,41 +222,53 @@ const stageSchema = z.object({
   connectionProfileId: z.string().max(100).optional(),
   modelDisplayName: z.string().max(180).optional(),
   variantId: z.string().max(80).optional(),
-  modelSnapshot: z.object({
-    providerId: z.string().max(80),
-    modelId: z.string().max(180),
-    displayName: z.string().max(180),
-    connectionProfileName: z.string().max(100).nullable().optional(),
-    billingLane: z.enum(billingLanes).optional(),
-    variantId: z.string().max(80).optional(),
-    capabilities: z.record(z.string(), z.unknown()),
-    discoveredAt: z.string().datetime().nullable(),
-    adapterVersion: z.string().max(120).nullable(),
-    status: z.enum(['current', 'last-known', 'unavailable', 'deprecated']),
-    identity: z.enum(['pinned', 'floating']).optional(),
-    reasoningControl: z.enum(['effort', 'variant', 'budget', 'provider-controlled', 'none']).optional(),
-  }).optional(),
-  nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  modelSnapshot: z
+    .object({
+      providerId: z.string().max(80),
+      modelId: z.string().max(180),
+      displayName: z.string().max(180),
+      connectionProfileName: z.string().max(100).nullable().optional(),
+      billingLane: z.enum(billingLanes).optional(),
+      variantId: z.string().max(80).optional(),
+      capabilities: z.record(z.string(), z.unknown()),
+      discoveredAt: z.string().datetime().nullable(),
+      adapterVersion: z.string().max(120).nullable(),
+      status: z.enum(['current', 'last-known', 'unavailable', 'deprecated']),
+      identity: z.enum(['pinned', 'floating']).optional(),
+      reasoningControl: z.enum(['effort', 'variant', 'budget', 'provider-controlled', 'none']).optional(),
+    })
+    .optional(),
+  nativeSettings: z
+    .record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()]))
+    .optional(),
   customInstructions: z.string().max(8_000).optional(),
-  contextPolicy: z.object({
-    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).optional(),
-    maxFiles: z.number().int().min(1).max(500).optional(),
-    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).optional(),
-    maxFileBytes: z.number().int().min(1_024).max(2_000_000).optional(),
-    includeGlobs: z.array(z.string().max(160)).max(100).optional(),
-    excludeGlobs: z.array(z.string().max(160)).max(100).optional(),
-    includeCurrentDiff: z.boolean().optional(),
-    includeTestOutput: z.boolean().optional(),
-    includeBuildOutput: z.boolean().optional(),
-    includePreviousArtifact: z.boolean().optional(),
-    includePreviousTranscript: z.boolean().optional(),
-    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).optional(),
-  }).optional(),
+  contextPolicy: z
+    .object({
+      strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).optional(),
+      maxFiles: z.number().int().min(1).max(500).optional(),
+      maxEstimatedTokens: z.number().int().min(1_000).max(500_000).optional(),
+      maxFileBytes: z.number().int().min(1_024).max(2_000_000).optional(),
+      includeGlobs: z.array(z.string().max(160)).max(100).optional(),
+      excludeGlobs: z.array(z.string().max(160)).max(100).optional(),
+      includeCurrentDiff: z.boolean().optional(),
+      includeTestOutput: z.boolean().optional(),
+      includeBuildOutput: z.boolean().optional(),
+      includePreviousArtifact: z.boolean().optional(),
+      includePreviousTranscript: z.boolean().optional(),
+      onLimitExceeded: z.enum(['compact', 'ask', 'stop']).optional(),
+    })
+    .optional(),
   decision: decisionSchema.optional(),
   orchestration: z
     .object({
       branches: z
-        .array(z.object({ id: z.string().trim().min(1).max(80), label: z.string().trim().min(1).max(120), skipStageIds: z.array(z.string().min(1).max(80)).max(50) }))
+        .array(
+          z.object({
+            id: z.string().trim().min(1).max(80),
+            label: z.string().trim().min(1).max(120),
+            skipStageIds: z.array(z.string().min(1).max(80)).max(50),
+          }),
+        )
         .min(1)
         .max(10),
       defaultBranchId: z.string().trim().min(1).max(80),
@@ -257,7 +317,15 @@ const workflowSchema = z.object({
     }),
   isolatedWorktree: z.boolean(),
   subscriptionOnly: z.boolean().default(true),
-  billingMode: z.enum(BILLING_MODES as unknown as readonly ['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom']).optional(),
+  billingMode: z
+    .enum(
+      BILLING_MODES as unknown as readonly [
+        'subscriptions-only',
+        'subscriptions-plus-decision-budget',
+        'custom',
+      ],
+    )
+    .optional(),
   customAllowedLanes: z.array(z.enum(billingLanes)).max(20).optional(),
   meteredBudget: meteredBudgetSchema.default({ perRunUsd: null, unknownCostPolicy: 'block' }),
   externalDecisionDataPolicy: z.enum(['allow', 'ask-first', 'block']).default('ask-first'),
@@ -265,25 +333,38 @@ const workflowSchema = z.object({
   defaultModelConfiguration: modelConfigurationSchema.optional(),
   stageDefaults: z.record(z.string(), modelConfigurationSchema).optional(),
   globalInstructions: z.string().max(8_000).optional(),
-  contextPolicy: z.object({
-    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).default('focused'),
-    maxFiles: z.number().int().min(1).max(500).default(24),
-    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).default(32_000),
-    maxFileBytes: z.number().int().min(1_024).max(2_000_000).default(80_000),
-    includeGlobs: z.array(z.string().max(160)).max(100).default([]),
-    excludeGlobs: z.array(z.string().max(160)).max(100).default(['.git/**', 'node_modules/**', 'dist/**', 'build/**']),
-    includeCurrentDiff: z.boolean().default(true),
-    includeTestOutput: z.boolean().default(true),
-    includeBuildOutput: z.boolean().default(true),
-    includePreviousArtifact: z.boolean().default(true),
-    includePreviousTranscript: z.boolean().default(false),
-    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).default('compact'),
-  }).default({
-    strategy: 'focused', maxFiles: 24, maxEstimatedTokens: 32_000, maxFileBytes: 80_000,
-    includeGlobs: [], excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
-    includeCurrentDiff: true, includeTestOutput: true, includeBuildOutput: true,
-    includePreviousArtifact: true, includePreviousTranscript: false, onLimitExceeded: 'compact',
-  }),
+  contextPolicy: z
+    .object({
+      strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).default('focused'),
+      maxFiles: z.number().int().min(1).max(500).default(24),
+      maxEstimatedTokens: z.number().int().min(1_000).max(500_000).default(32_000),
+      maxFileBytes: z.number().int().min(1_024).max(2_000_000).default(80_000),
+      includeGlobs: z.array(z.string().max(160)).max(100).default([]),
+      excludeGlobs: z
+        .array(z.string().max(160))
+        .max(100)
+        .default(['.git/**', 'node_modules/**', 'dist/**', 'build/**']),
+      includeCurrentDiff: z.boolean().default(true),
+      includeTestOutput: z.boolean().default(true),
+      includeBuildOutput: z.boolean().default(true),
+      includePreviousArtifact: z.boolean().default(true),
+      includePreviousTranscript: z.boolean().default(false),
+      onLimitExceeded: z.enum(['compact', 'ask', 'stop']).default('compact'),
+    })
+    .default({
+      strategy: 'focused',
+      maxFiles: 24,
+      maxEstimatedTokens: 32_000,
+      maxFileBytes: 80_000,
+      includeGlobs: [],
+      excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
+      includeCurrentDiff: true,
+      includeTestOutput: true,
+      includeBuildOutput: true,
+      includePreviousArtifact: true,
+      includePreviousTranscript: false,
+      onLimitExceeded: 'compact',
+    }),
   stages: z.array(stageSchema).min(1).max(50),
 });
 
@@ -293,7 +374,9 @@ const connectionProfileSchema = z.object({
   providerId: z.string().trim().min(1).max(80),
   billingLane: z.enum(billingLanes),
   credentialStoreRef: z.string().max(200).nullable().optional(),
-  metadata: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).default({}),
+  metadata: z
+    .record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()]))
+    .default({}),
 });
 const modelPresetSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -888,11 +971,15 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
       return reply.code(403).send({ error: 'Provider credentials can be managed on the desktop only.' });
     const { id, kind } = request.params as { id: string; kind: string };
-    if (kind !== 'inference' && kind !== 'management') return reply.code(400).send({ error: 'Choose an inference or management credential.' });
-    const profile = db.prepare('SELECT backend_id FROM connection_profiles WHERE id = ?').get(id) as { backend_id: string } | undefined;
+    if (kind !== 'inference' && kind !== 'management')
+      return reply.code(400).send({ error: 'Choose an inference or management credential.' });
+    const profile = db.prepare('SELECT backend_id FROM connection_profiles WHERE id = ?').get(id) as
+      { backend_id: string } | undefined;
     if (!profile) return reply.code(404).send({ error: 'Connection profile was not found.' });
     if (profile.backend_id !== 'openrouter')
-      return reply.code(400).send({ error: 'This backend authenticates through its official CLI; Turing does not store its credentials.' });
+      return reply.code(400).send({
+        error: 'This backend authenticates through its official CLI; Turing does not store its credentials.',
+      });
     const parsed = z.object({ secret: z.string().trim().min(8).max(512) }).safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'Enter the credential value.' });
     try {
@@ -900,13 +987,21 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     } catch (error) {
       return reply.code(400).send({ error: redactSecrets(message(error)) });
     }
-    return { profile: withCredentialState(db, toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>)) };
+    return {
+      profile: withCredentialState(
+        db,
+        toConnectionProfile(
+          db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+        ),
+      ),
+    };
   });
   app.delete('/api/connection-profiles/:id/credentials/:kind', async (request, reply) => {
     if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
       return reply.code(403).send({ error: 'Provider credentials can be managed on the desktop only.' });
     const { id, kind } = request.params as { id: string; kind: string };
-    if (kind !== 'inference' && kind !== 'management') return reply.code(400).send({ error: 'Choose an inference or management credential.' });
+    if (kind !== 'inference' && kind !== 'management')
+      return reply.code(400).send({ error: 'Choose an inference or management credential.' });
     SecretStore.forDatabase(db).delete(secretRef(id, kind));
     return { deleted: true };
   });
@@ -927,8 +1022,10 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         timezone: z.string().max(80).nullable().default(null),
       })
       .safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid budget settings.' });
-    if (parsed.data.timezone && !isValidTimeZone(parsed.data.timezone)) return reply.code(400).send({ error: 'Unknown timezone.' });
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid budget settings.' });
+    if (parsed.data.timezone && !isValidTimeZone(parsed.data.timezone))
+      return reply.code(400).send({ error: 'Unknown timezone.' });
     return { settings: saveBudgetSettings(db, parsed.data) };
   });
 
@@ -945,7 +1042,12 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const stamp = new Date().toISOString().slice(0, 10);
     if (query.format === 'json') {
       reply.header('content-disposition', `attachment; filename="turing-usage-${stamp}.json"`);
-      return { exportedAt: new Date().toISOString(), filter, columns: rows.length ? Object.keys(rows[0]!) : [], rows };
+      return {
+        exportedAt: new Date().toISOString(),
+        filter,
+        columns: rows.length ? Object.keys(rows[0]!) : [],
+        rows,
+      };
     }
     reply.header('content-type', 'text/csv; charset=utf-8');
     reply.header('content-disposition', `attachment; filename="turing-usage-${stamp}.csv"`);
@@ -962,33 +1064,55 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
             z.object({
               name: z.string().max(120).default(''),
               state: z.record(z.string(), z.unknown()).default({}),
-              conditionValues: z.record(z.string(), z.union([z.boolean(), z.number(), z.string()])).optional(),
+              conditionValues: z
+                .record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
+                .optional(),
               expected: z.union([z.boolean(), z.string().max(80), z.number()]).optional(),
             }),
           )
           .min(1)
           .max(200),
-        billingMode: z.enum(['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom']).default('subscriptions-only'),
+        billingMode: z
+          .enum(['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom'])
+          .default('subscriptions-only'),
         maxCostUsd: z.number().finite().min(0).max(10).nullable().default(null),
         confirmExternal: z.boolean().default(false),
       })
       .safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid decision test.' });
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid decision test.' });
     const config = parsed.data.decision as DecisionGateConfig;
-    const errors = validateDecisionGate(config, 'Test', []).filter((error) => !error.includes('can only skip later stages'));
+    const errors = validateDecisionGate(config, 'Test', []).filter(
+      (error) => !error.includes('can only skip later stages'),
+    );
     if (errors.length) return reply.code(400).send({ error: errors.join(' ') });
-    const external = [config, ...(config.escalation ? [config.escalation] : [])].some((route) => decisionEngineInfo(route.engine).external);
+    const external = [config, ...(config.escalation ? [config.escalation] : [])].some(
+      (route) => decisionEngineInfo(route.engine).external,
+    );
     if (external && !parsed.data.confirmExternal)
-      return reply.code(400).send({ error: 'Confirm that fixture state may be sent to the external Decision Engine.' });
+      return reply
+        .code(400)
+        .send({ error: 'Confirm that fixture state may be sent to the external Decision Engine.' });
     const batchId = randomUUID();
     const scope = `decision-test:${batchId}`;
-    const openRouterRoutes = new Map<string, { key: string; model: import('../shared/types.js').ModelOption | undefined }>();
+    const openRouterRoutes = new Map<
+      string,
+      { key: string; model: import('../shared/types.js').ModelOption | undefined }
+    >();
     for (const route of [config, ...(config.escalation ? [config.escalation] : [])]) {
       if (route.engine !== 'jev-openrouter' && route.engine !== 'openrouter-judge') continue;
-      const key = route.connectionProfileId ? SecretStore.forDatabase(db).read(secretRef(route.connectionProfileId, 'inference')) : null;
-      if (!key) return reply.code(400).send({ error: 'Select an OpenRouter connection with a stored inference key.' });
+      const key = route.connectionProfileId
+        ? SecretStore.forDatabase(db).read(secretRef(route.connectionProfileId, 'inference'))
+        : null;
+      if (!key)
+        return reply
+          .code(400)
+          .send({ error: 'Select an OpenRouter connection with a stored inference key.' });
       const status = (await allProviders(db)).find((provider) => provider.id === 'openrouter');
-      openRouterRoutes.set(`${route.connectionProfileId}::${route.modelId}`, { key, model: status?.models.find((model) => model.id === route.modelId) });
+      openRouterRoutes.set(`${route.connectionProfileId}::${route.modelId}`, {
+        key,
+        model: status?.models.find((model) => model.id === route.modelId),
+      });
     }
     const results: Array<Record<string, unknown>> = [];
     let cost = 0;
@@ -1025,7 +1149,22 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       };
       try {
         const [decision] = await decisionEngine(config.engine).evaluate(
-          [{ id: randomUUID(), batchId, route: config, question: { questionId: `fixture_${index}`, questionType: config.questionType, question: config.question, criteria: config.criteria, instructions: config.instructions }, state: fixture.state, rule: config.rule }],
+          [
+            {
+              id: randomUUID(),
+              batchId,
+              route: config,
+              question: {
+                questionId: `fixture_${index}`,
+                questionType: config.questionType,
+                question: config.question,
+                criteria: config.criteria,
+                instructions: config.instructions,
+              },
+              state: fixture.state,
+              rule: config.rule,
+            },
+          ],
           context,
         );
         const routed = routeDecision({ ...decision!, questionType: config.questionType }, config.routing);
@@ -1034,7 +1173,14 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           costReported += 1;
           costProvenances.add(decision!.costProvenance);
         }
-        const actual = config.questionType === 'boolean' ? (routed.outcome === 'pass' ? true : routed.outcome === 'fail' ? false : null) : decision!.answer;
+        const actual =
+          config.questionType === 'boolean'
+            ? routed.outcome === 'pass'
+              ? true
+              : routed.outcome === 'fail'
+                ? false
+                : null
+            : decision!.answer;
         results.push({
           name: fixture.name || `Fixture ${index + 1}`,
           outcome: routed.outcome,
@@ -1047,12 +1193,24 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           correct: fixture.expected === undefined ? null : actual === fixture.expected,
         });
       } catch (error) {
-        results.push({ name: fixture.name || `Fixture ${index + 1}`, error: redactSecrets(message(error)).slice(0, 400) });
+        results.push({
+          name: fixture.name || `Fixture ${index + 1}`,
+          error: redactSecrets(message(error)).slice(0, 400),
+        });
       }
     }
     const scored = results.filter((item) => item.correct !== null && item.correct !== undefined);
-    const field = (key: 'probability' | 'confidence') => results.map((item) => item[key]).filter((value): value is number => typeof value === 'number');
-    const stats = (values: number[]) => (values.length ? { count: values.length, min: Math.min(...values), max: Math.max(...values), mean: values.reduce((a, b) => a + b, 0) / values.length } : null);
+    const field = (key: 'probability' | 'confidence') =>
+      results.map((item) => item[key]).filter((value): value is number => typeof value === 'number');
+    const stats = (values: number[]) =>
+      values.length
+        ? {
+            count: values.length,
+            min: Math.min(...values),
+            max: Math.max(...values),
+            mean: values.reduce((a, b) => a + b, 0) / values.length,
+          }
+        : null;
     return {
       batchId,
       configHash: decisionConfigHash(config),
@@ -1060,10 +1218,16 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       accuracy: scored.length ? scored.filter((item) => item.correct === true).length / scored.length : null,
       probability: stats(field('probability')),
       confidence: stats(field('confidence')),
-      escalationRate: results.length ? results.filter((item) => item.outcome === 'uncertain').length / results.length : null,
+      escalationRate: results.length
+        ? results.filter((item) => item.outcome === 'uncertain').length / results.length
+        : null,
       errors: results.filter((item) => item.error).length,
       actualCostUsd: costReported ? cost : null,
-      costProvenance: !costReported ? 'unavailable' : costProvenances.has('provider_measured') ? 'provider_measured' : 'locally_measured',
+      costProvenance: !costReported
+        ? 'unavailable'
+        : costProvenances.has('provider_measured')
+          ? 'provider_measured'
+          : 'locally_measured',
     };
   });
   app.get('/api/projects', async () => ({
@@ -1264,66 +1428,145 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     ).map(toWorkflow),
   }));
   app.get('/api/connection-profiles', async () => ({
-    profiles: (db.prepare('SELECT * FROM connection_profiles ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>)
+    profiles: (
+      db.prepare('SELECT * FROM connection_profiles ORDER BY name COLLATE NOCASE').all() as Array<
+        Record<string, unknown>
+      >
+    )
       .map(toConnectionProfile)
       .map((profile) => withCredentialState(db, profile)),
   }));
   app.post('/api/connection-profiles', async (request, reply) => {
     const parsed = connectionProfileSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
     if (hasCredentialMaterial(parsed.data.metadata) || hasCredentialMaterial(parsed.data.name))
-      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+      return reply
+        .code(400)
+        .send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
     if (!routeMatchesBillingLane(parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane))
-      return reply.code(400).send({ error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.` });
+      return reply.code(400).send({
+        error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.`,
+      });
     const reference = parsed.data.credentialStoreRef ?? null;
-    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
-      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    if (
+      reference &&
+      (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference))
+    )
+      return reply
+        .code(400)
+        .send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
     const id = randomUUID();
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO connection_profiles (id, name, backend_id, provider_id, billing_lane, credential_store_ref, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), now, now);
-    return reply.code(201).send({ profile: withCredentialState(db, toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>)) });
+    db.prepare(
+      'INSERT INTO connection_profiles (id, name, backend_id, provider_id, billing_lane, credential_store_ref, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id,
+      parsed.data.name,
+      parsed.data.backendId,
+      parsed.data.providerId,
+      parsed.data.billingLane,
+      reference,
+      JSON.stringify(parsed.data.metadata),
+      now,
+      now,
+    );
+    return reply.code(201).send({
+      profile: withCredentialState(
+        db,
+        toConnectionProfile(
+          db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+        ),
+      ),
+    });
   });
   app.put('/api/connection-profiles/:id', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    if (!db.prepare('SELECT id FROM connection_profiles WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Connection profile was not found.' });
+    if (!db.prepare('SELECT id FROM connection_profiles WHERE id = ?').get(id))
+      return reply.code(404).send({ error: 'Connection profile was not found.' });
     const parsed = connectionProfileSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
     if (hasCredentialMaterial(parsed.data.metadata) || hasCredentialMaterial(parsed.data.name))
-      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+      return reply
+        .code(400)
+        .send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
     if (!routeMatchesBillingLane(parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane))
-      return reply.code(400).send({ error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.` });
+      return reply.code(400).send({
+        error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.`,
+      });
     const reference = parsed.data.credentialStoreRef ?? null;
-    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
-      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
-    db.prepare('UPDATE connection_profiles SET name = ?, backend_id = ?, provider_id = ?, billing_lane = ?, credential_store_ref = ?, metadata_json = ?, updated_at = ? WHERE id = ?')
-      .run(parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), new Date().toISOString(), id);
-    return { profile: toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>) };
+    if (
+      reference &&
+      (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference))
+    )
+      return reply
+        .code(400)
+        .send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    db.prepare(
+      'UPDATE connection_profiles SET name = ?, backend_id = ?, provider_id = ?, billing_lane = ?, credential_store_ref = ?, metadata_json = ?, updated_at = ? WHERE id = ?',
+    ).run(
+      parsed.data.name,
+      parsed.data.backendId,
+      parsed.data.providerId,
+      parsed.data.billingLane,
+      reference,
+      JSON.stringify(parsed.data.metadata),
+      new Date().toISOString(),
+      id,
+    );
+    return {
+      profile: toConnectionProfile(
+        db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+      ),
+    };
   });
   app.delete('/api/connection-profiles/:id', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const inUse = db.prepare("SELECT COUNT(*) AS count FROM workflows WHERE instr(config_json, ?) > 0").get(id) as { count: number };
-    if (inUse.count) return reply.code(409).send({ error: 'This connection profile is referenced by a saved workflow. Remove those references first.' });
+    const inUse = db
+      .prepare('SELECT COUNT(*) AS count FROM workflows WHERE instr(config_json, ?) > 0')
+      .get(id) as { count: number };
+    if (inUse.count)
+      return reply.code(409).send({
+        error: 'This connection profile is referenced by a saved workflow. Remove those references first.',
+      });
     const result = db.prepare('DELETE FROM connection_profiles WHERE id = ?').run(id);
     if (result.changes) SecretStore.forDatabase(db).deleteProfile(id);
     if (!result.changes) return reply.code(404).send({ error: 'Connection profile was not found.' });
     return reply.code(204).send();
   });
   app.get('/api/model-presets', async () => ({
-    presets: (db.prepare('SELECT * FROM model_presets ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>).map(toModelPreset),
+    presets: (
+      db.prepare('SELECT * FROM model_presets ORDER BY name COLLATE NOCASE').all() as Array<
+        Record<string, unknown>
+      >
+    ).map(toModelPreset),
   }));
   app.post('/api/model-presets', async (request, reply) => {
     const parsed = modelPresetSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid model preset.' });
-    if (hasCredentialMaterial(parsed.data.configuration)) return reply.code(400).send({ error: 'Model presets cannot contain credential material.' });
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid model preset.' });
+    if (hasCredentialMaterial(parsed.data.configuration))
+      return reply.code(400).send({ error: 'Model presets cannot contain credential material.' });
     const id = randomUUID();
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO model_presets (id, name, configuration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, parsed.data.name, JSON.stringify(parsed.data.configuration), now, now);
-    return reply.code(201).send({ preset: toModelPreset(db.prepare('SELECT * FROM model_presets WHERE id = ?').get(id) as Record<string, unknown>) });
+    db.prepare(
+      'INSERT INTO model_presets (id, name, configuration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(id, parsed.data.name, JSON.stringify(parsed.data.configuration), now, now);
+    return reply.code(201).send({
+      preset: toModelPreset(
+        db.prepare('SELECT * FROM model_presets WHERE id = ?').get(id) as Record<string, unknown>,
+      ),
+    });
   });
   app.delete('/api/model-presets/:id', async (request, reply) => {
-    const result = db.prepare('DELETE FROM model_presets WHERE id = ?').run((request.params as { id: string }).id);
+    const result = db
+      .prepare('DELETE FROM model_presets WHERE id = ?')
+      .run((request.params as { id: string }).id);
     if (!result.changes) return reply.code(404).send({ error: 'Model preset was not found.' });
     return reply.code(204).send();
   });
@@ -1457,25 +1700,43 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
 
   app.post('/api/runs/:id/replay', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
+      Record<string, unknown> | undefined;
     if (!source) return reply.code(404).send({ error: 'Run was not found.' });
-    if (source.permission_mode === 'enigma' && !(request.body as { enigmaConfirmed?: boolean } | undefined)?.enigmaConfirmed)
-      return reply.code(400).send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
+    if (
+      source.permission_mode === 'enigma' &&
+      !(request.body as { enigmaConfirmed?: boolean } | undefined)?.enigmaConfirmed
+    )
+      return reply
+        .code(400)
+        .send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
     const historicalWorkflow = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(db, {
-      task: String(source.prompt),
-      projectId: String(source.project_id),
-      workflowId: String(source.workflow_id),
-      profile: String(source.profile) as WorkflowDefinition['executionProfile'],
-      permissionMode: String(source.permission_mode) as WorkflowDefinition['permissionMode'],
-      refinePrompt: Boolean(source.refinement_requested),
-      subscriptionOnly: historicalWorkflow.subscriptionOnly,
-      lockProviders: historicalWorkflow.lockProviders,
-    }, historicalWorkflow);
-    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
-    if (!preview.canStart) return reply.code(409).send({ error: `Historical configuration cannot be replayed as saved: ${preview.warnings.join(' ')}`, warnings: preview.warnings, providerAssignments: preview.providerAssignments });
+    const preview = await makePreview(
+      db,
+      {
+        task: String(source.prompt),
+        projectId: String(source.project_id),
+        workflowId: String(source.workflow_id),
+        profile: String(source.profile) as WorkflowDefinition['executionProfile'],
+        permissionMode: String(source.permission_mode) as WorkflowDefinition['permissionMode'],
+        refinePrompt: Boolean(source.refinement_requested),
+        subscriptionOnly: historicalWorkflow.subscriptionOnly,
+        lockProviders: historicalWorkflow.lockProviders,
+      },
+      historicalWorkflow,
+    );
+    if (!preview)
+      return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    if (!preview.canStart)
+      return reply.code(409).send({
+        error: `Historical configuration cannot be replayed as saved: ${preview.warnings.join(' ')}`,
+        warnings: preview.warnings,
+        providerAssignments: preview.providerAssignments,
+      });
     if (preview.branchStrategy === 'worktree' && preview.project.dirty !== false)
-      return reply.code(409).send({ error: 'The project must be clean before an isolated replay can start.' });
+      return reply
+        .code(409)
+        .send({ error: 'The project must be clean before an isolated replay can start.' });
     const replay = createQueuedRun(db, engine, preview, {
       rulesSnapshot: safeJson(source.rules_snapshot_json, []),
       eventType: 'run_replayed',
@@ -1486,15 +1747,25 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
 
   app.post('/api/runs/:id/duplicate-workflow', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
+      Record<string, unknown> | undefined;
     if (!source) return reply.code(404).send({ error: 'Run was not found.' });
     const snapshot = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(db, {
-      task: String(source.prompt), projectId: String(source.project_id), workflowId: String(source.workflow_id),
-      profile: snapshot.executionProfile, permissionMode: snapshot.permissionMode,
-      subscriptionOnly: snapshot.subscriptionOnly, lockProviders: snapshot.lockProviders,
-    }, snapshot);
-    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    const preview = await makePreview(
+      db,
+      {
+        task: String(source.prompt),
+        projectId: String(source.project_id),
+        workflowId: String(source.workflow_id),
+        profile: snapshot.executionProfile,
+        permissionMode: snapshot.permissionMode,
+        subscriptionOnly: snapshot.subscriptionOnly,
+        lockProviders: snapshot.lockProviders,
+      },
+      snapshot,
+    );
+    if (!preview)
+      return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
     const name = `${snapshot.name} copy`;
     const workflowId = `${slug(snapshot.name) || 'workflow'}-history-${randomUUID().slice(0, 6)}`;
     const excludedWorkflowFields = new Set(['id', 'name', 'version', 'isDefault', 'createdAt', 'updatedAt']);
@@ -1502,9 +1773,15 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       Object.entries(preview.workflow).filter(([key]) => !excludedWorkflowFields.has(key)),
     );
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)')
-      .run(workflowId, name, snapshot.description, snapshot.template, JSON.stringify(configuration), now, now);
-    return reply.code(201).send({ workflow: toWorkflow(db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as Record<string, unknown>), providerAssignments: preview.providerAssignments });
+    db.prepare(
+      'INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)',
+    ).run(workflowId, name, snapshot.description, snapshot.template, JSON.stringify(configuration), now, now);
+    return reply.code(201).send({
+      workflow: toWorkflow(
+        db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as Record<string, unknown>,
+      ),
+      providerAssignments: preview.providerAssignments,
+    });
   });
 
   app.get('/api/runs', async (request) => {
@@ -1751,9 +2028,11 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     else start.setTime(Date.now() - days * 86_400_000);
     const since = start.toISOString();
     const events = db
-      .prepare(`SELECT u.*, s.title AS stage_title FROM usage_events u
+      .prepare(
+        `SELECT u.*, s.title AS stage_title FROM usage_events u
         LEFT JOIN stages s ON s.id = u.stage_id
-        WHERE u.occurred_at >= ? ORDER BY u.occurred_at DESC LIMIT 5000`)
+        WHERE u.occurred_at >= ? ORDER BY u.occurred_at DESC LIMIT 5000`,
+      )
       .all(since) as Array<Record<string, unknown>>;
     const providers = groupUsage(events, 'provider_id');
     const models = groupUsage(events, 'model_id');
@@ -1977,32 +2256,59 @@ function createQueuedRun(
        permission_mode, refinement_requested, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
     ).run(
-      id, preview.machine.id, preview.project.id, preview.workflow.id, JSON.stringify(workflowSnapshot),
-      preview.task, preview.profile, preview.permissionMode, Number(preview.refinePrompt), now,
+      id,
+      preview.machine.id,
+      preview.project.id,
+      preview.workflow.id,
+      JSON.stringify(workflowSnapshot),
+      preview.task,
+      preview.profile,
+      preview.permissionMode,
+      Number(preview.refinePrompt),
+      now,
     );
     db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
-      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules), id,
+      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules),
+      id,
     );
     const insert = db.prepare(`INSERT INTO stages
       (id, run_id, stage_key, kind, title, sequence, backend_id, provider_id, model_id, connection_profile_id, billing_lane, variant_id, model_snapshot_json, status, input_json, logs)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`);
-    workflowSnapshot.stages.forEach((stage, sequence) => insert.run(
-      randomUUID(), id, stage.id, stage.kind, stage.label, sequence,
-      stage.backendId ?? null, stage.providerId ?? null, stage.modelId ?? null,
-      stage.connectionProfileId ?? null, stage.billingLane ?? null, stage.variantId ?? null,
-      stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
-      stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt) ? 'skipped' : 'pending',
+    workflowSnapshot.stages.forEach((stage, sequence) =>
+      insert.run(
+        randomUUID(),
+        id,
+        stage.id,
+        stage.kind,
+        stage.label,
+        sequence,
+        stage.backendId ?? null,
+        stage.providerId ?? null,
+        stage.modelId ?? null,
+        stage.connectionProfileId ?? null,
+        stage.billingLane ?? null,
+        stage.variantId ?? null,
+        stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
+        stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt)
+          ? 'skipped'
+          : 'pending',
+        JSON.stringify({
+          role: stage.role ?? null,
+          reasoning: stage.reasoning ?? null,
+          variantId: stage.variantId ?? null,
+          nativeSettings: stage.nativeSettings ?? {},
+          billingLane: stage.billingLane ?? null,
+          connectionProfileId: stage.connectionProfileId ?? null,
+        }),
+      ),
+    );
+    db.prepare(
+      'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      randomUUID(),
+      id,
+      options.eventType ?? 'run_queued',
       JSON.stringify({
-        role: stage.role ?? null,
-        reasoning: stage.reasoning ?? null,
-        variantId: stage.variantId ?? null,
-        nativeSettings: stage.nativeSettings ?? {},
-        billingLane: stage.billingLane ?? null,
-        connectionProfileId: stage.connectionProfileId ?? null,
-      }),
-    ));
-    db.prepare('INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(randomUUID(), id, options.eventType ?? 'run_queued', JSON.stringify({
         projectId: preview.project.id,
         workflowId: preview.workflow.id,
         machineId: preview.machine.id,
@@ -2012,14 +2318,20 @@ function createQueuedRun(
         meteredCapUsd: preview.routingSummary.runMeteredCapUsd,
         lockProviders: preview.lockProviders,
         ...options.eventDetails,
-      }), now);
+      }),
+      now,
+    );
   });
   create();
   engine.start(id);
   return toRun(db, getRunRow(db, id)!);
 }
 
-async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workflowOverride?: WorkflowDefinition) {
+async function makePreview(
+  db: Db,
+  input: z.infer<typeof runInputSchema>,
+  workflowOverride?: WorkflowDefinition,
+) {
   let projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as
     Record<string, unknown> | undefined;
   const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(input.workflowId) as
@@ -2057,7 +2369,10 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   const profile = input.profile ?? source.executionProfile;
   const permissionMode = input.permissionMode ?? source.permissionMode;
   const refinePrompt = input.refinePrompt ?? source.promptRefinementDefault;
-  const billingMode = resolveBillingMode(source, { billingMode: input.billingMode, subscriptionOnly: input.subscriptionOnly });
+  const billingMode = resolveBillingMode(source, {
+    billingMode: input.billingMode,
+    subscriptionOnly: input.subscriptionOnly,
+  });
   const workflow: WorkflowDefinition = {
     ...source,
     executionProfile: profile,
@@ -2067,11 +2382,17 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     meteredBudget: source.meteredBudget ?? { perRunUsd: null, unknownCostPolicy: 'block' },
     externalDecisionDataPolicy: source.externalDecisionDataPolicy ?? 'ask-first',
     lockProviders: input.lockProviders ?? source.lockProviders,
-    stages: applyExecutionProfile(source.stages.map((stage) => inheritStageConfiguration(source, stage)), profile, source.maxParallelAgents),
+    stages: applyExecutionProfile(
+      source.stages.map((stage) => inheritStageConfiguration(source, stage)),
+      profile,
+      source.maxParallelAgents,
+    ),
   };
   const effectiveRules = resolveEffectiveRules(db, project.id);
   const providers = await allProviders(db);
-  const connections = (db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>).map(toConnectionProfile);
+  const connections = (
+    db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>
+  ).map(toConnectionProfile);
   const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
   const secrets = SecretStore.forDatabase(db);
   const budgetSettings = getBudgetSettings(db);
@@ -2080,7 +2401,11 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     if (!AI_KINDS.has(stage.kind)) return stage;
     const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
     if (stage.connectionProfileId && !connection) profileMismatch.add(stage.id);
-    if (!connection) return { ...stage, billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId) };
+    if (!connection)
+      return {
+        ...stage,
+        billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId),
+      };
     return {
       ...stage,
       backendId: connection.backendId,
@@ -2106,8 +2431,12 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   }) => {
     const provider = providers.find((candidate) => candidate.id === route.backendId);
     const selectedModel = provider?.models.find((model) => model.id === route.modelId);
-    const modelCatalogAvailable = Boolean(provider?.capabilities.modelDiscovery && provider.models.length && provider.catalogSource !== 'cache');
-    const modelExists = modelCatalogAvailable ? Boolean(selectedModel) : Boolean(route.modelId?.trim()) && (route.backendId !== 'openrouter' || Boolean(selectedModel));
+    const modelCatalogAvailable = Boolean(
+      provider?.capabilities.modelDiscovery && provider.models.length && provider.catalogSource !== 'cache',
+    );
+    const modelExists = modelCatalogAvailable
+      ? Boolean(selectedModel)
+      : Boolean(route.modelId?.trim()) && (route.backendId !== 'openrouter' || Boolean(selectedModel));
     const billingLane = route.billingLane ?? inferBillingLane(route.backendId, route.providerId);
     const billingLaneMatchesRoute = routeMatchesBillingLane(route.backendId, route.providerId, billingLane);
     const catalogStatus = selectedModel
@@ -2122,7 +2451,11 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     const connection = route.connectionProfileId ? connectionById.get(route.connectionProfileId) : undefined;
     const openRouterReady =
       route.backendId !== 'openrouter' ||
-      Boolean(connection && connection.backendId === 'openrouter' && secrets.has(secretRef(connection.id, 'inference')));
+      Boolean(
+        connection &&
+        connection.backendId === 'openrouter' &&
+        secrets.has(secretRef(connection.id, 'inference')),
+      );
     const subscriptionReady =
       provider?.id === 'claude-code'
         ? provider.subscriptionAuthenticated === true
@@ -2135,11 +2468,18 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
                 : selectedModel.subscriptionBacked === false
               : false
             : provider?.id === 'cline'
-              ? ['openai-codex', 'cline-pass'].includes(route.providerId ?? '') || ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
+              ? ['openai-codex', 'cline-pass'].includes(route.providerId ?? '') ||
+                ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
               : provider?.id === 'openrouter'
-                ? openRouterReady && (!route.family || !selectedModel?.family || selectedModel.family === route.family)
+                ? openRouterReady &&
+                  (!route.family || !selectedModel?.family || selectedModel.family === route.family)
                 : false;
-    const billing = evaluateBillingLane({ mode: billingMode, lane: billingLane, workload: route.workload, customAllowedLanes: workflow.customAllowedLanes });
+    const billing = evaluateBillingLane({
+      mode: billingMode,
+      lane: billingLane,
+      workload: route.workload,
+      customAllowedLanes: workflow.customAllowedLanes,
+    });
     const settingErrors = validateModelSettings({
       backendId: route.backendId,
       model: selectedModel,
@@ -2150,23 +2490,38 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     });
     const ready = Boolean(
       provider?.detected &&
-        provider.capabilities.toolMediation &&
-        subscriptionReady &&
-        billingLaneMatchesRoute &&
-        route.providerId?.trim() &&
-        route.modelId?.trim() &&
-        modelExists &&
-        billing.allowed &&
-        !profileMismatch.has(route.stageId) &&
-        !settingErrors.length,
+      provider.capabilities.toolMediation &&
+      subscriptionReady &&
+      billingLaneMatchesRoute &&
+      route.providerId?.trim() &&
+      route.modelId?.trim() &&
+      modelExists &&
+      billing.allowed &&
+      !profileMismatch.has(route.stageId) &&
+      !settingErrors.length,
     );
-    return { provider, selectedModel, billingLane, catalogStatus, connection, billing, settingErrors, ready, openRouterReady };
+    return {
+      provider,
+      selectedModel,
+      billingLane,
+      catalogStatus,
+      connection,
+      billing,
+      settingErrors,
+      ready,
+      openRouterReady,
+    };
   };
   const warnings: string[] = [];
   const providerAssignments: RunPreviewAssignment[] = [];
   for (const stage of activeStages) {
     if (AI_KINDS.has(stage.kind)) {
-      const status = routeStatus({ ...stage, stageId: stage.id, workload: 'generative', family: 'generative' });
+      const status = routeStatus({
+        ...stage,
+        stageId: stage.id,
+        workload: 'generative',
+        family: 'generative',
+      });
       const modelSnapshot = {
         providerId: stage.providerId ?? '',
         modelId: stage.modelId ?? '',
@@ -2176,12 +2531,17 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
         ...(stage.variantId ? { variantId: stage.variantId } : {}),
         capabilities: {
           ...(status.selectedModel?.capabilities ?? {}),
-          ...(status.selectedModel?.reasoningLevels ? { reasoningLevels: status.selectedModel.reasoningLevels } : {}),
+          ...(status.selectedModel?.reasoningLevels
+            ? { reasoningLevels: status.selectedModel.reasoningLevels }
+            : {}),
           ...(status.selectedModel?.variantIds ? { variants: status.selectedModel.variantIds } : {}),
           ...(status.selectedModel?.pricing ? { pricing: status.selectedModel.pricing } : {}),
-          supportsTools: status.selectedModel?.supportsTools ?? status.selectedModel?.capabilities?.tools ?? null,
+          supportsTools:
+            status.selectedModel?.supportsTools ?? status.selectedModel?.capabilities?.tools ?? null,
         },
-        discoveredAt: status.selectedModel ? (status.selectedModel.discoveredAt ?? status.provider?.checkedAt ?? null) : (stage.modelSnapshot?.discoveredAt ?? null),
+        discoveredAt: status.selectedModel
+          ? (status.selectedModel.discoveredAt ?? status.provider?.checkedAt ?? null)
+          : (stage.modelSnapshot?.discoveredAt ?? null),
         adapterVersion: status.provider?.version ?? stage.modelSnapshot?.adapterVersion ?? null,
         status: status.catalogStatus,
         identity: classifyModelIdentity(stage.backendId, stage.modelId),
@@ -2191,7 +2551,8 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       if (stage.backendId === 'openrouter' && !status.openRouterReady)
         warnings.push(`${stage.label}: select an OpenRouter connection with a stored inference key.`);
       for (const error of status.settingErrors) warnings.push(`${stage.label}: ${error}`);
-      if (!status.billing.allowed && status.billing.reason) warnings.push(`${stage.label}: ${status.billing.reason}`);
+      if (!status.billing.allowed && status.billing.reason)
+        warnings.push(`${stage.label}: ${status.billing.reason}`);
       providerAssignments.push({
         stage: stage.label,
         stageId: stage.id,
@@ -2235,7 +2596,13 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       const judge = route.engine === 'subscription-llm-judge' ? route.judge : undefined;
       const routeInput = judge
         ? { ...judge, billingLane: judge.billingLane ?? inferBillingLane(judge.backendId, judge.providerId) }
-        : { backendId: 'openrouter', providerId: 'openrouter', billingLane: 'openrouter-metered' as const, modelId: route.modelId, connectionProfileId: route.connectionProfileId };
+        : {
+            backendId: 'openrouter',
+            providerId: 'openrouter',
+            billingLane: 'openrouter-metered' as const,
+            modelId: route.modelId,
+            connectionProfileId: route.connectionProfileId,
+          };
       const status = routeStatus({
         ...routeInput,
         stageId: stage.id,
@@ -2256,9 +2623,15 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
           `${stage.label}: ${index === 0 ? 'Decision Engine' : 'escalation engine'} route is not ready${status.billing.reason ? ` — ${status.billing.reason}` : route.engine !== 'subscription-llm-judge' && !status.openRouterReady ? ' — select an OpenRouter connection with a stored inference key' : ''}.`,
         );
       }
-      if (isMeteredLane(status.billingLane) && billingMode === 'subscriptions-plus-decision-budget' && workflow.meteredBudget.perRunUsd === null) {
+      if (
+        isMeteredLane(status.billingLane) &&
+        billingMode === 'subscriptions-plus-decision-budget' &&
+        workflow.meteredBudget.perRunUsd === null
+      ) {
         ready = false;
-        warnings.push(`${stage.label}: set a per-run metered cap; Subscriptions + Decision Budget requires one.`);
+        warnings.push(
+          `${stage.label}: set a per-run metered cap; Subscriptions + Decision Budget requires one.`,
+        );
       }
     }
     const external = routes.some((route) => decisionEngineInfo(route.engine).external);
@@ -2295,7 +2668,9 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       modelId,
       modelDisplayName: modelId ?? info.label,
       variantId: null,
-      connectionProfileName: config?.connectionProfileId ? (connectionById.get(config.connectionProfileId)?.name ?? null) : null,
+      connectionProfileName: config?.connectionProfileId
+        ? (connectionById.get(config.connectionProfileId)?.name ?? null)
+        : null,
       billingLane,
       reasoning: null,
       nativeSettings: {},
@@ -2331,16 +2706,37 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       'One or more execution backends are missing, have no explicit provider/model, or no longer report the configured model.',
     );
   for (const assignment of providerAssignments) {
-    if (assignment.workload === 'generative' && assignment.backendId && assignment.providerId && !routeMatchesBillingLane(assignment.backendId, assignment.providerId, assignment.billingLane ?? 'unknown'))
-      warnings.push(`${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabel(assignment.billingLane ?? 'unknown')} billing lane.`);
+    if (
+      assignment.workload === 'generative' &&
+      assignment.backendId &&
+      assignment.providerId &&
+      !routeMatchesBillingLane(
+        assignment.backendId,
+        assignment.providerId,
+        assignment.billingLane ?? 'unknown',
+      )
+    )
+      warnings.push(
+        `${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabel(assignment.billingLane ?? 'unknown')} billing lane.`,
+      );
     if (profileMismatch.has(assignment.stageId ?? ''))
-      warnings.push(`Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`);
-    if (assignment.billingLane && isSubscriptionLane(assignment.billingLane) && !warnings.includes(PROVIDER_FALLBACK_UNVERIFIABLE))
+      warnings.push(
+        `Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`,
+      );
+    if (
+      assignment.billingLane &&
+      isSubscriptionLane(assignment.billingLane) &&
+      !warnings.includes(PROVIDER_FALLBACK_UNVERIFIABLE)
+    )
       warnings.push(PROVIDER_FALLBACK_UNVERIFIABLE);
     if (assignment.identity === 'floating')
-      warnings.push(`${assignment.stage}: ${assignment.modelId} is a floating/routed model alias; history records the resolved model where telemetry reports it, so reruns may not be identical.`);
+      warnings.push(
+        `${assignment.stage}: ${assignment.modelId} is a floating/routed model alias; history records the resolved model where telemetry reports it, so reruns may not be identical.`,
+      );
     if (assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-      warnings.push(`${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`);
+      warnings.push(
+        `${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`,
+      );
   }
   const billingGroups = new Map<string, string[]>();
   for (const assignment of providerAssignments) {
@@ -2348,23 +2744,36 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     const lane = assignment.billingLane ?? 'unknown';
     billingGroups.set(lane, [...(billingGroups.get(lane) ?? []), assignment.stage]);
   }
-  const usedLanes = [...billingGroups.entries()].map(([lane, stages]) => ({ billingLane: lane as BillingLane, stages }));
+  const usedLanes = [...billingGroups.entries()].map(([lane, stages]) => ({
+    billingLane: lane as BillingLane,
+    stages,
+  }));
   const billingSummary = [
     ...usedLanes,
-    ...ALL_BILLING_LANES.filter((lane) => lane !== 'unknown' && !billingGroups.has(lane)).map((billingLane) => ({ billingLane, stages: [] as string[] })),
+    ...ALL_BILLING_LANES.filter((lane) => lane !== 'unknown' && !billingGroups.has(lane)).map(
+      (billingLane) => ({ billingLane, stages: [] as string[] }),
+    ),
   ];
-  const meteredAssignments = providerAssignments.filter((assignment) => assignment.billingLane && isMeteredLane(assignment.billingLane));
+  const meteredAssignments = providerAssignments.filter(
+    (assignment) => assignment.billingLane && isMeteredLane(assignment.billingLane),
+  );
   const routingSummary = {
     subscriptions: SUBSCRIPTION_LANES.map((lane) => ({
       billingLane: lane,
       label: billingLaneLabel(lane),
-      stages: providerAssignments.filter((assignment) => assignment.billingLane === lane).map((assignment) => assignment.stage),
+      stages: providerAssignments
+        .filter((assignment) => assignment.billingLane === lane)
+        .map((assignment) => assignment.stage),
     })),
     metered: [...new Set(meteredAssignments.map((assignment) => assignment.billingLane!))].map((lane) => ({
       billingLane: lane,
       label: billingLaneLabel(lane),
-      generativeStages: meteredAssignments.filter((item) => item.billingLane === lane && item.workload === 'generative').map((item) => item.stage),
-      decisionStages: meteredAssignments.filter((item) => item.billingLane === lane && item.workload === 'decision').map((item) => item.stage),
+      generativeStages: meteredAssignments
+        .filter((item) => item.billingLane === lane && item.workload === 'generative')
+        .map((item) => item.stage),
+      decisionStages: meteredAssignments
+        .filter((item) => item.billingLane === lane && item.workload === 'decision')
+        .map((item) => item.stage),
     })),
     meteredNone: meteredAssignments.length === 0,
     runMeteredCapUsd: workflow.meteredBudget.perRunUsd,
@@ -2378,12 +2787,17 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   const providerFallbackStatus = usedLanes.flatMap((item) => {
     const status = providerSideFallbackStatus(item.billingLane);
     if (!status) return [];
-    const backend = providerAssignments.find((assignment) => assignment.billingLane === item.billingLane)?.backendId ?? 'unknown';
+    const backend =
+      providerAssignments.find((assignment) => assignment.billingLane === item.billingLane)?.backendId ??
+      'unknown';
     return [{ backendId: backend, billingLane: item.billingLane, ...status }];
   });
   const contextWarnings = providerAssignments
     .filter((assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-    .map((assignment) => `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`);
+    .map(
+      (assignment) =>
+        `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`,
+    );
   const machineRow = localMachine(db);
   const machine = {
     id: String(machineRow.id),
@@ -2395,7 +2809,9 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   };
   const hasRunnableStage = workflow.stages.some((stage) => stage.enabled !== false);
   const contextBudgetBlocked = providerAssignments.some(
-    (assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens && assignment.context.onLimitExceeded !== 'compact',
+    (assignment) =>
+      assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens &&
+      assignment.context.onLimitExceeded !== 'compact',
   );
   return {
     project,
@@ -2411,7 +2827,9 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     effectiveRules,
     branchStrategy:
       workflow.isolatedWorktree && project.gitRoot ? ('worktree' as const) : ('current-branch' as const),
-    expectedAiStages: providerAssignments.filter((assignment) => assignment.ready && assignment.workload === 'generative').length,
+    expectedAiStages: providerAssignments.filter(
+      (assignment) => assignment.ready && assignment.workload === 'generative',
+    ).length,
     canStart:
       Boolean(input.task.trim()) &&
       hasRunnableStage &&
@@ -2442,13 +2860,14 @@ function inheritStageConfiguration(workflow: WorkflowDefinition, stage: Workflow
   };
   const nodeChangedConnection = Boolean(
     (stage.backendId && defaults.backendId && stage.backendId !== defaults.backendId) ||
-      (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
-      (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
+    (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
+    (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
   );
   return {
     ...stage,
     backendId: inherited.backendId,
-    connectionProfileId: stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
+    connectionProfileId:
+      stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
     providerId: inherited.providerId,
     billingLane: inherited.billingLane,
     modelId: inherited.modelId,
@@ -2459,7 +2878,9 @@ function inheritStageConfiguration(workflow: WorkflowDefinition, stage: Workflow
   };
 }
 
-function normalizeWorkflowBilling<T extends { billingMode?: import('../shared/types.js').BillingMode; subscriptionOnly: boolean }>(value: T): T {
+function normalizeWorkflowBilling<
+  T extends { billingMode?: import('../shared/types.js').BillingMode; subscriptionOnly: boolean },
+>(value: T): T {
   const billingMode = resolveBillingMode(value);
   return { ...value, billingMode, subscriptionOnly: billingMode !== 'custom' };
 }
@@ -2475,16 +2896,22 @@ function withCredentialState(db: Db, profile: import('../shared/types.js').Conne
   };
 }
 
-function usageFilterFromQuery(db: Db, query: Record<string, string | undefined>): UsageFilter | { error: string } {
+function usageFilterFromQuery(
+  db: Db,
+  query: Record<string, string | undefined>,
+): UsageFilter | { error: string } {
   const timeZone = query.tz && isValidTimeZone(query.tz) ? query.tz : systemTimeZone();
-  const preset = (['today', 'yesterday', '7d', '30d', 'month', 'custom', 'period'] as const).includes(query.range as 'today')
+  const preset = (['today', 'yesterday', '7d', '30d', 'month', 'custom', 'period'] as const).includes(
+    query.range as 'today',
+  )
     ? (query.range as RangePreset | 'period')
     : '7d';
   let range: { from: string; to: string };
   if (preset === 'period') {
     // Current billing/reset period from a user-configured quota envelope.
     const quota = query.quotaId
-      ? (db.prepare('SELECT effective_at, reset_at FROM quota_envelopes WHERE id = ?').get(query.quotaId) as { effective_at: string; reset_at: string } | undefined)
+      ? (db.prepare('SELECT effective_at, reset_at FROM quota_envelopes WHERE id = ?').get(query.quotaId) as
+          { effective_at: string; reset_at: string } | undefined)
       : undefined;
     if (!quota) return { error: 'Choose a configured quota envelope for the billing-period view.' };
     range = { from: quota.effective_at, to: quota.reset_at };
@@ -2507,23 +2934,45 @@ function usageFilterFromQuery(db: Db, query: Record<string, string | undefined>)
   };
 }
 
-function estimateStageContext(task: string, stage: WorkflowStage, rules: import('../shared/types.js').TuringRule[], workflowPolicy: WorkflowDefinition['contextPolicy']) {
+function estimateStageContext(
+  task: string,
+  stage: WorkflowStage,
+  rules: import('../shared/types.js').TuringRule[],
+  workflowPolicy: WorkflowDefinition['contextPolicy'],
+) {
   const policy = { ...workflowPolicy, ...(stage.contextPolicy ?? {}) };
   const reviewKinds = ['reviewer', 'parallelReview', 'finalGate', 'consolidate'];
-  const includeCurrentDiff = stage.contextPolicy?.includeCurrentDiff ?? (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
-  const includePreviousTranscript = stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
-  const applicableRules = rules.filter((rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind));
+  const includeCurrentDiff =
+    stage.contextPolicy?.includeCurrentDiff ??
+    (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
+  const includePreviousTranscript =
+    stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
+  const applicableRules = rules.filter(
+    (rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind),
+  );
   const instructions = stage.customInstructions?.length ?? 0;
-  const ruleChars = applicableRules.reduce((total, rule) => total + rule.content.length + rule.name.length + 80, 0);
+  const ruleChars = applicableRules.reduce(
+    (total, rule) => total + rule.content.length + rule.name.length + 80,
+    0,
+  );
   const transcriptAllowance = includePreviousTranscript ? 16_000 : 0;
-  const estimatedInputTokens = Math.ceil((task.length + instructions + ruleChars + (includeCurrentDiff ? 2_000 : 0) + transcriptAllowance + 1_600) / 4);
-  const label = policy.strategy === 'changed-files'
-    ? 'Changed Files + Selected Artifacts'
-    : policy.strategy === 'artifacts-only'
-      ? 'Structured Artifacts + Explicit Files'
-      : policy.strategy === 'full-project'
-        ? 'Broad Project Context'
-        : 'Focused Context';
+  const estimatedInputTokens = Math.ceil(
+    (task.length +
+      instructions +
+      ruleChars +
+      (includeCurrentDiff ? 2_000 : 0) +
+      transcriptAllowance +
+      1_600) /
+      4,
+  );
+  const label =
+    policy.strategy === 'changed-files'
+      ? 'Changed Files + Selected Artifacts'
+      : policy.strategy === 'artifacts-only'
+        ? 'Structured Artifacts + Explicit Files'
+        : policy.strategy === 'full-project'
+          ? 'Broad Project Context'
+          : 'Focused Context';
   return {
     label,
     estimatedInputTokens,
@@ -2687,8 +3136,9 @@ function hasCredentialMaterial(value: unknown): boolean {
   if (typeof value === 'string') return redactSecrets(value) !== value;
   if (Array.isArray(value)) return value.some(hasCredentialMaterial);
   if (value && typeof value === 'object')
-    return Object.entries(value as Record<string, unknown>).some(([key, item]) =>
-      /secret|token|api.?key|password|cookie|credential/i.test(key) || hasCredentialMaterial(item),
+    return Object.entries(value as Record<string, unknown>).some(
+      ([key, item]) =>
+        /secret|token|api.?key|password|cookie|credential/i.test(key) || hasCredentialMaterial(item),
     );
   return false;
 }

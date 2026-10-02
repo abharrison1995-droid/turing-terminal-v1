@@ -202,11 +202,14 @@ export interface MeteredBudgetSettings {
   updatedAt: string | null;
 }
 
-export type UsageProvenance = 'provider_measured' | 'locally_measured' | 'user_configured' | 'estimated' | 'unavailable';
+export type UsageProvenance =
+  'provider_measured' | 'locally_measured' | 'user_configured' | 'estimated' | 'unavailable';
 
-export type DecisionEngineId = 'deterministic-rules' | 'jev-openrouter' | 'subscription-llm-judge' | 'openrouter-judge';
+export type DecisionEngineId =
+  'deterministic-rules' | 'jev-openrouter' | 'subscription-llm-judge' | 'openrouter-judge';
 export type DecisionQuestionType = 'boolean' | 'choice' | 'score';
-export type DecisionInputCategory = 'task' | 'plan' | 'implementation' | 'diff' | 'tests' | 'build' | 'findings' | 'finalGate';
+export type DecisionInputCategory =
+  'task' | 'plan' | 'implementation' | 'diff' | 'tests' | 'build' | 'findings' | 'finalGate';
 export type DecisionOutcome = 'pass' | 'fail' | 'uncertain' | 'choice';
 
 export interface DecisionRouteAction {
@@ -711,7 +714,12 @@ export interface RunPreview {
   billingSummary: Array<{ billingLane: BillingLane | 'not-used'; stages: string[] }>;
   routingSummary: {
     subscriptions: Array<{ billingLane: BillingLane; label: string; stages: string[] }>;
-    metered: Array<{ billingLane: BillingLane; label: string; generativeStages: string[]; decisionStages: string[] }>;
+    metered: Array<{
+      billingLane: BillingLane;
+      label: string;
+      generativeStages: string[];
+      decisionStages: string[];
+    }>;
     meteredNone: boolean;
     runMeteredCapUsd: number | null;
     dailyBudgetUsd: number | null;
@@ -720,6 +728,11 @@ export interface RunPreview {
     paygFallback: 'none' | 'configured';
     externalDecisionDataPolicy: ExternalDataPolicy;
   };
-  providerFallbackStatus: Array<{ backendId: string; billingLane?: BillingLane; status: 'known-disabled' | 'known-enabled' | 'unknown'; message: string }>;
+  providerFallbackStatus: Array<{
+    backendId: string;
+    billingLane?: BillingLane;
+    status: 'known-disabled' | 'known-enabled' | 'unknown';
+    message: string;
+  }>;
   contextWarnings: string[];
 }

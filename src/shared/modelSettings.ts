@@ -8,7 +8,10 @@ import type { ModelIdentityKind, ModelOption, ReasoningControl } from './types.j
 
 const CLAUDE_CODE_ALIASES = new Set(['opus', 'sonnet', 'haiku', 'default', 'best', 'opusplan']);
 
-export function classifyModelIdentity(backendId: string | undefined, modelId: string | undefined): ModelIdentityKind {
+export function classifyModelIdentity(
+  backendId: string | undefined,
+  modelId: string | undefined,
+): ModelIdentityKind {
   const id = (modelId ?? '').trim();
   if (!id) return 'pinned';
   const lower = id.toLowerCase();
@@ -31,19 +34,34 @@ export interface AdvancedSettingDescriptor {
 }
 
 /** Documented OpenRouter `reasoning.effort` values (verified 2026-10-02). */
-export const OPENROUTER_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export const OPENROUTER_REASONING_EFFORTS = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
 
-export function reasoningControlFor(backendId: string | undefined, model: ModelOption | undefined): ReasoningControl {
+export function reasoningControlFor(
+  backendId: string | undefined,
+  model: ModelOption | undefined,
+): ReasoningControl {
   if (!backendId) return 'none';
   if (model?.reasoningControl) return model.reasoningControl;
   if (backendId === 'codex-cli') return model?.reasoningLevels?.length ? 'effort' : 'provider-controlled';
   if (backendId === 'opencode') return model?.variantIds?.length ? 'variant' : 'provider-controlled';
-  if (backendId === 'openrouter') return model?.reasoningLevels?.length ? 'effort' : model ? 'none' : 'provider-controlled';
+  if (backendId === 'openrouter')
+    return model?.reasoningLevels?.length ? 'effort' : model ? 'none' : 'provider-controlled';
   // Claude Code and Cline expose no account model catalog to this adapter, so reasoning stays provider controlled.
   return 'provider-controlled';
 }
 
-export function advancedSettingsFor(backendId: string | undefined, model: ModelOption | undefined): AdvancedSettingDescriptor[] {
+export function advancedSettingsFor(
+  backendId: string | undefined,
+  model: ModelOption | undefined,
+): AdvancedSettingDescriptor[] {
   if (backendId !== 'openrouter' || !model) return [];
   const settings: AdvancedSettingDescriptor[] = [];
   if (model.supportsMaxOutput && model.maxOutputRange)
@@ -96,7 +114,9 @@ export function validateModelSettings(args: {
   const control = reasoningControlFor(args.backendId, args.model);
   if (args.reasoning) {
     if (control !== 'effort')
-      errors.push(`Reasoning “${args.reasoning}” cannot be sent: this model's reasoning is ${control === 'variant' ? 'selected through a provider-native variant' : control === 'none' ? 'not configurable' : 'provider controlled'}.`);
+      errors.push(
+        `Reasoning “${args.reasoning}” cannot be sent: this model's reasoning is ${control === 'variant' ? 'selected through a provider-native variant' : control === 'none' ? 'not configurable' : 'provider controlled'}.`,
+      );
     else if (args.catalogAvailable && !args.model?.reasoningLevels?.includes(args.reasoning))
       errors.push(`Reasoning “${args.reasoning}” is not reported as supported for this exact model.`);
   }
@@ -107,13 +127,19 @@ export function validateModelSettings(args: {
   for (const [key, value] of Object.entries(args.nativeSettings ?? {})) {
     if (value === null || value === undefined) continue;
     if (!allowed.has(key)) {
-      errors.push(`Setting “${key}” is not a supported capability of this backend/model and will not be sent.`);
+      errors.push(
+        `Setting “${key}” is not a supported capability of this backend/model and will not be sent.`,
+      );
       continue;
     }
     const descriptor = descriptors.find((item) => item.key === key);
     if (descriptor?.kind === 'number') {
-      if (typeof value !== 'number' || !Number.isFinite(value)) errors.push(`${descriptor.label} must be a number.`);
-      else if ((descriptor.min !== undefined && value < descriptor.min) || (descriptor.max !== undefined && value > descriptor.max))
+      if (typeof value !== 'number' || !Number.isFinite(value))
+        errors.push(`${descriptor.label} must be a number.`);
+      else if (
+        (descriptor.min !== undefined && value < descriptor.min) ||
+        (descriptor.max !== undefined && value > descriptor.max)
+      )
         errors.push(`${descriptor.label} must be between ${descriptor.min} and ${descriptor.max}.`);
     }
     if (descriptor?.kind === 'enum' && !descriptor.options?.includes(String(value)))
@@ -122,8 +148,15 @@ export function validateModelSettings(args: {
   if (args.backendId === 'codex-cli') {
     const nativeEffort = args.nativeSettings?.reasoningEffort;
     if (typeof nativeEffort === 'string' && args.reasoning && nativeEffort !== args.reasoning)
-      errors.push('Choose one provider-native reasoning value; conflicting reasoning settings were configured.');
-    if (typeof nativeEffort === 'string' && !args.reasoning && args.catalogAvailable && !args.model?.reasoningLevels?.includes(nativeEffort))
+      errors.push(
+        'Choose one provider-native reasoning value; conflicting reasoning settings were configured.',
+      );
+    if (
+      typeof nativeEffort === 'string' &&
+      !args.reasoning &&
+      args.catalogAvailable &&
+      !args.model?.reasoningLevels?.includes(nativeEffort)
+    )
       errors.push(`Reasoning “${nativeEffort}” is not reported as supported for this exact model.`);
   }
   return errors;
@@ -139,12 +172,22 @@ export function pruneModelSettings(args: {
   reasoning?: string;
   variantId?: string;
   nativeSettings?: Record<string, string | number | boolean | null>;
-}): { reasoning: string | undefined; variantId: string | undefined; nativeSettings: Record<string, string | number | boolean | null> | undefined } {
+}): {
+  reasoning: string | undefined;
+  variantId: string | undefined;
+  nativeSettings: Record<string, string | number | boolean | null> | undefined;
+} {
   const control = reasoningControlFor(args.backendId, args.model);
-  const reasoning = control === 'effort' && args.reasoning && args.model?.reasoningLevels?.includes(args.reasoning) ? args.reasoning : undefined;
-  const variantId = args.variantId && args.model?.variantIds?.includes(args.variantId) ? args.variantId : undefined;
+  const reasoning =
+    control === 'effort' && args.reasoning && args.model?.reasoningLevels?.includes(args.reasoning)
+      ? args.reasoning
+      : undefined;
+  const variantId =
+    args.variantId && args.model?.variantIds?.includes(args.variantId) ? args.variantId : undefined;
   const allowed = new Set(advancedSettingsFor(args.backendId, args.model).map((item) => item.key));
-  const kept = Object.fromEntries(Object.entries(args.nativeSettings ?? {}).filter(([key]) => allowed.has(key)));
+  const kept = Object.fromEntries(
+    Object.entries(args.nativeSettings ?? {}).filter(([key]) => allowed.has(key)),
+  );
   return { reasoning, variantId, nativeSettings: Object.keys(kept).length ? kept : undefined };
 }
 

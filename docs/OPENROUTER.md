@@ -8,10 +8,10 @@ Adding an OpenRouter connection (Settings → OpenRouter) creates a connection p
 
 ## Credentials
 
-| Credential | Used for | Required |
-| --- | --- | --- |
-| **Inference key** | Chat completions, Jev decisions, `/api/v1/key` telemetry | Yes, for any OpenRouter use |
-| **Management key** | `/api/v1/credits` account balance only | No |
+| Credential         | Used for                                                 | Required                    |
+| ------------------ | -------------------------------------------------------- | --------------------------- |
+| **Inference key**  | Chat completions, Jev decisions, `/api/v1/key` telemetry | Yes, for any OpenRouter use |
+| **Management key** | `/api/v1/credits` account balance only                   | No                          |
 
 OpenRouter management keys cannot run inference; Turing never uses one for inference.
 

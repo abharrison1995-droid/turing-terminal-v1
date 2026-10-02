@@ -43,13 +43,25 @@ function scrub(text: string, key?: string): string {
   return redactSecrets(withoutKey).slice(0, 800);
 }
 
-async function request<T>(fetchImpl: FetchLike, path: string, key: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
+async function request<T>(
+  fetchImpl: FetchLike,
+  path: string,
+  key: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<T> {
   const signals = [AbortSignal.timeout(init.timeoutMs ?? 120_000), ...(init.signal ? [init.signal] : [])];
   let response: Response;
   try {
-    response = await fetchImpl(`${OPENROUTER_ORIGIN}${path}`, { ...init, headers: headers(key), signal: AbortSignal.any(signals) });
+    response = await fetchImpl(`${OPENROUTER_ORIGIN}${path}`, {
+      ...init,
+      headers: headers(key),
+      signal: AbortSignal.any(signals),
+    });
   } catch (error) {
-    throw new OpenRouterError(`OpenRouter request failed: ${scrub(error instanceof Error ? error.message : String(error), key)}`, null);
+    throw new OpenRouterError(
+      `OpenRouter request failed: ${scrub(error instanceof Error ? error.message : String(error), key)}`,
+      null,
+    );
   }
   const text = await response.text();
   let body: unknown = null;
@@ -73,7 +85,10 @@ const price = (value: unknown): number | null => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
-export function parseOpenRouterModels(payload: unknown, observedAt = new Date().toISOString()): ModelOption[] {
+export function parseOpenRouterModels(
+  payload: unknown,
+  observedAt = new Date().toISOString(),
+): ModelOption[] {
   const rows = (payload as { data?: unknown } | null)?.data;
   if (!Array.isArray(rows)) return [];
   return rows.flatMap((row): ModelOption[] => {
@@ -81,21 +96,31 @@ export function parseOpenRouterModels(payload: unknown, observedAt = new Date().
     const model = row as Record<string, unknown>;
     const id = typeof model.id === 'string' ? model.id : '';
     if (!id) return [];
-    const parameters = Array.isArray(model.supported_parameters) ? model.supported_parameters.filter((item): item is string => typeof item === 'string') : [];
+    const parameters = Array.isArray(model.supported_parameters)
+      ? model.supported_parameters.filter((item): item is string => typeof item === 'string')
+      : [];
     const pricing = (model.pricing ?? {}) as Record<string, unknown>;
-    const overrides = Array.isArray(pricing.overrides) ? (pricing.overrides as Array<Record<string, unknown>>) : [];
+    const overrides = Array.isArray(pricing.overrides)
+      ? (pricing.overrides as Array<Record<string, unknown>>)
+      : [];
     const maxOf = (field: string) => {
-      const values = [price(pricing[field]), ...overrides.map((item) => price(item[field]))].filter((value): value is number => value !== null);
+      const values = [price(pricing[field]), ...overrides.map((item) => price(item[field]))].filter(
+        (value): value is number => value !== null,
+      );
       return values.length ? Math.max(...values) : null;
     };
     const topProvider = (model.top_provider ?? {}) as Record<string, unknown>;
     const contextLength = typeof model.context_length === 'number' ? model.context_length : null;
-    const maxCompletion = typeof topProvider.max_completion_tokens === 'number' ? topProvider.max_completion_tokens : contextLength;
+    const maxCompletion =
+      typeof topProvider.max_completion_tokens === 'number'
+        ? topProvider.max_completion_tokens
+        : contextLength;
     const architecture = (model.architecture ?? {}) as Record<string, unknown>;
     const inputs = Array.isArray(architecture.input_modalities) ? architecture.input_modalities : [];
     const decision = /^~?typesafe\/jev/i.test(id);
     const supportsReasoning = parameters.includes('reasoning');
-    const expiration = typeof model.expiration_date === 'string' && model.expiration_date ? model.expiration_date : null;
+    const expiration =
+      typeof model.expiration_date === 'string' && model.expiration_date ? model.expiration_date : null;
     return [
       {
         id,
@@ -104,7 +129,8 @@ export function parseOpenRouterModels(payload: unknown, observedAt = new Date().
         subscriptionBacked: false,
         family: decision ? 'decision' : 'generative',
         supportsTools: parameters.includes('tools'),
-        supportsStructuredOutput: parameters.includes('structured_outputs') || parameters.includes('response_format'),
+        supportsStructuredOutput:
+          parameters.includes('structured_outputs') || parameters.includes('response_format'),
         supportsImages: inputs.includes('image'),
         contextLength,
         ...(supportsReasoning
@@ -117,7 +143,9 @@ export function parseOpenRouterModels(payload: unknown, observedAt = new Date().
         supportsTemperature: parameters.includes('temperature'),
         ...(parameters.includes('temperature') ? { temperatureRange: { min: 0, max: 2 } } : {}),
         supportsMaxOutput: parameters.includes('max_tokens') && Boolean(maxCompletion),
-        ...(parameters.includes('max_tokens') && maxCompletion ? { maxOutputRange: { min: 1, max: maxCompletion } } : {}),
+        ...(parameters.includes('max_tokens') && maxCompletion
+          ? { maxOutputRange: { min: 1, max: maxCompletion } }
+          : {}),
         identity: classifyModelIdentity('openrouter', id),
         status: expiration ? 'deprecated' : 'current',
         deprecationDate: expiration,
@@ -166,8 +194,15 @@ export function jevAdapterMetadata(): ModelOption {
   };
 }
 
-export async function fetchKeyTelemetry(key: string, connectionProfileId: string, fetchImpl: FetchLike = fetch): Promise<ProviderSpendTelemetry> {
-  const body = await request<{ data?: Record<string, unknown> }>(fetchImpl, '/api/v1/key', key, { method: 'GET', timeoutMs: 15_000 });
+export async function fetchKeyTelemetry(
+  key: string,
+  connectionProfileId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<ProviderSpendTelemetry> {
+  const body = await request<{ data?: Record<string, unknown> }>(fetchImpl, '/api/v1/key', key, {
+    method: 'GET',
+    timeoutMs: 15_000,
+  });
   const data = body?.data ?? {};
   const n = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
   return {
@@ -190,8 +225,17 @@ export async function fetchKeyTelemetry(key: string, connectionProfileId: string
 }
 
 /** Account-wide balance. Requires a management key; never used for inference. */
-export async function fetchAccountCredits(managementKey: string, connectionProfileId: string, fetchImpl: FetchLike = fetch): Promise<ProviderSpendTelemetry> {
-  const body = await request<{ data?: Record<string, unknown> }>(fetchImpl, '/api/v1/credits', managementKey, { method: 'GET', timeoutMs: 15_000 });
+export async function fetchAccountCredits(
+  managementKey: string,
+  connectionProfileId: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<ProviderSpendTelemetry> {
+  const body = await request<{ data?: Record<string, unknown> }>(
+    fetchImpl,
+    '/api/v1/credits',
+    managementKey,
+    { method: 'GET', timeoutMs: 15_000 },
+  );
   const data = body?.data ?? {};
   const credits = typeof data.total_credits === 'number' ? data.total_credits : null;
   const usage = typeof data.total_usage === 'number' ? data.total_usage : null;
@@ -223,7 +267,11 @@ export function estimateTokensConservatively(text: string): number {
  * Conservative reservation in USD. Returns null when the request cannot be bounded
  * (missing price or no bounded output), so the unknown-cost policy applies.
  */
-export function estimateReservationUsd(model: ModelOption | undefined, inputTokens: number, maxOutputTokens: number | null): number | null {
+export function estimateReservationUsd(
+  model: ModelOption | undefined,
+  inputTokens: number,
+  maxOutputTokens: number | null,
+): number | null {
   const pricing = model?.pricing;
   if (!pricing) return null;
   const prompt = pricing.maxPromptUsdPerToken ?? pricing.promptUsdPerToken;
@@ -282,12 +330,17 @@ export async function openRouterChat(args: {
   fetchImpl?: FetchLike;
 }): Promise<{ body: Record<string, unknown>; observation: UsageObservation; latencyMs: number }> {
   const started = Date.now();
-  const body = await request<Record<string, unknown>>(args.fetchImpl ?? fetch, '/api/v1/chat/completions', args.key, {
-    method: 'POST',
-    body: JSON.stringify(args.body),
-    signal: args.signal,
-    timeoutMs: 10 * 60_000,
-  });
+  const body = await request<Record<string, unknown>>(
+    args.fetchImpl ?? fetch,
+    '/api/v1/chat/completions',
+    args.key,
+    {
+      method: 'POST',
+      body: JSON.stringify(args.body),
+      signal: args.signal,
+      timeoutMs: 10 * 60_000,
+    },
+  );
   return { body, observation: usageObservationFrom(body), latencyMs: Date.now() - started };
 }
 
@@ -306,13 +359,22 @@ export async function openRouterDecision(args: {
   fetchImpl?: FetchLike;
 }): Promise<{ body: Record<string, unknown>; observation: UsageObservation; latencyMs: number }> {
   const started = Date.now();
-  const body = await request<Record<string, unknown>>(args.fetchImpl ?? fetch, '/api/alpha/decisions', args.key, {
-    method: 'POST',
-    body: JSON.stringify({ model: args.model, state: args.state, questions: args.questions }),
-    signal: args.signal,
-    timeoutMs: 120_000,
-  });
-  return { body, observation: { ...usageObservationFrom(body), source: 'openrouter-decisions-response' }, latencyMs: Date.now() - started };
+  const body = await request<Record<string, unknown>>(
+    args.fetchImpl ?? fetch,
+    '/api/alpha/decisions',
+    args.key,
+    {
+      method: 'POST',
+      body: JSON.stringify({ model: args.model, state: args.state, questions: args.questions }),
+      signal: args.signal,
+      timeoutMs: 120_000,
+    },
+  );
+  return {
+    body,
+    observation: { ...usageObservationFrom(body), source: 'openrouter-decisions-response' },
+    latencyMs: Date.now() - started,
+  };
 }
 
 export interface MeterHandle {
@@ -326,7 +388,12 @@ export interface MeterHandle {
  * `complete`/`fail` reconcile or release it.
  */
 export interface MeteringHooks {
-  begin(args: { estimateUsd: number | null; estimatedInputTokens: number; estimatedOutputTokens: number | null; label: string }): Promise<MeterHandle>;
+  begin(args: {
+    estimateUsd: number | null;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number | null;
+    label: string;
+  }): Promise<MeterHandle>;
   complete(handle: MeterHandle, observation: UsageObservation): void;
   fail(handle: MeterHandle, message: string, observation?: UsageObservation): void;
 }
@@ -334,8 +401,12 @@ export interface MeteringHooks {
 export const OPENROUTER_DEFAULT_MAX_OUTPUT = 8_192;
 const MAX_AGENT_TURNS = 16;
 
-export function boundedMaxOutput(model: ModelOption | undefined, nativeSettings?: Record<string, string | number | boolean | null>): number | null {
-  const configured = typeof nativeSettings?.maxOutputTokens === 'number' ? nativeSettings.maxOutputTokens : null;
+export function boundedMaxOutput(
+  model: ModelOption | undefined,
+  nativeSettings?: Record<string, string | number | boolean | null>,
+): number | null {
+  const configured =
+    typeof nativeSettings?.maxOutputTokens === 'number' ? nativeSettings.maxOutputTokens : null;
   if (!model?.supportsMaxOutput || !model.maxOutputRange) return null;
   return Math.min(configured ?? OPENROUTER_DEFAULT_MAX_OUTPUT, model.maxOutputRange.max);
 }
@@ -353,14 +424,24 @@ export async function runOpenRouterAgent(args: {
   metering: MeteringHooks;
   brokerTool?: (name: string, input: Record<string, unknown>) => Promise<{ result?: string; error?: string }>;
   fetchImpl?: FetchLike;
-}): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null; usageProvenance: 'provider_reported' | 'unavailable'; exitCode: number; stdout: string; usageRecorded: true }> {
+}): Promise<{
+  text: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  usageProvenance: 'provider_reported' | 'unavailable';
+  exitCode: number;
+  stdout: string;
+  usageRecorded: true;
+}> {
   const { BROKER_TOOL_DEFINITIONS, READ_ONLY_BROKER_TOOLS } = await import('./brokerTools.js');
   const tools =
     args.model?.supportsTools && args.brokerTool
-      ? BROKER_TOOL_DEFINITIONS.filter((tool) => !args.readOnly || READ_ONLY_BROKER_TOOLS.has(tool.name)).map((tool) => ({
-          type: 'function' as const,
-          function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
-        }))
+      ? BROKER_TOOL_DEFINITIONS.filter((tool) => !args.readOnly || READ_ONLY_BROKER_TOOLS.has(tool.name)).map(
+          (tool) => ({
+            type: 'function' as const,
+            function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+          }),
+        )
       : [];
   const messages: ChatMessage[] = [
     {
@@ -386,11 +467,15 @@ export async function runOpenRouterAgent(args: {
         ? {
             reasoning: {
               ...(args.reasoning ? { effort: args.reasoning } : {}),
-              ...(typeof args.nativeSettings?.reasoningMaxTokens === 'number' ? { max_tokens: args.nativeSettings.reasoningMaxTokens } : {}),
+              ...(typeof args.nativeSettings?.reasoningMaxTokens === 'number'
+                ? { max_tokens: args.nativeSettings.reasoningMaxTokens }
+                : {}),
             },
           }
         : {}),
-      ...(typeof args.nativeSettings?.temperature === 'number' ? { temperature: args.nativeSettings.temperature } : {}),
+      ...(typeof args.nativeSettings?.temperature === 'number'
+        ? { temperature: args.nativeSettings.temperature }
+        : {}),
       // Hard per-token price ceiling: OpenRouter will not route to an upstream priced above the reservation basis.
       ...(maxPrice ? { provider: { max_price: maxPrice } } : {}),
     };
@@ -403,15 +488,21 @@ export async function runOpenRouterAgent(args: {
     });
     let response: Awaited<ReturnType<typeof openRouterChat>>;
     try {
-      response = await openRouterChat({ key: args.key, body, signal: args.signal, fetchImpl: args.fetchImpl });
+      response = await openRouterChat({
+        key: args.key,
+        body,
+        signal: args.signal,
+        fetchImpl: args.fetchImpl,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.metering.fail(handle, message);
       throw error instanceof Error ? error : new Error(message);
     }
-    const choice = (Array.isArray(response.body.choices) ? response.body.choices[0] : null) as
-      | { message?: ChatMessage; finish_reason?: string }
-      | null;
+    const choice = (Array.isArray(response.body.choices) ? response.body.choices[0] : null) as {
+      message?: ChatMessage;
+      finish_reason?: string;
+    } | null;
     args.metering.complete(handle, {
       ...response.observation,
       status: 'succeeded',
@@ -419,7 +510,8 @@ export async function runOpenRouterAgent(args: {
       latencyMs: response.latencyMs,
       durationMs: response.latencyMs,
     });
-    if (response.observation.inputTokens === null || response.observation.outputTokens === null) allReported = false;
+    if (response.observation.inputTokens === null || response.observation.outputTokens === null)
+      allReported = false;
     inputTokens += response.observation.inputTokens ?? 0;
     outputTokens += response.observation.outputTokens ?? 0;
     const message = choice?.message;
@@ -442,7 +534,8 @@ export async function runOpenRouterAgent(args: {
       let input: Record<string, unknown> = {};
       try {
         const parsed = JSON.parse(call.function.arguments || '{}') as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) input = parsed as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+          input = parsed as Record<string, unknown>;
       } catch {
         input = {};
       }
@@ -451,7 +544,11 @@ export async function runOpenRouterAgent(args: {
         ? await args.brokerTool(call.function.name, input)
         : { error: 'The requested tool is not exposed to this stage by the Turing broker.' };
       args.onLog(`tool ${call.function.name}: ${outcome.error ? 'denied/failed' : 'completed'}`);
-      messages.push({ role: 'tool', tool_call_id: call.id, content: outcome.error ? `Error: ${outcome.error}` : (outcome.result ?? '') });
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: outcome.error ? `Error: ${outcome.error}` : (outcome.result ?? ''),
+      });
     }
   }
   throw new Error(`OpenRouter stage exceeded the ${MAX_AGENT_TURNS}-turn tool limit.`);

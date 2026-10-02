@@ -1,6 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import type { BillingLane, BillingMode, MeteredBudgetSettings, UnknownCostPolicy, WorkloadType } from '../shared/types.js';
-import { addDays, isValidTimeZone, localDayKey, systemTimeZone, zonedMidnightUtc } from '../shared/timezone.js';
+import type {
+  BillingLane,
+  BillingMode,
+  MeteredBudgetSettings,
+  UnknownCostPolicy,
+  WorkloadType,
+} from '../shared/types.js';
+import {
+  addDays,
+  isValidTimeZone,
+  localDayKey,
+  systemTimeZone,
+  zonedMidnightUtc,
+} from '../shared/timezone.js';
 import type { Db } from './db.js';
 
 /**
@@ -18,7 +30,8 @@ export function defaultBudgetSettings(): MeteredBudgetSettings {
 }
 
 export function getBudgetSettings(db: Db): MeteredBudgetSettings {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(SETTINGS_KEY) as { value: string } | undefined;
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(SETTINGS_KEY) as
+    { value: string } | undefined;
   if (!row) return defaultBudgetSettings();
   try {
     return { ...defaultBudgetSettings(), ...(JSON.parse(row.value) as Partial<MeteredBudgetSettings>) };
@@ -27,7 +40,10 @@ export function getBudgetSettings(db: Db): MeteredBudgetSettings {
   }
 }
 
-export function saveBudgetSettings(db: Db, value: Omit<MeteredBudgetSettings, 'updatedAt'>): MeteredBudgetSettings {
+export function saveBudgetSettings(
+  db: Db,
+  value: Omit<MeteredBudgetSettings, 'updatedAt'>,
+): MeteredBudgetSettings {
   const saved: MeteredBudgetSettings = {
     dailyUsd: value.dailyUsd,
     monthlyUsd: value.monthlyUsd,
@@ -64,7 +80,11 @@ export interface ReservationRequest {
 
 export type ReservationOutcome =
   | { ok: true; reservationId: string; bounded: boolean; warnings: string[] }
-  | { ok: false; code: 'cap_exceeded' | 'unknown_cost_blocked' | 'unknown_cost_needs_approval' | 'run_cap_required'; reason: string };
+  | {
+      ok: false;
+      code: 'cap_exceeded' | 'unknown_cost_blocked' | 'unknown_cost_needs_approval' | 'run_cap_required';
+      reason: string;
+    };
 
 interface WindowCommit {
   committed: number;
@@ -97,8 +117,16 @@ export function budgetStatus(db: Db, runId: string | null, perRunUsd: number | n
   const settings = getBudgetSettings(db);
   const windows = budgetWindows(settings, now);
   const run = runId ? (db.prepare(committedSql('run_id = ?')).get(runId) as WindowCommit).committed : 0;
-  const day = (db.prepare(committedSql('created_at >= ? AND created_at < ?')).get(windows.dayFrom, windows.dayTo) as WindowCommit).committed;
-  const month = (db.prepare(committedSql('created_at >= ? AND created_at < ?')).get(windows.monthFrom, windows.monthTo) as WindowCommit).committed;
+  const day = (
+    db
+      .prepare(committedSql('created_at >= ? AND created_at < ?'))
+      .get(windows.dayFrom, windows.dayTo) as WindowCommit
+  ).committed;
+  const month = (
+    db
+      .prepare(committedSql('created_at >= ? AND created_at < ?'))
+      .get(windows.monthFrom, windows.monthTo) as WindowCommit
+  ).committed;
   return {
     timeZone: windows.timeZone,
     run: { committedUsd: run, capUsd: perRunUsd },
@@ -115,15 +143,25 @@ export function reserveMetered(db: Db, request: ReservationRequest): Reservation
       return {
         ok: false,
         code: 'run_cap_required',
-        reason: 'Subscriptions + Decision Budget requires a per-run metered cap before any Decision Engine may spend.',
+        reason:
+          'Subscriptions + Decision Budget requires a per-run metered cap before any Decision Engine may spend.',
       };
     const status = budgetStatus(db, request.runId, request.perRunUsd, now);
     const bounded = request.amountUsd !== null && Number.isFinite(request.amountUsd);
     if (!bounded) {
       if (request.unknownCostPolicy === 'block')
-        return { ok: false, code: 'unknown_cost_blocked', reason: 'This metered request cannot be cost-bounded before launch, and the unknown-cost policy is Block.' };
+        return {
+          ok: false,
+          code: 'unknown_cost_blocked',
+          reason:
+            'This metered request cannot be cost-bounded before launch, and the unknown-cost policy is Block.',
+        };
       if (request.unknownCostPolicy === 'ask' && !request.unboundedApproved)
-        return { ok: false, code: 'unknown_cost_needs_approval', reason: 'This metered request cannot be cost-bounded before launch. Approval is required.' };
+        return {
+          ok: false,
+          code: 'unknown_cost_needs_approval',
+          reason: 'This metered request cannot be cost-bounded before launch. Approval is required.',
+        };
     }
     const amount = bounded ? Math.max(0, request.amountUsd!) : 0;
     const caps: Array<[string, number, number | null]> = [
@@ -143,9 +181,12 @@ export function reserveMetered(db: Db, request: ReservationRequest): Reservation
           reason: `The ${name} Turing metered budget ($${cap.toFixed(4)}) would be exceeded: $${committed.toFixed(4)} committed + $${amount.toFixed(4)} reserved.`,
         };
       if (cap > 0 && (committed + amount) / cap >= status.warningRatio)
-        warnings.push(`${name} metered budget is at ${Math.round(((committed + amount) / cap) * 100)}% of $${cap.toFixed(2)}.`);
+        warnings.push(
+          `${name} metered budget is at ${Math.round(((committed + amount) / cap) * 100)}% of $${cap.toFixed(2)}.`,
+        );
     }
-    if (!bounded) warnings.push('Unbounded metered request: Turing cannot guarantee the hard cap for this request.');
+    if (!bounded)
+      warnings.push('Unbounded metered request: Turing cannot guarantee the hard cap for this request.');
     const id = randomUUID();
     db.prepare(
       `INSERT INTO metered_reservations (id, run_id, stage_id, billing_lane, connection_profile_id, workload_type, reserved_usd, status, cost_bound, reason, created_at)
@@ -168,29 +209,32 @@ export function reserveMetered(db: Db, request: ReservationRequest): Reservation
 }
 
 export function attachReservationUsage(db: Db, reservationId: string, usageEventId: string): void {
-  db.prepare('UPDATE metered_reservations SET usage_event_id = ? WHERE id = ?').run(usageEventId, reservationId);
+  db.prepare('UPDATE metered_reservations SET usage_event_id = ? WHERE id = ?').run(
+    usageEventId,
+    reservationId,
+  );
 }
 
 /** Replace the reservation with provider-measured actual cost; unused headroom is released. */
-export function reconcileReservation(db: Db, reservationId: string, actualUsd: number | null, provenance: string): { overrunUsd: number } {
-  const row = db.prepare('SELECT reserved_usd, status FROM metered_reservations WHERE id = ?').get(reservationId) as
-    | { reserved_usd: number; status: string }
-    | undefined;
+export function reconcileReservation(
+  db: Db,
+  reservationId: string,
+  actualUsd: number | null,
+  provenance: string,
+): { overrunUsd: number } {
+  const row = db
+    .prepare('SELECT reserved_usd, status FROM metered_reservations WHERE id = ?')
+    .get(reservationId) as { reserved_usd: number; status: string } | undefined;
   if (!row || row.status !== 'reserved') return { overrunUsd: 0 };
-  db.prepare("UPDATE metered_reservations SET status = 'reconciled', actual_usd = ?, actual_provenance = ?, settled_at = ? WHERE id = ?").run(
-    actualUsd,
-    provenance,
-    new Date().toISOString(),
-    reservationId,
-  );
+  db.prepare(
+    "UPDATE metered_reservations SET status = 'reconciled', actual_usd = ?, actual_provenance = ?, settled_at = ? WHERE id = ?",
+  ).run(actualUsd, provenance, new Date().toISOString(), reservationId);
   return { overrunUsd: actualUsd !== null ? Math.max(0, actualUsd - row.reserved_usd) : 0 };
 }
 
 /** Release a reservation for a request that failed or was cancelled before any provider charge was reported. */
 export function releaseReservation(db: Db, reservationId: string, reason: string): void {
-  db.prepare("UPDATE metered_reservations SET status = 'released', settled_at = ?, reason = substr(reason || ' · ' || ?, 1, 300) WHERE id = ? AND status = 'reserved'").run(
-    new Date().toISOString(),
-    reason,
-    reservationId,
-  );
+  db.prepare(
+    "UPDATE metered_reservations SET status = 'released', settled_at = ?, reason = substr(reason || ' · ' || ?, 1, 300) WHERE id = ? AND status = 'reserved'",
+  ).run(new Date().toISOString(), reason, reservationId);
 }

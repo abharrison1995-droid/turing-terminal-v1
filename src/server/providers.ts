@@ -173,7 +173,10 @@ const adapters: ProviderAdapter[] = [
     discover: async () => {
       const version = await commandOutput('opencode', ['--version']);
       if (!version) return missingAdapter('OpenCode');
-      const modelOutput = await commandOutput('opencode', ['models', '--verbose'], { timeoutMs: 20_000, maxBuffer: 12_000_000 });
+      const modelOutput = await commandOutput('opencode', ['models', '--verbose'], {
+        timeoutMs: 20_000,
+        maxBuffer: 12_000_000,
+      });
       const models = parseOpenCodeModels(modelOutput ?? '');
       const authOutput = await commandOutput('opencode', ['auth', 'list', '--format', 'json']);
       const authentication: ProviderStatus['authentication'] =
@@ -304,23 +307,38 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
   if (adapter.id === 'codex-cli' && request.providerId !== 'openai-codex')
     throw new Error('Select ChatGPT subscription authentication; OpenAI API providers are disabled.');
   if (!routeMatchesBillingLane(request.backendId, request.providerId, request.billingLane))
-    throw new Error(`Provider ${request.providerId} cannot execute through billing lane ${request.billingLane ?? 'unknown'}.`);
+    throw new Error(
+      `Provider ${request.providerId} cannot execute through billing lane ${request.billingLane ?? 'unknown'}.`,
+    );
   if (adapter.id === 'opencode') {
     const selectedModel = status.models.find((model) => model.id === request.modelId);
-    if (!selectedModel)
-      throw new Error('The exact OpenCode model is not present in the current catalog.');
+    if (!selectedModel) throw new Error('The exact OpenCode model is not present in the current catalog.');
     if (!request.modelId.startsWith(`${request.providerId}/`))
       throw new Error('Use the exact provider-native OpenCode model ID, including its provider prefix.');
     if (request.modelId.includes('#'))
-      throw new Error('Store the OpenCode base model ID and provider-native variant in their separate fields.');
-    if (request.billingLane && ['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) && !selectedModel.subscriptionBacked)
+      throw new Error(
+        'Store the OpenCode base model ID and provider-native variant in their separate fields.',
+      );
+    if (
+      request.billingLane &&
+      ['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) &&
+      !selectedModel.subscriptionBacked
+    )
       throw new Error('The selected model is not reported as backed by the configured subscription lane.');
-    if (request.billingLane && !['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) && selectedModel.subscriptionBacked)
+    if (
+      request.billingLane &&
+      !['opencode-go-subscription', 'chatgpt-subscription'].includes(request.billingLane) &&
+      selectedModel.subscriptionBacked
+    )
       throw new Error('A subscription-backed model cannot be relabeled as a metered or API billing lane.');
     if (request.variantId && !selectedModel.variantIds?.includes(request.variantId))
       throw new Error(`Variant “${request.variantId}” was not reported as supported for this exact model.`);
   }
-  if (adapter.id === 'cline' && !['openai-codex', 'cline-pass'].includes(request.providerId) && !['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(request.billingLane ?? ''))
+  if (
+    adapter.id === 'cline' &&
+    !['openai-codex', 'cline-pass'].includes(request.providerId) &&
+    !['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(request.billingLane ?? '')
+  )
     throw new Error(
       'Select ClinePass, OpenAI Codex subscription authentication, or explicitly configure the Cline usage-billing lane.',
     );
@@ -335,14 +353,16 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
     throw new Error(
       `Choose an explicit model for ${adapter.name}; Turing will not select one automatically.`,
     );
-  const billingMode: BillingMode = request.billingMode ?? (request.subscriptionOnly === false ? 'custom' : 'subscriptions-only');
+  const billingMode: BillingMode =
+    request.billingMode ?? (request.subscriptionOnly === false ? 'custom' : 'subscriptions-only');
   const billing = evaluateBillingLane({
     mode: billingMode,
     lane: request.billingLane,
     workload: request.workload ?? 'generative',
     customAllowedLanes: request.customAllowedLanes,
   });
-  if (!billing.allowed) throw new Error(`Billing lane “${request.billingLane}” is blocked: ${billing.reason}`);
+  if (!billing.allowed)
+    throw new Error(`Billing lane “${request.billingLane}” is blocked: ${billing.reason}`);
   const selectedModel = status.models.find((model) => model.id === request.modelId);
   const settingErrors = validateModelSettings({
     backendId: adapter.id,
@@ -536,7 +556,11 @@ async function runCodexCli(request: ProviderRunRequest): Promise<ProviderRunResu
     '--config',
     `mcp_servers=${tomlInline(serverConfig)}`,
   ];
-  const codexEffort = request.reasoning ?? (typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined);
+  const codexEffort =
+    request.reasoning ??
+    (typeof request.nativeSettings?.reasoningEffort === 'string'
+      ? request.nativeSettings.reasoningEffort
+      : undefined);
   if (codexEffort) args.push('--config', `model_reasoning_effort=${JSON.stringify(codexEffort)}`);
   args.push(request.prompt);
   try {
@@ -719,14 +743,25 @@ export function parseOpenCodeModels(output: string): ModelOption[] {
     }
     const variants = metadata.variants;
     const variantIds = Array.isArray(variants)
-      ? variants.flatMap((variant) => variant && typeof variant === 'object' && typeof (variant as Record<string, unknown>).id === 'string' ? [(variant as Record<string, unknown>).id as string] : [])
+      ? variants.flatMap((variant) =>
+          variant &&
+          typeof variant === 'object' &&
+          typeof (variant as Record<string, unknown>).id === 'string'
+            ? [(variant as Record<string, unknown>).id as string]
+            : [],
+        )
       : variants && typeof variants === 'object'
         ? Object.keys(variants as Record<string, unknown>)
         : [];
     const reportedCapabilities = metadata.capabilities;
-    const capabilities = reportedCapabilities && typeof reportedCapabilities === 'object'
-      ? Object.fromEntries(Object.entries(reportedCapabilities as Record<string, unknown>).filter(([key]) => ['tools', 'input', 'output'].includes(key)))
-      : {};
+    const capabilities =
+      reportedCapabilities && typeof reportedCapabilities === 'object'
+        ? Object.fromEntries(
+            Object.entries(reportedCapabilities as Record<string, unknown>).filter(([key]) =>
+              ['tools', 'input', 'output'].includes(key),
+            ),
+          )
+        : {};
     models.set(id, {
       id,
       name: typeof metadata.name === 'string' ? metadata.name : id,
@@ -742,7 +777,15 @@ export function parseOpenCodeModels(output: string): ModelOption[] {
 
 async function runOpenCode(request: ProviderRunRequest): Promise<ProviderRunResult> {
   const broker = createMcpConfig(request.toolBroker);
-  const args = ['run', '--format', 'json', '--dir', request.cwd, '--model', openCodeModelSelector(request.modelId, request.variantId)];
+  const args = [
+    'run',
+    '--format',
+    'json',
+    '--dir',
+    request.cwd,
+    '--model',
+    openCodeModelSelector(request.modelId, request.variantId),
+  ];
   if (request.permissionMode === 'yolo') args.push('--auto');
   args.push(request.prompt);
   try {
@@ -782,7 +825,8 @@ async function runClaudeCode(request: ProviderRunRequest): Promise<ProviderRunRe
     '--max-turns',
     '30',
   ];
-  const effort = typeof request.nativeSettings?.effort === 'string' ? request.nativeSettings.effort : undefined;
+  const effort =
+    typeof request.nativeSettings?.effort === 'string' ? request.nativeSettings.effort : undefined;
   if (effort) args.push('--effort', effort);
   args.push(request.prompt);
   try {
@@ -818,7 +862,8 @@ async function runCline(request: ProviderRunRequest): Promise<ProviderRunResult>
     '--auto-approve',
     'false',
   ];
-  const thinking = typeof request.nativeSettings?.thinking === 'string' ? request.nativeSettings.thinking : undefined;
+  const thinking =
+    typeof request.nativeSettings?.thinking === 'string' ? request.nativeSettings.thinking : undefined;
   if (thinking) args.push('--thinking', thinking);
   if (['planner', 'reviewer', 'consolidator', 'final-gate'].includes(request.role)) args.push('--plan');
   args.push(request.prompt);

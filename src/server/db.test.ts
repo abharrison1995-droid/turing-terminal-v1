@@ -28,8 +28,15 @@ describe('local database', () => {
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '013_model_run_snapshots.sql'").get(),
     ).toBeTruthy();
-    for (const table of ['metered_reservations', 'decision_results', 'model_catalog_cache', 'external_data_consents'])
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table)).toBeTruthy();
+    for (const table of [
+      'metered_reservations',
+      'decision_results',
+      'model_catalog_cache',
+      'external_data_consents',
+    ])
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+      ).toBeTruthy();
     expect((db.prepare('SELECT COUNT(*) AS count FROM workflows').get() as { count: number }).count).toBe(5);
     expect((db.prepare('SELECT COUNT(*) AS count FROM machines').get() as { count: number }).count).toBe(1);
     db.close();

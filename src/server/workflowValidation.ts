@@ -91,11 +91,14 @@ export function validateWorkflow(
       }
     }
     const laterStageIds = workflow.stages.slice(index + 1).map((candidate) => candidate.id);
-    if (stage.kind === 'decisionGate') errors.push(...validateDecisionGate(stage.decision, stage.label, laterStageIds));
+    if (stage.kind === 'decisionGate')
+      errors.push(...validateDecisionGate(stage.decision, stage.label, laterStageIds));
     if (stage.orchestration) {
-      if (stage.kind !== 'orchestrator') errors.push(`Stage “${stage.label}” can define branches only as an AI Orchestrator.`);
+      if (stage.kind !== 'orchestrator')
+        errors.push(`Stage “${stage.label}” can define branches only as an AI Orchestrator.`);
       const branchIds = stage.orchestration.branches.map((branch) => branch.id);
-      if (new Set(branchIds).size !== branchIds.length) errors.push(`Orchestrator “${stage.label}” has duplicate branch IDs.`);
+      if (new Set(branchIds).size !== branchIds.length)
+        errors.push(`Orchestrator “${stage.label}” has duplicate branch IDs.`);
       if (!branchIds.includes(stage.orchestration.defaultBranchId))
         errors.push(`Orchestrator “${stage.label}” needs a default branch from its configured branches.`);
       for (const branch of stage.orchestration.branches)

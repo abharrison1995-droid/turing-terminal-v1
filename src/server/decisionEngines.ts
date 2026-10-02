@@ -77,7 +77,10 @@ export interface DecisionContext {
   /** Metering for a metered decision call (billing gate + atomic reservation + canonical usage event). */
   metering?: (route: DecisionEngineRoute, question: DecisionQuestion) => MeteringHooks;
   /** Subscription judge through the normal provider adapters; records its own usage event. */
-  callJudge?: (route: ModelConfiguration, prompt: string) => Promise<ProviderRunResult & { usageEventId?: string | null }>;
+  callJudge?: (
+    route: ModelConfiguration,
+    prompt: string,
+  ) => Promise<ProviderRunResult & { usageEventId?: string | null }>;
   fetchImpl?: typeof fetch;
 }
 
@@ -87,7 +90,8 @@ export interface DecisionEngine {
   evaluate(requests: DecisionRequest[], context: DecisionContext): Promise<EngineDecision[]>;
 }
 
-const finite = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const finite = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
 const unit = (value: unknown): number | null => {
   const n = finite(value);
   return n !== null && n >= 0 && n <= 1 ? n : null;
@@ -127,7 +131,8 @@ export const deterministicRulesEngine: DecisionEngine = {
   id: 'deterministic-rules',
   async evaluate(requests, context) {
     return requests.map((request) => {
-      if (!request.rule || !context.conditionValue) throw new Error('Deterministic Rules needs a structured rule and run state.');
+      if (!request.rule || !context.conditionValue)
+        throw new Error('Deterministic Rules needs a structured rule and run state.');
       const passed = evaluateCondition(request.rule, context.conditionValue(request.rule.path));
       return {
         ...baseDecision(),
@@ -152,42 +157,98 @@ export function toJevQuestion(question: DecisionQuestion): JevQuestion {
 }
 
 /** Strict parse of a Jev answer. Missing fields halt the gate instead of defaulting. */
-export function parseJevAnswer(answer: unknown, question: DecisionQuestion): Pick<EngineDecision, 'answer' | 'probability' | 'distribution' | 'confidence' | 'confidenceKind' | 'score' | 'legend'> {
-  if (!answer || typeof answer !== 'object') throw new Error('Jev did not return an answer for the question.');
+export function parseJevAnswer(
+  answer: unknown,
+  question: DecisionQuestion,
+): Pick<
+  EngineDecision,
+  'answer' | 'probability' | 'distribution' | 'confidence' | 'confidenceKind' | 'score' | 'legend'
+> {
+  if (!answer || typeof answer !== 'object')
+    throw new Error('Jev did not return an answer for the question.');
   const value = answer as Record<string, unknown>;
   const record = (input: unknown): Record<string, number> | null => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
-    const entries = Object.entries(input as Record<string, unknown>).map(([key, item]) => [key, unit(item)] as const);
-    return entries.every(([, item]) => item !== null) ? Object.fromEntries(entries as Array<[string, number]>) : null;
+    const entries = Object.entries(input as Record<string, unknown>).map(
+      ([key, item]) => [key, unit(item)] as const,
+    );
+    return entries.every(([, item]) => item !== null)
+      ? Object.fromEntries(entries as Array<[string, number]>)
+      : null;
   };
   if (question.questionType === 'boolean') {
     const probability = unit(value.noul);
-    if (value.type !== 'noul' || probability === null) throw new Error('Jev returned an invalid noul answer (probability missing).');
+    if (value.type !== 'noul' || probability === null)
+      throw new Error('Jev returned an invalid noul answer (probability missing).');
     // A noul answer is P(true) only: no answer is derived and no confidence is invented.
-    return { answer: null, probability, distribution: null, confidence: null, confidenceKind: null, score: null, legend: null };
+    return {
+      answer: null,
+      probability,
+      distribution: null,
+      confidence: null,
+      confidenceKind: null,
+      score: null,
+      legend: null,
+    };
   }
   const confidence = unit(value.confidence);
   const distribution = record(value.probabilities);
   if (question.questionType === 'choice') {
-    const options = question.criteria && !Array.isArray(question.criteria) ? Object.keys(question.criteria) : [];
-    if (value.type !== 'choice' || typeof value.choice !== 'string' || !options.includes(value.choice) || confidence === null || !distribution)
-      throw new Error('Jev returned an invalid choice answer (choice, confidence, or probabilities missing).');
-    return { answer: value.choice, probability: null, distribution, confidence, confidenceKind: 'engine-distribution', score: null, legend: null };
+    const options =
+      question.criteria && !Array.isArray(question.criteria) ? Object.keys(question.criteria) : [];
+    if (
+      value.type !== 'choice' ||
+      typeof value.choice !== 'string' ||
+      !options.includes(value.choice) ||
+      confidence === null ||
+      !distribution
+    )
+      throw new Error(
+        'Jev returned an invalid choice answer (choice, confidence, or probabilities missing).',
+      );
+    return {
+      answer: value.choice,
+      probability: null,
+      distribution,
+      confidence,
+      confidenceKind: 'engine-distribution',
+      score: null,
+      legend: null,
+    };
   }
   const score = finite(value.score);
   const legend =
     value.legend && typeof value.legend === 'object' && !Array.isArray(value.legend)
-      ? Object.fromEntries(Object.entries(value.legend as Record<string, unknown>).map(([key, item]) => [key, String(item)]))
+      ? Object.fromEntries(
+          Object.entries(value.legend as Record<string, unknown>).map(([key, item]) => [key, String(item)]),
+        )
       : null;
   if (value.type !== 'score' || score === null || confidence === null || !distribution)
     throw new Error('Jev returned an invalid score answer (score, confidence, or probabilities missing).');
-  return { answer: score, probability: null, distribution, confidence, confidenceKind: 'engine-distribution', score, legend };
+  return {
+    answer: score,
+    probability: null,
+    distribution,
+    confidence,
+    confidenceKind: 'engine-distribution',
+    score,
+    legend,
+  };
 }
 
 async function meteredCall<T>(
   hooks: MeteringHooks,
-  estimate: { estimateUsd: number | null; estimatedInputTokens: number; estimatedOutputTokens: number | null; label: string },
-  call: () => Promise<{ value: T; observation: import('./usageEvents.js').UsageObservation; latencyMs: number }>,
+  estimate: {
+    estimateUsd: number | null;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number | null;
+    label: string;
+  },
+  call: () => Promise<{
+    value: T;
+    observation: import('./usageEvents.js').UsageObservation;
+    latencyMs: number;
+  }>,
   decisionOutcome?: (value: T) => string | null,
 ): Promise<{ value: T; handle: MeterHandle; observation: import('./usageEvents.js').UsageObservation }> {
   const handle = await hooks.begin(estimate);
@@ -211,16 +272,24 @@ async function meteredCall<T>(
 export const jevOpenRouterEngine: DecisionEngine = {
   id: 'jev-openrouter',
   async evaluate(requests, context) {
-    if (!context.resolveOpenRouter || !context.metering) throw new Error('Jev needs an explicitly selected OpenRouter connection.');
+    if (!context.resolveOpenRouter || !context.metering)
+      throw new Error('Jev needs an explicitly selected OpenRouter connection.');
     // The Decisions API has no batch endpoint; batch items run with bounded concurrency under one batch ID.
     return mapBounded(requests, 3, async (request) => {
       const { key, model } = context.resolveOpenRouter!(request.route);
       const questions = { [request.question.questionId]: toJevQuestion(request.question) };
-      const estimatedInputTokens = estimateTokensConservatively(JSON.stringify({ state: request.state, questions }));
+      const estimatedInputTokens = estimateTokensConservatively(
+        JSON.stringify({ state: request.state, questions }),
+      );
       const { value, handle, observation } = await meteredCall(
         context.metering!(request.route, request.question),
         // Jev bills input tokens only; outputs are free (completion price 0 in the catalog).
-        { estimateUsd: estimateReservationUsd(model, estimatedInputTokens, 0), estimatedInputTokens, estimatedOutputTokens: 0, label: 'Jev decision' },
+        {
+          estimateUsd: estimateReservationUsd(model, estimatedInputTokens, 0),
+          estimatedInputTokens,
+          estimatedOutputTokens: 0,
+          label: 'Jev decision',
+        },
         async () => {
           const response = await openRouterDecision({
             key,
@@ -231,7 +300,11 @@ export const jevOpenRouterEngine: DecisionEngine = {
             fetchImpl: context.fetchImpl,
           });
           const answers = (response.body.answers ?? {}) as Record<string, unknown>;
-          return { value: parseJevAnswer(answers[request.question.questionId], request.question), observation: response.observation, latencyMs: response.latencyMs };
+          return {
+            value: parseJevAnswer(answers[request.question.questionId], request.question),
+            observation: response.observation,
+            latencyMs: response.latencyMs,
+          };
         },
       );
       return {
@@ -271,7 +344,13 @@ export function judgePrompt(request: DecisionRequest): string {
     .join('\n\n');
 }
 
-export function parseJudgeAnswer(text: string, question: DecisionQuestion): Pick<EngineDecision, 'answer' | 'probability' | 'distribution' | 'confidence' | 'confidenceKind' | 'score' | 'legend'> {
+export function parseJudgeAnswer(
+  text: string,
+  question: DecisionQuestion,
+): Pick<
+  EngineDecision,
+  'answer' | 'probability' | 'distribution' | 'confidence' | 'confidenceKind' | 'score' | 'legend'
+> {
   const match = text.match(/\{[\s\S]*\}/);
   let value: Record<string, unknown> = {};
   try {
@@ -280,19 +359,28 @@ export function parseJudgeAnswer(text: string, question: DecisionQuestion): Pick
     value = {};
   }
   const confidence = unit(value.confidence);
-  const base = { probability: null, distribution: null, confidence, confidenceKind: confidence === null ? null : ('self-reported' as const), legend: null };
+  const base = {
+    probability: null,
+    distribution: null,
+    confidence,
+    confidenceKind: confidence === null ? null : ('self-reported' as const),
+    legend: null,
+  };
   if (question.questionType === 'boolean') {
     if (typeof value.answer !== 'boolean') throw new Error('The judge did not return a boolean answer.');
     return { ...base, answer: value.answer, score: null };
   }
   if (question.questionType === 'choice') {
-    const options = question.criteria && !Array.isArray(question.criteria) ? Object.keys(question.criteria) : [];
-    if (typeof value.answer !== 'string' || !options.includes(value.answer)) throw new Error('The judge did not return a configured option.');
+    const options =
+      question.criteria && !Array.isArray(question.criteria) ? Object.keys(question.criteria) : [];
+    if (typeof value.answer !== 'string' || !options.includes(value.answer))
+      throw new Error('The judge did not return a configured option.');
     return { ...base, answer: value.answer, score: null };
   }
   const levels = Array.isArray(question.criteria) ? question.criteria.length : 0;
   const score = finite(value.answer);
-  if (score === null || !Number.isInteger(score) || score < 0 || score >= levels) throw new Error('The judge did not return a valid score level.');
+  if (score === null || !Number.isInteger(score) || score < 0 || score >= levels)
+    throw new Error('The judge did not return a valid score level.');
   return { ...base, answer: score, score };
 }
 
@@ -301,7 +389,8 @@ export const subscriptionJudgeEngine: DecisionEngine = {
   async evaluate(requests, context) {
     if (!context.callJudge) throw new Error('The Subscription LLM Judge needs a configured provider route.');
     return mapBounded(requests, 2, async (request) => {
-      if (!request.route.judge) throw new Error('The Subscription LLM Judge needs an explicit backend, provider, and model.');
+      if (!request.route.judge)
+        throw new Error('The Subscription LLM Judge needs an explicit backend, provider, and model.');
       const result = await context.callJudge!(request.route.judge, judgePrompt(request));
       return {
         ...baseDecision(),
@@ -320,7 +409,8 @@ export const subscriptionJudgeEngine: DecisionEngine = {
 export const openRouterJudgeEngine: DecisionEngine = {
   id: 'openrouter-judge',
   async evaluate(requests, context) {
-    if (!context.resolveOpenRouter || !context.metering) throw new Error('The OpenRouter judge needs an explicitly selected OpenRouter connection.');
+    if (!context.resolveOpenRouter || !context.metering)
+      throw new Error('The OpenRouter judge needs an explicitly selected OpenRouter connection.');
     return mapBounded(requests, 3, async (request) => {
       const { key, model } = context.resolveOpenRouter!(request.route);
       const prompt = judgePrompt(request);
@@ -329,7 +419,12 @@ export const openRouterJudgeEngine: DecisionEngine = {
       const maxPrice = maxPriceFor(model);
       const { value, handle, observation } = await meteredCall(
         context.metering!(request.route, request.question),
-        { estimateUsd: estimateReservationUsd(model, estimatedInputTokens, maxOutput), estimatedInputTokens, estimatedOutputTokens: maxOutput, label: 'OpenRouter judge' },
+        {
+          estimateUsd: estimateReservationUsd(model, estimatedInputTokens, maxOutput),
+          estimatedInputTokens,
+          estimatedOutputTokens: maxOutput,
+          label: 'OpenRouter judge',
+        },
         async () => {
           const response = await openRouterChat({
             key,
@@ -343,9 +438,15 @@ export const openRouterJudgeEngine: DecisionEngine = {
               ...(maxPrice ? { provider: { max_price: maxPrice } } : {}),
             },
           });
-          const choice = (Array.isArray(response.body.choices) ? response.body.choices[0] : null) as { message?: { content?: unknown } } | null;
+          const choice = (Array.isArray(response.body.choices) ? response.body.choices[0] : null) as {
+            message?: { content?: unknown };
+          } | null;
           const text = typeof choice?.message?.content === 'string' ? choice.message.content : '';
-          return { value: parseJudgeAnswer(text, request.question), observation: response.observation, latencyMs: response.latencyMs };
+          return {
+            value: parseJudgeAnswer(text, request.question),
+            observation: response.observation,
+            latencyMs: response.latencyMs,
+          };
         },
       );
       return {
@@ -395,7 +496,14 @@ export function decisionConfigSnapshot(config: DecisionGateConfig) {
       engine: item.engine,
       modelId: item.modelId ?? null,
       judge: item.judge
-        ? { backendId: item.judge.backendId, providerId: item.judge.providerId, billingLane: item.judge.billingLane, modelId: item.judge.modelId, variantId: item.judge.variantId, reasoning: item.judge.reasoning }
+        ? {
+            backendId: item.judge.backendId,
+            providerId: item.judge.providerId,
+            billingLane: item.judge.billingLane,
+            modelId: item.judge.modelId,
+            variantId: item.judge.variantId,
+            reasoning: item.judge.reasoning,
+          }
         : null,
     };
   return canonical({
@@ -414,7 +522,9 @@ export function decisionConfigSnapshot(config: DecisionGateConfig) {
 }
 
 export function decisionConfigHash(config: DecisionGateConfig): string {
-  return createHash('sha256').update(JSON.stringify(decisionConfigSnapshot(config))).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(decisionConfigSnapshot(config)))
+    .digest('hex');
 }
 
 export interface GateEvaluation {
@@ -442,21 +552,42 @@ export async function evaluateDecisionGate(args: {
   };
   const evaluate = async (route: DecisionEngineRoute) => {
     const [decision] = await decisionEngine(route.engine).evaluate(
-      [{ id: randomUUID(), batchId: args.batchId, route, question, state: args.state, rule: args.config.rule }],
+      [
+        {
+          id: randomUUID(),
+          batchId: args.batchId,
+          route,
+          question,
+          state: args.state,
+          rule: args.config.rule,
+        },
+      ],
       args.context,
     );
     return decision!;
   };
   const primary = await evaluate(args.config);
-  const routedPrimary = routeDecision({ ...primary, questionType: args.config.questionType }, args.config.routing);
-  const results: GateEvaluation['results'] = [{ route: args.config, decision: primary, routed: routedPrimary }];
-  if (routedPrimary.route.action !== 'escalate' || !args.config.escalation) return { results, final: routedPrimary };
+  const routedPrimary = routeDecision(
+    { ...primary, questionType: args.config.questionType },
+    args.config.routing,
+  );
+  const results: GateEvaluation['results'] = [
+    { route: args.config, decision: primary, routed: routedPrimary },
+  ];
+  if (routedPrimary.route.action !== 'escalate' || !args.config.escalation)
+    return { results, final: routedPrimary };
   const escalated = await evaluate(args.config.escalation);
-  let routedEscalation = routeDecision({ ...escalated, questionType: args.config.questionType }, args.config.routing);
+  let routedEscalation = routeDecision(
+    { ...escalated, questionType: args.config.questionType },
+    args.config.routing,
+  );
   if (routedEscalation.route.action === 'escalate')
     routedEscalation = {
       outcome: routedEscalation.outcome,
-      route: { action: 'human-approval', reason: `${routedEscalation.route.reason}; escalation was also uncertain, so a person decides` },
+      route: {
+        action: 'human-approval',
+        reason: `${routedEscalation.route.reason}; escalation was also uncertain, so a person decides`,
+      },
     };
   results.push({ route: args.config.escalation, decision: escalated, routed: routedEscalation });
   return { results, final: routedEscalation };
@@ -485,7 +616,10 @@ export function saveDecisionResult(
     engine: args.route.engine,
     providerId: args.decision.providerId,
     billingLane: args.decision.billingLane,
-    configuredModelId: args.route.engine === 'subscription-llm-judge' ? (args.route.judge?.modelId ?? null) : (args.route.modelId ?? null),
+    configuredModelId:
+      args.route.engine === 'subscription-llm-judge'
+        ? (args.route.judge?.modelId ?? null)
+        : (args.route.modelId ?? null),
     resolvedModelId: args.decision.resolvedModelId,
     upstreamProvider: args.decision.upstreamProvider,
     questionId: args.questionId,
@@ -550,16 +684,16 @@ export function saveDecisionResult(
     result.createdAt,
   );
   if (result.usageEventId)
-    db.prepare('UPDATE usage_events SET decision_outcome = ?, decision_type = COALESCE(decision_type, ?) WHERE id = ?').run(
-      result.outcome,
-      result.questionType,
-      result.usageEventId,
-    );
+    db.prepare(
+      'UPDATE usage_events SET decision_outcome = ?, decision_type = COALESCE(decision_type, ?) WHERE id = ?',
+    ).run(result.outcome, result.questionType, result.usageEventId);
   return result;
 }
 
 export function listDecisionResults(db: Db, runId: string): DecisionResult[] {
-  const rows = db.prepare('SELECT * FROM decision_results WHERE run_id = ? ORDER BY created_at').all(runId) as Array<Record<string, unknown>>;
+  const rows = db
+    .prepare('SELECT * FROM decision_results WHERE run_id = ? ORDER BY created_at')
+    .all(runId) as Array<Record<string, unknown>>;
   const parse = <T>(value: unknown, fallback: T): T => {
     if (typeof value !== 'string') return fallback;
     try {

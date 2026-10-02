@@ -23,13 +23,13 @@ Workflow defaults → defaults for the stage kind → the node itself. A selecte
 
 `ModelOption` carries `reasoningControl` (`effort`, `variant`, `budget`, `provider-controlled`, `none`), provider-native `reasoningLevels` / `variantIds`, reasoning budget range, temperature and max-output support and ranges, tools, images, structured output, context length, pricing (metered providers), identity (pinned/floating), status, and deprecation date. `ProviderCapabilities` adds metered billing, provider-side fallback visibility, and decision support.
 
-| Backend | Discovery | Reasoning control |
-| --- | --- | --- |
-| Codex CLI | live (`model/list`) | provider-native efforts the model reports |
-| OpenCode | live (`opencode models --verbose`) | provider-native variants, sent as `provider/model#variant` |
-| OpenRouter | live public catalog | `reasoning.effort` values and `reasoning.max_tokens` when `reasoning` is a supported parameter; temperature and max output when supported |
-| Claude Code | none (exact model/alias entered) | provider controlled |
-| Cline | none (exact model entered) | provider controlled |
+| Backend     | Discovery                          | Reasoning control                                                                                                                         |
+| ----------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Codex CLI   | live (`model/list`)                | provider-native efforts the model reports                                                                                                 |
+| OpenCode    | live (`opencode models --verbose`) | provider-native variants, sent as `provider/model#variant`                                                                                |
+| OpenRouter  | live public catalog                | `reasoning.effort` values and `reasoning.max_tokens` when `reasoning` is a supported parameter; temperature and max output when supported |
+| Claude Code | none (exact model/alias entered)   | provider controlled                                                                                                                       |
+| Cline       | none (exact model entered)         | provider controlled                                                                                                                       |
 
 The Workflow Studio shows a reasoning selector only for `effort`, a variant selector only for `variant`, "Provider controlled" when the backend reports no control, and nothing for `none`. **Advanced Model Settings** lists only supported settings. Changing the backend clears model settings; changing the model prunes any setting the new model does not support (`pruneModelSettings`). The run engine re-validates with the same rules (`validateModelSettings`) and refuses unsupported values rather than sending them.
 
@@ -37,12 +37,12 @@ The Workflow Studio shows a reasoning selector only for `effort`, a variant sele
 
 **Refresh models** (Workflow Studio) re-runs discovery without restarting. Successful catalogs are persisted in `model_catalog_cache`. If a later discovery returns nothing, cached entries are shown as **Last Known** — never as current.
 
-| Status | Meaning |
-| --- | --- |
-| Current | present in a live catalog |
-| Last Known | from cache, or the backend has no discovery |
-| Unavailable | absent from a live, complete catalog |
-| Deprecated | the provider reports a deprecation/expiration date |
+| Status      | Meaning                                            |
+| ----------- | -------------------------------------------------- |
+| Current     | present in a live catalog                          |
+| Last Known  | from cache, or the backend has no discovery        |
+| Unavailable | absent from a live, complete catalog               |
+| Deprecated  | the provider reports a deprecation/expiration date |
 
 Turing never replaces an unavailable or deprecated model. The editor says **Choose replacement**; the user picks one.
 

@@ -47,7 +47,8 @@ export class SecretStore {
   write(ref: string, secret: string): void {
     if (!REF_PATTERN.test(ref)) throw new Error('Invalid credential reference.');
     const trimmed = secret.trim();
-    if (trimmed.length < 8 || trimmed.length > 512 || /\s/.test(trimmed)) throw new Error('The credential format is not valid.');
+    if (trimmed.length < 8 || trimmed.length > 512 || /\s/.test(trimmed))
+      throw new Error('The credential format is not valid.');
     const all = this.readAll();
     all[ref] = trimmed;
     this.writeAll(all);
@@ -75,7 +76,9 @@ export class SecretStore {
     if (!existsSync(this.file)) return {};
     try {
       const value = JSON.parse(readFileSync(this.file, 'utf8')) as unknown;
-      return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, string>) : {};
+      return value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, string>)
+        : {};
     } catch {
       return {};
     }

@@ -1,7 +1,12 @@
 import type { BillingLane, BillingMode, UnknownCostPolicy, WorkloadType } from '../shared/types.js';
 import { evaluateBillingLane } from '../shared/billing.js';
 import type { Db } from './db.js';
-import { attachReservationUsage, reconcileReservation, releaseReservation, reserveMetered } from './meteredBudget.js';
+import {
+  attachReservationUsage,
+  reconcileReservation,
+  releaseReservation,
+  reserveMetered,
+} from './meteredBudget.js';
 import type { MeteringHooks } from './openrouter.js';
 import { redactSecrets } from './security.js';
 import { createUsageEvent, reconcileUsageEvent } from './usageEvents.js';
@@ -42,8 +47,16 @@ export function createMeteringHooks(db: Db, options: MeteringOptions): MeteringH
   const lane: BillingLane = 'openrouter-metered';
   return {
     begin: async (estimate) => {
-      const billing = evaluateBillingLane({ mode: options.billingMode, lane, workload: options.workload, customAllowedLanes: options.customAllowedLanes });
-      if (!billing.allowed) throw new MeteringBlockedError(billing.reason ?? 'Metered spending is blocked by the run billing mode.');
+      const billing = evaluateBillingLane({
+        mode: options.billingMode,
+        lane,
+        workload: options.workload,
+        customAllowedLanes: options.customAllowedLanes,
+      });
+      if (!billing.allowed)
+        throw new MeteringBlockedError(
+          billing.reason ?? 'Metered spending is blocked by the run billing mode.',
+        );
       const base = {
         runId: options.reservationScopeId,
         stageId: options.stageId,
@@ -61,13 +74,22 @@ export function createMeteringHooks(db: Db, options: MeteringOptions): MeteringH
         const approved = options.approveUnbounded ? await options.approveUnbounded(estimate.label) : false;
         reservation = approved
           ? reserveMetered(db, { ...base, unboundedApproved: true })
-          : { ok: false, code: 'unknown_cost_blocked', reason: 'The unbounded metered request was not approved.' };
+          : {
+              ok: false,
+              code: 'unknown_cost_blocked',
+              reason: 'The unbounded metered request was not approved.',
+            };
       }
       if (!reservation.ok) {
-        options.onEvent?.('metered_request_blocked', { stageId: options.stageId, code: reservation.code, reason: reservation.reason });
+        options.onEvent?.('metered_request_blocked', {
+          stageId: options.stageId,
+          code: reservation.code,
+          reason: reservation.reason,
+        });
         throw new MeteringBlockedError(reservation.reason);
       }
-      for (const warning of reservation.warnings) options.onEvent?.('metered_budget_warning', { stageId: options.stageId, warning });
+      for (const warning of reservation.warnings)
+        options.onEvent?.('metered_budget_warning', { stageId: options.stageId, warning });
       const usageEventId = createUsageEvent(db, {
         runId: options.usageRunId,
         stageId: options.stageId,
@@ -100,12 +122,19 @@ export function createMeteringHooks(db: Db, options: MeteringOptions): MeteringH
         observation.actualCostUsd != null
           ? reconcileReservation(db, handle.reservationId, observation.actualCostUsd, 'provider_measured')
           : reconcileReservation(db, handle.reservationId, null, 'estimated');
-      if (overrunUsd > 0) options.onEvent?.('metered_reservation_overrun', { stageId: options.stageId, overrunUsd });
+      if (overrunUsd > 0)
+        options.onEvent?.('metered_reservation_overrun', { stageId: options.stageId, overrunUsd });
     },
     fail: (handle, message, observation) => {
-      reconcileUsageEvent(db, handle.usageEventId, { source: 'openrouter-error', provenance: 'unavailable', ...observation, status: 'failed' });
+      reconcileUsageEvent(db, handle.usageEventId, {
+        source: 'openrouter-error',
+        provenance: 'unavailable',
+        ...observation,
+        status: 'failed',
+      });
       if (!handle.reservationId) return;
-      if (observation?.actualCostUsd != null) reconcileReservation(db, handle.reservationId, observation.actualCostUsd, 'provider_measured');
+      if (observation?.actualCostUsd != null)
+        reconcileReservation(db, handle.reservationId, observation.actualCostUsd, 'provider_measured');
       else releaseReservation(db, handle.reservationId, redactSecrets(message).slice(0, 120));
     },
   };

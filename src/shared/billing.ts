@@ -17,7 +17,11 @@ export const METERED_LANES: readonly BillingLane[] = [
 
 export const ALL_BILLING_LANES: readonly BillingLane[] = [...SUBSCRIPTION_LANES, ...METERED_LANES, 'unknown'];
 
-export const BILLING_MODES: readonly BillingMode[] = ['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom'];
+export const BILLING_MODES: readonly BillingMode[] = [
+  'subscriptions-only',
+  'subscriptions-plus-decision-budget',
+  'custom',
+];
 
 export function isSubscriptionLane(lane: string | null | undefined): boolean {
   return SUBSCRIPTION_LANES.includes(lane as BillingLane);
@@ -112,7 +116,11 @@ export function evaluateBillingLane(args: {
     };
   }
   if (args.customAllowedLanes && !args.customAllowedLanes.includes(lane))
-    return { allowed: false, metered: true, reason: `${label} is not in this workflow's Custom allowed lanes.` };
+    return {
+      allowed: false,
+      metered: true,
+      reason: `${label} is not in this workflow's Custom allowed lanes.`,
+    };
   return { allowed: true, metered: true, reason: null };
 }
 
@@ -155,7 +163,8 @@ export function providerSideFallbackStatus(lane: BillingLane): {
   }
 }
 
-export const PROVIDER_FALLBACK_UNVERIFIABLE = 'Provider-side PAYG fallback status cannot be verified by Turing Terminal.';
+export const PROVIDER_FALLBACK_UNVERIFIABLE =
+  'Provider-side PAYG fallback status cannot be verified by Turing Terminal.';
 
 /** Infer the lane a backend/provider route bills through. Used only when no lane was saved. */
 export function inferBillingLane(backendId?: string, providerId?: string): BillingLane {
@@ -186,18 +195,38 @@ export function inferBillingLane(backendId?: string, providerId?: string): Billi
 }
 
 /** A route may only execute through the exact lane its provider bills through. */
-export function routeMatchesBillingLane(backendId?: string, providerId?: string, lane?: string | null): boolean {
+export function routeMatchesBillingLane(
+  backendId?: string,
+  providerId?: string,
+  lane?: string | null,
+): boolean {
   if (!backendId || !providerId) return false;
   if (backendId === 'codex-cli') return providerId === 'openai-codex' && lane === 'chatgpt-subscription';
-  if (backendId === 'claude-code') return providerId === 'anthropic-subscription' && lane === 'claude-subscription';
+  if (backendId === 'claude-code')
+    return providerId === 'anthropic-subscription' && lane === 'claude-subscription';
   if (backendId === 'openrouter') return providerId === 'openrouter' && lane === 'openrouter-metered';
-  if (backendId === 'opencode' || backendId === 'cline') return inferBillingLane(backendId, providerId) === lane;
+  if (backendId === 'opencode' || backendId === 'cline')
+    return inferBillingLane(backendId, providerId) === lane;
   return false;
 }
 
 export function billingLanesForBackend(backendId?: string): BillingLane[] {
-  if (backendId === 'opencode') return ['opencode-go-subscription', 'chatgpt-subscription', 'opencode-metered', 'openai-api', 'anthropic-api'];
-  if (backendId === 'cline') return ['clinepass-subscription', 'chatgpt-subscription', 'cline-usage-billing', 'openai-api', 'anthropic-api'];
+  if (backendId === 'opencode')
+    return [
+      'opencode-go-subscription',
+      'chatgpt-subscription',
+      'opencode-metered',
+      'openai-api',
+      'anthropic-api',
+    ];
+  if (backendId === 'cline')
+    return [
+      'clinepass-subscription',
+      'chatgpt-subscription',
+      'cline-usage-billing',
+      'openai-api',
+      'anthropic-api',
+    ];
   if (backendId === 'codex-cli') return ['chatgpt-subscription'];
   if (backendId === 'claude-code') return ['claude-subscription'];
   if (backendId === 'openrouter') return ['openrouter-metered'];

@@ -8,20 +8,20 @@ A **Decision Gate** is a workflow node that sends bounded, structured run state 
 
 The workflow engine depends only on the `DecisionEngine` interface (`src/server/decisionEngines.ts`), which is batch-shaped (`evaluate(requests[])`, shared `batchId`).
 
-| Engine | External | Billing | Confidence semantics |
-| --- | --- | --- | --- |
-| Deterministic Rules | No | none | probability 1/0 from a typed rule over build/test/review/final-gate state |
-| Jev via OpenRouter Decisions | Yes | `openrouter-metered`, decision workload | engine-reported (see below) |
-| Subscription LLM Judge | Yes | the judge route's subscription lane | `confidence` is **self-reported** by the model; no probability |
-| OpenRouter generative judge | Yes | `openrouter-metered`, decision workload | self-reported |
+| Engine                       | External | Billing                                 | Confidence semantics                                                      |
+| ---------------------------- | -------- | --------------------------------------- | ------------------------------------------------------------------------- |
+| Deterministic Rules          | No       | none                                    | probability 1/0 from a typed rule over build/test/review/final-gate state |
+| Jev via OpenRouter Decisions | Yes      | `openrouter-metered`, decision workload | engine-reported (see below)                                               |
+| Subscription LLM Judge       | Yes      | the judge route's subscription lane     | `confidence` is **self-reported** by the model; no probability            |
+| OpenRouter generative judge  | Yes      | `openrouter-metered`, decision workload | self-reported                                                             |
 
 ## Question types
 
-| Type | Jev type | Result fields |
-| --- | --- | --- |
-| Boolean / proposition | `noul` | `probability` = engine-reported P(true). No answer is derived and no confidence is invented. |
-| Choice (2–255 options) | `choice` | `answer` (option), `distribution` (per-option probabilities), `confidence` |
-| Score (2–10 ordered levels) | `score` | `score` (probability-weighted level), `distribution`, `confidence`, `legend` |
+| Type                        | Jev type | Result fields                                                                                |
+| --------------------------- | -------- | -------------------------------------------------------------------------------------------- |
+| Boolean / proposition       | `noul`   | `probability` = engine-reported P(true). No answer is derived and no confidence is invented. |
+| Choice (2–255 options)      | `choice` | `answer` (option), `distribution` (per-option probabilities), `confidence`                   |
+| Score (2–10 ordered levels) | `score`  | `score` (probability-weighted level), `distribution`, `confidence`, `legend`                 |
 
 ## Probability is not confidence
 
@@ -29,12 +29,12 @@ The workflow engine depends only on the `DecisionEngine` interface (`src/server/
 
 ## Routing and uncertainty
 
-| Question | Routing |
-| --- | --- |
-| Boolean + probability | ≥ PASS threshold → PASS; ≤ FAIL threshold → FAIL; between → **UNCERTAIN** |
-| Boolean + confidence | confidence ≥ minimum → PASS/FAIL by answer; otherwise UNCERTAIN |
-| Choice | below minimum confidence (or the selected option's probability) → UNCERTAIN; otherwise the route configured for that option; an option without a route → UNCERTAIN |
-| Score | optional minimum confidence; ≥ PASS / ≤ FAIL score thresholds; between → UNCERTAIN |
+| Question              | Routing                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Boolean + probability | ≥ PASS threshold → PASS; ≤ FAIL threshold → FAIL; between → **UNCERTAIN**                                                                                          |
+| Boolean + confidence  | confidence ≥ minimum → PASS/FAIL by answer; otherwise UNCERTAIN                                                                                                    |
+| Choice                | below minimum confidence (or the selected option's probability) → UNCERTAIN; otherwise the route configured for that option; an option without a route → UNCERTAIN |
+| Score                 | optional minimum confidence; ≥ PASS / ≤ FAIL score thresholds; between → UNCERTAIN                                                                                 |
 
 Route actions: **Continue**, **Skip later stages** (forward only, validated), **Stop the run (FAIL)**, **Ask a person** (human approval; denial stops the run), and, for UNCERTAIN, **Escalate** to one configured second engine. If the escalation is also uncertain, a person decides. Uncertainty is never forced into a binary outcome.
 

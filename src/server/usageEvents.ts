@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import type { BillingLane, UsageProvenance, UsageReconciliationState, WorkloadType } from '../shared/types.js';
+import type {
+  BillingLane,
+  UsageProvenance,
+  UsageReconciliationState,
+  WorkloadType,
+} from '../shared/types.js';
 import type { Db } from './db.js';
 
 /**
@@ -77,13 +82,23 @@ export function createUsageEvent(db: Db, init: UsageEventInit): string {
   const id = randomUUID();
   const run = init.runId
     ? (db.prepare('SELECT project_id, workflow_id, machine_id FROM runs WHERE id = ?').get(init.runId) as
-        | { project_id: string; workflow_id: string; machine_id: string }
-        | undefined)
+        { project_id: string; workflow_id: string; machine_id: string } | undefined)
     : undefined;
   const occurredAt = init.occurredAt ?? new Date().toISOString();
-  const hasEstimate = init.estimatedInputTokens != null || init.estimatedOutputTokens != null || init.estimatedCostUsd != null;
+  const hasEstimate =
+    init.estimatedInputTokens != null || init.estimatedOutputTokens != null || init.estimatedCostUsd != null;
   const estimateObservation = hasEstimate
-    ? [{ source: 'turing-preflight-estimate', provenance: 'estimated', inputTokens: init.estimatedInputTokens ?? null, outputTokens: init.estimatedOutputTokens ?? null, actualCostUsd: null, estimatedCostUsd: init.estimatedCostUsd ?? null, observedAt: occurredAt }]
+    ? [
+        {
+          source: 'turing-preflight-estimate',
+          provenance: 'estimated',
+          inputTokens: init.estimatedInputTokens ?? null,
+          outputTokens: init.estimatedOutputTokens ?? null,
+          actualCostUsd: null,
+          estimatedCostUsd: init.estimatedCostUsd ?? null,
+          observedAt: occurredAt,
+        },
+      ]
     : [];
   db.prepare(
     `INSERT INTO usage_events (id, request_id, occurred_at, provider_id, model_id, backend, project_id, run_id, stage_id, role,
@@ -129,7 +144,8 @@ export function createUsageEvent(db: Db, init: UsageEventInit): string {
 }
 
 function localMachineId(db: Db): string | null {
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string } | undefined;
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as
+    { value: string } | undefined;
   return row?.value ?? null;
 }
 
@@ -173,13 +189,17 @@ export function reconcileUsageEvent(db: Db, eventId: string, observation: UsageO
         : inputTokens !== null && outputTokens !== null
           ? inputTokens + outputTokens
           : reportedTotal;
-    const tokenProvenance = tokenUpdate && hasTokenData(observation) ? observation.provenance : normalizeProvenance(row.provenance);
+    const tokenProvenance =
+      tokenUpdate && hasTokenData(observation) ? observation.provenance : normalizeProvenance(row.provenance);
     const costProvenance = observation.costProvenance ?? observation.provenance;
     const costUpdate =
       observation.actualCostUsd !== undefined &&
       PROVENANCE_RANK[costProvenance] >= PROVENANCE_RANK[normalizeProvenance(row.actual_cost_provenance)];
     const actualCost = costUpdate ? (observation.actualCostUsd ?? null) : row.actual_cost_usd;
-    const actualCostProvenance = costUpdate && observation.actualCostUsd != null ? costProvenance : normalizeProvenance(row.actual_cost_provenance);
+    const actualCostProvenance =
+      costUpdate && observation.actualCostUsd != null
+        ? costProvenance
+        : normalizeProvenance(row.actual_cost_provenance);
     const audit = parseObservations(row.observations_json);
     audit.push({
       source: observation.source,
@@ -234,9 +254,13 @@ export function reconcileUsageEvent(db: Db, eventId: string, observation: UsageO
 }
 
 function hasTokenData(observation: UsageObservation): boolean {
-  return [observation.inputTokens, observation.outputTokens, observation.cachedInputTokens, observation.reasoningTokens, observation.totalTokens].some(
-    (value) => typeof value === 'number',
-  );
+  return [
+    observation.inputTokens,
+    observation.outputTokens,
+    observation.cachedInputTokens,
+    observation.reasoningTokens,
+    observation.totalTokens,
+  ].some((value) => typeof value === 'number');
 }
 
 function parseObservations(value: string): Array<Record<string, unknown>> {
