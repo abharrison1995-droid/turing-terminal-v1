@@ -64,7 +64,7 @@ If a request cannot be bounded (no catalog price, or no bounded output), the wor
 
 ### Residual risk
 
-The input estimate is conservative but is not a tokenizer. A pathological prompt (for example, dense non-Latin text) could tokenise above the estimate; the actual provider cost then exceeds the reservation and Turing records a `metered_reservation_overrun` run event. Output is bounded exactly by `max_tokens`, and price is bounded by `max_price`.
+The input estimate is conservative but is not a tokenizer. A pathological prompt (for example, dense non-Latin text) could tokenise above the estimate; the actual provider cost then exceeds the reservation and Turing records a `metered_reservation_overrun` run event. Output is bounded exactly by `max_tokens`, and price is bounded by `max_price`. If the desktop service stops while a metered request is in flight, that reservation stays committed (Turing cannot know whether the provider charged), so it continues to count against the run, daily, and monthly caps.
 
 ## Provider-side PAYG fallback
 
