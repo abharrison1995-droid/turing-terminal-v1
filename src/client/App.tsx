@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   Bell,
   Check,
@@ -19,11 +20,11 @@ import {
   GitCompareArrows,
   HardDrive,
   Laptop,
-  LayoutDashboard,
   LoaderCircle,
   LockKeyhole,
   Menu,
   Mic,
+  MoreHorizontal,
   Monitor,
   Pause,
   Play,
@@ -34,6 +35,7 @@ import {
   Search,
   Send,
   Settings,
+  SlidersHorizontal,
   Shield,
   Smartphone,
   Sparkles,
@@ -88,7 +90,6 @@ import {
 type Page = 'command' | 'workflows' | 'projects' | 'runs' | 'usage' | 'machines' | 'settings';
 
 const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
-  { id: 'command', label: 'Command Center', icon: LayoutDashboard },
   { id: 'workflows', label: 'Workflows', icon: WorkflowIcon },
   { id: 'projects', label: 'Projects', icon: FileCode2 },
   { id: 'runs', label: 'Runs & history', icon: Activity },
@@ -106,6 +107,7 @@ const activeStatuses = new Set([
   'retrying',
   'cancelling',
 ]);
+const waitingStatuses = new Set(['waiting_for_approval', 'waiting_for_user']);
 const quotaProviderOptions = [
   { id: 'anthropic-subscription', name: 'Claude subscription' },
   { id: 'openai-codex', name: 'OpenAI Codex subscription' },
@@ -250,9 +252,20 @@ function App() {
       setError(reason instanceof Error ? reason.message : 'Turing Terminal Master could not be restarted.');
     }
   };
-  const pageLabel = navItems.find((item) => item.id === page)?.label ?? 'Command Center';
+  const pageLabel = page === 'command' ? 'New task' : (navItems.find((item) => item.id === page)?.label ?? '');
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
+  const titleQuiet =
+    ['workflows', 'projects', 'usage', 'machines', 'settings'].includes(page) ||
+    (page === 'runs' && !selectedRun);
+  const railTasks = (snapshot?.runs ?? [])
+    .slice()
+    .sort((left, right) => {
+      const leftActive = activeStatuses.has(left.status) ? 1 : 0;
+      const rightActive = activeStatuses.has(right.status) ? 1 : 0;
+      return rightActive - leftActive || right.createdAt.localeCompare(left.createdAt);
+    })
+    .slice(0, 14);
 
   if (requiresPairing) return <DevicePairingPage onPaired={pairedSuccessfully} />;
 
@@ -261,26 +274,66 @@ function App() {
       <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`} aria-label="Primary navigation">
         <button
           className="brand-lockup"
-          onClick={() => changePage('command')}
+          onClick={() => {
+            setSelectedRunId(null);
+            changePage('command');
+          }}
           aria-label="Turing Terminal home"
         >
           <span className="brand-mark">
-            <Command size={17} strokeWidth={2.2} />
+            <Command size={16} />
           </span>
-          <span className="brand-name">
-            Turing Terminal<small>LOCAL CONTROL PLANE</small>
-          </span>
+          <span className="brand-name">Turing Terminal</span>
         </button>
-        <div className="nav-caption">WORKSPACE</div>
-        <nav className="primary-nav">
+        <button
+          className="new-task-button"
+          onClick={() => {
+            setSelectedRunId(null);
+            changePage('command');
+          }}
+        >
+          <Plus size={16} /> New task
+        </button>
+        <p className="nav-label">Recent</p>
+        <nav className="task-nav" aria-label="Tasks">
+          {railTasks.length === 0 ? (
+            <p className="task-nav-empty">Tasks you start appear here, newest first.</p>
+          ) : (
+            railTasks.map((run) => (
+              <button
+                key={run.id}
+                className={`task-link ${page === 'runs' && selectedRunId === run.id ? 'task-link-active' : ''}`}
+                onClick={() => {
+                  setSelectedRunId(run.id);
+                  changePage('runs');
+                }}
+                aria-current={page === 'runs' && selectedRunId === run.id ? 'page' : undefined}
+              >
+                <span className={`run-status-glyph run-glyph-${run.status}`}>
+                  <StatusIcon status={run.status} />
+                </span>
+                <span className="task-link-copy">
+                  <strong>{shortTask(run.prompt)}</strong>
+                  <small>
+                    {humanStatus(run.status)} · {run.projectName}
+                  </small>
+                </span>
+              </button>
+            ))
+          )}
+        </nav>
+        <nav className="primary-nav" aria-label="Workspace">
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-              onClick={() => changePage(id)}
+              onClick={() => {
+                if (id === 'runs') setSelectedRunId(null);
+                changePage(id);
+              }}
               aria-current={page === id ? 'page' : undefined}
             >
-              <Icon size={17} strokeWidth={1.8} /> <span>{label}</span>
+              <Icon size={16} /> <span>{label}</span>
               {id === 'runs' && activeRuns.length > 0 && (
                 <span className="nav-count">{activeRuns.length}</span>
               )}
@@ -293,17 +346,12 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-spacer" />
         <div className="machine-rail">
           <span className="presence-dot" />
           <span className="machine-rail-copy">
             <strong>{snapshot?.machine.name ?? 'Desktop master'}</strong>
-            <small>Local machine · online</small>
+            <small>Online · v{APP_VERSION}</small>
           </span>
-          <ChevronDown size={14} />
-        </div>
-        <div className="sidebar-foot">
-          TURING TERMINAL <span>{APP_VERSION.toUpperCase()}</span>
         </div>
       </aside>
 
@@ -320,11 +368,7 @@ function App() {
           >
             <Menu size={19} />
           </button>
-          <div className="breadcrumb">
-            <span>Workspace</span>
-            <ChevronRight size={14} />
-            <strong>{pageLabel}</strong>
-          </div>
+          <p className={`topbar-title ${titleQuiet ? 'topbar-title-quiet' : ''}`}>{pageLabel}</p>
           <div className="topbar-right">
             <span className={`connection-state ${error ? 'connection-state-error' : ''}`}>
               <span className="presence-dot" />{' '}
@@ -342,7 +386,6 @@ function App() {
               <Bell size={17} />
               {(snapshot?.approvals.length ?? 0) > 0 && <i />}
             </button>
-            <span className="avatar-small">TT</span>
           </div>
         </header>
 
@@ -411,6 +454,7 @@ function App() {
                 onSelect={setSelectedRunId}
                 onRefresh={() => refresh(true)}
                 onNotice={setNotice}
+                onNavigate={changePage}
               />
             )}
             {page === 'usage' && snapshot && <UsagePage snapshot={snapshot} />}
@@ -462,42 +506,6 @@ function App() {
           </>
         )}
       </div>
-      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
-        <button
-          className={page === 'command' ? 'mobile-nav-active' : ''}
-          onClick={() => changePage('command')}
-        >
-          <LayoutDashboard size={19} />
-          <span>Home</span>
-        </button>
-        <button className={page === 'runs' ? 'mobile-nav-active' : ''} onClick={() => changePage('runs')}>
-          <Activity size={19} />
-          <span>Runs</span>
-        </button>
-        <button
-          className="mobile-launch"
-          onClick={() => changePage('command')}
-          aria-label="Launch a workflow"
-        >
-          <Plus size={23} />
-          <span>Launch</span>
-        </button>
-        <button className={page === 'usage' ? 'mobile-nav-active' : ''} onClick={() => changePage('usage')}>
-          <Radio size={19} />
-          <span>Usage</span>
-        </button>
-        <button
-          className={
-            page === 'settings' || page === 'machines' || page === 'projects' || page === 'workflows'
-              ? 'mobile-nav-active'
-              : ''
-          }
-          onClick={() => setMobileMenuOpen(true)}
-        >
-          <Menu size={19} />
-          <span>More</span>
-        </button>
-      </nav>
     </div>
   );
 }
@@ -683,6 +691,7 @@ function CommandCenter({
   const [preview, setPreview] = useState<RunPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
   useEffect(() => {
     if (!snapshot.projects.some((project) => project.id === projectId))
@@ -710,6 +719,15 @@ function CommandCenter({
         ),
     ) ?? [];
 
+  const reviewBlockedReason = busy
+    ? null
+    : !selectedProject
+      ? 'Add a project to continue.'
+      : !workflowId
+        ? 'Choose a workflow to continue.'
+        : !task.trim()
+          ? 'Describe the task to continue.'
+          : null;
   const makePreview = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!task.trim() || !projectId || !workflowId) return;
@@ -797,207 +815,30 @@ function CommandCenter({
   };
 
   const pending = snapshot.runs.filter((run) => activeStatuses.has(run.status));
+  const waitingRuns = pending.filter((run) => waitingStatuses.has(run.status));
+  const runningRuns = pending.filter((run) => !waitingStatuses.has(run.status));
+  const recentFailed = snapshot.runs
+    .filter((run) => run.status === 'failed' && Date.now() - new Date(run.createdAt).getTime() < 7 * 86_400_000)
+    .slice(0, 3);
+  const recentFinished = snapshot.runs
+    .filter((run) => !activeStatuses.has(run.status) && !recentFailed.includes(run))
+    .slice(0, 5);
+  const agentStages = (selectedWorkflow?.stages ?? [])
+    .filter((stage) => stage.enabled !== false && isAiStage(stage.kind))
+    .map((stage) => {
+      const config = { ...selectedWorkflow?.defaultModelConfiguration, ...selectedWorkflow?.stageDefaults?.[stage.kind], ...stage };
+      return { stage, config, ready: Boolean(config.backendId && config.providerId && config.modelId) };
+    });
+  const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘↵' : 'Ctrl ↵';
 
-  return (
-    <main className="page-content command-page">
-      <PageHeading
-        title="Command Center"
-        description="Set the context. Review the execution plan. Then let the desktop master work."
-        actions={
-          <div className="machine-chip">
-            <Laptop size={16} />
-            <span>{snapshot.machine.name}</span>
-            <span className="presence-dot" />
-          </div>
-        }
-      />
-      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
-      <div className="command-layout">
-        <section className="launch-column" aria-label="Launch a workflow">
-          <form className="launch-form surface-panel" onSubmit={makePreview}>
-            <div className="panel-title-row">
-              <div>
-                <h2>Start a workflow</h2>
-                <p>Your task stays on this machine and follows its saved workflow.</p>
-              </div>
-              <span className="panel-spark">
-                <Sparkles size={17} />
-              </span>
-            </div>
-            <label className="field-label" htmlFor="task-input">
-              What should the agents do?
-            </label>
-            <div className="task-field-wrap">
-              <textarea
-                id="task-input"
-                rows={5}
-                maxLength={12_000}
-                placeholder="Describe the change, the behavior you expect, and any constraints…"
-                value={task}
-                onChange={(event) => {
-                  setTask(event.target.value);
-                  setPreview(null);
-                }}
-              />
-              <div className="task-field-footer">
-                <span>{task.length.toLocaleString()} / 12,000</span>
-                <button
-                  className={`voice-button ${listening ? 'voice-live' : ''}`}
-                  type="button"
-                  onClick={beginVoice}
-                  aria-pressed={listening}
-                >
-                  <Mic size={15} />
-                  {listening ? 'Listening…' : 'Voice input'}
-                </button>
-              </div>
-            </div>
-            <div className="form-grid-two">
-              <label className="form-field">
-                <span>Project</span>
-                <select
-                  value={projectId}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    setPreview(null);
-                  }}
-                  disabled={!snapshot.projects.length}
-                >
-                  {snapshot.projects.length === 0 ? (
-                    <option value="">Add a project first</option>
-                  ) : (
-                    snapshot.projects.map((project) => (
-                      <option value={project.id} key={project.id}>
-                        {project.name}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Workflow</span>
-                <select
-                  value={workflowId}
-                  onChange={(event) => {
-                    setWorkflowId(event.target.value);
-                    setRefinePrompt(
-                      snapshot.workflows.find((workflow) => workflow.id === event.target.value)
-                        ?.promptRefinementDefault ?? false,
-                    );
-                    setPreview(null);
-                  }}
-                  disabled={!snapshot.workflows.length}
-                >
-                  {snapshot.workflows.map((workflow) => (
-                    <option value={workflow.id} key={workflow.id}>
-                      {workflow.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Execution profile</span>
-                <select
-                  value={profile}
-                  onChange={(event) => {
-                    setProfile(event.target.value as ExecutionProfile);
-                    setPreview(null);
-                  }}
-                >
-                  <option value="economy">Economy · one reviewer per parallel review</option>
-                  <option value="balanced">Balanced · up to two reviewers</option>
-                  <option value="maximum">Maximum · configured reviewer count</option>
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Permission mode</span>
-                <select
-                  value={permissionMode}
-                  onChange={(event) => {
-                    setPermissionMode(event.target.value as PermissionMode);
-                    setEnigmaConfirmed(false);
-                    setPreview(null);
-                  }}
-                >
-                  <option value="normal">Normal · routine broker actions auto-approve</option>
-                  <option value="supervised">Supervised · approve consequential operations</option>
-                  <option value="yolo">YOLO · autonomous project work</option>
-                  <option value="enigma">ENIGMA · maximum configured autonomy</option>
-                </select>
-              </label>
-            </div>
-            <label className="toggle-line prompt-refinement-toggle">
-              <input
-                type="checkbox"
-                checked={refinePrompt}
-                disabled={
-                  !selectedWorkflow?.stages.some(
-                    (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
-                  )
-                }
-                onChange={(event) => {
-                  setRefinePrompt(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Refine and confirm the task before execution</strong>
-                <small>
-                  Workflow default: {selectedWorkflow?.promptRefinementDefault ? 'On' : 'Off'}. Review the
-                  draft and answer real ambiguities before approving the run.
-                </small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={subscriptionOnly}
-                onChange={(event) => {
-                  setSubscriptionOnly(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Subscription only for this run</strong>
-                <small>Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be unverifiable.</small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={lockProviders}
-                onChange={(event) => {
-                  setLockProviders(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Lock configured providers and models</strong>
-                <small>Failures pause at the configured stage; Turing does not substitute a model or reasoning setting.</small>
-              </span>
-            </label>
-            {permissionMode === 'enigma' && (
-              <label className="inline-callout enigma-confirmation">
-                <input
-                  type="checkbox"
-                  checked={enigmaConfirmed}
-                  onChange={(event) => {
-                    setEnigmaConfirmed(event.target.checked);
-                    setPreview(null);
-                  }}
-                />
-                <div>
-                  <strong>Activate ENIGMA for this run</strong>
-                  <p>
-                    Supported brokered project edits and deletes may proceed without approval. Secret access
-                    and out-of-project paths stay blocked; network, destructive commands, Git pushes, merges,
-                    and rollbacks remain approval-gated.
-                  </p>
-                </div>
-              </label>
-            )}
+  const blockers = (
+    <>
+      {(missingAssignments.length > 0 || !selectedProject) && (
+        <div className="launch-blockers" role="group" aria-labelledby="launch-blockers-title">
+          <h3 id="launch-blockers-title">Before you can run</h3>
+          <ul>
             {missingAssignments.length > 0 && (
-              <div className="inline-callout">
+              <li>
                 <CircleHelp size={16} />
                 <div>
                   <strong>Set up the stage models first</strong>
@@ -1010,10 +851,10 @@ function CommandCenter({
                 <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
                   Configure workflow <ChevronRight size={14} />
                 </button>
-              </div>
+              </li>
             )}
             {!selectedProject && (
-              <div className="inline-callout">
+              <li>
                 <FileCode2 size={16} />
                 <div>
                   <strong>No project registered</strong>
@@ -1022,129 +863,366 @@ function CommandCenter({
                 <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
                   Add project <ChevronRight size={14} />
                 </button>
-              </div>
+              </li>
             )}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <main className="page-content command-page">
+      <div className={`home-column ${snapshot.runs.length > 0 ? 'home-has-activity' : ''}`}>
+        {snapshot.approvals.length > 0 && (
+          <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />
+        )}
+        {(runningRuns.length > 0 || waitingRuns.length > 0 || recentFailed.length > 0) && (
+          <div className="glance" role="group" aria-label="Runs at a glance">
+            {waitingRuns.length > 0 && (
+              <button type="button" className="glance-item glance-attention" onClick={() => onStart(waitingRuns[0].id)}>
+                <LockKeyhole size={14} aria-hidden="true" />
+                <strong>{waitingRuns.length}</strong> needs you
+              </button>
+            )}
+            {runningRuns.length > 0 && (
+              <button type="button" className="glance-item glance-running" onClick={() => onStart(runningRuns[0].id)}>
+                <Activity size={14} aria-hidden="true" />
+                <strong>{runningRuns.length}</strong> running
+              </button>
+            )}
+            {recentFailed.length > 0 && (
+              <button type="button" className="glance-item glance-failed" onClick={() => onStart(recentFailed[0].id)}>
+                <AlertTriangle size={14} aria-hidden="true" />
+                <strong>{recentFailed.length}</strong> failed
+              </button>
+            )}
+          </div>
+        )}
+        <div className="home-intro">
+          <h1>What should the agents do?</h1>
+          <p>Your task stays on this machine and follows its saved workflow.</p>
+        </div>
+        {preview && <RunPreviewPanel preview={preview} />}
+        {blockers}
+        <form className="composer" onSubmit={makePreview} aria-label="Start a workflow">
+          <label className="sr-only" htmlFor="task-input">
+            What should the agents do?
+          </label>
+          <textarea
+            id="task-input"
+            rows={3}
+            maxLength={12_000}
+            placeholder="Describe the change, the behavior you expect, and any constraints…"
+            value={task}
+            onChange={(event) => {
+              setTask(event.target.value);
+              setPreview(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !preview) {
+                event.preventDefault();
+                event.currentTarget.form?.requestSubmit();
+              }
+            }}
+          />
+          {agentStages.length > 0 && (
+            <div className="composer-agents" role="group" aria-label="Agents in this workflow">
+              {agentStages.slice(0, 5).map(({ stage, config, ready }) => (
+                <button
+                  type="button"
+                  key={stage.id}
+                  className={`agent-chip ${ready ? '' : 'agent-chip-missing'}`}
+                  title="Edit in Workflow Studio"
+                  onClick={() => onNavigate('workflows')}
+                >
+                  <b>{stage.label}</b>
+                  <code>{ready ? (config.modelDisplayName ?? config.modelId) : 'Choose model'}</code>
+                </button>
+              ))}
+              {agentStages.length > 5 && <span className="agent-chip">+{agentStages.length - 5} more</span>}
+            </div>
+          )}
+          <div className="composer-bar">
+            <label className="pill-select">
+              <FileCode2 size={15} aria-hidden="true" />
+              <span className="sr-only">Project</span>
+              <select
+                value={projectId}
+                onChange={(event) => {
+                  setProjectId(event.target.value);
+                  setPreview(null);
+                }}
+                disabled={!snapshot.projects.length}
+              >
+                {snapshot.projects.length === 0 ? (
+                  <option value="">Add a project first</option>
+                ) : (
+                  snapshot.projects.map((project) => (
+                    <option value={project.id} key={project.id}>
+                      {project.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label className="pill-select">
+              <WorkflowIcon size={15} aria-hidden="true" />
+              <span className="sr-only">Workflow</span>
+              <select
+                value={workflowId}
+                onChange={(event) => {
+                  setWorkflowId(event.target.value);
+                  setRefinePrompt(
+                    snapshot.workflows.find((workflow) => workflow.id === event.target.value)
+                      ?.promptRefinementDefault ?? false,
+                  );
+                  setPreview(null);
+                }}
+                disabled={!snapshot.workflows.length}
+              >
+                {snapshot.workflows.map((workflow) => (
+                  <option value={workflow.id} key={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="pill-button"
+              aria-expanded={optionsOpen}
+              aria-controls="composer-options"
+              onClick={() => setOptionsOpen((value) => !value)}
+            >
+              <SlidersHorizontal size={15} aria-hidden="true" />
+              Options
+            </button>
+            <span className="composer-spacer" />
+            {task.length >= 8_000 && <span className="char-count">{task.length.toLocaleString()} / 12,000</span>}
+            <button
+              className={`voice-button ${listening ? 'voice-live' : ''}`}
+              type="button"
+              onClick={beginVoice}
+              aria-pressed={listening}
+              aria-label={listening ? 'Listening…' : 'Voice input'}
+            >
+              <Mic size={17} />
+            </button>
             {preview ? (
-              <div className="preview-actions">
+              <>
                 <button type="button" className="secondary-button" onClick={() => setPreview(null)}>
                   Edit request
                 </button>
                 <button
                   type="button"
-                  className="primary-button"
+                  className="primary-button start-button"
                   onClick={() => void start()}
                   disabled={!preview.canStart || busy || (permissionMode === 'enigma' && !enigmaConfirmed)}
                 >
                   <Play size={15} fill="currentColor" />
                   {busy ? 'Starting…' : 'Start workflow'}
                 </button>
-              </div>
+              </>
             ) : (
               <button
                 type="submit"
-                className="primary-button review-run-button"
+                className="run-button"
+                aria-label={busy ? 'Preparing preview…' : 'Review run preview'}
+                title={`Review run preview (${shortcutLabel})`}
+                aria-busy={busy}
                 disabled={busy || !task.trim() || !projectId || !workflowId}
+                aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
               >
-                <Search size={15} />
-                {busy ? 'Preparing preview…' : 'Review run preview'}
-                <ChevronRight size={15} />
+                {busy ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={16} />}
+                Run
+                <kbd aria-hidden="true">{shortcutLabel}</kbd>
               </button>
             )}
-          </form>
-
-          {preview && <RunPreviewPanel preview={preview} />}
-          {pending.length > 0 && (
-            <section className="active-runs-block">
-              <div className="section-title-row">
-                <div>
-                  <h2>Active runs</h2>
-                  <p>Running on {snapshot.machine.name}</p>
+          </div>
+          {optionsOpen && (
+            <div className="composer-options" id="composer-options">
+              {agentStages.length > 0 && (
+                <div className="options-agents">
+                  <span className="field-label">Agents in “{selectedWorkflow?.name}”</span>
+                  <div className="agent-list">
+                    {agentStages.map(({ stage, config, ready }) => (
+                      <div className={`agent-row ${ready ? '' : 'agent-row-missing'}`} key={stage.id}>
+                        <span>{stage.label}</span>
+                        <code>
+                          {ready
+                            ? `${config.backendId} · ${config.providerId}/${config.modelId}`
+                            : 'Provider and model required'}
+                        </code>
+                        <small>{config.reasoning ? `reasoning ${config.reasoning}` : ''}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
+                    Edit in Workflow Studio <ChevronRight size={14} />
+                  </button>
                 </div>
-                <button className="text-button" onClick={() => onNavigate('runs')}>
-                  View all <ChevronRight size={14} />
-                </button>
+              )}
+              <div className="form-grid-two">
+                <label className="form-field">
+                  <span>Execution profile</span>
+                  <select
+                    value={profile}
+                    onChange={(event) => {
+                      setProfile(event.target.value as ExecutionProfile);
+                      setPreview(null);
+                    }}
+                  >
+                    <option value="economy">Economy · one reviewer per parallel review</option>
+                    <option value="balanced">Balanced · up to two reviewers</option>
+                    <option value="maximum">Maximum · configured reviewer count</option>
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>Permission mode</span>
+                  <select
+                    value={permissionMode}
+                    onChange={(event) => {
+                      setPermissionMode(event.target.value as PermissionMode);
+                      setEnigmaConfirmed(false);
+                      setPreview(null);
+                    }}
+                  >
+                    <option value="normal">Normal · routine broker actions auto-approve</option>
+                    <option value="supervised">Supervised · approve consequential operations</option>
+                    <option value="yolo">YOLO · autonomous project work</option>
+                    <option value="enigma">ENIGMA · maximum configured autonomy</option>
+                  </select>
+                </label>
               </div>
-              <div className="compact-run-list">
-                {pending.slice(0, 3).map((run) => (
-                  <RunListRow run={run} key={run.id} onSelect={() => onStart(run.id)} />
-                ))}
-              </div>
-            </section>
+              <label className="toggle-line prompt-refinement-toggle">
+                <input
+                  type="checkbox"
+                  checked={refinePrompt}
+                  disabled={
+                    !selectedWorkflow?.stages.some(
+                      (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
+                    )
+                  }
+                  onChange={(event) => {
+                    setRefinePrompt(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Refine and confirm the task before execution</strong>
+                  <small>
+                    Workflow default: {selectedWorkflow?.promptRefinementDefault ? 'On' : 'Off'}. Review the
+                    draft and answer real ambiguities before approving the run.
+                  </small>
+                </span>
+              </label>
+              <label className="toggle-line">
+                <input
+                  type="checkbox"
+                  checked={subscriptionOnly}
+                  onChange={(event) => {
+                    setSubscriptionOnly(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Subscription only for this run</strong>
+                  <small>
+                    Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be
+                    unverifiable.
+                  </small>
+                </span>
+              </label>
+              <label className="toggle-line">
+                <input
+                  type="checkbox"
+                  checked={lockProviders}
+                  onChange={(event) => {
+                    setLockProviders(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Lock configured providers and models</strong>
+                  <small>
+                    Failures pause at the configured stage; Turing does not substitute a model or reasoning
+                    setting.
+                  </small>
+                </span>
+              </label>
+              {permissionMode === 'enigma' && (
+                <label className="inline-callout enigma-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={enigmaConfirmed}
+                    onChange={(event) => {
+                      setEnigmaConfirmed(event.target.checked);
+                      setPreview(null);
+                    }}
+                  />
+                  <div>
+                    <strong>Activate ENIGMA for this run</strong>
+                    <p>
+                      Supported brokered project edits and deletes may proceed without approval. Secret access
+                      and out-of-project paths stay blocked; network, destructive commands, Git pushes, merges,
+                      and rollbacks remain approval-gated.
+                    </p>
+                  </div>
+                </label>
+              )}
+            </div>
           )}
-          <RecentRuns
-            runs={snapshot.runs.filter((run) => !activeStatuses.has(run.status)).slice(0, 4)}
-            onSelect={onStart}
-            onAll={() => onNavigate('runs')}
-          />
-        </section>
+        </form>
+        {reviewBlockedReason && !preview && (
+          <p id="launch-hint" className="composer-hint">
+            {reviewBlockedReason}
+          </p>
+        )}
 
-        <aside className="command-inspector">
+        <div className="home-status" aria-label="Workspace status">
+          <span>
+            <span className="presence-dot" /> {snapshot.machine.name} · online
+          </span>
+          <span>
+            {snapshot.projects.length} {snapshot.projects.length === 1 ? 'project' : 'projects'}
+          </span>
+          <span>{pending.length} active</span>
+          <span>{snapshot.usage.events} events today</span>
+          <button type="button" className="text-button" onClick={() => onNavigate('machines')}>
+            Machines
+          </button>
+          <button type="button" className="text-button" onClick={() => onNavigate('usage')}>
+            Usage
+          </button>
+        </div>
+        <details className="home-providers">
+          <summary>
+            Provider health · {snapshot.providers.filter((provider) => provider.detected).length} of{' '}
+            {snapshot.providers.length} local CLIs detected
+          </summary>
           <ProviderHealth providers={snapshot.providers} onNavigate={() => onNavigate('settings')} />
-          <section className="surface-panel inspector-panel">
-            <div className="section-title-row">
-              <div>
-                <h2>Machine</h2>
-                <p>Execution target for this workspace</p>
-              </div>
-              <Laptop size={17} className="muted-icon" />
-            </div>
-            <div className="machine-detail-row">
-              <span className="machine-symbol">
-                <Monitor size={17} />
-              </span>
-              <span>
-                <strong>{snapshot.machine.name}</strong>
-                <small>
-                  {snapshot.machine.hostname} · {snapshot.machine.os}
-                </small>
-              </span>
-              <span className="status-pill status-online">Online</span>
-            </div>
-            <div className="inspector-data-row">
-              <span>Projects</span>
-              <strong>{snapshot.projects.length}</strong>
-            </div>
-            <div className="inspector-data-row">
-              <span>Active runs</span>
-              <strong>{pending.length}</strong>
-            </div>
-            <button className="quiet-button full-width" onClick={() => onNavigate('machines')}>
-              Manage machines <ChevronRight size={14} />
-            </button>
-          </section>
-          <section className="surface-panel inspector-panel usage-summary-panel">
-            <div className="section-title-row">
-              <div>
-                <h2>Activity today</h2>
-                <p>Locally observed, not a quota meter</p>
-              </div>
-              <Radio size={17} className="muted-icon" />
-            </div>
-            <div className="usage-inline-stats">
-              <div>
-                <strong>{snapshot.usage.events}</strong>
-                <span>provider & process events</span>
-              </div>
-              <div>
-                <strong>
-                  {snapshot.usage.localMinutesToday}
-                  <small>m</small>
-                </strong>
-                <span>process time today</span>
-              </div>
-            </div>
-            <div className="quiet-note">
-              <LockKeyhole size={14} />
-              <span>
-                Provider allowance stays unavailable unless reported; Usage supports separate user-configured
-                estimates.
-              </span>
-            </div>
-            <button className="quiet-button full-width" onClick={() => onNavigate('usage')}>
-              Open usage dashboard <ChevronRight size={14} />
-            </button>
-          </section>
-        </aside>
+        </details>
+
+        <div className="home-tasks">
+          <RunGroup
+            title="Needs you"
+            tone="attention"
+            runs={waitingRuns}
+            onSelect={onStart}
+          />
+          <RunGroup title="Running" runs={runningRuns} onSelect={onStart} />
+          <RunGroup title="Failed" tone="failed" runs={recentFailed} onSelect={onStart} />
+          <RunGroup
+            title="Recent"
+            runs={recentFinished}
+            onSelect={onStart}
+            action={{ label: 'History', onClick: () => onNavigate('runs') }}
+            emptyText={
+              snapshot.runs.length === 0 ? 'No runs yet. Your task history will appear here.' : undefined
+            }
+          />
+        </div>
       </div>
     </main>
   );
@@ -1161,7 +1239,7 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
           </span>
           <h2>Ready to hand off</h2>
         </div>
-        <span className={`status-pill ${preview.canStart ? 'status-ready' : 'status-attention'}`}>
+        <span className={`status-pill ${preview.canStart ? 'status-ready' : 'status-waiting_for_user'}`}>
           {preview.canStart ? 'Ready to start' : 'Needs setup'}
         </span>
       </div>
@@ -1351,7 +1429,15 @@ function ApprovalInbox({
           <div className="approval-item" key={approval.id}>
             <div className="approval-copy">
               <strong>{approval.operation}</strong>
-              <pre className="approval-reason">{approval.reason}</pre>
+              <p className="approval-reason">
+                {approval.reason.split(/(`[^`]+`)/).map((part, index) =>
+                  part.startsWith('`') && part.endsWith('`') ? (
+                    <code key={index}>{part.slice(1, -1)}</code>
+                  ) : (
+                    part
+                  ),
+                )}
+              </p>
               <small>Risk: {capitalize(approval.risk)}</small>
             </div>
             <div className="approval-actions">
@@ -1433,25 +1519,34 @@ function ProviderHealth({ providers, onNavigate }: { providers: ProviderStatus[]
   );
 }
 
-function RecentRuns({
+function RunGroup({
+  title,
   runs,
   onSelect,
-  onAll,
+  tone,
+  action,
+  emptyText,
 }: {
+  title: string;
   runs: RunSummary[];
   onSelect: (id: string) => void;
-  onAll: () => void;
+  tone?: 'attention' | 'failed';
+  action?: { label: string; onClick: () => void };
+  emptyText?: string;
 }) {
+  if (runs.length === 0 && !emptyText) return null;
   return (
-    <section className="recent-runs-block">
-      <div className="section-title-row">
-        <div>
-          <h2>Recent runs</h2>
-          <p>Finished and interrupted work</p>
-        </div>
-        <button className="text-button" onClick={onAll}>
-          History <ChevronRight size={14} />
-        </button>
+    <section
+      className={`active-runs-block ${tone ? `attention-block attention-block-${tone}` : ''}`}
+      aria-label={title}
+    >
+      <div className="activity-head">
+        <h2>{title}</h2>
+        {action && (
+          <button className="text-button" onClick={action.onClick}>
+            {action.label} <ChevronRight size={14} />
+          </button>
+        )}
       </div>
       {runs.length ? (
         <div className="compact-run-list">
@@ -1461,8 +1556,8 @@ function RecentRuns({
         </div>
       ) : (
         <div className="empty-inline">
-          <Clock3 size={17} />
-          <span>No completed runs yet. Your run history will appear here.</span>
+          <Clock3 size={16} />
+          <span>{emptyText}</span>
         </div>
       )}
     </section>
@@ -1473,6 +1568,7 @@ function RunListRow({ run, onSelect }: { run: RunSummary; onSelect: () => void }
   const stage =
     run.stages.find((item) => item.status === 'running') ??
     run.stages.find((item) => item.status === 'failed');
+  const loud = run.status === 'failed' || waitingStatuses.has(run.status);
   return (
     <button className="run-list-row" onClick={onSelect}>
       <span className={`run-status-glyph run-glyph-${run.status}`}>
@@ -1484,7 +1580,11 @@ function RunListRow({ run, onSelect }: { run: RunSummary; onSelect: () => void }
           {run.projectName} <i>·</i> {stage ? stage.title : run.workflowName}
         </span>
       </span>
-      <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
+      {loud ? (
+        <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
+      ) : (
+        <span className="run-row-time">{rowTime(run)}</span>
+      )}
       <ChevronRight size={15} className="row-chevron" />
     </button>
   );
@@ -1513,6 +1613,11 @@ function WorkflowsPage({
   const [profileBackend, setProfileBackend] = useState('opencode');
   const [profileProvider, setProfileProvider] = useState('opencode-go');
   const [profileLane, setProfileLane] = useState<ConnectionProfile['billingLane']>('opencode-go-subscription');
+  const [openSections, setOpenSections] = useState<Record<StudioSectionId, boolean>>(() => {
+    const narrow = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 680px)').matches);
+    return { basics: true, safety: !narrow, agents: true, context: !narrow, generation: !narrow };
+  });
+  const [activeSection, setActiveSection] = useState<StudioSectionId>('basics');
 
   useEffect(() => {
     void Promise.all([api.connectionProfiles(), api.modelPresets()]).then(([connections, presets]) => {
@@ -1528,6 +1633,23 @@ function WorkflowsPage({
     setDraft(selected ?? null);
     setValidationMessage('');
   }, [selectedId, selected?.version, selected?.updatedAt]);
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const first = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top)[0];
+        if (first) setActiveSection(first.target.id.replace('studio-', '') as StudioSectionId);
+      },
+      { rootMargin: '-80px 0px -60% 0px' },
+    );
+    for (const id of ['basics', 'safety', 'agents', 'context', 'generation']) {
+      const element = document.getElementById(`studio-${id}`);
+      if (element) observer.observe(element);
+    }
+    return () => observer.disconnect();
+  }, [draft?.id]);
   if (!draft)
     return (
       <main className="page-content">
@@ -1690,6 +1812,23 @@ function WorkflowsPage({
     }
   };
 
+  const toggleSection = (id: StudioSectionId) => setOpenSections((current) => ({ ...current, [id]: !current[id] }));
+  const goToSection = (id: StudioSectionId) => {
+    setOpenSections((current) => ({ ...current, [id]: true }));
+    setActiveSection(id);
+    window.requestAnimationFrame(() =>
+      document.getElementById(`studio-${id}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' }),
+    );
+  };
+  const aiStageCount = draft.stages.filter((stage) => isAiStage(stage.kind)).length;
+  const studioNav: Array<{ id: StudioSectionId; label: string; badge?: string }> = [
+    { id: 'basics', label: 'Basics' },
+    { id: 'safety', label: 'Safety' },
+    { id: 'agents', label: 'Agents', badge: String(draft.stages.length) },
+    { id: 'context', label: 'Context' },
+    { id: 'generation', label: 'Generation' },
+  ];
+
   return (
     <main className="page-content">
       <PageHeading
@@ -1717,14 +1856,34 @@ function WorkflowsPage({
         }
       />
       <div className="workflow-studio-layout">
-        <aside className="workflow-list-panel surface-panel">
-          <div className="panel-title-row">
-            <div>
-              <h2>Templates</h2>
-              <p>Editable starting points</p>
-            </div>
-            <WorkflowIcon size={17} className="muted-icon" />
+        <aside className="studio-rail" aria-label="Workflow studio navigation">
+          <div className="studio-template-select">
+            <label className="form-field">
+              <span>Template</span>
+              <select
+                value={draft.id}
+                onChange={(event) => {
+                  const next = workflows.find((workflow) => workflow.id === event.target.value);
+                  if (next) {
+                    setSelectedId(next.id);
+                    setDraft(next);
+                  }
+                }}
+              >
+                {workflows.map((workflow) => (
+                  <option value={workflow.id} key={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="quiet-button" onClick={() => void duplicate()}>
+              <Plus size={14} />
+              Duplicate
+            </button>
           </div>
+          <div className="studio-rail-group">
+            <p className="studio-rail-label">Templates</p>
           <div className="workflow-select-list">
             {workflows.map((workflow) => (
               <button
@@ -1752,10 +1911,31 @@ function WorkflowsPage({
             <Plus size={14} />
             Duplicate selected workflow
           </button>
+
+          </div>
+          <nav className="studio-rail-group studio-rail-sections" aria-label="Workflow sections">
+            <p className="studio-rail-label">Sections</p>
+            <div className="studio-nav">
+              {studioNav.map((item) => (
+                <a
+                  key={item.id}
+                  href={`#studio-${item.id}`}
+                  aria-current={activeSection === item.id ? 'true' : undefined}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    goToSection(item.id);
+                  }}
+                >
+                  {item.label}
+                  {item.badge && <span>{item.badge}</span>}
+                </a>
+              ))}
+            </div>
+          </nav>
         </aside>
 
         <section className="workflow-editor">
-          <div className="surface-panel workflow-settings-panel">
+      <StudioSection id="basics" title="Basics" summary={`${capitalize(draft.executionProfile)} profile · ${capitalize(draft.permissionMode)} permissions`} open={openSections.basics} onToggle={() => toggleSection('basics')}>
             <div className="workflow-title-fields">
               <label className="form-field">
                 <span>Workflow name</span>
@@ -1767,7 +1947,9 @@ function WorkflowsPage({
               </label>
               <label className="form-field">
                 <span>Purpose</span>
-                <input
+                <textarea
+                  className="wrap-input"
+                  rows={1}
                   value={draft.description}
                   maxLength={500}
                   onChange={(event) => changeWorkflow({ description: event.target.value })}
@@ -1802,6 +1984,52 @@ function WorkflowsPage({
                   <option value="enigma">ENIGMA · requires run confirmation</option>
                 </select>
               </label>
+            </div>
+            <label className="form-field">
+              <span>Workflow instructions</span>
+              <textarea rows={3} maxLength={8000} value={draft.globalInstructions ?? ''} onChange={(event) => changeWorkflow({ globalInstructions: event.target.value })} placeholder="Workflow-specific instructions. These stay below Turing security rules and mandatory Global/Project Rules." />
+            </label>
+
+      </StudioSection>
+      <StudioSection id="safety" title="Safety" summary={`${draft.isolatedWorktree ? 'Worktree isolation on' : 'Worktree isolation off'} · ${draft.subscriptionOnly ? 'Subscription only' : 'Metered routes allowed'} · ${draft.lockProviders ? 'Providers locked' : 'Providers unlocked'}`} open={openSections.safety} onToggle={() => toggleSection('safety')}>
+        <div className="toggle-stack">
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={draft.isolatedWorktree}
+                onChange={(event) => changeWorkflow({ isolatedWorktree: event.target.checked })}
+              />
+              <span>
+                <strong>Isolate Git runs in a worktree</strong>
+                <small>Run setup pauses if the repository has uncommitted changes.</small>
+              </span>
+            </label>
+            <label className="toggle-line">
+              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
+              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
+            </label>
+            <label className="toggle-line">
+              <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
+              <span><strong>Lock Providers</strong><small>ON by default. A failed stage pauses; Turing does not substitute providers, models, or native reasoning values.</small></span>
+            </label>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={draft.promptRefinementDefault}
+                disabled={
+                  !draft.stages.some((stage) => stage.kind === 'promptRefinement' && stage.enabled !== false)
+                }
+                onChange={(event) => changeWorkflow({ promptRefinementDefault: event.target.checked })}
+              />
+              <span>
+                <strong>Prompt refinement by default</strong>
+                <small>
+                  Add an enabled Prompt refinement stage and assign its provider to use this option.
+                </small>
+              </span>
+            </label>
+        </div>
+        <div className="field-row">
               <label className="form-field small-number-field">
                 <span>Max remediation rounds</span>
                 <input
@@ -1844,6 +2072,15 @@ function WorkflowsPage({
                   }
                 />
               </label>
+        </div>
+        <details className="settings-disclosure">
+          <summary>
+            Retry policy
+            <small>
+              {draft.retryPolicy.maxRetries} {draft.retryPolicy.maxRetries === 1 ? 'retry' : 'retries'} · {draft.retryPolicy.initialDelayMs}–{draft.retryPolicy.maxDelayMs} ms backoff
+            </small>
+          </summary>
+          <div className="field-row">
               <label className="form-field small-number-field">
                 <span>Transient provider retries</span>
                 <input
@@ -1901,69 +2138,16 @@ function WorkflowsPage({
                   }
                 />
               </label>
-            </div>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={draft.isolatedWorktree}
-                onChange={(event) => changeWorkflow({ isolatedWorktree: event.target.checked })}
-              />
-              <span>
-                <strong>Isolate Git runs in a worktree</strong>
-                <small>Run setup pauses if the repository has uncommitted changes.</small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
-              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
-            </label>
-            <label className="toggle-line">
-              <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
-              <span><strong>Lock Providers</strong><small>ON by default. A failed stage pauses; Turing does not substitute providers, models, or native reasoning values.</small></span>
-            </label>
-            <div className="form-grid-two workflow-options-grid">
-              <label className="form-field">
-                <span>Default context strategy</span>
-                <select value={draft.contextPolicy.strategy} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'] } })}>
-                  <option value="focused">AUTO / Focused</option><option value="changed-files">Changed Files</option><option value="artifacts-only">Artifacts Only</option><option value="full-project">Full Project / Broad</option>
-                </select>
-              </label>
-              <label className="form-field small-number-field"><span>Default estimated token limit</span><input type="number" min={1000} max={500000} value={draft.contextPolicy.maxEstimatedTokens} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))) } })} /></label>
-              <label className="form-field small-number-field"><span>Default max files</span><input type="number" min={1} max={500} value={draft.contextPolicy.maxFiles} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) } })} /></label>
-              <label className="form-field small-number-field"><span>Default max file size (bytes)</span><input type="number" min={1024} max={2000000} value={draft.contextPolicy.maxFileBytes} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFileBytes: Math.min(2000000, Math.max(1024, Number(event.target.value))) } })} /></label>
-            </div>
-            <div className="form-grid-two workflow-default-model">
-              <label className="form-field"><span>Workflow default connection profile</span><select value={draft.defaultModelConfiguration?.connectionProfileId ?? ''} onChange={(event) => {
-                const selected = connectionProfiles.find((profile) => profile.id === event.target.value);
-                changeWorkflow({ defaultModelConfiguration: selected
-                  ? { ...draft.defaultModelConfiguration, connectionProfileId: selected.id, backendId: selected.backendId, providerId: selected.providerId, billingLane: selected.billingLane }
-                  : { ...draft.defaultModelConfiguration, connectionProfileId: undefined, backendId: undefined, providerId: undefined, billingLane: undefined } });
-              }}><option value="">No workflow-level connection</option>{connectionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {billingLaneLabel(profile.billingLane)}</option>)}</select></label>
-              <label className="form-field"><span>Workflow default exact model ID</span><input value={draft.defaultModelConfiguration?.modelId ?? ''} onChange={(event) => changeWorkflow({ defaultModelConfiguration: { ...draft.defaultModelConfiguration, modelId: event.target.value || undefined } })} placeholder="provider-native/model-id" maxLength={180} /></label>
-            </div>
-            <label className="form-field">
-              <span>Workflow instructions</span>
-              <textarea rows={3} maxLength={8000} value={draft.globalInstructions ?? ''} onChange={(event) => changeWorkflow({ globalInstructions: event.target.value })} placeholder="Workflow-specific instructions. These stay below Turing security rules and mandatory Global/Project Rules." />
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={draft.promptRefinementDefault}
-                disabled={
-                  !draft.stages.some((stage) => stage.kind === 'promptRefinement' && stage.enabled !== false)
-                }
-                onChange={(event) => changeWorkflow({ promptRefinementDefault: event.target.checked })}
-              />
-              <span>
-                <strong>Prompt refinement by default</strong>
-                <small>
-                  Add an enabled Prompt refinement stage and assign its provider to use this option.
-                </small>
-              </span>
-            </label>
           </div>
-
-          <section className="surface-panel connection-profile-panel">
+        </details>
+      </StudioSection>
+      <StudioSection id="agents" title="Agents" summary={`${draft.stages.length} stages · ${aiStageCount} AI ${aiStageCount === 1 ? 'agent' : 'agents'}`} open={openSections.agents} onToggle={() => toggleSection('agents')}>
+        <details className="settings-disclosure connection-profile-panel">
+          <summary>
+            Connection profiles
+            <small>{connectionProfiles.length} saved · credentials stay in provider CLIs or secure desktop storage</small>
+          </summary>
+          <div className="connection-profile-body">
             <div className="section-title-row"><div><h2>Connection profiles</h2><p>Reusable account and billing lane references. Credentials stay in provider CLIs or secure desktop storage.</p></div><LockKeyhole size={16} className="muted-icon" /></div>
             <div className="form-grid-two">
               <label className="form-field"><span>Profile name</span><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="OpenCode Go — Alex" maxLength={100} /></label>
@@ -1973,8 +2157,9 @@ function WorkflowsPage({
             </div>
             <button className="secondary-button" disabled={!profileName.trim() || !profileProvider.trim()} onClick={() => void saveConnection()}><Plus size={14} />Save connection profile</button>
             {connectionProfiles.length > 0 && <div className="connection-profile-list">{connectionProfiles.map((connection) => <span key={connection.id}>{connection.name} · {connection.backendId} · {billingLaneLabel(connection.billingLane)}</span>)}</div>}
-          </section>
+          </div>
 
+        </details>
           <div className="stage-editor-heading">
             <div>
               <h2>Stage sequence</h2>
@@ -2002,6 +2187,7 @@ function WorkflowsPage({
                 workflowContextPolicy={draft.contextPolicy}
                 workflowDefaultModelConfiguration={draft.defaultModelConfiguration}
                 stageDefaultModelConfiguration={draft.stageDefaults?.[stage.kind]}
+                permissionMode={draft.permissionMode}
                 onSavePreset={(name, configuration) => void savePreset(name, configuration).catch((error) => onNotice(error instanceof Error ? error.message : 'Preset could not be saved.'))}
                 onPromoteToStageDefault={(kind, configuration) => promoteStageToDefault(stage.id, kind, configuration)}
                 onChange={(patch) => changeStage(stage.id, patch)}
@@ -2028,6 +2214,41 @@ function WorkflowsPage({
               Economy, Balanced, or Maximum.
             </span>
           </div>
+
+      </StudioSection>
+      <StudioSection id="context" title="Context" summary={`${draft.contextPolicy.strategy} · ${draft.contextPolicy.maxEstimatedTokens.toLocaleString()} token limit`} open={openSections.context} onToggle={() => toggleSection('context')}>
+        <div className="form-grid-two">
+              <label className="form-field">
+                <span>Default context strategy</span>
+                <select value={draft.contextPolicy.strategy} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'] } })}>
+                  <option value="focused">AUTO / Focused</option><option value="changed-files">Changed Files</option><option value="artifacts-only">Artifacts Only</option><option value="full-project">Full Project / Broad</option>
+                </select>
+              </label>
+              <label className="form-field small-number-field"><span>Default estimated token limit</span><input type="number" min={1000} max={500000} value={draft.contextPolicy.maxEstimatedTokens} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))) } })} /></label>
+        </div>
+        <details className="settings-disclosure">
+          <summary>
+            File limits
+            <small>{draft.contextPolicy.maxFiles} files · {draft.contextPolicy.maxFileBytes.toLocaleString()} bytes each</small>
+          </summary>
+          <div className="form-grid-two">
+              <label className="form-field small-number-field"><span>Default max files</span><input type="number" min={1} max={500} value={draft.contextPolicy.maxFiles} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) } })} /></label>
+              <label className="form-field small-number-field"><span>Default max file size (bytes)</span><input type="number" min={1024} max={2000000} value={draft.contextPolicy.maxFileBytes} onChange={(event) => changeWorkflow({ contextPolicy: { ...draft.contextPolicy, maxFileBytes: Math.min(2000000, Math.max(1024, Number(event.target.value))) } })} /></label>
+          </div>
+        </details>
+      </StudioSection>
+      <StudioSection id="generation" title="Generation" summary={draft.defaultModelConfiguration?.modelId || 'No workflow default model'} open={openSections.generation} onToggle={() => toggleSection('generation')}>
+            <div className="form-grid-two ">
+              <label className="form-field"><span>Workflow default connection profile</span><select value={draft.defaultModelConfiguration?.connectionProfileId ?? ''} onChange={(event) => {
+                const selected = connectionProfiles.find((profile) => profile.id === event.target.value);
+                changeWorkflow({ defaultModelConfiguration: selected
+                  ? { ...draft.defaultModelConfiguration, connectionProfileId: selected.id, backendId: selected.backendId, providerId: selected.providerId, billingLane: selected.billingLane }
+                  : { ...draft.defaultModelConfiguration, connectionProfileId: undefined, backendId: undefined, providerId: undefined, billingLane: undefined } });
+              }}><option value="">No workflow-level connection</option>{connectionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {billingLaneLabel(profile.billingLane)}</option>)}</select></label>
+              <label className="form-field"><span>Workflow default exact model ID</span><input value={draft.defaultModelConfiguration?.modelId ?? ''} onChange={(event) => changeWorkflow({ defaultModelConfiguration: { ...draft.defaultModelConfiguration, modelId: event.target.value || undefined } })} placeholder="provider-native/model-id" maxLength={180} /></label>
+            </div>
+
+      </StudioSection>
           {validationMessage && (
             <div className="form-error" role="alert">
               <AlertTriangle size={15} />
@@ -2047,6 +2268,49 @@ function WorkflowsPage({
   );
 }
 
+type StudioSectionId = 'basics' | 'safety' | 'agents' | 'context' | 'generation';
+
+function StudioSection({
+  id,
+  title,
+  summary,
+  open,
+  onToggle,
+  children,
+}: {
+  id: StudioSectionId;
+  title: string;
+  summary: string;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section id={`studio-${id}`} className={`studio-section ${open ? 'studio-section-open' : ''}`}>
+      <h2 className="studio-section-title">
+        <button
+          type="button"
+          className="studio-section-head"
+          aria-expanded={open}
+          aria-controls={`studio-${id}-body`}
+          onClick={onToggle}
+        >
+          <span className="studio-section-copy">
+            <span className="studio-section-name">{title}</span>
+            <span className="studio-section-summary">{summary}</span>
+          </span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </button>
+      </h2>
+      {open && (
+        <div id={`studio-${id}-body`} className="studio-section-body">
+          {children}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function WorkflowStageEditor({
   stage,
   index,
@@ -2058,6 +2322,7 @@ function WorkflowStageEditor({
   workflowContextPolicy,
   workflowDefaultModelConfiguration,
   stageDefaultModelConfiguration,
+  permissionMode,
   onSavePreset,
   onPromoteToStageDefault,
   onChange,
@@ -2077,6 +2342,7 @@ function WorkflowStageEditor({
   workflowContextPolicy: WorkflowDefinition['contextPolicy'];
   workflowDefaultModelConfiguration?: ModelConfiguration;
   stageDefaultModelConfiguration?: ModelConfiguration;
+  permissionMode: PermissionMode;
   onSavePreset: (name: string, configuration: ModelConfiguration) => void;
   onPromoteToStageDefault: (kind: StageKind, configuration: ModelConfiguration) => void;
   onChange: (patch: Partial<WorkflowStage>) => void;
@@ -2095,9 +2361,11 @@ function WorkflowStageEditor({
   const aiStage = isAiStage(stage.kind);
   const updateCondition = (condition: NonNullable<WorkflowStage['condition']>) => onChange({ condition });
   const laterStages = stages.filter((_, stageIndex) => stageIndex > index);
+  const ready = Boolean(configuredStage.backendId && configuredStage.providerId && configuredStage.modelId);
+  const [expanded, setExpanded] = useState(aiStage && !ready);
   return (
     <article
-      className={`workflow-stage-node ${stage.enabled === false ? 'workflow-stage-disabled' : ''}`}
+      className={`workflow-stage-node ${stage.enabled === false ? 'workflow-stage-disabled' : ''} ${expanded ? 'workflow-stage-open' : ''}`}
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
@@ -2146,8 +2414,95 @@ function WorkflowStageEditor({
               <X size={14} />
             </button>
           </div>
+          <button
+            type="button"
+            className="stage-expand"
+            aria-expanded={expanded}
+            aria-controls={`stage-config-${stage.id}`}
+            aria-label={`${expanded ? 'Hide' : 'Edit'} ${stage.label} settings`}
+            onClick={() => setExpanded((value) => !value)}
+          >
+            <ChevronDown size={16} />
+          </button>
         </div>
-        <div className="stage-node-config">
+        <div className="stage-summary">
+          {aiStage ? (
+            ready ? (
+              <>
+                <span className="agent-chip">
+                  <span className="agent-chip-label">Provider</span>
+                  <code>
+                    {configuredStage.backendId} · {configuredStage.providerId}
+                  </code>
+                </span>
+                <span className="agent-chip">
+                  <span className="agent-chip-label">Model</span>
+                  <code>{configuredStage.modelDisplayName ?? configuredStage.modelId}</code>
+                </span>
+                {configuredStage.reasoning && (
+                  <span className="agent-chip">
+                    <span className="agent-chip-label">Reasoning</span>
+                    <code>{configuredStage.reasoning}</code>
+                  </span>
+                )}
+                {configuredStage.variantId && (
+                  <span className="agent-chip">
+                    <span className="agent-chip-label">Variant</span>
+                    <code>{configuredStage.variantId}</code>
+                  </span>
+                )}
+                <span className="agent-chip">
+                  <span className="agent-chip-label">Context</span>
+                  <code>{stage.contextPolicy?.strategy ?? workflowContextPolicy.strategy}</code>
+                </span>
+                <span className="agent-chip">
+                  <span className="agent-chip-label">Permissions</span>
+                  <code>{permissionMode}</code>
+                </span>
+                {stage.timeoutMinutes && (
+                  <span className="agent-chip">
+                    <span className="agent-chip-label">Timeout</span>
+                    <code>{stage.timeoutMinutes}m</code>
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="stage-summary-required">
+                <AlertTriangle size={13} aria-hidden="true" /> Provider and model required
+              </span>
+            )
+          ) : (
+            <span className="stage-summary-note">
+              {stage.kind === 'build' || stage.kind === 'test'
+                ? 'Uses detected project command'
+                : stage.kind === 'gitCheckpoint'
+                  ? 'Saves a restorable project snapshot'
+                  : stage.kind === 'gitCommit'
+                    ? 'Commits checked project changes in the run branch'
+                    : stage.kind === 'gitPush'
+                      ? 'Pushes the run branch without force'
+                      : stage.kind === 'gitMerge'
+                        ? 'Fast-forward merge with explicit approval'
+                        : stage.kind === 'gitRollback'
+                          ? 'Restores only the registered project subtree'
+                          : 'No model assignment required'}
+            </span>
+          )}
+          <label className="toggle-line compact-toggle stage-enabled">
+            <input
+              type="checkbox"
+              checked={stage.enabled !== false}
+              aria-label={`${stage.label} enabled`}
+              onChange={(event) => onChange({ enabled: event.target.checked })}
+            />
+            <span>Enabled</span>
+          </label>
+        </div>
+        {aiStage && stage.modelSnapshot?.status === 'unavailable' && (
+          <div className="inline-callout model-repair-note"><AlertTriangle size={14} /><span><strong>Model unavailable</strong><small>Choose a currently discovered model from this provider. Turing will not migrate the historical assignment automatically.</small></span></div>
+        )}
+        {expanded && (
+          <div className="stage-node-config" id={`stage-config-${stage.id}`}>
           <label className="form-field">
             <span>Stage type</span>
             <select
@@ -2203,16 +2558,6 @@ function WorkflowStageEditor({
           {aiStage && (
             <>
               <label className="form-field">
-                <span>Connection / subscription profile</span>
-                <select value={configuredStage.connectionProfileId ?? ''} onChange={(event) => {
-                  const connection = connectionProfiles.find((profile) => profile.id === event.target.value);
-                  onChange(connection ? { connectionProfileId: connection.id, backendId: connection.backendId, providerId: connection.providerId, billingLane: connection.billingLane } : { connectionProfileId: undefined, billingLane: undefined });
-                }}>
-                  <option value="">No saved profile · manual connection</option>
-                  {connectionProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name} · {profile.backendId} · {billingLaneLabel(profile.billingLane)}</option>)}
-                </select>
-              </label>
-              <label className="form-field">
                 <span>Execution backend</span>
                 <select
                   value={configuredStage.backendId ?? ''}
@@ -2255,18 +2600,6 @@ function WorkflowStageEditor({
                           : 'openai, anthropic, openai-codex, opencode-go'
                   }
                 />
-              </label>
-              <label className="form-field">
-                <span>Provider / billing lane</span>
-                <select
-                  value={configuredStage.billingLane ?? inferClientBillingLane(configuredStage.backendId, configuredStage.providerId)}
-                  disabled={Boolean(configuredStage.connectionProfileId)}
-                  onChange={(event) => onChange({ billingLane: event.target.value as NonNullable<WorkflowStage['billingLane']> })}
-                >
-                  {billingLanesForBackend(configuredStage.backendId).map((lane) => (
-                    <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>
-                  ))}
-                </select>
               </label>
               <label className="form-field stage-model-field">
                 <span>Model {discovered.length > 0 && <small>· discovered</small>}</span>
@@ -2318,42 +2651,25 @@ function WorkflowStageEditor({
                   ))}
                 </datalist>
               </label>
-              <label className="form-field">
-                <span>Saved model preset</span>
-                <select value="" onChange={(event) => {
-                  const preset = modelPresets.find((item) => item.id === event.target.value);
-                  if (preset) onChange(preset.configuration);
-                }}>
-                  <option value="">Choose preset to apply</option>
-                  {modelPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}
-                </select>
-              </label>
-              <button type="button" className="quiet-button" onClick={() => {
-                const name = window.prompt('Name this model configuration preset:');
-                if (name?.trim()) onSavePreset(name.trim(), {
-                  backendId: configuredStage.backendId,
-                  connectionProfileId: configuredStage.connectionProfileId,
-                  providerId: configuredStage.providerId,
-                  billingLane: configuredStage.billingLane,
-                  modelId: configuredStage.modelId,
-                  modelDisplayName: configuredStage.modelDisplayName,
-                  variantId: configuredStage.variantId,
-                  reasoning: configuredStage.reasoning,
-                  nativeSettings: configuredStage.nativeSettings,
-                });
-              }} disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId}><Save size={13} />Save model preset</button>
-              <button type="button" className="quiet-button" disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId} onClick={() => onPromoteToStageDefault(stage.kind, {
-                backendId: configuredStage.backendId,
-                connectionProfileId: configuredStage.connectionProfileId,
-                providerId: configuredStage.providerId,
-                billingLane: configuredStage.billingLane,
-                modelId: configuredStage.modelId,
-                modelDisplayName: configuredStage.modelDisplayName,
-                variantId: configuredStage.variantId,
-                reasoning: configuredStage.reasoning,
-                nativeSettings: configuredStage.nativeSettings,
-              })}><Save size={13} />Use for all matching stages</button>
             </>
+          )}
+          {aiStage && selectedModel?.variantIds && selectedModel.variantIds.length > 0 && (
+            <label className="form-field reasoning-field">
+                <span>Provider-native variant</span>
+              <select value={configuredStage.variantId ?? ''} onChange={(event) => onChange({ variantId: event.target.value || undefined })}>
+                <option value="">Provider default</option>
+                {selectedModel.variantIds.map((variant) => <option value={variant} key={variant}>{variant}</option>)}
+              </select>
+            </label>
+          )}
+          {aiStage && selectedModel?.reasoningLevels && selectedModel.reasoningLevels.length > 0 && (
+            <label className="form-field reasoning-field">
+              <span>Provider-native reasoning</span>
+              <select value={configuredStage.reasoning ?? ''} onChange={(event) => onChange({ reasoning: event.target.value || undefined })}>
+                <option value="">Provider default</option>
+                {selectedModel.reasoningLevels.map((level) => <option value={level} key={level}>{level}</option>)}
+              </select>
+            </label>
           )}
           {stage.kind === 'parallelReview' && (
             <label className="form-field small-number-field">
@@ -2365,45 +2681,6 @@ function WorkflowStageEditor({
                 value={stage.parallelism ?? 1}
                 onChange={(event) =>
                   onChange({ parallelism: Math.min(8, Math.max(1, Number(event.target.value))) })
-                }
-              />
-            </label>
-          )}
-          <label className="form-field small-number-field">
-            <span>Stage timeout (minutes)</span>
-            <input
-              type="number"
-              min={1}
-              max={360}
-              value={stage.timeoutMinutes ?? ''}
-              placeholder="No stage override"
-              onChange={(event) =>
-                onChange({
-                  timeoutMinutes: event.target.value
-                    ? Math.min(360, Math.max(1, Number(event.target.value)))
-                    : undefined,
-                })
-              }
-            />
-          </label>
-          {aiStage && (
-            <label className="form-field small-number-field">
-              <span>Retry override</span>
-              <input
-                type="number"
-                min={0}
-                max={5}
-                value={stage.retryPolicy?.maxRetries ?? ''}
-                placeholder="Workflow default"
-                onChange={(event) =>
-                  onChange({
-                    retryPolicy: {
-                      ...stage.retryPolicy,
-                      maxRetries: event.target.value
-                        ? Math.min(5, Math.max(0, Number(event.target.value)))
-                        : undefined,
-                    },
-                  })
                 }
               />
             </label>
@@ -2594,31 +2871,125 @@ function WorkflowStageEditor({
               Continue to conditional stages after failure
             </label>
           )}
-          {aiStage && selectedModel?.variantIds && selectedModel.variantIds.length > 0 && (
-            <label className="form-field reasoning-field">
-                <span>Provider-native variant</span>
-              <select value={configuredStage.variantId ?? ''} onChange={(event) => onChange({ variantId: event.target.value || undefined })}>
-                <option value="">Provider default</option>
-                {selectedModel.variantIds.map((variant) => <option value={variant} key={variant}>{variant}</option>)}
-              </select>
-            </label>
-          )}
-          {aiStage && selectedModel?.reasoningLevels && selectedModel.reasoningLevels.length > 0 && (
-            <label className="form-field reasoning-field">
-              <span>Provider-native reasoning</span>
-              <select value={configuredStage.reasoning ?? ''} onChange={(event) => onChange({ reasoning: event.target.value || undefined })}>
-                <option value="">Provider default</option>
-                {selectedModel.reasoningLevels.map((level) => <option value={level} key={level}>{level}</option>)}
-              </select>
-            </label>
-          )}
           {aiStage && (
             <>
-              <label className="form-field">
+              <label className="form-field stage-wide">
                 <span>Custom stage instructions</span>
                 <textarea rows={3} maxLength={8_000} value={stage.customInstructions ?? ''} onChange={(event) => onChange({ customInstructions: event.target.value })} placeholder="Optional instructions for this stage. They remain below mandatory security, Global Rules, Project Rules, and Turing role instructions." />
               </label>
-              <div className="form-grid-two stage-context-controls">
+            </>
+          )}
+          <details className="settings-disclosure stage-advanced">
+            <summary>
+              Advanced
+              <small>Connection profile, billing lane, presets, limits, context</small>
+            </summary>
+            <div className="stage-advanced-grid">
+              {aiStage && (
+                <>
+              <label className="form-field">
+                <span>Connection / subscription profile</span>
+                <select value={configuredStage.connectionProfileId ?? ''} onChange={(event) => {
+                  const connection = connectionProfiles.find((profile) => profile.id === event.target.value);
+                  onChange(connection ? { connectionProfileId: connection.id, backendId: connection.backendId, providerId: connection.providerId, billingLane: connection.billingLane } : { connectionProfileId: undefined, billingLane: undefined });
+                }}>
+                  <option value="">No saved profile · manual connection</option>
+                  {connectionProfiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name} · {profile.backendId} · {billingLaneLabel(profile.billingLane)}</option>)}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Provider / billing lane</span>
+                <select
+                  value={configuredStage.billingLane ?? inferClientBillingLane(configuredStage.backendId, configuredStage.providerId)}
+                  disabled={Boolean(configuredStage.connectionProfileId)}
+                  onChange={(event) => onChange({ billingLane: event.target.value as NonNullable<WorkflowStage['billingLane']> })}
+                >
+                  {billingLanesForBackend(configuredStage.backendId).map((lane) => (
+                    <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-field">
+                <span>Saved model preset</span>
+                <select value="" onChange={(event) => {
+                  const preset = modelPresets.find((item) => item.id === event.target.value);
+                  if (preset) onChange(preset.configuration);
+                }}>
+                  <option value="">Choose preset to apply</option>
+                  {modelPresets.map((preset) => <option value={preset.id} key={preset.id}>{preset.name}</option>)}
+                </select>
+              </label>
+                  <div className="stage-wide stage-actions-row">
+              <button type="button" className="quiet-button" onClick={() => {
+                const name = window.prompt('Name this model configuration preset:');
+                if (name?.trim()) onSavePreset(name.trim(), {
+                  backendId: configuredStage.backendId,
+                  connectionProfileId: configuredStage.connectionProfileId,
+                  providerId: configuredStage.providerId,
+                  billingLane: configuredStage.billingLane,
+                  modelId: configuredStage.modelId,
+                  modelDisplayName: configuredStage.modelDisplayName,
+                  variantId: configuredStage.variantId,
+                  reasoning: configuredStage.reasoning,
+                  nativeSettings: configuredStage.nativeSettings,
+                });
+              }} disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId}><Save size={13} />Save model preset</button>
+              <button type="button" className="quiet-button" disabled={!configuredStage.backendId || !configuredStage.providerId || !configuredStage.modelId} onClick={() => onPromoteToStageDefault(stage.kind, {
+                backendId: configuredStage.backendId,
+                connectionProfileId: configuredStage.connectionProfileId,
+                providerId: configuredStage.providerId,
+                billingLane: configuredStage.billingLane,
+                modelId: configuredStage.modelId,
+                modelDisplayName: configuredStage.modelDisplayName,
+                variantId: configuredStage.variantId,
+                reasoning: configuredStage.reasoning,
+                nativeSettings: configuredStage.nativeSettings,
+              })}><Save size={13} />Use for all matching stages</button>
+                  </div>
+                </>
+              )}
+          <label className="form-field small-number-field">
+            <span>Stage timeout (minutes)</span>
+            <input
+              type="number"
+              min={1}
+              max={360}
+              value={stage.timeoutMinutes ?? ''}
+              placeholder="No stage override"
+              onChange={(event) =>
+                onChange({
+                  timeoutMinutes: event.target.value
+                    ? Math.min(360, Math.max(1, Number(event.target.value)))
+                    : undefined,
+                })
+              }
+            />
+          </label>
+          {aiStage && (
+            <label className="form-field small-number-field">
+              <span>Retry override</span>
+              <input
+                type="number"
+                min={0}
+                max={5}
+                value={stage.retryPolicy?.maxRetries ?? ''}
+                placeholder="Workflow default"
+                onChange={(event) =>
+                  onChange({
+                    retryPolicy: {
+                      ...stage.retryPolicy,
+                      maxRetries: event.target.value
+                        ? Math.min(5, Math.max(0, Number(event.target.value)))
+                        : undefined,
+                    },
+                  })
+                }
+              />
+            </label>
+          )}
+              {aiStage && (
+                <>
+              <div className="form-grid-two stage-context-controls stage-wide">
                 <label className="form-field"><span>Context strategy</span><select value={stage.contextPolicy?.strategy ?? workflowContextPolicy.strategy} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'] } })}><option value="focused">AUTO / Focused</option><option value="changed-files">Changed Files</option><option value="artifacts-only">Artifacts Only</option><option value="full-project">Full Project / Broad</option></select></label>
                 <label className="form-field small-number-field"><span>Estimated token limit</span><input type="number" min={1000} max={500000} value={stage.contextPolicy?.maxEstimatedTokens ?? workflowContextPolicy.maxEstimatedTokens} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))) } })} /></label>
                 <label className="form-field small-number-field"><span>Maximum files</span><input type="number" min={1} max={500} value={stage.contextPolicy?.maxFiles ?? workflowContextPolicy.maxFiles} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) } })} /></label>
@@ -2626,7 +2997,7 @@ function WorkflowStageEditor({
                 <label className="form-field"><span>Include globs (one per line)</span><textarea rows={2} value={(stage.contextPolicy?.includeGlobs ?? workflowContextPolicy.includeGlobs).join('\n')} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, includeGlobs: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) } })} placeholder="src/**/*.ts" /></label>
                 <label className="form-field"><span>Exclude globs (one per line)</span><textarea rows={2} value={(stage.contextPolicy?.excludeGlobs ?? workflowContextPolicy.excludeGlobs).join('\n')} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, excludeGlobs: event.target.value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean) } })} placeholder="node_modules/**" /></label>
               </div>
-              <div className="context-inclusion-flags">
+              <div className="context-inclusion-flags stage-wide">
                 {([
                   ['includeCurrentDiff', 'Include current diff'],
                   ['includeTestOutput', 'Include structured test summary'],
@@ -2636,40 +3007,11 @@ function WorkflowStageEditor({
                 <label className="rule-flag"><input type="checkbox" checked={stage.contextPolicy?.includePreviousTranscript ?? workflowContextPolicy.includePreviousTranscript} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, includePreviousTranscript: event.target.checked } })} />Include prior AI stage responses (larger context)</label>
                 <label className="form-field"><span>Over budget</span><select value={stage.contextPolicy?.onLimitExceeded ?? workflowContextPolicy.onLimitExceeded} onChange={(event) => onChange({ contextPolicy: { ...stage.contextPolicy, onLimitExceeded: event.target.value as 'compact' | 'ask' | 'stop' } })}><option value="compact">Compact optional context</option><option value="ask">Require user review</option><option value="stop">Stop stage</option></select></label>
               </div>
-            </>
-          )}
+                </>
+              )}
+            </div>
+          </details>
         </div>
-        <div className="stage-node-foot">
-          <label className="toggle-line compact-toggle">
-            <input
-              type="checkbox"
-              checked={stage.enabled !== false}
-              onChange={(event) => onChange({ enabled: event.target.checked })}
-            />
-            <span>Stage enabled</span>
-          </label>
-          <span>
-            {aiStage
-              ? configuredStage.backendId && configuredStage.providerId && configuredStage.modelId
-                ? `${configuredStage.backendId} · ${configuredStage.providerId}/${configuredStage.modelId}`
-                : 'Provider and model required'
-              : stage.kind === 'build' || stage.kind === 'test'
-                ? 'Uses detected project command'
-                : stage.kind === 'gitCheckpoint'
-                  ? 'Saves a restorable project snapshot'
-                  : stage.kind === 'gitCommit'
-                    ? 'Commits checked project changes in the run branch'
-                    : stage.kind === 'gitPush'
-                      ? 'Pushes the run branch without force'
-                      : stage.kind === 'gitMerge'
-                        ? 'Fast-forward merge with explicit approval'
-                        : stage.kind === 'gitRollback'
-                          ? 'Restores only the registered project subtree'
-                          : 'No model assignment required'}
-          </span>
-        </div>
-        {aiStage && stage.modelSnapshot?.status === 'unavailable' && (
-          <div className="inline-callout model-repair-note"><AlertTriangle size={14} /><span><strong>Model unavailable</strong><small>Choose a currently discovered model from this provider. Turing will not migrate the historical assignment automatically.</small></span></div>
         )}
       </div>
     </article>
@@ -2710,7 +3052,7 @@ function ProjectsPage({
         title="Projects"
         description="Repositories registered on this machine, with detected profile and test commands."
       />
-      <div className="projects-layout">
+      <div className={`projects-layout ${projects.length === 0 ? 'projects-layout-empty' : ''}`}>
         <section className="surface-panel projects-list-panel">
           <div className="panel-title-row">
             <div>
@@ -2766,6 +3108,7 @@ function ProjectsPage({
             )}
           </div>
         </section>
+        {projects.length > 0 && (
         <section className="project-profile-column">
           {selected ? (
             <ProjectProfilePanel
@@ -2784,6 +3127,7 @@ function ProjectsPage({
             />
           )}
         </section>
+        )}
       </div>
     </main>
   );
@@ -2862,7 +3206,7 @@ function ProjectProfilePanel({
           {project.gitRoot ? 'Git repository' : 'Folder'}
         </span>
       </div>
-      <div className="metadata-grid">
+      <dl className="metadata-grid">
         <Meta label="Current branch" value={project.branch ?? 'Not detected'} icon={GitBranch} />
         <Meta
           label="Working tree"
@@ -2891,7 +3235,7 @@ function ProjectProfilePanel({
           value={project.instructionFiles.length ? project.instructionFiles.join(', ') : 'None found'}
           icon={CircleHelp}
         />
-      </div>
+      </dl>
       <div className="project-command-editor">
         <div>
           <h3>Project commands</h3>
@@ -2944,6 +3288,7 @@ function RunsPage({
   onSelect,
   onRefresh,
   onNotice,
+  onNavigate,
 }: {
   snapshot: DashboardSnapshot;
   selectedRun: RunSummary | null;
@@ -2951,6 +3296,7 @@ function RunsPage({
   onSelect: (id: string | null) => void;
   onRefresh: () => void;
   onNotice: (message: string) => void;
+  onNavigate: (page: Page) => void;
 }) {
   const [filter, setFilter] = useState('all');
   const runs = snapshot.runs.filter(
@@ -2958,6 +3304,7 @@ function RunsPage({
   );
   return (
     <main className="page-content">
+      {!selectedRun && (
       <PageHeading
         title="Runs & history"
         description="Follow active stages, inspect provider output, and review changes from recent workflows."
@@ -2968,8 +3315,13 @@ function RunsPage({
           </button>
         }
       />
+      )}
       {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
-      <div className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''}`}>
+      <div
+        className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''} ${
+          snapshot.runs.length === 0 ? 'runs-layout-empty' : ''
+        }`}
+      >
         <section className="runs-list-panel surface-panel">
           <div className="runs-list-toolbar">
             <div>
@@ -3010,11 +3362,21 @@ function RunsPage({
               ))}
             </div>
           ) : (
-            <EmptyState
-              icon={Activity}
-              title="No runs match"
-              body="Start a workflow from Command Center or change the filter."
-            />
+            snapshot.runs.length === 0 ? (
+              <EmptyState
+                icon={Activity}
+                title="No runs yet"
+                body="Stage output, approvals, findings, and Git changes appear here once a workflow runs."
+                action={{ label: 'Start a task', onClick: () => onNavigate('command') }}
+              />
+            ) : (
+              <EmptyState
+                icon={Activity}
+                title="No runs match"
+                body="No runs match this filter."
+                action={{ label: 'Show all runs', onClick: () => setFilter('all') }}
+              />
+            )
           )}
         </section>
         {selectedRun ? (
@@ -3025,11 +3387,13 @@ function RunsPage({
             onClose={() => onSelect(null)}
           />
         ) : (
-          <section className="run-inspector-empty surface-panel">
-            <Activity size={21} />
-            <h2>Select a run</h2>
-            <p>Stage output, approvals, findings, and Git changes appear here.</p>
-          </section>
+          snapshot.runs.length > 0 && (
+            <section className="run-inspector-empty surface-panel">
+              <Activity size={21} />
+              <h2>Select a run</h2>
+              <p>Stage output, approvals, findings, and Git changes appear here.</p>
+            </section>
+          )
         )}
       </div>
     </main>
@@ -3123,18 +3487,69 @@ function RunDetail({
       onNotice(error instanceof Error ? error.message : 'Historical workflow could not be duplicated.');
     }
   };
+  const stop = () =>
+    void api
+      .cancelRun(run.id)
+      .then(() => {
+        onRefresh();
+        onNotice('Stop requested. The provider process is being terminated.');
+      })
+      .catch((error) => onNotice(error.message));
   const findings = details?.findings ?? [];
   const gitOperations = details?.gitOperations ?? [];
+  const liveStage = run.stages.find((stage) =>
+    ['running', 'waiting_for_approval', 'waiting_for_user'].includes(stage.status),
+  );
+  const failedStage = run.stages.find((stage) => stage.status === 'failed');
+  const threadState: { tone: string; icon: LucideIcon; title: string; detail: string } =
+    run.status === 'failed'
+      ? {
+          tone: 'failed',
+          icon: AlertTriangle,
+          title: 'Failed',
+          detail: failedStage
+            ? `${failedStage.title}${failedStage.error ? `: ${failedStage.error}` : ''}`
+            : 'The run stopped before finishing.',
+        }
+      : run.status === 'completed'
+        ? {
+            tone: 'completed',
+            icon: CheckCircle2,
+            title: `Completed in ${formatDuration(run.startedAt, run.completedAt)}`,
+            detail: `${run.stages.filter((stage) => stage.status === 'passed').length} of ${run.stages.length} stages passed.`,
+          }
+        : run.status === 'waiting_for_approval'
+          ? {
+              tone: 'waiting',
+              icon: LockKeyhole,
+              title: 'Waiting for your approval',
+              detail: liveStage ? `${liveStage.title} is paused until you decide.` : 'A step needs your decision.',
+            }
+          : run.status === 'waiting_for_user'
+            ? {
+                tone: 'waiting',
+                icon: CircleHelp,
+                title: 'Waiting for your input',
+                detail: liveStage ? `${liveStage.title} needs an answer to continue.` : 'The run needs an answer.',
+              }
+            : run.status === 'paused' || run.status === 'paused_limit_reached'
+              ? { tone: 'waiting', icon: Pause, title: 'Paused', detail: 'Resume the run to continue from its next pending stage.' }
+              : isActive
+                ? {
+                    tone: 'running',
+                    icon: Activity,
+                    title: `Running · ${formatMilliseconds(run.elapsedMs)}`,
+                    detail: liveStage ? `Now: ${liveStage.title}` : 'Preparing the first stage.',
+                  }
+                : { tone: 'neutral', icon: Square, title: humanStatus(run.status), detail: 'This run is no longer active.' };
+  const StateIcon = threadState.icon;
   return (
-    <section className="run-detail-panel surface-panel">
+    <section className="run-detail-panel">
+      <button className="back-link" onClick={onClose}>
+        <ArrowLeft size={15} aria-hidden="true" />
+        All runs
+      </button>
       <div className="run-detail-top">
-        <button
-          className="icon-button tiny-icon run-close-button"
-          aria-label="Close run detail"
-          onClick={onClose}
-        >
-          <X size={15} />
-        </button>
         <div className="run-detail-title">
           <span className={`run-status-glyph run-glyph-${run.status}`}>
             <StatusIcon status={run.status} />
@@ -3147,6 +3562,52 @@ function RunDetail({
           </div>
         </div>
         <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
+        <details className="run-menu">
+          <summary aria-label="Run actions">
+            <MoreHorizontal size={18} />
+          </summary>
+          <div className="run-menu-list">
+            <button className="secondary-button" onClick={() => void replay()} disabled={isActive}>
+              <RefreshCw size={14} />
+              Run Again With Same Configuration
+            </button>
+            <button className="secondary-button" onClick={() => void duplicateWorkflow()}>
+              <Plus size={14} />
+              Duplicate and Edit
+            </button>
+            {isActive && <small>Run again is available once this run finishes.</small>}
+          </div>
+        </details>
+      </div>
+      <div className={`thread-state thread-state-${threadState.tone}`}>
+        <div className="thread-state-copy">
+          <StateIcon size={18} aria-hidden="true" />
+          <div>
+            <strong>{threadState.title}</strong>
+            <p>{threadState.detail}</p>
+          </div>
+        </div>
+        <div className="thread-state-actions">
+          {(run.status === 'paused' || run.status === 'failed') && (
+            <button className="primary-button" onClick={() => void resume()}>
+              <Play size={14} />
+              Resume run
+            </button>
+          )}
+          {isActive && (
+            <button className="danger-button" onClick={stop}>
+              <StopCircle size={14} />
+              Stop run
+            </button>
+          )}
+          <button className="secondary-button" onClick={() => void loadDiff()}>
+            <GitCompareArrows size={14} />
+            View diff
+          </button>
+        </div>
+      </div>
+      <div className="thread-user">
+        <p>{run.prompt}</p>
       </div>
       <div className="run-detail-meta">
         <span>
@@ -3159,10 +3620,6 @@ function RunDetail({
         </span>
         <span>{run.profile} profile</span>
         <span>{run.permissionMode}</span>
-      </div>
-      <div className="run-history-actions">
-        <button className="secondary-button" onClick={() => void replay()} disabled={isActive}><RefreshCw size={14} />Run Again With Same Configuration</button>
-        <button className="secondary-button" onClick={() => void duplicateWorkflow()}><Plus size={14} />Duplicate and Edit</button>
       </div>
       <div className="run-runtime-summary">
         <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
@@ -3197,13 +3654,15 @@ function RunDetail({
             {run.stages.filter((stage) => stage.status === 'passed').length} / {run.stages.length} complete
           </span>
         </div>
-        {run.stages.map((stage) => (
-          <RunStageRow
-            key={stage.id}
-            stage={stage}
-            findings={findings.filter((finding) => finding.stage_id === stage.id)}
-          />
-        ))}
+        <div className="stage-list">
+          {run.stages.map((stage) => (
+            <RunStageRow
+              key={stage.id}
+              stage={stage}
+              findings={findings.filter((finding) => finding.stage_id === stage.id)}
+            />
+          ))}
+        </div>
       </div>
       <section className="execution-activity">
         <div className="timeline-heading">
@@ -3300,56 +3759,6 @@ function RunDetail({
         )}
       </section>
       <RuleListDetails rules={details?.effectiveRules ?? []} title="Saved rule snapshot" />
-      <div className="run-detail-tools">
-        <button className="secondary-button" onClick={() => void loadDiff()}>
-          <GitCompareArrows size={14} />
-          View diff
-        </button>
-        {run.status === 'paused' || run.status === 'failed' ? (
-          <button className="primary-button compact-button" onClick={() => void resume()}>
-            <Play size={14} />
-            Resume run
-          </button>
-        ) : isActive ? (
-          <button
-            className="secondary-button danger-button"
-            onClick={() =>
-              void api
-                .cancelRun(run.id)
-                .then(() => {
-                  onRefresh();
-                  onNotice('Stop requested. The provider process is being terminated.');
-                })
-                .catch((error) => onNotice(error.message))
-            }
-          >
-            <StopCircle size={14} />
-            Stop run
-          </button>
-        ) : null}
-      </div>
-      {isActive && (
-        <div className="intervention-box">
-          <label className="form-field">
-            <span>Intervene in this run</span>
-            <textarea
-              rows={2}
-              maxLength={4_000}
-              value={intervention}
-              onChange={(event) => setIntervention(event.target.value)}
-              placeholder="Add a constraint or redirect the next stage…"
-            />
-          </label>
-          <button
-            className="secondary-button"
-            onClick={() => void sendIntervention()}
-            disabled={!intervention.trim()}
-          >
-            <Send size={14} />
-            Record intervention
-          </button>
-        </div>
-      )}
       {showDiff && (
         <div className="diff-viewer">
           <div className="diff-viewer-head">
@@ -3367,6 +3776,28 @@ function RunDetail({
           ) : (
             <div className="empty-inline">No tracked changes are present in this working tree.</div>
           )}
+        </div>
+      )}
+      {isActive && (
+        <div className="intervention-box">
+          <label className="form-field">
+            <span className="sr-only">Intervene in this run</span>
+            <textarea
+              rows={2}
+              maxLength={4_000}
+              value={intervention}
+              onChange={(event) => setIntervention(event.target.value)}
+              placeholder="Add a constraint or redirect the next stage…"
+            />
+          </label>
+          <button
+            className="primary-button"
+            onClick={() => void sendIntervention()}
+            disabled={!intervention.trim()}
+          >
+            <Send size={14} />
+            <span className="btn-label">Record intervention</span>
+          </button>
         </div>
       )}
     </section>
@@ -3759,7 +4190,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           {error}
         </div>
       )}
-      <div className="usage-summary-grid">
+      <dl className="usage-summary-grid">
         <Metric
           label="Local provider/process events"
           value={String(data?.eventCount ?? snapshot.usage.events)}
@@ -3780,7 +4211,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           value={`${quotas.length} configured`}
           help="Different quota units remain separate; inspect each envelope below"
         />
-      </div>
+      </dl>
       <section className="surface-panel usage-table-panel usage-attribution-panel">
         <div className="panel-title-row">
           <div>
@@ -3790,9 +4221,11 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           <Activity size={16} className="muted-icon" />
         </div>
         <div className="usage-table">
-          <div className="usage-table-head">
-            <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
-          </div>
+          {rawEvents.length > 0 && (
+            <div className="usage-table-head">
+              <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
+            </div>
+          )}
           {rawEvents.slice(0, 30).map((event) => (
             <div className="usage-table-row" key={String(event.id)}>
               <span className="usage-key">
@@ -3806,7 +4239,12 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
                 : `${Number(event.input_tokens).toLocaleString()} in · ${Number(event.output_tokens ?? 0).toLocaleString()} out`}</span>
             </div>
           ))}
-          {!rawEvents.length && <p className="empty-state">No provider stage calls recorded in this time window.</p>}
+          {!rawEvents.length && (
+            <div className="empty-state empty-state-compact">
+              <h2>No provider stage calls in this window</h2>
+              <p>Calls appear here after a workflow runs a provider stage. Try a longer window to see older activity.</p>
+            </div>
+          )}
         </div>
       </section>
       <section className="surface-panel quota-envelope-panel">
@@ -3919,7 +4357,11 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
               onChange={(event) => setQuotaDraft({ ...quotaDraft, notes: event.target.value })}
             />
           </label>
-          <button className="primary-button" type="submit" disabled={savingQuota || !quotaDraft.providerId}>
+          <button
+            className="primary-button quota-save-button"
+            type="submit"
+            disabled={savingQuota || !quotaDraft.providerId}
+          >
             <Save size={14} /> {savingQuota ? 'Saving…' : 'Save envelope'}
           </button>
         </form>
@@ -4533,13 +4975,13 @@ function SettingsPage({
                     : 'CLI not detected'}
                 </small>
                 <p>{provider.note}</p>
-                <div className="capability-tags">
+                <p className="capability-line">
+                  Supports:{' '}
                   {Object.entries(provider.capabilities)
                     .filter(([, enabled]) => enabled)
-                    .map(([key]) => (
-                      <span key={key}>{humanize(key)}</span>
-                    ))}
-                </div>
+                    .map(([key]) => humanize(key).toLowerCase())
+                    .join(', ') || 'nothing reported'}
+                </p>
               </div>
             </div>
           ))}
@@ -5403,9 +5845,9 @@ function PermissionInfo({
 
 function Metric({ label, value, help }: { label: string; value: string; help: string }) {
   return (
-    <div className="usage-metric surface-panel">
-      <span>{label}</span>
-      <strong>{value}</strong>
+    <div className="usage-metric">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
       <small>{help}</small>
     </div>
   );
@@ -5413,15 +5855,25 @@ function Metric({ label, value, help }: { label: string; value: string; help: st
 function Meta({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
     <div className="metadata-item">
-      <Icon size={15} />
-      <span>
-        <small>{label}</small>
-        <strong>{value}</strong>
-      </span>
+      <dt>
+        <Icon size={14} aria-hidden="true" />
+        {label}
+      </dt>
+      <dd>{value}</dd>
     </div>
   );
 }
-function EmptyState({ icon: Icon, title, body }: { icon: LucideIcon; title: string; body: string }) {
+function EmptyState({
+  icon: Icon,
+  title,
+  body,
+  action,
+}: {
+  icon: LucideIcon;
+  title: string;
+  body: string;
+  action?: { label: string; onClick: () => void };
+}) {
   return (
     <div className="empty-state">
       <span>
@@ -5429,6 +5881,11 @@ function EmptyState({ icon: Icon, title, body }: { icon: LucideIcon; title: stri
       </span>
       <h2>{title}</h2>
       <p>{body}</p>
+      {action && (
+        <button type="button" className="secondary-button empty-state-action" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }
@@ -5438,7 +5895,7 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'cancelled') return <Square size={12} />;
   if (status === 'running') return <LoaderCircle size={14} className="spin" />;
   if (status === 'waiting_for_approval') return <LockKeyhole size={13} />;
-  if (status === 'waiting_for_user') return <Sparkles size={13} />;
+  if (status === 'waiting_for_user') return <CircleHelp size={13} />;
   if (status === 'paused') return <Pause size={13} />;
   if (status === 'paused_limit_reached') return <Clock3 size={13} />;
   return <Clock3 size={13} />;
@@ -5481,7 +5938,8 @@ function isAiStage(kind: StageKind): boolean {
   ].includes(kind);
 }
 function humanStatus(value: string): string {
-  return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const text = value.replaceAll('_', ' ').toLowerCase();
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 function humanize(value: string): string {
   return value
@@ -5539,6 +5997,16 @@ function formatDuration(start: string | null, end: string | null): string {
   const duration = Math.max(0, (end ? new Date(end).getTime() : Date.now()) - new Date(start).getTime());
   const seconds = Math.floor(duration / 1000);
   return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+function rowTime(run: RunSummary): string {
+  if (activeStatuses.has(run.status)) return formatMilliseconds(run.elapsedMs);
+  const then = new Date(run.completedAt ?? run.createdAt).getTime();
+  if (Number.isNaN(then)) return '';
+  const minutes = Math.max(0, Math.round((Date.now() - then) / 60_000));
+  if (minutes < 1) return 'now';
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 1_440) return `${Math.round(minutes / 60)}h ago`;
+  return `${Math.round(minutes / 1_440)}d ago`;
 }
 function formatMilliseconds(durationMs: number): string {
   const seconds = Math.floor(Math.max(0, durationMs) / 1_000);

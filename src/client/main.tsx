@@ -4,7 +4,9 @@ import { createRoot } from 'react-dom/client';
 import { registerSW } from 'virtual:pwa-register';
 import App from './App';
 import { desktop, isDesktopShell, setMasterApiBase, type DesktopRuntime } from './desktop';
-import './styles.css';
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+import './styles/index.css';
 
 const root = createRoot(document.getElementById('root')!);
 
