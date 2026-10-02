@@ -142,8 +142,13 @@ A pale-blue field with white work surfaces and one calm red voice.
 - **Ink** (#0a0e13): all primary text. **Ink Secondary** (#28323e), **Ink Muted** (#4b5968), **Ink Faint** (#4d5b6b, 4.5:1 or better on the rail).
 - **Hairline** (#c9dbee): panel and divider lines. **Control Line** (#7a98b4): input and secondary-button borders (3:1 on white).
 
+### Status colour
+
+Colour on a status means exactly three things: **red** = failed or unavailable, **green** = completed or passed, **amber** = assistance required (waiting for approval or for you, paused). Running, queued, online, ready, connected, missing and everything else are neutral grey. The approvals dot and the bell dot are amber.
+
 ### Named Rules
 
+**The Three Signals Rule.** Only red, green and amber carry status, and each always comes with an icon or a word. Routine states never get a colour.
 **The One Red Rule.** Calm red marks the action that moves work forward and nothing else. If it is on a status, a badge or a decoration, it is wrong.
 **The Failure Is Not a Button Rule.** Anything that failed or is blocked uses crimson with an icon and text, never calm red.
 
@@ -198,6 +203,13 @@ Soft and consistent: composer 22px, panels 14px, task rows 12px, buttons 10px, p
 - **Hover / Focus:** Calm Red Deep; focus is a 2px #0e4585 outline with 2px offset.
 - **Secondary:** white fill, Control Line border, ink text. **Text button:** Link Blue, no fill.
 
+### Icons
+
+- **System:** one outline family (Lucide), 1.6px stroke, rounded caps, always `currentColor`. The same neutral (#3a4755) everywhere; icons differ by shape only.
+- **Sizes by role:** 14px inline with 13px text (buttons, pills, text-button chevrons), 16px in navigation, rows and callouts, 18px for icon-only controls (menu, bell, voice, send).
+- **No tiles:** icons stand on their own, never inside a tinted square or circle. Only status icons take colour (see Status colour).
+- **Disclosure:** one chevron that rotates 90 degrees; no browser default triangles.
+
 ### Chips
 
 - **Status pill:** wash fill with the matching deep text (green, amber, crimson, blue), 11 to 12px, always carries a word.
@@ -235,6 +247,10 @@ Back link, title and status, the prompt as a Blue Wash bubble aligned right, sta
 - **Do** put a new task, a thread or a status in the rail before inventing a new page.
 
 ### Don't:
+
+- **Don't** colour an icon for decoration, or put one inside a tinted tile.
+- **Don't** mix icon sizes or stroke weights; use the three size roles at 1.6px.
+- **Don't** give routine states (running, online, ready, connected) a colour.
 
 - **Don't** add a dark theme, glass, gradient text or decorative shadows.
 - **Don't** use same-size icon cards or big-number tiles; prefer a definition list or a table of facts.
