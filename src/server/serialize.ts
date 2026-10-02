@@ -9,6 +9,8 @@ import type {
   ConnectionProfile,
   ModelPreset,
 } from '../shared/types.js';
+import type { BillingLane, BillingMode } from '../shared/types.js';
+import { BILLING_MODES, resolveBillingMode } from '../shared/billing.js';
 import type { Db } from './db.js';
 
 type Row = Record<string, unknown>;
@@ -79,7 +81,7 @@ export function toWorkflow(row: Row): WorkflowDefinition {
       maxDelayMs: Number((config.retryPolicy as Record<string, unknown> | undefined)?.maxDelayMs ?? 30_000),
     },
     isolatedWorktree: Boolean(config.isolatedWorktree),
-    subscriptionOnly: config.subscriptionOnly !== false,
+    ...billingConfiguration(config),
     lockProviders: config.lockProviders !== false,
     defaultModelConfiguration: config.defaultModelConfiguration as WorkflowDefinition['defaultModelConfiguration'],
     stageDefaults: config.stageDefaults as WorkflowDefinition['stageDefaults'],
@@ -90,6 +92,29 @@ export function toWorkflow(row: Row): WorkflowDefinition {
     isDefault: Boolean(row.is_default),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+  };
+}
+
+function billingConfiguration(config: Record<string, unknown>) {
+  const billingMode = resolveBillingMode({
+    billingMode: BILLING_MODES.includes(config.billingMode as BillingMode) ? (config.billingMode as BillingMode) : undefined,
+    subscriptionOnly: typeof config.subscriptionOnly === 'boolean' ? config.subscriptionOnly : undefined,
+  });
+  const budget = (config.meteredBudget ?? {}) as Partial<WorkflowDefinition['meteredBudget']>;
+  const policy = config.externalDecisionDataPolicy;
+  return {
+    billingMode,
+    subscriptionOnly: billingMode !== 'custom',
+    ...(Array.isArray(config.customAllowedLanes) ? { customAllowedLanes: config.customAllowedLanes as BillingLane[] } : {}),
+    meteredBudget: {
+      perRunUsd: typeof budget.perRunUsd === 'number' && budget.perRunUsd >= 0 ? budget.perRunUsd : null,
+      unknownCostPolicy: (['block', 'ask', 'allow-with-warning'] as const).includes(budget.unknownCostPolicy as 'block')
+        ? (budget.unknownCostPolicy as WorkflowDefinition['meteredBudget']['unknownCostPolicy'])
+        : 'block',
+    },
+    externalDecisionDataPolicy: (['allow', 'ask-first', 'block'] as const).includes(policy as 'allow')
+      ? (policy as WorkflowDefinition['externalDecisionDataPolicy'])
+      : 'ask-first',
   };
 }
 
@@ -171,6 +196,10 @@ export function toRun(db: Db, row: Row): RunSummary {
     permissionMode: String(row.permission_mode) as RunSummary['permissionMode'],
     refinePrompt: Boolean(row.refinement_requested),
     subscriptionOnly: snapshot.subscriptionOnly !== false,
+    billingMode: resolveBillingMode({
+      billingMode: BILLING_MODES.includes(snapshot.billingMode as BillingMode) ? (snapshot.billingMode as BillingMode) : undefined,
+      subscriptionOnly: typeof snapshot.subscriptionOnly === 'boolean' ? snapshot.subscriptionOnly : undefined,
+    }),
     lockProviders: snapshot.lockProviders !== false,
     status: String(row.status) as RunSummary['status'],
     branch: nullable(row.branch),

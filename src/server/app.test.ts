@@ -981,7 +981,7 @@ describe('local API', () => {
     expect(executed).toMatchObject({ providerId: 'cline-pass', modelId: 'cline-pass/kimi-k3', billingLane: 'clinepass-subscription', subscriptionOnly: true });
     expect(db.prepare('SELECT billing_lane, provider_id, model_id FROM usage_events WHERE run_id = ?').get(runId)).toEqual({ billing_lane: 'clinepass-subscription', provider_id: 'cline-pass', model_id: 'cline-pass/kimi-k3' });
     const savedWorkflow = JSON.parse((db.prepare("SELECT config_json FROM workflows WHERE id = 'quick-fix'").get() as { config_json: string }).config_json) as { stages: Array<Record<string, unknown>> };
-    Object.assign(savedWorkflow, { subscriptionOnly: true });
+    Object.assign(savedWorkflow, { subscriptionOnly: true, billingMode: 'subscriptions-only' });
     savedWorkflow.stages[0] = {
       ...savedWorkflow.stages[0], connectionProfileId: undefined, providerId: 'cline',
       modelId: 'cline/usage-model', billingLane: 'cline-usage-billing',
@@ -991,7 +991,7 @@ describe('local API', () => {
       task: 'Check the explicit Cline usage lane.', projectId: project.json().project.id, workflowId: 'quick-fix',
     } });
     expect(blockedMetered.json().preview.providerAssignments[0]).toMatchObject({ ready: false, billingLane: 'cline-usage-billing' });
-    Object.assign(savedWorkflow, { subscriptionOnly: false });
+    Object.assign(savedWorkflow, { subscriptionOnly: false, billingMode: 'custom' });
     db.prepare("UPDATE workflows SET config_json = ? WHERE id = 'quick-fix'").run(JSON.stringify(savedWorkflow));
     const explicitMetered = await app.inject({ method: 'POST', url: '/api/runs/preview', payload: {
       task: 'Check the explicit Cline usage lane.', projectId: project.json().project.id, workflowId: 'quick-fix',

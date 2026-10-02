@@ -1,6 +1,6 @@
 # Provider setup and limits
 
-Turing launches the provider's installed command line program. Sign in through that provider's own supported flow first. Each stage resolves an execution backend, optional connection profile, provider/billing lane, and exact model configuration through workflow defaults, stage-kind defaults, and node overrides. Turing does not choose fallback models. Connection profiles and presets store references/configuration, not provider credentials. Install and update provider tools using their official instructions.
+Turing launches the provider's installed command line program (OpenCode, Cline, Codex CLI, Claude Code) or, for the optional metered OpenRouter connection, calls OpenRouter's HTTP API with a key stored on the desktop. Sign in through that provider's own supported flow first. Each stage resolves an execution backend, optional connection profile, provider/billing lane, and exact model configuration through workflow defaults, stage-kind defaults, and node overrides. Turing does not choose fallback models. Connection profiles and presets store references/configuration, not provider credentials. Install and update provider tools using their official instructions.
 
 ## OpenCode
 
@@ -26,13 +26,21 @@ Install the official Cline CLI and sign in through its documented provider or OA
 
 The current adapter launches Cline in JSON mode with automatic approval disabled and bridges its documented file-based approval IPC to Turing's permission engine. Each request is authorized by the Turing broker policy before a decision file is written. Cline does not return per-tool stdout/stderr through that approval interface, so the audit record cannot claim a specific tool result. ClinePass availability and remaining allowance belong to Cline's own dashboard; Turing does not query them.
 
+## OpenRouter (optional, metered)
+
+Add a connection and inference key in Settings → OpenRouter. Nothing uses it until a stage or Decision Gate explicitly selects that connection and the run's billing mode permits `openrouter-metered`. Generative OpenRouter stages require Custom billing mode; Jev Decision Gates are allowed in Subscriptions + Decision Budget. Every request is metered with an atomic budget reservation and a provider `max_price` ceiling. See [OpenRouter](OPENROUTER.md), [Decision Layer](DECISION_LAYER.md), and [Billing safety](BILLING_SAFETY.md).
+
+## Provider-independent workflows
+
+No provider has privileged status. A workflow may run entirely on OpenCode Go, entirely on ClinePass, entirely on a ChatGPT subscription, entirely on a Claude subscription, or any explicit mix. Preview checks only the providers a workflow actually uses, so a disconnected Claude Code does not block an all-OpenCode-Go workflow. Deterministic acceptance tests cover the all-OpenCode-Go, all-ClinePass, mixed, and Subscriptions + Jev cases.
+
 ## Capability and billing boundaries
 
 Provider detection means only that the CLI can be launched and returns a version. `authentication: unknown` means Turing cannot confirm the active account. A locally observed run duration is not provider usage. Token counts appear only when the provider emits them in a parseable event; quota, reset time, and cost remain unavailable when no documented source supplies them.
 
 Provider support changes over time. The [capability matrix](PROVIDER_CAPABILITY_MATRIX.md) lists the official documentation reviewed for this release. Check those sources again when updating a CLI adapter. Turing does not scrape subscription websites or reuse credentials from provider-owned stores.
 
-Connection checks use authentication status, CLI status, and model discovery where those mechanisms are available. They do not send a generation prompt. Run Preview shows each stage's exact route and groups stages under the selected billing lane. Subscription Only blocks Turing-managed OpenAI/Anthropic API routes, Cline usage billing, OpenCode metered routes, and other configured PAYG routes. It cannot guarantee the provider will not bill through an account-side fallback that Turing cannot inspect. See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for route rules, context defaults, snapshots, and run-history behavior.
+Connection checks use authentication status, CLI status, and model discovery where those mechanisms are available. They do not send a generation prompt. Run Preview shows each stage's exact route and groups stages under the selected billing lane. Subscription Only blocks Turing-managed OpenAI/Anthropic API routes, Cline usage billing, OpenCode metered routes, and other configured PAYG routes. It cannot guarantee the provider will not bill through an account-side fallback that Turing cannot inspect; Preview reports provider-side fallback as **unknown** for every subscription lane (OpenCode Go, ClinePass, ChatGPT, Claude). See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for route rules, context defaults, snapshots, and run-history behavior.
 
 ## Official sources
 
@@ -45,3 +53,6 @@ Connection checks use authentication status, CLI status, and model discovery whe
 - [Claude Code CLI usage](https://code.claude.com/docs/en/cli-usage)
 - [Cline CLI](https://github.com/cline/cline/blob/main/apps/cli/README.md)
 - [ClinePass](https://github.com/cline/cline/blob/main/docs/getting-started/clinepass.mdx)
+- [OpenCode Go limits and Console balance](https://opencode.ai/docs/go/)
+- [OpenRouter API keys](https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key), [management keys](https://openrouter.ai/docs/guides/overview/auth/management-api-keys), [usage accounting](https://openrouter.ai/docs/guides/administration/usage-accounting), [provider routing / max_price](https://openrouter.ai/docs/guides/routing/provider-selection), [models](https://openrouter.ai/docs/guides/overview/models), [reasoning](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+- [Jev on OpenRouter](https://openrouter.ai/docs/guides/community/jev), [Jev tutorial](https://openrouter.ai/docs/guides/community/jev-tutorial)

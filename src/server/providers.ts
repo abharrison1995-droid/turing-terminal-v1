@@ -9,7 +9,9 @@ import type { Readable } from 'node:stream';
 import { createInterface } from 'node:readline';
 import type { ModelOption, ProviderCapabilities, ProviderStatus } from '../shared/types.js';
 import type { PermissionMode } from '../shared/types.js';
-import type { BillingLane } from '../shared/types.js';
+import type { BillingLane, BillingMode, WorkloadType } from '../shared/types.js';
+import { evaluateBillingLane, routeMatchesBillingLane } from '../shared/billing.js';
+import { validateModelSettings } from '../shared/modelSettings.js';
 import { redactSecrets, safeChildEnvironment } from './security.js';
 
 const execFile = promisify(callbackExecFile);
@@ -28,6 +30,9 @@ export interface ProviderRunRequest {
   nativeSettings?: Record<string, string | number | boolean | null>;
   billingLane?: BillingLane;
   subscriptionOnly?: boolean;
+  billingMode?: BillingMode;
+  customAllowedLanes?: BillingLane[];
+  workload?: WorkloadType;
   cwd: string;
   prompt: string;
   timeoutMs: number;
@@ -234,6 +239,11 @@ const adapters: ProviderAdapter[] = [
   },
 ];
 
+export function invalidateProviderCache(): void {
+  providerCache = null;
+  providerCacheExpires = 0;
+}
+
 export async function discoverProviders(): Promise<ProviderStatus[]> {
   if (providerCache && Date.now() < providerCacheExpires) return structuredClone(providerCache);
   if (providerDiscovery) return structuredClone(await providerDiscovery);
@@ -293,7 +303,7 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
     );
   if (adapter.id === 'codex-cli' && request.providerId !== 'openai-codex')
     throw new Error('Select ChatGPT subscription authentication; OpenAI API providers are disabled.');
-  if (!providerBillingLaneMatches(request.backendId, request.providerId, request.billingLane))
+  if (!routeMatchesBillingLane(request.backendId, request.providerId, request.billingLane))
     throw new Error(`Provider ${request.providerId} cannot execute through billing lane ${request.billingLane ?? 'unknown'}.`);
   if (adapter.id === 'opencode') {
     const selectedModel = status.models.find((model) => model.id === request.modelId);
@@ -325,19 +335,24 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
     throw new Error(
       `Choose an explicit model for ${adapter.name}; Turing will not select one automatically.`,
     );
-  if (request.subscriptionOnly && !['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription'].includes(request.billingLane ?? ''))
-    throw new Error(`Billing lane “${request.billingLane}” is blocked by Subscription Only mode.`);
+  const billingMode: BillingMode = request.billingMode ?? (request.subscriptionOnly === false ? 'custom' : 'subscriptions-only');
+  const billing = evaluateBillingLane({
+    mode: billingMode,
+    lane: request.billingLane,
+    workload: request.workload ?? 'generative',
+    customAllowedLanes: request.customAllowedLanes,
+  });
+  if (!billing.allowed) throw new Error(`Billing lane “${request.billingLane}” is blocked: ${billing.reason}`);
   const selectedModel = status.models.find((model) => model.id === request.modelId);
-  const requestedEffort = request.reasoning ?? (typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined);
-  const supportedNativeKeys = adapter.id === 'codex-cli' ? ['reasoningEffort'] : [];
-  const unsupportedNativeKeys = Object.keys(request.nativeSettings ?? {}).filter((key) => !supportedNativeKeys.includes(key));
-  if (unsupportedNativeKeys.length)
-    throw new Error(`Provider-native setting(s) ${unsupportedNativeKeys.join(', ')} are not exposed as capabilities for this backend/model and will not be sent.`);
-  const nativeEffort = typeof request.nativeSettings?.reasoningEffort === 'string' ? request.nativeSettings.reasoningEffort : undefined;
-  if (request.reasoning && nativeEffort && request.reasoning !== nativeEffort)
-    throw new Error('Choose one provider-native reasoning value; conflicting reasoning settings were configured.');
-  if (requestedEffort && (adapter.id !== 'codex-cli' || !selectedModel?.reasoningLevels?.includes(requestedEffort)))
-    throw new Error(`Provider-native reasoning value “${requestedEffort}” is not reported as supported for this backend/model.`);
+  const settingErrors = validateModelSettings({
+    backendId: adapter.id,
+    model: selectedModel,
+    catalogAvailable: status.models.length > 0,
+    reasoning: request.reasoning,
+    variantId: request.variantId,
+    nativeSettings: request.nativeSettings,
+  });
+  if (settingErrors.length) throw new Error(settingErrors.join(' '));
   if (adapter.id === 'claude-code' && !supportsRestrictedClaudeCode(status.version))
     throw new Error(
       'Claude Code 2.1.248 or later is required for Turing-managed tool mediation. Update Claude Code before running this workflow.',
@@ -346,22 +361,6 @@ export async function executeProvider(request: ProviderRunRequest): Promise<Prov
   if (!runtimeCapabilities.toolMediation)
     throw new Error(`${adapter.name} does not have an execution mediation bridge in this installation.`);
   return adapter.execute(request);
-}
-
-function providerBillingLaneMatches(backendId: string, providerId: string, lane?: BillingLane): boolean {
-  if (backendId === 'opencode' && providerId === 'opencode-go') return lane === 'opencode-go-subscription';
-  if (backendId === 'opencode' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'opencode' && providerId === 'openai') return lane === 'openai-api';
-  if (backendId === 'opencode' && providerId === 'anthropic') return lane === 'anthropic-api';
-  if (backendId === 'opencode' && providerId) return lane === 'opencode-metered';
-  if (backendId === 'cline' && providerId === 'cline-pass') return lane === 'clinepass-subscription';
-  if (backendId === 'cline' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'cline' && providerId === 'cline') return lane === 'cline-usage-billing';
-  if (backendId === 'cline' && providerId === 'openai') return lane === 'openai-api';
-  if (backendId === 'cline' && providerId === 'anthropic') return lane === 'anthropic-api';
-  if (backendId === 'codex-cli' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'claude-code' && providerId === 'anthropic-subscription') return lane === 'claude-subscription';
-  return false;
 }
 
 function supportsCodexBroker(version: string | null): boolean {

@@ -1,6 +1,11 @@
 import type {
+  BillingMode,
   DashboardSnapshot,
   ConnectionProfile,
+  DecisionGateConfig,
+  DecisionResult,
+  MeteredBudgetSettings,
+  ProviderSpendTelemetry,
   ExecutionOperation,
   GitOperation,
   ProjectProfile,
@@ -55,6 +60,22 @@ function sanitizeWorkflowExport<T>(value: T): T {
 export const api = {
   dashboard: () => call<DashboardSnapshot>('/api/dashboard'),
   providers: () => call<{ providers: ProviderStatus[] }>('/api/providers'),
+  refreshProviders: () => call<{ providers: ProviderStatus[] }>('/api/providers/refresh', json('POST')),
+  openRouterTelemetry: () =>
+    call<{ telemetry: ProviderSpendTelemetry[]; errors: string[]; provenance: string }>('/api/providers/openrouter/telemetry'),
+  setCredential: (profileId: string, kind: 'inference' | 'management', secret: string) =>
+    call<{ profile: ConnectionProfileWithCredentials }>(`/api/connection-profiles/${profileId}/credentials/${kind}`, json('PUT', { secret })),
+  deleteCredential: (profileId: string, kind: 'inference' | 'management') =>
+    call<{ deleted: boolean }>(`/api/connection-profiles/${profileId}/credentials/${kind}`, json('DELETE')),
+  budgets: () => call<{ settings: MeteredBudgetSettings; status: BudgetStatus; systemTimeZone: string }>('/api/budgets'),
+  saveBudgets: (settings: Omit<MeteredBudgetSettings, 'updatedAt'>) =>
+    call<{ settings: MeteredBudgetSettings }>('/api/budgets', json('PUT', settings)),
+  usageAnalytics: (query: Record<string, string>) =>
+    call<UsageAnalytics>(`/api/usage/analytics?${new URLSearchParams(query).toString()}`),
+  usageExportUrl: (query: Record<string, string>, format: 'csv' | 'json') =>
+    masterApiUrl(`/api/usage/export?${new URLSearchParams({ ...query, format }).toString()}`),
+  testDecisionGate: (body: { decision: DecisionGateConfig; fixtures: Array<Record<string, unknown>>; billingMode: BillingMode; maxCostUsd: number | null; confirmExternal: boolean }) =>
+    call<Record<string, unknown>>('/api/decision-gates/test', json('POST', body)),
   addProject: (path: string) => call<{ project: ProjectProfile }>('/api/projects', json('POST', { path })),
   refreshProject: (id: string) =>
     call<{ project: ProjectProfile }>(`/api/projects/${id}/refresh`, json('POST')),
@@ -75,7 +96,11 @@ export const api = {
       maxDurationMinutes: workflow.maxDurationMinutes,
       retryPolicy: workflow.retryPolicy,
       isolatedWorktree: workflow.isolatedWorktree,
-      subscriptionOnly: workflow.subscriptionOnly,
+      subscriptionOnly: workflow.billingMode ? workflow.billingMode !== 'custom' : workflow.subscriptionOnly,
+      billingMode: workflow.billingMode,
+      customAllowedLanes: workflow.customAllowedLanes,
+      meteredBudget: workflow.meteredBudget,
+      externalDecisionDataPolicy: workflow.externalDecisionDataPolicy,
       lockProviders: workflow.lockProviders,
       defaultModelConfiguration: workflow.defaultModelConfiguration,
       stageDefaults: workflow.stageDefaults,
@@ -90,7 +115,7 @@ export const api = {
   },
   duplicateWorkflow: (id: string) =>
     call<{ workflow: WorkflowDefinition }>(`/api/workflows/${id}/duplicate`, json('POST')),
-  connectionProfiles: () => call<{ profiles: ConnectionProfile[] }>('/api/connection-profiles'),
+  connectionProfiles: () => call<{ profiles: ConnectionProfileWithCredentials[] }>('/api/connection-profiles'),
   saveConnectionProfile: (profile: Omit<ConnectionProfile, 'id' | 'createdAt' | 'updatedAt'>, id?: string) =>
     call<{ profile: ConnectionProfile }>(id ? `/api/connection-profiles/${id}` : '/api/connection-profiles', json(id ? 'PUT' : 'POST', profile)),
   deleteConnectionProfile: (id: string) => call(`/api/connection-profiles/${id}`, json('DELETE')),
@@ -114,6 +139,7 @@ export const api = {
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
     subscriptionOnly?: boolean;
+    billingMode?: BillingMode;
     lockProviders?: boolean;
   }) => call<{ preview: RunPreview }>('/api/runs/preview', json('POST', input)),
   startRun: (input: {
@@ -125,6 +151,7 @@ export const api = {
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
     subscriptionOnly?: boolean;
+    billingMode?: BillingMode;
     lockProviders?: boolean;
   }) => call<{ run: RunSummary }>('/api/runs', json('POST', input)),
   run: (id: string) =>
@@ -132,6 +159,7 @@ export const api = {
       run: RunSummary;
       effectiveRules: TuringRule[];
       findings: Array<Record<string, unknown>>;
+      decisions?: DecisionResult[];
       gitOperations: GitOperation[];
       events: Array<{ type: string; payload: Record<string, unknown>; createdAt: string }>;
     }>(`/api/runs/${id}`),
@@ -268,8 +296,102 @@ export const api = {
           ...(stage.connectionProfileId
             ? { connectionReference: `${stage.backendId ?? ''}:${stage.providerId ?? ''}:${stage.billingLane ?? 'unknown'}` }
             : {}),
+          ...(stage.decision
+            ? {
+                decision: {
+                  ...stage.decision,
+                  ...(stage.decision.connectionProfileId ? { connectionReference: 'openrouter:openrouter:openrouter-metered' } : {}),
+                  judge: exportModelConfiguration(stage.decision.judge),
+                  escalation: stage.decision.escalation
+                    ? {
+                        ...stage.decision.escalation,
+                        ...(stage.decision.escalation.connectionProfileId ? { connectionReference: 'openrouter:openrouter:openrouter-metered' } : {}),
+                        judge: exportModelConfiguration(stage.decision.escalation.judge),
+                      }
+                    : undefined,
+                },
+              }
+            : {}),
         })),
       }))),
     };
   },
 };
+
+export type ConnectionProfileWithCredentials = ConnectionProfile & { credentials?: { inference: boolean; management: boolean } };
+
+export interface BudgetWindow {
+  committedUsd: number;
+  capUsd: number | null;
+}
+export interface BudgetStatus {
+  timeZone: string;
+  run: BudgetWindow;
+  daily: BudgetWindow;
+  monthly: BudgetWindow;
+  warningRatio: number;
+}
+
+export interface MetricTotal {
+  value: number | null;
+  reported: number;
+  missing: number;
+}
+export interface UsageAggregate {
+  events: number;
+  requests: number;
+  durationMs: number;
+  inputTokens: MetricTotal;
+  outputTokens: MetricTotal;
+  cachedInputTokens: MetricTotal;
+  cacheWriteTokens: MetricTotal;
+  reasoningTokens: MetricTotal;
+  totalTokens: MetricTotal;
+  actualMeteredCostUsd: MetricTotal;
+  equivalentValueUsd: MetricTotal;
+  tokenProvenance: Record<string, number>;
+}
+export interface UsageGroupRow extends UsageAggregate {
+  key: string;
+  label: string;
+  billingLane: string | null;
+  providerId: string | null;
+  modelId: string | null;
+  roles: Record<string, number>;
+  projects: Record<string, number>;
+  reasoning: Record<string, number>;
+  upstreamProviders: Record<string, number>;
+}
+export interface UsageAnalytics {
+  filter: { from: string; to: string; timeZone: string } & Record<string, string | undefined>;
+  granularity: 'hour' | 'day';
+  totals: UsageAggregate;
+  activeModels: number;
+  activeBillingLanes: number;
+  series: Array<UsageAggregate & { bucket: string }>;
+  byBillingLane: UsageGroupRow[];
+  byModel: UsageGroupRow[];
+  byProvider: UsageGroupRow[];
+  byRole: UsageGroupRow[];
+  byProject: UsageGroupRow[];
+  byWorkflow: UsageGroupRow[];
+  byMachine: UsageGroupRow[];
+  byWorkload: UsageGroupRow[];
+  byReasoning: UsageGroupRow[];
+  decisions: {
+    decisions: number;
+    byType: Record<string, number>;
+    byOutcome: Record<string, number>;
+    autoRouted: number;
+    escalated: number;
+    costUsd: MetricTotal;
+    inputTokens: MetricTotal;
+    outputTokens: MetricTotal;
+    averageBooleanProbability: number | null;
+    averageChoiceConfidence: number | null;
+    averageScoreConfidence: number | null;
+    byEngineModel: Array<{ key: string; engine: string; modelId: string | null; decisions: number; costUsd: number | null }>;
+  };
+  events: Array<Record<string, unknown>>;
+  eventCount: number;
+}

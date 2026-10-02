@@ -1,9 +1,10 @@
 export function safeChildEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
   const sensitiveName =
-    /(^|_)(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|PASSPHRASE|CREDENTIALS?|AUTH_CONFIG)(_|$)/i;
+    /(^|_)(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|MANAGEMENT_KEY|PROVISIONING_KEY|PASSPHRASE|CREDENTIALS?|AUTH_CONFIG)(_|$)/i;
   for (const key of Object.keys(env)) {
-    if (sensitiveName.test(key) || /^(OPENAI|ANTHROPIC)_BASE_URL$/i.test(key)) delete env[key];
+    // OpenRouter credentials are Turing-held only: no OPENROUTER_* variable ever reaches an agent.
+    if (sensitiveName.test(key) || /^(OPENAI|ANTHROPIC)_BASE_URL$/i.test(key) || /^OPENROUTER_/i.test(key)) delete env[key];
   }
   return env;
 }
@@ -14,7 +15,7 @@ export function redactSecrets(value: string): string {
       /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
       '[REDACTED_PRIVATE_KEY]',
     )
-    .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
+    .replace(/\bsk-(?:ant-|or-(?:v1-)?)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
     .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_TOKEN]')
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
     .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, '[REDACTED_GOOGLE_KEY]')

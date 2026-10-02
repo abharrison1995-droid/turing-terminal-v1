@@ -1,5 +1,7 @@
 # Phase 3.6 Provider, Model, and Context Configuration
 
+> This page records the first Phase 3.6 pass. The completed architecture — billing modes, OpenRouter, the Decision Layer, metered budget reservation, and canonical usage analytics — is documented in [Billing safety](BILLING_SAFETY.md), [OpenRouter](OPENROUTER.md), [Decision Layer](DECISION_LAYER.md), [Model configuration](MODEL_CONFIGURATION.md), [Context management](CONTEXT_MANAGEMENT.md), and [Usage accounting](USAGE_ACCOUNTING.md). Where this page says "Subscription Only", read "Subscriptions Only billing mode".
+
 ## Configuration identity
 
 An AI stage preserves the execution backend, optional connection profile, provider/billing lane, exact model ID, provider-native variant, native settings, and discovery snapshot as separate fields. At the OpenCode adapter boundary, a selected variant is serialized into the provider-native `provider/model#variant` selector; it is not renamed or translated. The Run Preview and run history keep the base model and exact variant separately.

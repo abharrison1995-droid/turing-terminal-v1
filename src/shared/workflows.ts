@@ -16,6 +16,15 @@ const defaultContextPolicy = {
   onLimitExceeded: 'compact' as const,
 };
 
+/** Safe V1 defaults: no metered spend, unknown-cost requests blocked, no external decision data without asking. */
+export const DEFAULT_METERED_BUDGET = { perRunUsd: null, unknownCostPolicy: 'block' as const };
+export const DEFAULT_BILLING = {
+  subscriptionOnly: true,
+  billingMode: 'subscriptions-only' as const,
+  meteredBudget: DEFAULT_METERED_BUDGET,
+  externalDecisionDataPolicy: 'ask-first' as const,
+};
+
 const stage = (
   id: string,
   label: string,
@@ -45,7 +54,7 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
-    subscriptionOnly: true,
+    ...DEFAULT_BILLING,
     lockProviders: true,
     contextPolicy: defaultContextPolicy,
     version: 1,
@@ -70,7 +79,7 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
-    subscriptionOnly: true,
+    ...DEFAULT_BILLING,
     lockProviders: true,
     contextPolicy: defaultContextPolicy,
     version: 1,
@@ -99,7 +108,7 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 180,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
-    subscriptionOnly: true,
+    ...DEFAULT_BILLING,
     lockProviders: true,
     contextPolicy: defaultContextPolicy,
     version: 1,
@@ -130,7 +139,7 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 60,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: false,
-    subscriptionOnly: true,
+    ...DEFAULT_BILLING,
     lockProviders: true,
     contextPolicy: defaultContextPolicy,
     version: 1,
@@ -153,7 +162,7 @@ export const DEFAULT_WORKFLOWS: Array<Omit<WorkflowDefinition, 'createdAt' | 'up
     maxDurationMinutes: 120,
     retryPolicy: defaultRetryPolicy,
     isolatedWorktree: true,
-    subscriptionOnly: true,
+    ...DEFAULT_BILLING,
     lockProviders: true,
     contextPolicy: defaultContextPolicy,
     version: 1,

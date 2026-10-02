@@ -32,6 +32,7 @@ import {
   Radio,
   RefreshCw,
   Save,
+  Scale,
   Search,
   Send,
   Settings,
@@ -72,6 +73,22 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { billingLaneLabel, billingLanesForBackend, billingModeLabel, inferBillingLane as inferClientBillingLane } from '../shared/billing';
+import { pruneModelSettings, classifyModelIdentity } from '../shared/modelSettings';
+import {
+  BillingSafetyFields,
+  DecisionGateEditor,
+  DecisionResultsPanel,
+  MeteredBudgetSettingsPanel,
+  ModelSettingsFields,
+  ModelStatusLine,
+  OpenRouterSettings,
+  OrchestratorBranchesEditor,
+  RoutingSummaryPanel,
+  UsageExplorer,
+  decisionAssignmentLine,
+  defaultDecisionConfig,
+} from './phase36';
 import { desktop, isDesktopShell, masterApiUrl, setMasterApiBase, type DesktopRuntime } from './desktop';
 import { makePairingQrUrl, parsePairingRequestId } from './pairingQr.js';
 import { decodeVapidPublicKey, pushSubscriptionStorageKey } from './pushNotifications.js';
@@ -135,6 +152,7 @@ const stageLabels: Record<StageKind, string> = {
   shellCommand: 'Shell command',
   notification: 'Notification',
   humanApproval: 'Human approval',
+  decisionGate: 'Decision Gate',
 };
 
 function App() {
@@ -682,7 +700,7 @@ function CommandCenter({
   const [task, setTask] = useState('');
   const [profile, setProfile] = useState<ExecutionProfile>('balanced');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('normal');
-  const [subscriptionOnly, setSubscriptionOnly] = useState(true);
+  const [billingMode, setBillingMode] = useState<WorkflowDefinition['billingMode']>('subscriptions-only');
   const [lockProviders, setLockProviders] = useState(true);
   const [refinePrompt, setRefinePrompt] = useState(
     snapshot.workflows.find((workflow) => workflow.id === workflowId)?.promptRefinementDefault ?? false,
@@ -704,7 +722,7 @@ function CommandCenter({
   const selectedWorkflow = snapshot.workflows.find((workflow) => workflow.id === workflowId);
   useEffect(() => {
     if (!selectedWorkflow) return;
-    setSubscriptionOnly(selectedWorkflow.subscriptionOnly);
+    setBillingMode(selectedWorkflow.billingMode ?? (selectedWorkflow.subscriptionOnly ? 'subscriptions-only' : 'custom'));
     setLockProviders(selectedWorkflow.lockProviders);
   }, [selectedWorkflow?.id, selectedWorkflow?.version, selectedWorkflow?.updatedAt]);
   const missingAssignments =
@@ -741,7 +759,7 @@ function CommandCenter({
         permissionMode,
         enigmaConfirmed,
         refinePrompt,
-        subscriptionOnly,
+        billingMode,
         lockProviders,
       });
       setPreview(response.preview);
@@ -765,7 +783,7 @@ function CommandCenter({
         permissionMode,
         enigmaConfirmed,
         refinePrompt,
-        subscriptionOnly,
+        billingMode,
         lockProviders,
       });
       setPreview(null);
@@ -1117,22 +1135,20 @@ function CommandCenter({
                   </small>
                 </span>
               </label>
-              <label className="toggle-line">
-                <input
-                  type="checkbox"
-                  checked={subscriptionOnly}
+              <label className="form-field">
+                <span>Billing mode for this run</span>
+                <select
+                  value={billingMode}
                   onChange={(event) => {
-                    setSubscriptionOnly(event.target.checked);
+                    setBillingMode(event.target.value as WorkflowDefinition['billingMode']);
                     setPreview(null);
                   }}
-                />
-                <span>
-                  <strong>Subscription only for this run</strong>
-                  <small>
-                    Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be
-                    unverifiable.
-                  </small>
-                </span>
+                >
+                  <option value="subscriptions-only">Subscriptions Only — no metered spending</option>
+                  <option value="subscriptions-plus-decision-budget">Subscriptions + Decision Budget</option>
+                  <option value="custom">Custom metered lanes</option>
+                </select>
+                <small>Workflow default: {billingModeLabel(selectedWorkflow?.billingMode ?? 'subscriptions-only')}. Provider-side PAYG fallback cannot be verified by Turing.</small>
               </label>
               <label className="toggle-line">
                 <input
@@ -1305,7 +1321,7 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
         </div>
       </div>
       <div className="preview-bounds">
-        <span><strong>Billing mode</strong> {preview.subscriptionOnly ? 'Subscription Only' : 'Metered routes permitted by configuration'}</span>
+        <span><strong>Billing mode</strong> {billingModeLabel(preview.billingMode ?? (preview.subscriptionOnly ? 'subscriptions-only' : 'custom'))}</span>
         <span><strong>Provider lock</strong> {preview.lockProviders ? 'On · exact configured routes' : 'Off'}</span>
         <span>
           <strong>Run limit</strong> {preview.workflow.maxDurationMinutes} minutes
@@ -1334,30 +1350,7 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
           {preview.branchStrategy === 'worktree' ? 'isolated worktree' : 'project working tree'}
         </span>
       </div>
-      <section className="surface-panel billing-preview-panel">
-        <div className="section-title-row">
-          <div>
-            <h3>Subscriptions / Billing Used</h3>
-            <p>Turing-selected route by stage</p>
-          </div>
-          <LockKeyhole size={16} className="muted-icon" />
-        </div>
-        <div className="billing-lane-list">
-          {preview.billingSummary.map((lane) => (
-            <div key={lane.billingLane}>
-              <strong>{billingLaneLabel(lane.billingLane)}</strong>
-              <span>{lane.stages.length ? lane.stages.join(', ') : 'Not used'}</span>
-            </div>
-          ))}
-          <div>
-            <strong>Metered / PAYG routes</strong>
-            <span>{preview.billingSummary.some((lane) => ['opencode-metered', 'cline-usage-billing', 'openai-api', 'anthropic-api'].includes(lane.billingLane) && lane.stages.length) ? 'Configured' : 'NONE'}</span>
-          </div>
-        </div>
-        {preview.providerFallbackStatus.map((fallback) => (
-          <p className="quiet-note" key={fallback.backendId}>{fallback.backendId}: {fallback.message}</p>
-        ))}
-      </section>
+      <RoutingSummaryPanel preview={preview} />
       <RuleListDetails rules={preview.effectiveRules} title="Effective run rules" />
       {preview.providerAssignments.length > 0 && (
         <div className="assignment-summary">
@@ -1366,13 +1359,19 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
               <span className={item.ready ? 'assignment-dot-ready' : 'assignment-dot-error'} />
               {item.stage}
               <strong>
-                {item.ready
-                  ? `${item.backendId} · ${item.providerId}/${item.modelId}${item.variantId ? ` · variant ${item.variantId}` : ''}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
-                  : 'Needs provider/model setup'}
+                {item.decision
+                  ? `Decision Gate · ${item.modelId ?? 'Deterministic Rules'}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
+                  : item.ready
+                    ? `${item.backendId} · ${item.providerId}/${item.modelId}${item.variantId ? ` · variant ${item.variantId}` : ''}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
+                    : 'Needs provider/model setup'}
               </strong>
+              {item.decision && <small className="assignment-native-config">{decisionAssignmentLine(item)}</small>}
+              {item.billingAllowed === false && <small className="assignment-native-config">BLOCKED · {item.billingReason}</small>}
               {item.ready && (
                 <small className="assignment-native-config">
-                  {billingLaneLabel(item.billingLane ?? 'unknown')} · {(item.catalogStatus ?? 'last-known').toUpperCase()}
+                  {item.workload === 'deterministic'
+                    ? 'decision-gate · local deterministic rules · no provider, no billing lane'
+                    : `${item.role ? `${item.role} · ` : ''}${billingLaneLabel(item.billingLane ?? 'unknown')}${item.catalogStatus ? ` · ${item.catalogStatus.toUpperCase().replace('-', ' ')}` : ''} · ${(item.identity ?? classifyModelIdentity(item.backendId ?? undefined, item.modelId ?? undefined)) === 'floating' ? 'FLOATING / ROUTED' : 'PINNED'}`}
                   {item.reasoning ? ` · provider reasoning ${item.reasoning}` : ''}
                   {item.nativeSettings && Object.keys(item.nativeSettings).length
                     ? ` · ${Object.entries(item.nativeSettings).map(([key, value]) => `${key}=${value}`).join(', ')}`
@@ -1395,7 +1394,7 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
         </ul>
       )}
       <p className="preview-footnote">
-        <Shield size={14} /> Credentials remain in desktop-side credential storage. Turing does not select OpenAI or Anthropic API billing. OpenCode Go provider-side PAYG fallback is shown as unknown unless a supported check can verify it.
+        <Shield size={14} /> Credentials remain in desktop-side storage and are never sent to this device. Turing never falls back to API, PAYG, or OpenRouter billing on its own; provider-side PAYG fallback is shown as unknown because no supported check can verify it. Token figures are ESTIMATED.
       </p>
     </section>
   );
@@ -1592,7 +1591,7 @@ function RunListRow({ run, onSelect }: { run: RunSummary; onSelect: () => void }
 
 function WorkflowsPage({
   workflows,
-  providers,
+  providers: discoveredProviders,
   onSaved,
   onNotice,
 }: {
@@ -1602,6 +1601,20 @@ function WorkflowsPage({
   onNotice: (message: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState(workflows[0]?.id ?? '');
+  const [refreshedProviders, setRefreshedProviders] = useState<ProviderStatus[] | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const providers = refreshedProviders ?? discoveredProviders;
+  const refreshModels = async () => {
+    setRefreshingModels(true);
+    try {
+      setRefreshedProviders((await api.refreshProviders()).providers);
+      onNotice('Model catalogs refreshed. Unreachable catalogs show their LAST KNOWN entries.');
+    } catch (error) {
+      onNotice(error instanceof Error ? error.message : 'Models could not be refreshed.');
+    } finally {
+      setRefreshingModels(false);
+    }
+  };
   const selected = workflows.find((workflow) => workflow.id === selectedId) ?? workflows[0];
   const [draft, setDraft] = useState<WorkflowDefinition | null>(selected ?? null);
   const [busy, setBusy] = useState(false);
@@ -1785,7 +1798,14 @@ function WorkflowsPage({
           : undefined;
         return { ...cleanConfiguration, connectionProfileId: match?.id };
       };
-      const importedStages = workflow.stages.map((stage) => remapConnection(stage as WorkflowStage & { connectionReference?: string }) as WorkflowStage);
+      const remapDecisionRoute = <T extends { connectionProfileId?: string; judge?: ModelConfiguration }>(route: T | undefined): T | undefined =>
+        route ? ({ ...remapConnection(route as T & { connectionReference?: string }), judge: remapConnection(route.judge as (ModelConfiguration & { connectionReference?: string }) | undefined) } as T) : route;
+      const importedStages = workflow.stages.map((stage) => {
+        const remapped = remapConnection(stage as WorkflowStage & { connectionReference?: string }) as WorkflowStage;
+        return remapped.decision
+          ? { ...remapped, decision: { ...remapDecisionRoute(remapped.decision)!, escalation: remapDecisionRoute(remapped.decision.escalation) } }
+          : remapped;
+      });
       const importedStageDefaults = workflow.stageDefaults
         ? Object.fromEntries(Object.entries(workflow.stageDefaults).map(([kind, configuration]) => [kind, remapConnection(configuration as (typeof configuration & { connectionReference?: string }))])) as WorkflowDefinition['stageDefaults']
         : undefined;
@@ -1991,7 +2011,7 @@ function WorkflowsPage({
             </label>
 
       </StudioSection>
-      <StudioSection id="safety" title="Safety" summary={`${draft.isolatedWorktree ? 'Worktree isolation on' : 'Worktree isolation off'} · ${draft.subscriptionOnly ? 'Subscription only' : 'Metered routes allowed'} · ${draft.lockProviders ? 'Providers locked' : 'Providers unlocked'}`} open={openSections.safety} onToggle={() => toggleSection('safety')}>
+      <StudioSection id="safety" title="Safety" summary={`${draft.isolatedWorktree ? 'Worktree isolation on' : 'Worktree isolation off'} · ${billingModeLabel(draft.billingMode ?? (draft.subscriptionOnly ? 'subscriptions-only' : 'custom'))} · ${draft.lockProviders ? 'Providers locked' : 'Providers unlocked'}`} open={openSections.safety} onToggle={() => toggleSection('safety')}>
         <div className="toggle-stack">
             <label className="toggle-line">
               <input
@@ -2003,10 +2023,6 @@ function WorkflowsPage({
                 <strong>Isolate Git runs in a worktree</strong>
                 <small>Run setup pauses if the repository has uncommitted changes.</small>
               </span>
-            </label>
-            <label className="toggle-line">
-              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
-              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
             </label>
             <label className="toggle-line">
               <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
@@ -2029,6 +2045,7 @@ function WorkflowsPage({
               </span>
             </label>
         </div>
+        <BillingSafetyFields workflow={draft} onChange={changeWorkflow} />
         <div className="field-row">
               <label className="form-field small-number-field">
                 <span>Max remediation rounds</span>
@@ -2151,9 +2168,15 @@ function WorkflowsPage({
             <div className="section-title-row"><div><h2>Connection profiles</h2><p>Reusable account and billing lane references. Credentials stay in provider CLIs or secure desktop storage.</p></div><LockKeyhole size={16} className="muted-icon" /></div>
             <div className="form-grid-two">
               <label className="form-field"><span>Profile name</span><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="OpenCode Go — Alex" maxLength={100} /></label>
-              <label className="form-field"><span>Execution backend</span><select value={profileBackend} onChange={(event) => setProfileBackend(event.target.value)}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
+              <label className="form-field"><span>Execution backend</span><select value={profileBackend} onChange={(event) => {
+                setProfileBackend(event.target.value);
+                setProfileLane(billingLanesForBackend(event.target.value)[0] ?? 'unknown');
+                if (event.target.value === 'openrouter') setProfileProvider('openrouter');
+                if (event.target.value === 'codex-cli') setProfileProvider('openai-codex');
+                if (event.target.value === 'claude-code') setProfileProvider('anthropic-subscription');
+              }}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></label>
               <label className="form-field"><span>Provider / billing lane ID</span><input value={profileProvider} onChange={(event) => setProfileProvider(event.target.value)} placeholder="opencode-go or cline-pass" maxLength={80} /></label>
-              <label className="form-field"><span>Billing lane</span><select value={profileLane} onChange={(event) => setProfileLane(event.target.value as ConnectionProfile['billingLane'])}>{['opencode-go-subscription','clinepass-subscription','chatgpt-subscription','claude-subscription','opencode-metered','cline-usage-billing','openai-api','anthropic-api','unknown'].map((lane) => <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>)}</select></label>
+              <label className="form-field"><span>Billing lane</span><select value={profileLane} onChange={(event) => setProfileLane(event.target.value as ConnectionProfile['billingLane'])}>{billingLanesForBackend(profileBackend).map((lane) => <option value={lane} key={lane}>{billingLaneLabel(lane)}</option>)}</select></label>
             </div>
             <button className="secondary-button" disabled={!profileName.trim() || !profileProvider.trim()} onClick={() => void saveConnection()}><Plus size={14} />Save connection profile</button>
             {connectionProfiles.length > 0 && <div className="connection-profile-list">{connectionProfiles.map((connection) => <span key={connection.id}>{connection.name} · {connection.backendId} · {billingLaneLabel(connection.billingLane)}</span>)}</div>}
@@ -2168,10 +2191,16 @@ function WorkflowsPage({
                 stage.
               </p>
             </div>
-            <button className="secondary-button" onClick={addStage}>
-              <Plus size={14} />
-              Add reviewer stage
-            </button>
+            <span className="stage-actions-row">
+              <button className="quiet-button" onClick={() => void refreshModels()} disabled={refreshingModels}>
+                <RefreshCw size={14} />
+                {refreshingModels ? 'Refreshing…' : 'Refresh models'}
+              </button>
+              <button className="secondary-button" onClick={addStage}>
+                <Plus size={14} />
+                Add reviewer stage
+              </button>
+            </span>
           </div>
           <div className="workflow-stage-list">
             {draft.stages.map((stage, index) => (
@@ -2485,7 +2514,9 @@ function WorkflowStageEditor({
                         ? 'Fast-forward merge with explicit approval'
                         : stage.kind === 'gitRollback'
                           ? 'Restores only the registered project subtree'
-                          : 'No model assignment required'}
+                          : stage.kind === 'decisionGate'
+                            ? `${stage.decision?.engine ?? 'deterministic-rules'} · ${stage.decision?.questionType ?? 'boolean'} · optional constrained judgement`
+                            : 'No model assignment required'}
             </span>
           )}
           <label className="toggle-line compact-toggle stage-enabled">
@@ -2525,6 +2556,7 @@ function WorkflowStageEditor({
                             'shellCommand',
                             'humanApproval',
                             'notification',
+                            'decisionGate',
                           ].includes(event.target.value)
                         ? undefined
                         : (stage.role ?? event.target.value),
@@ -2532,6 +2564,8 @@ function WorkflowStageEditor({
                     event.target.value === 'conditionalBranch'
                       ? (stage.condition ?? { path: 'build.success', operator: 'equals', value: true })
                       : undefined,
+                  decision: event.target.value === 'decisionGate' ? (stage.decision ?? defaultDecisionConfig()) : undefined,
+                  orchestration: event.target.value === 'orchestrator' ? stage.orchestration : undefined,
                   skipStageIds:
                     event.target.value === 'conditionalBranch' ? (stage.skipStageIds ?? []) : undefined,
                   command:
@@ -2571,8 +2605,14 @@ function WorkflowStageEditor({
                           ? 'anthropic-subscription'
                           : event.target.value === 'codex-cli'
                             ? 'openai-codex'
-                            : stage.providerId,
+                            : event.target.value === 'openrouter'
+                              ? 'openrouter'
+                              : stage.providerId,
                       modelId: '',
+                      reasoning: undefined,
+                      variantId: undefined,
+                      nativeSettings: undefined,
+                      modelSnapshot: undefined,
                     })
                   }
                 >
@@ -2591,7 +2631,9 @@ function WorkflowStageEditor({
                   value={configuredStage.providerId ?? ''}
                   onChange={(event) => onChange({ providerId: event.target.value, connectionProfileId: undefined, billingLane: undefined })}
                   placeholder={
-                    stage.backendId === 'cline'
+                    stage.backendId === 'openrouter'
+                      ? 'openrouter'
+                      : stage.backendId === 'cline'
                       ? 'cline, cline-pass, openai-codex, openai, or anthropic'
                       : stage.backendId === 'claude-code'
                         ? 'anthropic-subscription'
@@ -2627,8 +2669,13 @@ function WorkflowStageEditor({
                         adapterVersion: discoveredModel.adapterVersion ?? backend?.version ?? null,
                         status: 'current' as const,
                       } } : {}),
-                      ...(discoveredModel?.reasoningLevels?.includes(configuredStage.reasoning ?? '') ? {} : { reasoning: undefined }),
-                      variantId: undefined,
+                      ...pruneModelSettings({
+                        backendId: configuredStage.backendId,
+                        model: discoveredModel,
+                        reasoning: configuredStage.reasoning,
+                        variantId: configuredStage.variantId,
+                        nativeSettings: configuredStage.nativeSettings,
+                      }),
                       ...(discoveredModel ? { providerId: discoveredModel.providerId } : {}),
                     });
                   }}
@@ -2642,7 +2689,7 @@ function WorkflowStageEditor({
                           : 'Choose a model reported by OpenCode'
                   }
                 />
-                {stage.modelSnapshot && <small className={`model-catalog-status model-status-${stage.modelSnapshot.status}`}>{stage.modelSnapshot.status.toUpperCase()} · last catalog {stage.modelSnapshot.discoveredAt ?? 'unknown'} · adapter {stage.modelSnapshot.adapterVersion ?? 'unknown'}</small>}
+                <ModelStatusLine backendId={configuredStage.backendId} modelId={configuredStage.modelId} model={selectedModel} snapshot={stage.modelSnapshot} catalogSource={backend?.capabilities.modelDiscovery ? backend.catalogSource : undefined} />
                 <datalist id={modelListId}>
                   {discovered.map((model) => (
                     <option value={model.id} key={model.id}>
@@ -2653,23 +2700,19 @@ function WorkflowStageEditor({
               </label>
             </>
           )}
-          {aiStage && selectedModel?.variantIds && selectedModel.variantIds.length > 0 && (
-            <label className="form-field reasoning-field">
-                <span>Provider-native variant</span>
-              <select value={configuredStage.variantId ?? ''} onChange={(event) => onChange({ variantId: event.target.value || undefined })}>
-                <option value="">Provider default</option>
-                {selectedModel.variantIds.map((variant) => <option value={variant} key={variant}>{variant}</option>)}
-              </select>
-            </label>
+          {aiStage && (
+            <ModelSettingsFields
+              backendId={configuredStage.backendId}
+              model={selectedModel}
+              reasoning={configuredStage.reasoning}
+              variantId={configuredStage.variantId}
+              nativeSettings={configuredStage.nativeSettings}
+              onChange={onChange}
+            />
           )}
-          {aiStage && selectedModel?.reasoningLevels && selectedModel.reasoningLevels.length > 0 && (
-            <label className="form-field reasoning-field">
-              <span>Provider-native reasoning</span>
-              <select value={configuredStage.reasoning ?? ''} onChange={(event) => onChange({ reasoning: event.target.value || undefined })}>
-                <option value="">Provider default</option>
-                {selectedModel.reasoningLevels.map((level) => <option value={level} key={level}>{level}</option>)}
-              </select>
-            </label>
+          {stage.kind === 'orchestrator' && <OrchestratorBranchesEditor stage={stage} laterStages={laterStages} onChange={onChange} />}
+          {stage.kind === 'decisionGate' && (
+            <DecisionGateEditor stage={stage} laterStages={laterStages} providers={providers} profiles={connectionProfiles} onChange={onChange} />
           )}
           {stage.kind === 'parallelReview' && (
             <label className="form-field small-number-field">
@@ -3758,6 +3801,7 @@ function RunDetail({
           <div className="empty-inline">No first-class Git operations have run.</div>
         )}
       </section>
+      <DecisionResultsPanel decisions={details?.decisions ?? []} />
       <RuleListDetails rules={details?.effectiveRules ?? []} title="Saved rule snapshot" />
       {showDiff && (
         <div className="diff-viewer">
@@ -4070,8 +4114,9 @@ function StageOutput({ output }: { output: Record<string, unknown> }) {
   );
 }
 
-function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
-  const [windowSize, setWindowSize] = useState<'today' | '7d' | '30d'>('7d');
+function UsagePage(_props: { snapshot: DashboardSnapshot }) {
+  // Quota envelopes compare against a 30-day window; all other analytics come from UsageExplorer.
+  const windowSize = '30d' as const;
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
   const [quotaMessage, setQuotaMessage] = useState('');
@@ -4112,13 +4157,8 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
       setQuotaDraft((current) => ({ ...current, providerId: quotaProviderOptions[0]!.id }));
   }, [quotaDraft.providerId]);
   const providers = Array.isArray(data?.providers) ? (data.providers as Array<Record<string, unknown>>) : [];
-  const models = Array.isArray(data?.models) ? (data.models as Array<Record<string, unknown>>) : [];
-  const projects = Array.isArray(data?.projects) ? (data.projects as Array<Record<string, unknown>>) : [];
-  const daily = Array.isArray(data?.daily) ? (data.daily as Array<Record<string, unknown>>) : [];
   const quotas = Array.isArray(data?.quotas) ? (data.quotas as Array<Record<string, unknown>>) : [];
-  const rawEvents = Array.isArray(data?.raw) ? (data.raw as Array<Record<string, unknown>>) : [];
   const usageByProvider = new Map(providers.map((provider) => [String(provider.key), provider]));
-  const maxDuration = Math.max(1, ...daily.map((item) => Number(item.duration_ms ?? 0)));
   const saveQuota = async (event: React.FormEvent) => {
     event.preventDefault();
     setSavingQuota(true);
@@ -4158,25 +4198,12 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
     <main className="page-content">
       <PageHeading
         title="Usage"
-        description="Observed workflow activity, separated from provider quotas and billing estimates."
-        actions={
-          <div className="window-switcher" role="group" aria-label="Usage time window">
-            {(['today', '7d', '30d'] as const).map((window) => (
-              <button
-                className={windowSize === window ? 'window-selected' : ''}
-                onClick={() => setWindowSize(window)}
-                key={window}
-              >
-                {window === 'today' ? 'Today' : window}
-              </button>
-            ))}
-          </div>
-        }
+        description="Tokens, requests, and spend by provider lane, model, role, and project — one shared query drives every card, chart, table, and export."
       />
       <div className="usage-honesty-banner">
         <div>
           <Radio size={17} />
-          <strong>Measured activity · separate configured envelopes</strong>
+          <strong>Provenance stays visible · reconciled, never double-counted</strong>
           <span>
             Quota calculations use your manually entered allowance/reset and this master’s observed usage.
             They are estimates, not provider telemetry.
@@ -4190,63 +4217,7 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           {error}
         </div>
       )}
-      <dl className="usage-summary-grid">
-        <Metric
-          label="Local provider/process events"
-          value={String(data?.eventCount ?? snapshot.usage.events)}
-          help="Recorded by this machine"
-        />
-        <Metric
-          label="Measured input tokens"
-          value={sumMetric(providers, 'inputTokens')}
-          help="Unavailable where the adapter emits no token counts"
-        />
-        <Metric
-          label="Measured output tokens"
-          value={sumMetric(providers, 'outputTokens')}
-          help="Provider-reported only"
-        />
-        <Metric
-          label="Allowance remaining"
-          value={`${quotas.length} configured`}
-          help="Different quota units remain separate; inspect each envelope below"
-        />
-      </dl>
-      <section className="surface-panel usage-table-panel usage-attribution-panel">
-        <div className="panel-title-row">
-          <div>
-            <h2>Recent stage usage attribution</h2>
-            <p>Recorded route and billing lane for each workflow stage call</p>
-          </div>
-          <Activity size={16} className="muted-icon" />
-        </div>
-        <div className="usage-table">
-          {rawEvents.length > 0 && (
-            <div className="usage-table-head">
-              <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
-            </div>
-          )}
-          {rawEvents.slice(0, 30).map((event) => (
-            <div className="usage-table-row" key={String(event.id)}>
-              <span className="usage-key">
-                <strong>{String(event.stage_title ?? event.stage_id ?? 'Unattributed process')}</strong>
-                <small>{String(event.backend_id ?? 'local')} · {String(event.provider_id ?? 'unknown')}/{String(event.model_id ?? 'unknown')}{event.variant_id ? ` · ${String(event.variant_id)}` : ''}</small>
-              </span>
-              <span>{billingLaneLabel(String(event.billing_lane ?? 'unknown'))}</span>
-              <span>{formatDate(String(event.occurred_at ?? ''))}</span>
-              <span>{event.input_tokens === null || event.input_tokens === undefined
-                ? 'Unavailable'
-                : `${Number(event.input_tokens).toLocaleString()} in · ${Number(event.output_tokens ?? 0).toLocaleString()} out`}</span>
-            </div>
-          ))}
-          {!rawEvents.length && (
-            <div className="empty-state empty-state-compact">
-              <h2>No provider stage calls in this window</h2>
-              <p>Calls appear here after a workflow runs a provider stage. Try a longer window to see older activity.</p>
-            </div>
-          )}
-        </div>
-      </section>
+      <UsageExplorer />
       <section className="surface-panel quota-envelope-panel">
         <div className="panel-title-row">
           <div>
@@ -4476,140 +4447,18 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           <div className="empty-inline">No manual quota envelopes configured.</div>
         )}
       </section>
-      <div className="usage-two-column">
-        <section className="surface-panel usage-table-panel">
-          <div className="panel-title-row">
-            <div>
-              <h2>Provider activity</h2>
-              <p>Duration and requests observed in the selected window</p>
-            </div>
-            <Cpu size={16} className="muted-icon" />
-          </div>
-          {providers.length ? (
-            <UsageTable rows={providers} labelProvider />
-          ) : (
-            <div className="empty-inline">No provider activity recorded in this window.</div>
-          )}
-        </section>
-        <section className="surface-panel usage-table-panel">
-          <div className="panel-title-row">
-            <div>
-              <h2>Activity by model</h2>
-              <p>Model identity recorded by each run stage</p>
-            </div>
-            <Sparkles size={16} className="muted-icon" />
-          </div>
-          {models.length ? (
-            <UsageTable rows={models} />
-          ) : (
-            <div className="empty-inline">No model activity recorded in this window.</div>
-          )}
-        </section>
-      </div>
-      <div className="usage-two-column">
-        <section className="surface-panel usage-chart-panel">
-          <div className="panel-title-row">
-            <div>
-              <h2>Daily runtime</h2>
-              <p>Locally measured process duration</p>
-            </div>
-            <Clock3 size={16} className="muted-icon" />
-          </div>
-          {daily.length ? (
-            <div className="daily-bars">
-              {daily.map((item) => (
-                <div className="daily-bar-row" key={String(item.day)}>
-                  <span>{formatDay(String(item.day))}</span>
-                  <div className="bar-track">
-                    <i
-                      style={{
-                        width: `${Math.max(3, (Number(item.duration_ms ?? 0) / maxDuration) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <strong>{Math.round(Number(item.duration_ms ?? 0) / 60_000)}m</strong>
-                  <small>{String(item.events)} events</small>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-inline">
-              Runtime is recorded when a provider or project command completes.
-            </div>
-          )}
-        </section>
-        <section className="surface-panel usage-table-panel">
-          <div className="panel-title-row">
-            <div>
-              <h2>Activity by project</h2>
-              <p>Observed process activity, not ownership of provider quota</p>
-            </div>
-            <FileCode2 size={16} className="muted-icon" />
-          </div>
-          {projects.length ? (
-            <div className="project-usage-list">
-              {projects.map((item) => (
-                <div className="project-usage-row" key={String(item.name)}>
-                  <span>{String(item.name ?? 'Unassigned project')}</span>
-                  <strong>{String(item.events)} events</strong>
-                  <small>{Math.round(Number(item.duration_ms ?? 0) / 60_000)} min</small>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-inline">No project activity yet.</div>
-          )}
-        </section>
-      </div>
       <div className="usage-footnote">
         <Shield size={14} />
         <span>
-          API-equivalent values use exact public model prices when available and locally observed token
-          counts. They are ESTIMATED, omit unavailable cache/token detail, and are not billed spend. Quota
-          forecasts use USER CONFIGURED limits plus this master’s recorded usage.
+          Actual metered spend is PROVIDER MEASURED where the provider reports it. API-equivalent values use exact
+          public model prices with measured tokens; they are ESTIMATED and are not billed spend. Unavailable metrics
+          are never shown as zero. Quota forecasts use USER CONFIGURED limits plus this master’s recorded usage.
         </span>
       </div>
     </main>
   );
 }
 
-function UsageTable({
-  rows,
-  labelProvider = false,
-}: {
-  rows: Array<Record<string, unknown>>;
-  labelProvider?: boolean;
-}) {
-  return (
-    <div className="usage-table">
-      <div className="usage-table-head">
-        <span>{labelProvider ? 'Provider / backend' : 'Provider model'}</span>
-        <span>Requests</span>
-        <span>Runtime</span>
-        <span>Tokens</span>
-      </div>
-      {rows.map((row) => (
-        <div className="usage-table-row" key={String(row.key)}>
-          <span className="usage-key">
-            <strong>{String(row.key) === 'unavailable' ? 'Unavailable' : String(row.key)}</strong>
-            <small>
-              {row.costProvenance === 'unavailable'
-                ? 'Equivalent cost unavailable'
-                : String(row.costProvenance)}
-            </small>
-          </span>
-          <span>{String(row.events)}</span>
-          <span>{Math.round(Number(row.durationMs ?? 0) / 60_000)} min</span>
-          <span>
-            {row.inputTokens === null
-              ? 'Unavailable'
-              : `${Number(row.inputTokens).toLocaleString()} in · ${Number(row.outputTokens).toLocaleString()} out`}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 function MachinesPage({
   snapshot,
@@ -5012,6 +4861,8 @@ function SettingsPage({
             text="Broad supported project edits and deletes may run without approval after explicit per-run activation. Secret and out-of-project access remain denied; push, merge, rollback, network, and destructive Git actions still require approval."
           />
         </section>
+        <OpenRouterSettings onNotice={onNotice} />
+        <MeteredBudgetSettingsPanel onNotice={onNotice} />
         <RulesSettings projects={snapshot.projects} onNotice={onNotice} />
         <PairingSettings onNotice={onNotice} />
         <section className="surface-panel settings-section">
@@ -5843,15 +5694,6 @@ function PermissionInfo({
   );
 }
 
-function Metric({ label, value, help }: { label: string; value: string; help: string }) {
-  return (
-    <div className="usage-metric">
-      <dt>{label}</dt>
-      <dd>{value}</dd>
-      <small>{help}</small>
-    </div>
-  );
-}
 function Meta({ label, value, icon: Icon }: { label: string; value: string; icon: LucideIcon }) {
   return (
     <div className="metadata-item">
@@ -5922,6 +5764,7 @@ function iconForStage(kind: StageKind): LucideIcon {
     shellCommand: TerminalSquare,
     notification: Bell,
     humanApproval: LockKeyhole,
+    decisionGate: Scale,
   }[kind];
 }
 function isAiStage(kind: StageKind): boolean {
@@ -5949,34 +5792,6 @@ function humanize(value: string): string {
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
-function billingLaneLabel(lane: string): string {
-  return ({
-    'opencode-go-subscription': 'OpenCode Go Subscription',
-    'opencode-metered': 'OpenCode PAYG / Console balance',
-    'clinepass-subscription': 'ClinePass Subscription',
-    'cline-usage-billing': 'Cline usage billing',
-    'chatgpt-subscription': 'ChatGPT Subscription',
-    'claude-subscription': 'Claude Subscription',
-    'openai-api': 'OpenAI API',
-    'anthropic-api': 'Anthropic API',
-    'unknown': 'Unknown billing lane',
-    'not-used': 'Not used',
-  } as Record<string, string>)[lane] ?? lane;
-}
-function inferClientBillingLane(backendId?: string, providerId?: string): NonNullable<WorkflowStage['billingLane']> {
-  if (backendId === 'opencode') return providerId === 'opencode-go' ? 'opencode-go-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'opencode-metered';
-  if (backendId === 'cline') return providerId === 'cline-pass' ? 'clinepass-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'cline-usage-billing';
-  if (backendId === 'codex-cli') return 'chatgpt-subscription';
-  if (backendId === 'claude-code') return 'claude-subscription';
-  return 'unknown';
-}
-function billingLanesForBackend(backendId?: string): Array<NonNullable<WorkflowStage['billingLane']>> {
-  if (backendId === 'opencode') return ['opencode-go-subscription', 'chatgpt-subscription', 'opencode-metered', 'openai-api', 'anthropic-api'];
-  if (backendId === 'cline') return ['clinepass-subscription', 'chatgpt-subscription', 'cline-usage-billing', 'openai-api', 'anthropic-api'];
-  if (backendId === 'codex-cli') return ['chatgpt-subscription'];
-  if (backendId === 'claude-code') return ['claude-subscription'];
-  return ['unknown'];
-}
 function shortTask(value: string): string {
   return value.length > 72 ? `${value.slice(0, 69)}…` : value;
 }
@@ -5985,12 +5800,6 @@ function formatDate(value: string): string {
   return Number.isNaN(date.getTime())
     ? value
     : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date);
-}
-function formatDay(value: string): string {
-  const date = new Date(`${value}T12:00:00`);
-  return Number.isNaN(date.getTime())
-    ? value
-    : new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric' }).format(date);
 }
 function formatDuration(start: string | null, end: string | null): string {
   if (!start) return '—';
@@ -6033,10 +5842,6 @@ function commandText(command: string[] | null): string {
 function parseCommand(value: string): string[] | null {
   const parts = value.trim().split(/\s+/);
   return !value.trim() ? null : parts.length === 3 ? parts : null;
-}
-function sumMetric(rows: Array<Record<string, unknown>>, key: string): string {
-  const known = rows.map((row) => row[key]).filter((value): value is number => typeof value === 'number');
-  return known.length ? known.reduce((sum, value) => sum + value, 0).toLocaleString() : 'Unavailable';
 }
 
 export default App;
