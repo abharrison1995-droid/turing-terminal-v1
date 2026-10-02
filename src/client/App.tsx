@@ -19,7 +19,6 @@ import {
   GitCompareArrows,
   HardDrive,
   Laptop,
-  LayoutDashboard,
   LoaderCircle,
   LockKeyhole,
   Menu,
@@ -34,6 +33,7 @@ import {
   Search,
   Send,
   Settings,
+  SlidersHorizontal,
   Shield,
   Smartphone,
   Sparkles,
@@ -88,7 +88,6 @@ import {
 type Page = 'command' | 'workflows' | 'projects' | 'runs' | 'usage' | 'machines' | 'settings';
 
 const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
-  { id: 'command', label: 'Command Center', icon: LayoutDashboard },
   { id: 'workflows', label: 'Workflows', icon: WorkflowIcon },
   { id: 'projects', label: 'Projects', icon: FileCode2 },
   { id: 'runs', label: 'Runs & history', icon: Activity },
@@ -250,9 +249,20 @@ function App() {
       setError(reason instanceof Error ? reason.message : 'Turing Terminal Master could not be restarted.');
     }
   };
-  const pageLabel = navItems.find((item) => item.id === page)?.label ?? 'Command Center';
+  const pageLabel = page === 'command' ? 'New task' : (navItems.find((item) => item.id === page)?.label ?? '');
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
+  const titleQuiet =
+    ['workflows', 'projects', 'usage', 'machines', 'settings'].includes(page) ||
+    (page === 'runs' && !selectedRun);
+  const railTasks = (snapshot?.runs ?? [])
+    .slice()
+    .sort((left, right) => {
+      const leftActive = activeStatuses.has(left.status) ? 1 : 0;
+      const rightActive = activeStatuses.has(right.status) ? 1 : 0;
+      return rightActive - leftActive || right.createdAt.localeCompare(left.createdAt);
+    })
+    .slice(0, 14);
 
   if (requiresPairing) return <DevicePairingPage onPaired={pairedSuccessfully} />;
 
@@ -261,26 +271,65 @@ function App() {
       <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`} aria-label="Primary navigation">
         <button
           className="brand-lockup"
-          onClick={() => changePage('command')}
+          onClick={() => {
+            setSelectedRunId(null);
+            changePage('command');
+          }}
           aria-label="Turing Terminal home"
         >
           <span className="brand-mark">
-            <Command size={17} strokeWidth={2.2} />
+            <Command size={16} strokeWidth={2.2} />
           </span>
-          <span className="brand-name">
-            Turing Terminal<small>LOCAL CONTROL PLANE</small>
-          </span>
+          <span className="brand-name">Turing Terminal</span>
         </button>
-        <div className="nav-caption">WORKSPACE</div>
-        <nav className="primary-nav">
+        <button
+          className="new-task-button"
+          onClick={() => {
+            setSelectedRunId(null);
+            changePage('command');
+          }}
+        >
+          <Plus size={16} strokeWidth={2.4} /> New task
+        </button>
+        <nav className="task-nav" aria-label="Tasks">
+          {railTasks.length === 0 ? (
+            <p className="task-nav-empty">Tasks you start appear here, newest first.</p>
+          ) : (
+            railTasks.map((run) => (
+              <button
+                key={run.id}
+                className={`task-link ${page === 'runs' && selectedRunId === run.id ? 'task-link-active' : ''}`}
+                onClick={() => {
+                  setSelectedRunId(run.id);
+                  changePage('runs');
+                }}
+                aria-current={page === 'runs' && selectedRunId === run.id ? 'page' : undefined}
+              >
+                <span className={`run-status-glyph run-glyph-${run.status}`}>
+                  <StatusIcon status={run.status} />
+                </span>
+                <span className="task-link-copy">
+                  <strong>{shortTask(run.prompt)}</strong>
+                  <small>
+                    {humanStatus(run.status)} · {run.projectName}
+                  </small>
+                </span>
+              </button>
+            ))
+          )}
+        </nav>
+        <nav className="primary-nav" aria-label="Workspace">
           {navItems.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-              onClick={() => changePage(id)}
+              onClick={() => {
+                if (id === 'runs') setSelectedRunId(null);
+                changePage(id);
+              }}
               aria-current={page === id ? 'page' : undefined}
             >
-              <Icon size={17} strokeWidth={1.8} /> <span>{label}</span>
+              <Icon size={16} strokeWidth={1.9} /> <span>{label}</span>
               {id === 'runs' && activeRuns.length > 0 && (
                 <span className="nav-count">{activeRuns.length}</span>
               )}
@@ -293,17 +342,14 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-spacer" />
         <div className="machine-rail">
           <span className="presence-dot" />
           <span className="machine-rail-copy">
             <strong>{snapshot?.machine.name ?? 'Desktop master'}</strong>
-            <small>Local machine · online</small>
+            <small>
+              Local machine · online · {APP_VERSION}
+            </small>
           </span>
-          <ChevronDown size={14} />
-        </div>
-        <div className="sidebar-foot">
-          TURING TERMINAL <span>{APP_VERSION.toUpperCase()}</span>
         </div>
       </aside>
 
@@ -320,11 +366,7 @@ function App() {
           >
             <Menu size={19} />
           </button>
-          <div className="breadcrumb">
-            <span>Workspace</span>
-            <ChevronRight size={14} />
-            <strong>{pageLabel}</strong>
-          </div>
+          <p className={`topbar-title ${titleQuiet ? 'topbar-title-quiet' : ''}`}>{pageLabel}</p>
           <div className="topbar-right">
             <span className={`connection-state ${error ? 'connection-state-error' : ''}`}>
               <span className="presence-dot" />{' '}
@@ -342,7 +384,6 @@ function App() {
               <Bell size={17} />
               {(snapshot?.approvals.length ?? 0) > 0 && <i />}
             </button>
-            <span className="avatar-small">TT</span>
           </div>
         </header>
 
@@ -463,42 +504,6 @@ function App() {
           </>
         )}
       </div>
-      <nav className="mobile-bottom-nav" aria-label="Mobile navigation">
-        <button
-          className={page === 'command' ? 'mobile-nav-active' : ''}
-          onClick={() => changePage('command')}
-        >
-          <LayoutDashboard size={19} />
-          <span>Home</span>
-        </button>
-        <button className={page === 'runs' ? 'mobile-nav-active' : ''} onClick={() => changePage('runs')}>
-          <Activity size={19} />
-          <span>Runs</span>
-        </button>
-        <button
-          className="mobile-launch"
-          onClick={() => changePage('command')}
-          aria-label="Launch a workflow"
-        >
-          <Plus size={23} />
-          <span>Launch</span>
-        </button>
-        <button className={page === 'usage' ? 'mobile-nav-active' : ''} onClick={() => changePage('usage')}>
-          <Radio size={19} />
-          <span>Usage</span>
-        </button>
-        <button
-          className={
-            page === 'settings' || page === 'machines' || page === 'projects' || page === 'workflows'
-              ? 'mobile-nav-active'
-              : ''
-          }
-          onClick={() => setMobileMenuOpen(true)}
-        >
-          <Menu size={19} />
-          <span>More</span>
-        </button>
-      </nav>
     </div>
   );
 }
@@ -684,6 +689,7 @@ function CommandCenter({
   const [preview, setPreview] = useState<RunPreview | null>(null);
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
 
   useEffect(() => {
     if (!snapshot.projects.some((project) => project.id === projectId))
@@ -808,276 +814,309 @@ function CommandCenter({
 
   const pending = snapshot.runs.filter((run) => activeStatuses.has(run.status));
 
-  return (
-    <main className="page-content command-page">
-      <PageHeading
-        title="Command Center"
-        description="Set the context. Review the execution plan. Then let the desktop master work."
-        actions={
-          <div className="machine-chip">
-            <Laptop size={16} />
-            <span>{snapshot.machine.name}</span>
-            <span className="presence-dot" />
-          </div>
-        }
-      />
-      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
-      <div className="command-layout">
-        <section className="launch-column" aria-label="Launch a workflow">
-          <form className="launch-form surface-panel" onSubmit={makePreview}>
-            <div className="panel-title-row">
-              <div>
-                <h2>Start a workflow</h2>
-                <p>Your task stays on this machine and follows its saved workflow.</p>
-              </div>
-              <span className="panel-spark">
-                <Sparkles size={17} />
-              </span>
-            </div>
-            <label className="field-label" htmlFor="task-input">
-              What should the agents do?
-            </label>
-            <div className="task-field-wrap">
-              <textarea
-                id="task-input"
-                rows={5}
-                maxLength={12_000}
-                placeholder="Describe the change, the behavior you expect, and any constraints…"
-                value={task}
-                onChange={(event) => {
-                  setTask(event.target.value);
-                  setPreview(null);
-                }}
-              />
-              <div className="task-field-footer">
-                <span>{task.length.toLocaleString()} / 12,000</span>
-                <button
-                  className={`voice-button ${listening ? 'voice-live' : ''}`}
-                  type="button"
-                  onClick={beginVoice}
-                  aria-pressed={listening}
-                >
-                  <Mic size={15} />
-                  {listening ? 'Listening…' : 'Voice input'}
-                </button>
-              </div>
-            </div>
-            <div className="form-grid-two">
-              <label className="form-field">
-                <span>Project</span>
-                <select
-                  value={projectId}
-                  onChange={(event) => {
-                    setProjectId(event.target.value);
-                    setPreview(null);
-                  }}
-                  disabled={!snapshot.projects.length}
-                >
-                  {snapshot.projects.length === 0 ? (
-                    <option value="">Add a project first</option>
-                  ) : (
-                    snapshot.projects.map((project) => (
-                      <option value={project.id} key={project.id}>
-                        {project.name}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Workflow</span>
-                <select
-                  value={workflowId}
-                  onChange={(event) => {
-                    setWorkflowId(event.target.value);
-                    setRefinePrompt(
-                      snapshot.workflows.find((workflow) => workflow.id === event.target.value)
-                        ?.promptRefinementDefault ?? false,
-                    );
-                    setPreview(null);
-                  }}
-                  disabled={!snapshot.workflows.length}
-                >
-                  {snapshot.workflows.map((workflow) => (
-                    <option value={workflow.id} key={workflow.id}>
-                      {workflow.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Execution profile</span>
-                <select
-                  value={profile}
-                  onChange={(event) => {
-                    setProfile(event.target.value as ExecutionProfile);
-                    setPreview(null);
-                  }}
-                >
-                  <option value="economy">Economy · one reviewer per parallel review</option>
-                  <option value="balanced">Balanced · up to two reviewers</option>
-                  <option value="maximum">Maximum · configured reviewer count</option>
-                </select>
-              </label>
-              <label className="form-field">
-                <span>Permission mode</span>
-                <select
-                  value={permissionMode}
-                  onChange={(event) => {
-                    setPermissionMode(event.target.value as PermissionMode);
-                    setEnigmaConfirmed(false);
-                    setPreview(null);
-                  }}
-                >
-                  <option value="normal">Normal · routine broker actions auto-approve</option>
-                  <option value="supervised">Supervised · approve consequential operations</option>
-                  <option value="yolo">YOLO · autonomous project work</option>
-                  <option value="enigma">ENIGMA · maximum configured autonomy</option>
-                </select>
-              </label>
-            </div>
-            <label className="toggle-line prompt-refinement-toggle">
-              <input
-                type="checkbox"
-                checked={refinePrompt}
-                disabled={
-                  !selectedWorkflow?.stages.some(
-                    (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
-                  )
-                }
-                onChange={(event) => {
-                  setRefinePrompt(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Refine and confirm the task before execution</strong>
-                <small>
-                  Workflow default: {selectedWorkflow?.promptRefinementDefault ? 'On' : 'Off'}. Review the
-                  draft and answer real ambiguities before approving the run.
-                </small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={subscriptionOnly}
-                onChange={(event) => {
-                  setSubscriptionOnly(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Subscription only for this run</strong>
-                <small>Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be unverifiable.</small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={lockProviders}
-                onChange={(event) => {
-                  setLockProviders(event.target.checked);
-                  setPreview(null);
-                }}
-              />
-              <span>
-                <strong>Lock configured providers and models</strong>
-                <small>Failures pause at the configured stage; Turing does not substitute a model or reasoning setting.</small>
-              </span>
-            </label>
-            {permissionMode === 'enigma' && (
-              <label className="inline-callout enigma-confirmation">
-                <input
-                  type="checkbox"
-                  checked={enigmaConfirmed}
-                  onChange={(event) => {
-                    setEnigmaConfirmed(event.target.checked);
-                    setPreview(null);
-                  }}
-                />
+  const blockers = (
+    <>
+      {(missingAssignments.length > 0 || !selectedProject) && (
+        <div className="launch-blockers" role="group" aria-labelledby="launch-blockers-title">
+          <h3 id="launch-blockers-title">Before you can run</h3>
+          <ul>
+            {missingAssignments.length > 0 && (
+              <li>
+                <CircleHelp size={16} />
                 <div>
-                  <strong>Activate ENIGMA for this run</strong>
+                  <strong>Set up the stage models first</strong>
                   <p>
-                    Supported brokered project edits and deletes may proceed without approval. Secret access
-                    and out-of-project paths stay blocked; network, destructive commands, Git pushes, merges,
-                    and rollbacks remain approval-gated.
+                    {missingAssignments.length} active AI{' '}
+                    {missingAssignments.length === 1 ? 'stage needs' : 'stages need'} a backend, provider, and
+                    model.
                   </p>
                 </div>
-              </label>
+                <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
+                  Configure workflow <ChevronRight size={14} />
+                </button>
+              </li>
             )}
-            {(missingAssignments.length > 0 || !selectedProject) && (
-              <div className="launch-blockers" role="group" aria-labelledby="launch-blockers-title">
-                <h3 id="launch-blockers-title">Before you can run</h3>
-                <ul>
-                  {missingAssignments.length > 0 && (
-                    <li>
-                      <CircleHelp size={16} />
-                      <div>
-                        <strong>Set up the stage models first</strong>
-                        <p>
-                          {missingAssignments.length} active AI{' '}
-                          {missingAssignments.length === 1 ? 'stage needs' : 'stages need'} a backend, provider,
-                          and model.
-                        </p>
-                      </div>
-                      <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
-                        Configure workflow <ChevronRight size={14} />
-                      </button>
-                    </li>
-                  )}
-                  {!selectedProject && (
-                    <li>
-                      <FileCode2 size={16} />
-                      <div>
-                        <strong>No project registered</strong>
-                        <p>Add a local repository before creating a run.</p>
-                      </div>
-                      <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
-                        Add project <ChevronRight size={14} />
-                      </button>
-                    </li>
-                  )}
-                </ul>
-              </div>
+            {!selectedProject && (
+              <li>
+                <FileCode2 size={16} />
+                <div>
+                  <strong>No project registered</strong>
+                  <p>Add a local repository before creating a run.</p>
+                </div>
+                <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
+                  Add project <ChevronRight size={14} />
+                </button>
+              </li>
             )}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+
+  return (
+    <main className="page-content command-page">
+      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
+      <div className="home-column">
+        <div className="home-intro">
+          <h1>What should the agents do?</h1>
+          <p>Your task stays on this machine and follows its saved workflow.</p>
+        </div>
+        {preview && <RunPreviewPanel preview={preview} />}
+        {blockers}
+        <form className="composer" onSubmit={makePreview} aria-label="Start a workflow">
+          <label className="sr-only" htmlFor="task-input">
+            What should the agents do?
+          </label>
+          <textarea
+            id="task-input"
+            rows={3}
+            maxLength={12_000}
+            placeholder="Describe the change, the behavior you expect, and any constraints…"
+            value={task}
+            onChange={(event) => {
+              setTask(event.target.value);
+              setPreview(null);
+            }}
+          />
+          <div className="composer-bar">
+            <label className="pill-select">
+              <FileCode2 size={15} aria-hidden="true" />
+              <span className="sr-only">Project</span>
+              <select
+                value={projectId}
+                onChange={(event) => {
+                  setProjectId(event.target.value);
+                  setPreview(null);
+                }}
+                disabled={!snapshot.projects.length}
+              >
+                {snapshot.projects.length === 0 ? (
+                  <option value="">Add a project first</option>
+                ) : (
+                  snapshot.projects.map((project) => (
+                    <option value={project.id} key={project.id}>
+                      {project.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+            <label className="pill-select">
+              <WorkflowIcon size={15} aria-hidden="true" />
+              <span className="sr-only">Workflow</span>
+              <select
+                value={workflowId}
+                onChange={(event) => {
+                  setWorkflowId(event.target.value);
+                  setRefinePrompt(
+                    snapshot.workflows.find((workflow) => workflow.id === event.target.value)
+                      ?.promptRefinementDefault ?? false,
+                  );
+                  setPreview(null);
+                }}
+                disabled={!snapshot.workflows.length}
+              >
+                {snapshot.workflows.map((workflow) => (
+                  <option value={workflow.id} key={workflow.id}>
+                    {workflow.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="pill-button"
+              aria-expanded={optionsOpen}
+              aria-controls="composer-options"
+              onClick={() => setOptionsOpen((value) => !value)}
+            >
+              <SlidersHorizontal size={15} aria-hidden="true" />
+              Options
+            </button>
+            <span className="composer-spacer" />
+            {task.length > 0 && <span className="char-count">{task.length.toLocaleString()} / 12,000</span>}
+            <button
+              className={`voice-button ${listening ? 'voice-live' : ''}`}
+              type="button"
+              onClick={beginVoice}
+              aria-pressed={listening}
+              aria-label={listening ? 'Listening…' : 'Voice input'}
+            >
+              <Mic size={17} />
+            </button>
             {preview ? (
-              <div className="preview-actions">
+              <>
                 <button type="button" className="secondary-button" onClick={() => setPreview(null)}>
                   Edit request
                 </button>
                 <button
                   type="button"
-                  className="primary-button"
+                  className="primary-button start-button"
                   onClick={() => void start()}
                   disabled={!preview.canStart || busy || (permissionMode === 'enigma' && !enigmaConfirmed)}
                 >
                   <Play size={15} fill="currentColor" />
                   {busy ? 'Starting…' : 'Start workflow'}
                 </button>
-              </div>
+              </>
             ) : (
-              <div className="launch-actions">
-                <button
-                  type="submit"
-                  className="primary-button review-run-button"
-                  disabled={busy || !task.trim() || !projectId || !workflowId}
-                  aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
-                >
-                  <Search size={15} />
-                  {busy ? 'Preparing preview…' : 'Review run preview'}
-                  <ChevronRight size={15} />
-                </button>
-                {reviewBlockedReason && (
-                  <p id="launch-hint" className="launch-hint">
-                    {reviewBlockedReason}
-                  </p>
-                )}
-              </div>
+              <button
+                type="submit"
+                className="send-button"
+                aria-label={busy ? 'Preparing preview…' : 'Review run preview'}
+                title="Review run preview"
+                disabled={busy || !task.trim() || !projectId || !workflowId}
+                aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
+              >
+                {busy ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={19} strokeWidth={2.4} />}
+              </button>
             )}
-          </form>
+          </div>
+          {optionsOpen && (
+            <div className="composer-options" id="composer-options">
+              <div className="form-grid-two">
+                <label className="form-field">
+                  <span>Execution profile</span>
+                  <select
+                    value={profile}
+                    onChange={(event) => {
+                      setProfile(event.target.value as ExecutionProfile);
+                      setPreview(null);
+                    }}
+                  >
+                    <option value="economy">Economy · one reviewer per parallel review</option>
+                    <option value="balanced">Balanced · up to two reviewers</option>
+                    <option value="maximum">Maximum · configured reviewer count</option>
+                  </select>
+                </label>
+                <label className="form-field">
+                  <span>Permission mode</span>
+                  <select
+                    value={permissionMode}
+                    onChange={(event) => {
+                      setPermissionMode(event.target.value as PermissionMode);
+                      setEnigmaConfirmed(false);
+                      setPreview(null);
+                    }}
+                  >
+                    <option value="normal">Normal · routine broker actions auto-approve</option>
+                    <option value="supervised">Supervised · approve consequential operations</option>
+                    <option value="yolo">YOLO · autonomous project work</option>
+                    <option value="enigma">ENIGMA · maximum configured autonomy</option>
+                  </select>
+                </label>
+              </div>
+              <label className="toggle-line prompt-refinement-toggle">
+                <input
+                  type="checkbox"
+                  checked={refinePrompt}
+                  disabled={
+                    !selectedWorkflow?.stages.some(
+                      (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
+                    )
+                  }
+                  onChange={(event) => {
+                    setRefinePrompt(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Refine and confirm the task before execution</strong>
+                  <small>
+                    Workflow default: {selectedWorkflow?.promptRefinementDefault ? 'On' : 'Off'}. Review the
+                    draft and answer real ambiguities before approving the run.
+                  </small>
+                </span>
+              </label>
+              <label className="toggle-line">
+                <input
+                  type="checkbox"
+                  checked={subscriptionOnly}
+                  onChange={(event) => {
+                    setSubscriptionOnly(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Subscription only for this run</strong>
+                  <small>
+                    Blocks Turing-managed metered/API billing routes. Provider-side OpenCode Go fallback may be
+                    unverifiable.
+                  </small>
+                </span>
+              </label>
+              <label className="toggle-line">
+                <input
+                  type="checkbox"
+                  checked={lockProviders}
+                  onChange={(event) => {
+                    setLockProviders(event.target.checked);
+                    setPreview(null);
+                  }}
+                />
+                <span>
+                  <strong>Lock configured providers and models</strong>
+                  <small>
+                    Failures pause at the configured stage; Turing does not substitute a model or reasoning
+                    setting.
+                  </small>
+                </span>
+              </label>
+              {permissionMode === 'enigma' && (
+                <label className="inline-callout enigma-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={enigmaConfirmed}
+                    onChange={(event) => {
+                      setEnigmaConfirmed(event.target.checked);
+                      setPreview(null);
+                    }}
+                  />
+                  <div>
+                    <strong>Activate ENIGMA for this run</strong>
+                    <p>
+                      Supported brokered project edits and deletes may proceed without approval. Secret access
+                      and out-of-project paths stay blocked; network, destructive commands, Git pushes, merges,
+                      and rollbacks remain approval-gated.
+                    </p>
+                  </div>
+                </label>
+              )}
+            </div>
+          )}
+        </form>
+        {reviewBlockedReason && !preview && (
+          <p id="launch-hint" className="composer-hint">
+            {reviewBlockedReason}
+          </p>
+        )}
 
-          {preview && <RunPreviewPanel preview={preview} />}
+        <div className="home-status" aria-label="Workspace status">
+          <span>
+            <span className="presence-dot" /> {snapshot.machine.name} · online
+          </span>
+          <span>
+            {snapshot.projects.length} {snapshot.projects.length === 1 ? 'project' : 'projects'}
+          </span>
+          <span>{pending.length} active</span>
+          <span>{snapshot.usage.events} events today</span>
+          <button type="button" className="text-button" onClick={() => onNavigate('machines')}>
+            Machines
+          </button>
+          <button type="button" className="text-button" onClick={() => onNavigate('usage')}>
+            Usage
+          </button>
+        </div>
+        <details className="home-providers">
+          <summary>
+            Provider health · {snapshot.providers.filter((provider) => provider.detected).length} of{' '}
+            {snapshot.providers.length} local CLIs detected
+          </summary>
+          <ProviderHealth providers={snapshot.providers} onNavigate={() => onNavigate('settings')} />
+        </details>
+
+        <div className="home-tasks">
           {pending.length > 0 && (
             <section className="active-runs-block">
               <div className="section-title-row">
@@ -1101,75 +1140,7 @@ function CommandCenter({
             onSelect={onStart}
             onAll={() => onNavigate('runs')}
           />
-        </section>
-
-        <aside className="command-inspector">
-          <ProviderHealth providers={snapshot.providers} onNavigate={() => onNavigate('settings')} />
-          <section className="surface-panel inspector-panel">
-            <div className="section-title-row">
-              <div>
-                <h2>Machine</h2>
-                <p>Execution target for this workspace</p>
-              </div>
-              <Laptop size={17} className="muted-icon" />
-            </div>
-            <div className="machine-detail-row">
-              <span className="machine-symbol">
-                <Monitor size={17} />
-              </span>
-              <span>
-                <strong>{snapshot.machine.name}</strong>
-                <small>
-                  {snapshot.machine.hostname} · {snapshot.machine.os}
-                </small>
-              </span>
-              <span className="status-pill status-online">Online</span>
-            </div>
-            <div className="inspector-data-row">
-              <span>Projects</span>
-              <strong>{snapshot.projects.length}</strong>
-            </div>
-            <div className="inspector-data-row">
-              <span>Active runs</span>
-              <strong>{pending.length}</strong>
-            </div>
-            <button className="quiet-button full-width" onClick={() => onNavigate('machines')}>
-              Manage machines <ChevronRight size={14} />
-            </button>
-          </section>
-          <section className="surface-panel inspector-panel usage-summary-panel">
-            <div className="section-title-row">
-              <div>
-                <h2>Activity today</h2>
-                <p>Locally observed, not a quota meter</p>
-              </div>
-              <Radio size={17} className="muted-icon" />
-            </div>
-            <div className="usage-inline-stats">
-              <div>
-                <strong>{snapshot.usage.events}</strong>
-                <span>provider & process events</span>
-              </div>
-              <div>
-                <strong>
-                  {snapshot.usage.localMinutesToday}
-                  <small>m</small>
-                </strong>
-                <span>process time today</span>
-              </div>
-            </div>
-            <div className="quiet-note">
-              <LockKeyhole size={14} />
-              <span>
-                Provider allowance stays unavailable unless reported; Usage supports separate user-configured
-                estimates.
-              </span>
-            </div>
-            <button className="quiet-button full-width" onClick={() => onNavigate('usage')}>
-              Open usage dashboard <ChevronRight size={14} />
-            </button>
-          </section>
-        </aside>
+        </div>
       </div>
     </main>
   );
@@ -3018,6 +2989,7 @@ function RunsPage({
   );
   return (
     <main className="page-content">
+      {!selectedRun && (
       <PageHeading
         title="Runs & history"
         description="Follow active stages, inspect provider output, and review changes from recent workflows."
@@ -3028,6 +3000,7 @@ function RunsPage({
           </button>
         }
       />
+      )}
       {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
       <div
         className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''} ${
@@ -3223,6 +3196,9 @@ function RunDetail({
           </div>
         </div>
         <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
+      </div>
+      <div className="thread-user">
+        <p>{run.prompt}</p>
       </div>
       <div className="run-detail-meta">
         <span>

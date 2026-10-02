@@ -41,7 +41,7 @@ The desktop master owns repository access, process execution, provider authentic
 
 ## Brand Commitments
 
-Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. Structure and usability came first; a first `/impeccable` critique and fix pass has since raised the type floor and contrast and fixed layout defects, and further passes are expected.
+Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. The user pinned the look: it resembles the Claude Code and ChatGPT Codex apps (desktop and mobile), in a light theme with light blue as the main colour, calm red and white as accents, and black text. Light blue is the field, white is the work surface, and calm red marks the primary action. Light only; no dark theme is planned. The home is a task-thread workspace (composer first, runs as threads in a task list), not a dashboard of cards.
 
 ## Evidence on Hand
 
