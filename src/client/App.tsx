@@ -411,6 +411,7 @@ function App() {
                 onSelect={setSelectedRunId}
                 onRefresh={() => refresh(true)}
                 onNotice={setNotice}
+                onNavigate={changePage}
               />
             )}
             {page === 'usage' && snapshot && <UsagePage snapshot={snapshot} />}
@@ -710,6 +711,15 @@ function CommandCenter({
         ),
     ) ?? [];
 
+  const reviewBlockedReason = busy
+    ? null
+    : !selectedProject
+      ? 'Add a project to continue.'
+      : !workflowId
+        ? 'Choose a workflow to continue.'
+        : !task.trim()
+          ? 'Describe the task to continue.'
+          : null;
   const makePreview = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!task.trim() || !projectId || !workflowId) return;
@@ -996,32 +1006,39 @@ function CommandCenter({
                 </div>
               </label>
             )}
-            {missingAssignments.length > 0 && (
-              <div className="inline-callout">
-                <CircleHelp size={16} />
-                <div>
-                  <strong>Set up the stage models first</strong>
-                  <p>
-                    {missingAssignments.length} active AI{' '}
-                    {missingAssignments.length === 1 ? 'stage needs' : 'stages need'} a backend, provider, and
-                    model.
-                  </p>
-                </div>
-                <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
-                  Configure workflow <ChevronRight size={14} />
-                </button>
-              </div>
-            )}
-            {!selectedProject && (
-              <div className="inline-callout">
-                <FileCode2 size={16} />
-                <div>
-                  <strong>No project registered</strong>
-                  <p>Add a local repository before creating a run.</p>
-                </div>
-                <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
-                  Add project <ChevronRight size={14} />
-                </button>
+            {(missingAssignments.length > 0 || !selectedProject) && (
+              <div className="launch-blockers" role="group" aria-labelledby="launch-blockers-title">
+                <h3 id="launch-blockers-title">Before you can run</h3>
+                <ul>
+                  {missingAssignments.length > 0 && (
+                    <li>
+                      <CircleHelp size={16} />
+                      <div>
+                        <strong>Set up the stage models first</strong>
+                        <p>
+                          {missingAssignments.length} active AI{' '}
+                          {missingAssignments.length === 1 ? 'stage needs' : 'stages need'} a backend, provider,
+                          and model.
+                        </p>
+                      </div>
+                      <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
+                        Configure workflow <ChevronRight size={14} />
+                      </button>
+                    </li>
+                  )}
+                  {!selectedProject && (
+                    <li>
+                      <FileCode2 size={16} />
+                      <div>
+                        <strong>No project registered</strong>
+                        <p>Add a local repository before creating a run.</p>
+                      </div>
+                      <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
+                        Add project <ChevronRight size={14} />
+                      </button>
+                    </li>
+                  )}
+                </ul>
               </div>
             )}
             {preview ? (
@@ -1040,15 +1057,23 @@ function CommandCenter({
                 </button>
               </div>
             ) : (
-              <button
-                type="submit"
-                className="primary-button review-run-button"
-                disabled={busy || !task.trim() || !projectId || !workflowId}
-              >
-                <Search size={15} />
-                {busy ? 'Preparing preview…' : 'Review run preview'}
-                <ChevronRight size={15} />
-              </button>
+              <div className="launch-actions">
+                <button
+                  type="submit"
+                  className="primary-button review-run-button"
+                  disabled={busy || !task.trim() || !projectId || !workflowId}
+                  aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
+                >
+                  <Search size={15} />
+                  {busy ? 'Preparing preview…' : 'Review run preview'}
+                  <ChevronRight size={15} />
+                </button>
+                {reviewBlockedReason && (
+                  <p id="launch-hint" className="launch-hint">
+                    {reviewBlockedReason}
+                  </p>
+                )}
+              </div>
             )}
           </form>
 
@@ -1802,6 +1827,66 @@ function WorkflowsPage({
                   <option value="enigma">ENIGMA · requires run confirmation</option>
                 </select>
               </label>
+            </div>
+            <label className="form-field">
+              <span>Workflow instructions</span>
+              <textarea rows={3} maxLength={8000} value={draft.globalInstructions ?? ''} onChange={(event) => changeWorkflow({ globalInstructions: event.target.value })} placeholder="Workflow-specific instructions. These stay below Turing security rules and mandatory Global/Project Rules." />
+            </label>
+            <details className="settings-disclosure">
+              <summary>
+                <span>Safety and billing</span>
+                <small>
+                  {draft.isolatedWorktree ? 'Worktree isolation on' : 'Worktree isolation off'} ·{' '}
+                  {draft.subscriptionOnly ? 'Subscription only' : 'Metered routes allowed'} ·{' '}
+                  {draft.lockProviders ? 'Providers locked' : 'Providers unlocked'}
+                </small>
+              </summary>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={draft.isolatedWorktree}
+                onChange={(event) => changeWorkflow({ isolatedWorktree: event.target.checked })}
+              />
+              <span>
+                <strong>Isolate Git runs in a worktree</strong>
+                <small>Run setup pauses if the repository has uncommitted changes.</small>
+              </span>
+            </label>
+            <label className="toggle-line">
+              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
+              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
+            </label>
+            <label className="toggle-line">
+              <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
+              <span><strong>Lock Providers</strong><small>ON by default. A failed stage pauses; Turing does not substitute providers, models, or native reasoning values.</small></span>
+            </label>
+            <label className="toggle-line">
+              <input
+                type="checkbox"
+                checked={draft.promptRefinementDefault}
+                disabled={
+                  !draft.stages.some((stage) => stage.kind === 'promptRefinement' && stage.enabled !== false)
+                }
+                onChange={(event) => changeWorkflow({ promptRefinementDefault: event.target.checked })}
+              />
+              <span>
+                <strong>Prompt refinement by default</strong>
+                <small>
+                  Add an enabled Prompt refinement stage and assign its provider to use this option.
+                </small>
+              </span>
+            </label>
+            </details>
+            <details className="settings-disclosure">
+              <summary>
+                <span>Limits and retries</span>
+                <small>
+                  {draft.maxRemediationRounds} remediation {draft.maxRemediationRounds === 1 ? 'round' : 'rounds'} · {draft.maxParallelAgents} parallel{' '}
+                  {draft.maxParallelAgents === 1 ? 'agent' : 'agents'} · {draft.maxDurationMinutes} min · {draft.retryPolicy.maxRetries}{' '}
+                  {draft.retryPolicy.maxRetries === 1 ? 'retry' : 'retries'}
+                </small>
+              </summary>
+              <div className="form-grid-two workflow-options-grid">
               <label className="form-field small-number-field">
                 <span>Max remediation rounds</span>
                 <input
@@ -1901,26 +1986,16 @@ function WorkflowsPage({
                   }
                 />
               </label>
-            </div>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={draft.isolatedWorktree}
-                onChange={(event) => changeWorkflow({ isolatedWorktree: event.target.checked })}
-              />
-              <span>
-                <strong>Isolate Git runs in a worktree</strong>
-                <small>Run setup pauses if the repository has uncommitted changes.</small>
-              </span>
-            </label>
-            <label className="toggle-line">
-              <input type="checkbox" checked={draft.subscriptionOnly} onChange={(event) => changeWorkflow({ subscriptionOnly: event.target.checked })} />
-              <span><strong>Subscription Only</strong><small>Prohibit Turing-managed API, metered, and PAYG routes for runs using this workflow.</small></span>
-            </label>
-            <label className="toggle-line">
-              <input type="checkbox" checked={draft.lockProviders} onChange={(event) => changeWorkflow({ lockProviders: event.target.checked })} />
-              <span><strong>Lock Providers</strong><small>ON by default. A failed stage pauses; Turing does not substitute providers, models, or native reasoning values.</small></span>
-            </label>
+              </div>
+            </details>
+            <details className="settings-disclosure">
+              <summary>
+                <span>Context and model defaults</span>
+                <small>
+                  {draft.contextPolicy.strategy} · {draft.contextPolicy.maxEstimatedTokens.toLocaleString()} token limit ·{' '}
+                  {draft.defaultModelConfiguration?.modelId || 'no default model'}
+                </small>
+              </summary>
             <div className="form-grid-two workflow-options-grid">
               <label className="form-field">
                 <span>Default context strategy</span>
@@ -1941,26 +2016,7 @@ function WorkflowsPage({
               }}><option value="">No workflow-level connection</option>{connectionProfiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} · {billingLaneLabel(profile.billingLane)}</option>)}</select></label>
               <label className="form-field"><span>Workflow default exact model ID</span><input value={draft.defaultModelConfiguration?.modelId ?? ''} onChange={(event) => changeWorkflow({ defaultModelConfiguration: { ...draft.defaultModelConfiguration, modelId: event.target.value || undefined } })} placeholder="provider-native/model-id" maxLength={180} /></label>
             </div>
-            <label className="form-field">
-              <span>Workflow instructions</span>
-              <textarea rows={3} maxLength={8000} value={draft.globalInstructions ?? ''} onChange={(event) => changeWorkflow({ globalInstructions: event.target.value })} placeholder="Workflow-specific instructions. These stay below Turing security rules and mandatory Global/Project Rules." />
-            </label>
-            <label className="toggle-line">
-              <input
-                type="checkbox"
-                checked={draft.promptRefinementDefault}
-                disabled={
-                  !draft.stages.some((stage) => stage.kind === 'promptRefinement' && stage.enabled !== false)
-                }
-                onChange={(event) => changeWorkflow({ promptRefinementDefault: event.target.checked })}
-              />
-              <span>
-                <strong>Prompt refinement by default</strong>
-                <small>
-                  Add an enabled Prompt refinement stage and assign its provider to use this option.
-                </small>
-              </span>
-            </label>
+            </details>
           </div>
 
           <section className="surface-panel connection-profile-panel">
@@ -2710,7 +2766,7 @@ function ProjectsPage({
         title="Projects"
         description="Repositories registered on this machine, with detected profile and test commands."
       />
-      <div className="projects-layout">
+      <div className={`projects-layout ${projects.length === 0 ? 'projects-layout-empty' : ''}`}>
         <section className="surface-panel projects-list-panel">
           <div className="panel-title-row">
             <div>
@@ -2766,6 +2822,7 @@ function ProjectsPage({
             )}
           </div>
         </section>
+        {projects.length > 0 && (
         <section className="project-profile-column">
           {selected ? (
             <ProjectProfilePanel
@@ -2784,6 +2841,7 @@ function ProjectsPage({
             />
           )}
         </section>
+        )}
       </div>
     </main>
   );
@@ -2944,6 +3002,7 @@ function RunsPage({
   onSelect,
   onRefresh,
   onNotice,
+  onNavigate,
 }: {
   snapshot: DashboardSnapshot;
   selectedRun: RunSummary | null;
@@ -2951,6 +3010,7 @@ function RunsPage({
   onSelect: (id: string | null) => void;
   onRefresh: () => void;
   onNotice: (message: string) => void;
+  onNavigate: (page: Page) => void;
 }) {
   const [filter, setFilter] = useState('all');
   const runs = snapshot.runs.filter(
@@ -2969,7 +3029,11 @@ function RunsPage({
         }
       />
       {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
-      <div className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''}`}>
+      <div
+        className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''} ${
+          snapshot.runs.length === 0 ? 'runs-layout-empty' : ''
+        }`}
+      >
         <section className="runs-list-panel surface-panel">
           <div className="runs-list-toolbar">
             <div>
@@ -3010,11 +3074,21 @@ function RunsPage({
               ))}
             </div>
           ) : (
-            <EmptyState
-              icon={Activity}
-              title="No runs match"
-              body="Start a workflow from Command Center or change the filter."
-            />
+            snapshot.runs.length === 0 ? (
+              <EmptyState
+                icon={Activity}
+                title="No runs yet"
+                body="Stage output, approvals, findings, and Git changes appear here once a workflow runs."
+                action={{ label: 'Open Command Center', onClick: () => onNavigate('command') }}
+              />
+            ) : (
+              <EmptyState
+                icon={Activity}
+                title="No runs match"
+                body="No runs match this filter."
+                action={{ label: 'Show all runs', onClick: () => setFilter('all') }}
+              />
+            )
           )}
         </section>
         {selectedRun ? (
@@ -3025,11 +3099,13 @@ function RunsPage({
             onClose={() => onSelect(null)}
           />
         ) : (
-          <section className="run-inspector-empty surface-panel">
-            <Activity size={21} />
-            <h2>Select a run</h2>
-            <p>Stage output, approvals, findings, and Git changes appear here.</p>
-          </section>
+          snapshot.runs.length > 0 && (
+            <section className="run-inspector-empty surface-panel">
+              <Activity size={21} />
+              <h2>Select a run</h2>
+              <p>Stage output, approvals, findings, and Git changes appear here.</p>
+            </section>
+          )
         )}
       </div>
     </main>
@@ -3790,9 +3866,11 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
           <Activity size={16} className="muted-icon" />
         </div>
         <div className="usage-table">
-          <div className="usage-table-head">
-            <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
-          </div>
+          {rawEvents.length > 0 && (
+            <div className="usage-table-head">
+              <span>Stage / route</span><span>Billing lane</span><span>Observed</span><span>Tokens</span>
+            </div>
+          )}
           {rawEvents.slice(0, 30).map((event) => (
             <div className="usage-table-row" key={String(event.id)}>
               <span className="usage-key">
@@ -3806,7 +3884,12 @@ function UsagePage({ snapshot }: { snapshot: DashboardSnapshot }) {
                 : `${Number(event.input_tokens).toLocaleString()} in · ${Number(event.output_tokens ?? 0).toLocaleString()} out`}</span>
             </div>
           ))}
-          {!rawEvents.length && <p className="empty-state">No provider stage calls recorded in this time window.</p>}
+          {!rawEvents.length && (
+            <div className="empty-state empty-state-compact">
+              <h2>No provider stage calls in this window</h2>
+              <p>Calls appear here after a workflow runs a provider stage. Try a longer window to see older activity.</p>
+            </div>
+          )}
         </div>
       </section>
       <section className="surface-panel quota-envelope-panel">
@@ -5421,7 +5504,17 @@ function Meta({ label, value, icon: Icon }: { label: string; value: string; icon
     </div>
   );
 }
-function EmptyState({ icon: Icon, title, body }: { icon: LucideIcon; title: string; body: string }) {
+function EmptyState({
+  icon: Icon,
+  title,
+  body,
+  action,
+}: {
+  icon: LucideIcon;
+  title: string;
+  body: string;
+  action?: { label: string; onClick: () => void };
+}) {
   return (
     <div className="empty-state">
       <span>
@@ -5429,6 +5522,11 @@ function EmptyState({ icon: Icon, title, body }: { icon: LucideIcon; title: stri
       </span>
       <h2>{title}</h2>
       <p>{body}</p>
+      {action && (
+        <button type="button" className="secondary-button empty-state-action" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }
