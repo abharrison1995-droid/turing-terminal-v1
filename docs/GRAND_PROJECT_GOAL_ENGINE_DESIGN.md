@@ -1,6 +1,6 @@
 # Grand Project / Goal Engine design
 
-**Status: design proposal, revision 2.1. Stage 0A (launcher extraction) is implemented; nothing else is.** Written on branch `feature/grand-project-goal-engine` from the `v1.0.0-rc2` baseline. File and symbol references were read from that source; where this document says "proposed" it describes something that does not exist yet.
+**Status: design proposal, revision 2.2. Stage 0A (launcher extraction) is implemented; nothing else is.** Written on branch `feature/grand-project-goal-engine` from the `v1.0.0-rc2` baseline. File and symbol references were read from that source; where this document says "proposed" it describes something that does not exist yet.
 
 Revision 2 incorporates the independent architecture review: Goal integration branches (Q1), a bounded `RunEngine` extension, atomic Goal run launch with database idempotency, repository-bound evidence, a Goal-level finding lifecycle, versioned Goal definitions with safe amendment, role-specific route validation, provenance-aware availability, stronger final-review independence, asynchronous authoring, and a split Stage 0. A change log is in section 25.
 
@@ -52,7 +52,7 @@ Revision 2 incorporates the independent architecture review: Goal integration br
 
 The requirement is: **preserve the finite-run state-machine contract and make only the smallest additive Git/run-origin changes needed for Goal-owned integration branches.** A Goal child run is still finite, separately snapshotted, cancellable, independently recoverable, billing-checked, context-bounded, and permission-controlled. The permitted engine changes are exactly:
 
-1. `prepareWorkingCopy`: when the run row carries a trusted `goal_base_commit`, create `turing/<runid8>` from that commit instead of the source HEAD and **skip the source-checkout-clean check** (the user's checkout is not involved). Records `starting_commit = goal_base_commit`, `base_branch = turing/goal/<id>` (for history only; Goal child workflows contain no `gitMerge` stage).
+1. `prepareWorkingCopy`: when the run row carries a trusted `goal_base_commit`, create `turing/<runid8>` from that commit instead of the source HEAD and **skip the source-checkout-clean check** (the user's checkout is not involved). Records `starting_commit = goal_base_commit` and `base_branch = NULL`. **Goal branch ownership stays outside `RunEngine`:** the authoritative Goal branch is `goal_runtime.goal_branch` and its expected tip is `goal_runtime.integration_head`. Goal child workflows contain no `gitMerge`, `gitPush` or `gitRollback` stage, so `runs.base_branch` has no operational use for them, and the engine is not taught about Goals merely to populate a historical field. The integration module (Stage 1) advances the ref independently.
 2. Capture the exact repository state a deterministic stage verified: `build`, `test`, and lint/`shellCommand` stage outputs gain `subjectTree` (tree object of the working state, computed with a temporary index so the real index is untouched) and `subjectCommit` (worktree HEAD). Additive output fields; existing consumers ignore them.
 3. Read nothing else. The engine does not learn about Goals, cycles, evidence, or routes.
 
@@ -99,8 +99,14 @@ CREATE TABLE goals (
   status_reason_code TEXT,             -- enumerated, section 6.3; recovery keys off this
   status_detail_json TEXT,             -- human-readable and structured detail only
   current_definition_version INTEGER,  -- approved version; NULL while the first draft is unapproved
-  active_milestone_id TEXT REFERENCES goal_milestones(id) DEFERRABLE INITIALLY DEFERRED,
-  created_at TEXT NOT NULL, approved_at TEXT, started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL
+  active_milestone_id TEXT,            -- must belong to this Goal (composite FK below)
+  created_at TEXT NOT NULL, approved_at TEXT, started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
+  -- Both deferred: a Goal row and its first definition/milestone rows are written in one transaction in any order.
+  -- Composite foreign keys are not enforced while any column is NULL, so a draft Goal (NULL pointers) is valid.
+  FOREIGN KEY (id, current_definition_version) REFERENCES goal_definition_versions(goal_id, version)
+    DEFERRABLE INITIALLY DEFERRED,
+  FOREIGN KEY (id, active_milestone_id) REFERENCES goal_milestones(goal_id, id)
+    DEFERRABLE INITIALLY DEFERRED
 );
 
 CREATE TABLE goal_definition_versions (       -- immutable once approved (trigger)
@@ -129,7 +135,8 @@ CREATE TABLE goal_milestones (                -- runtime status of a milestone i
   ordinal INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending','active','in_review','satisfied','blocked','skipped')),
   satisfied_at TEXT,
-  UNIQUE (goal_id, milestone_key)
+  UNIQUE (goal_id, milestone_key),
+  UNIQUE (goal_id, id)                        -- target of same-owner composite foreign keys
 );
 
 CREATE TABLE goal_runtime (                   -- mutable; 1:1 with goals
@@ -164,33 +171,47 @@ CREATE TABLE goal_cycles (
   created_at TEXT NOT NULL, finished_at TEXT,
   UNIQUE (goal_id, sequence),
   CHECK ((kind = 'authoring') OR (definition_version IS NOT NULL)),
-  FOREIGN KEY (goal_id, definition_version) REFERENCES goal_definition_versions(goal_id, version)
+  UNIQUE (goal_id, id),                       -- target of same-owner composite foreign keys (016 tables)
+  FOREIGN KEY (goal_id, definition_version) REFERENCES goal_definition_versions(goal_id, version),
+  FOREIGN KEY (goal_id, milestone_id) REFERENCES goal_milestones(goal_id, id)   -- a cycle cannot use another Goal's milestone
 );
 
 CREATE TABLE goal_integration_ops (           -- durable record of every ref movement (section 7)
   id TEXT PRIMARY KEY,
   goal_id TEXT NOT NULL REFERENCES goals(id),
-  cycle_id TEXT REFERENCES goal_cycles(id),
+  cycle_id TEXT,
   run_id TEXT REFERENCES runs(id),
   op TEXT NOT NULL CHECK (op IN ('init_ref','advance','apply_to_base')),
   expected_old TEXT, new_commit TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('planned','applied','failed','aborted')),
   checks_json TEXT NOT NULL,                  -- the invariants evaluated and their results
   error_code TEXT,
-  created_at TEXT NOT NULL, finished_at TEXT
+  created_at TEXT NOT NULL, finished_at TEXT,
+  FOREIGN KEY (goal_id, cycle_id) REFERENCES goal_cycles(goal_id, id)
+  -- trigger: when run_id is set, runs.goal_cycle_id must equal cycle_id (an op cannot cite another Goal's run)
 );
 
 ALTER TABLE runs ADD COLUMN goal_cycle_id TEXT REFERENCES goal_cycles(id);
 ALTER TABLE runs ADD COLUMN goal_run_purpose TEXT
   CHECK (goal_run_purpose IS NULL OR goal_run_purpose IN
     ('authoring','proposal','execution','review','remediation','verification'));
-ALTER TABLE runs ADD COLUMN goal_base_commit TEXT;     -- trusted; set only by server code
+ALTER TABLE runs ADD COLUMN goal_base_commit TEXT      -- trusted; set only by server code; lowercase hex of length 40 or 64
+  CHECK (goal_base_commit IS NULL OR (length(goal_base_commit) IN (40, 64) AND goal_base_commit NOT GLOB '*[^0-9a-f]*'));
 
 -- All-or-none origin metadata and per-purpose idempotency
 CREATE UNIQUE INDEX idx_runs_goal_cycle_purpose ON runs(goal_cycle_id, goal_run_purpose)
   WHERE goal_cycle_id IS NOT NULL;
--- trigger: goal_cycle_id and goal_run_purpose are both NULL or both NOT NULL (CHECK on ADD COLUMN cannot span columns)
--- trigger: goal_definition_versions rows with status approved/superseded reject UPDATE of the five definition columns and hash
+-- triggers (a CHECK on ADD COLUMN cannot span columns), on INSERT and UPDATE:
+--   goal_cycle_id NULL     -> goal_run_purpose NULL and goal_base_commit NULL
+--   goal_cycle_id NOT NULL -> goal_run_purpose NOT NULL (goal_base_commit stays nullable, e.g. initial authoring)
+--   origin columns are immutable once the run row exists (set at insert or never)
+-- Server code, not SQL, validates that a non-null goal_base_commit exists in the registered repository.
+-- trigger: goal_definition_versions rows with status approved/superseded reject UPDATE of the five definition columns, hash and identity;
+--          approved rows may only move to superseded; superseded and rejected are terminal; approved/superseded rows cannot be deleted
+-- At most one approved definition per Goal:
+CREATE UNIQUE INDEX idx_goal_one_approved_definition ON goal_definition_versions(goal_id) WHERE status = 'approved';
+-- Amendment approval is one transaction: N approved -> superseded, N+1 proposed -> approved, goals.current_definition_version = N+1.
+-- trigger: goal_integration_ops with a run_id require that runs.goal_cycle_id equals cycle_id
 CREATE UNIQUE INDEX idx_goal_one_active_per_project ON goals(project_id)
   WHERE status IN ('running','reviewing','needs_user','blocked','paused');
 -- Authoring cycles exist before any definition does, so definition_version may be NULL only when kind = 'authoring'.
@@ -201,6 +222,8 @@ CREATE UNIQUE INDEX idx_goal_one_active_per_project ON goals(project_id)
 CREATE INDEX idx_goal_cycles_goal ON goal_cycles(goal_id, sequence);
 CREATE INDEX idx_runs_goal_cycle ON runs(goal_cycle_id);
 ```
+
+**Same-owner rule (applies to 016 as well).** Wherever a row carries both `goal_id` and a child key (`milestone_id`, `cycle_id`, `review_id`), the pair is a composite foreign key to `(goal_id, id)` of the child table, never a bare child id next to an independent `goal_id`. 016 tables follow this and are tested with deliberate cross-Goal inserts.
 
 `runs.goal_id` is intentionally **not** added: the Goal of a run is `runs.goal_cycle_id → goal_cycles.goal_id`. A convenience view `goal_runs(run_id, goal_id, cycle_id, purpose)` supports queries. `goal_cycles.proposal_run_id` and `goal_cycles.run_id` from revision 1 are removed (answering the review's question: they are not necessary and would be a second source of truth).
 
@@ -545,11 +568,15 @@ on approval, re-check immediately before acting (the user's checkout can change 
 The launcher is extracted from `app.ts` into `src/server/runLauncher.ts` as separate operations:
 
 ```
-buildPreview(db, input, workflowOverride?)                    // = makePreview, unchanged semantics
+buildPreview(db, input, workflowOverride?, context?: RunLaunchContext)   // = makePreview; context is server-internal
 queueRun(db, preview, options, origin?): { runId, existed }   // one SQLite transaction
-startQueuedRun(db, engine, runId): void                       // engine.start(runId) only if status 'queued' and not active
+startQueuedRun(db, engine, runId): { started: true } | { started: false, reason }   // starts only a persisted 'queued' run that is not active
 createRun(db, engine, preview, options) = queueRun(...) then startQueuedRun(...)   // the existing human/API path
 ```
+
+**Trusted launch context.** `RunLaunchContext { origin?: RunOrigin }` is a narrow internal type that never appears in `RunInput`; `runInputSchema` remains the public boundary and keeps stripping unknown keys, so `ignoreDirty`, `allowDirty` and `goalBaseCommit` cannot be sent over HTTP. RC2 `buildPreview` blocks an isolated run when `project.gitRoot && workflow.isolatedWorktree && project.dirty !== false`, correct for an ordinary run whose worktree starts from the registered HEAD. A Goal child run starts from an explicit trusted integration commit and the user checkout may stay dirty while the Goal works. A Goal-origin preview therefore treats checkout dirtiness as **informational** (reported, but not a blocker, not a warning that sets `canStart = false`) only when all hold: the `RunOrigin` was built by trusted server code; `goalBaseCommit` is present and a full lowercase commit SHA; the workflow is isolated; the commit is verified to exist in the registered repository (`git cat-file -e <sha>^{commit}`); and the context did not come from request fields. Otherwise the ordinary rule applies. Ordinary runs keep blocking on a dirty checkout.
+
+**Recovery-safe start.** `startQueuedRun` reads the persisted status first. `queued` and not already active in the engine returns `{ started: true }` after calling `engine.start`; any other status (`paused`, `waiting_for_approval`, running, terminal, unknown run) returns `{ started: false, reason }` and never takes the fresh-start path. `RunEngine.start` still guards concurrent in-memory execution; the launcher additionally enforces the persisted-state invariant. Resuming a paused run remains the existing `engine.start(id, true)` path, used deliberately by the user, not by reconcile calling a helper twice.
 
 `createRun` preserves RC2's exact behaviour and events for ordinary runs. Only trusted server code can construct a `RunOrigin`; `runInputSchema` strips unknown keys, and a test asserts that goal fields in an HTTP body are ignored.
 
@@ -928,3 +955,10 @@ Only after stage 7 and a prove-it review does the Model Opportunity Layer begin:
 - `goal_cycles.definition_version` is nullable and a `CHECK` requires it for every kind except `authoring` (section 4.1). The foreign key still protects non-null values.
 - Q1, Q3, Q4, Q6, Q7 and Q8 decided as annotated in section 23.
 - Stage 0A implemented in `src/server/runLauncher.ts` (`buildPreview`, `queueRun`, `startQueuedRun`, `createRun`).
+
+### Revision 2.2
+
+- Goal-origin previews take a trusted server-internal `RunLaunchContext`; a dirty registered checkout is informational for a valid Goal-origin isolated run and still blocks ordinary runs (section 8.1).
+- `RunEngine` does not derive the Goal branch: Goal-origin runs record `starting_commit = goal_base_commit` and `base_branch = NULL`; the Goal branch lives in `goal_runtime` (section 2.1).
+- Migration 015 relational invariants: deferred composite foreign keys for `current_definition_version` and `active_milestone_id`; a unique partial index allowing one approved definition per Goal; same-owner composite keys for cycles and integration ops (and the rule for 016); run-origin all-or-none and immutability triggers; a hex/length check on `goal_base_commit` (section 4.1).
+- `startQueuedRun(db, engine, runId)` inspects persisted state and returns `{ started }`; only a `queued` run that is not active is started (section 8.1).
