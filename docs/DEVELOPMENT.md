@@ -19,10 +19,12 @@ The UI is served at `http://127.0.0.1:5173`; the API is at `http://127.0.0.1:431
 ## Checks
 
 ```sh
+npm run format:check
+npm run lint
 npm run typecheck
 npm test
-npm run lint
 npm run build
+npm audit --omit=dev
 ```
 
 `npm start` serves the production build from `dist` and loads the compiled Node service from `dist-server`. Run it from the repository root so the compiled service can find the application migrations and static assets.

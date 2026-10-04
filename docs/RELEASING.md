@@ -19,7 +19,7 @@ npm audit --omit=dev
 git tag v1.0.0-rc2
 ```
 
-Push a tag only after release approval. The workflow uploads checksummed GitHub Actions artifacts; it does not publish a GitHub Release. The Windows build is unsigned for RC1 and may show Unknown Publisher or SmartScreen warnings. Add a real certificate and CI signing secret only after a signing process is approved; never store a certificate in the repository.
+Push a tag only after release approval. The workflow uploads checksummed GitHub Actions artifacts; it does not publish a GitHub Release. The Windows build is unsigned for RC2 and may show Unknown Publisher or SmartScreen warnings. Add a real certificate and CI signing secret only after a signing process is approved; never store a certificate in the repository.
 
 ## Artifacts
 

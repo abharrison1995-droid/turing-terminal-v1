@@ -19,7 +19,7 @@ Download `Turing-Terminal-Setup-x64-1.0.0-rc2.exe` from a successful **Desktop i
 
 Download `turing-terminal_1.0.0-rc2_amd64.deb` and open it with your distribution's software installer, or use the portable `Turing-Terminal-x86_64-1.0.0-rc2.AppImage`. The app appears in your application menu after the `.deb` install. See [Linux installation](docs/INSTALL_LINUX.md).
 
-Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. The repository is private, so downloading its Actions artifacts requires a GitHub account with repository access. RC1 is for acceptance testing; physical Windows/Linux and phone pairing checks remain pending.
+Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. The repository is private, so downloading its Actions artifacts requires a GitHub account with repository access. RC2 is for acceptance testing; physical Windows/Linux and phone pairing checks remain pending.
 
 ## How to use Turing Terminal
 
