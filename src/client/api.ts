@@ -1,6 +1,11 @@
 import type {
+  BillingMode,
   DashboardSnapshot,
   ConnectionProfile,
+  DecisionGateConfig,
+  DecisionResult,
+  MeteredBudgetSettings,
+  ProviderSpendTelemetry,
   ExecutionOperation,
   GitOperation,
   ProjectProfile,
@@ -34,19 +39,28 @@ function json(method: string, body?: unknown): RequestInit {
 function sanitizeWorkflowExport<T>(value: T): T {
   if (typeof value === 'string')
     return value
-      .replace(/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
+      .replace(
+        /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
+        '[REDACTED_PRIVATE_KEY]',
+      )
       .replace(/\bsk-(?:ant-)?[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_API_KEY]')
       .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_TOKEN]')
       .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
       .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, '[REDACTED_GOOGLE_KEY]')
       .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[REDACTED_SLACK_TOKEN]')
       .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{12,}/gi, '$1[REDACTED_TOKEN]')
-      .replace(/((?:[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*|(?:token|secret|password|api[_-]?key|access[_-]?key|private[_-]?key|credentials?))\s*[:=]\s*["']?)[^\s"',;}]+/gi, '$1[REDACTED]') as T;
+      .replace(
+        /((?:[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIALS?)[A-Z0-9_]*|(?:token|secret|password|api[_-]?key|access[_-]?key|private[_-]?key|credentials?))\s*[:=]\s*["']?)[^\s"',;}]+/gi,
+        '$1[REDACTED]',
+      ) as T;
   if (Array.isArray(value)) return value.map(sanitizeWorkflowExport) as T;
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => !/secret|token|api.?key|password|cookie|credential|connectionProfileId|modelSnapshot/i.test(key))
+        .filter(
+          ([key]) =>
+            !/secret|token|api.?key|password|cookie|credential|connectionProfileId|modelSnapshot/i.test(key),
+        )
         .map(([key, item]) => [key, sanitizeWorkflowExport(item)]),
     ) as T;
   return value;
@@ -55,6 +69,33 @@ function sanitizeWorkflowExport<T>(value: T): T {
 export const api = {
   dashboard: () => call<DashboardSnapshot>('/api/dashboard'),
   providers: () => call<{ providers: ProviderStatus[] }>('/api/providers'),
+  refreshProviders: () => call<{ providers: ProviderStatus[] }>('/api/providers/refresh', json('POST')),
+  openRouterTelemetry: () =>
+    call<{ telemetry: ProviderSpendTelemetry[]; errors: string[]; provenance: string }>(
+      '/api/providers/openrouter/telemetry',
+    ),
+  setCredential: (profileId: string, kind: 'inference' | 'management', secret: string) =>
+    call<{ profile: ConnectionProfileWithCredentials }>(
+      `/api/connection-profiles/${profileId}/credentials/${kind}`,
+      json('PUT', { secret }),
+    ),
+  deleteCredential: (profileId: string, kind: 'inference' | 'management') =>
+    call<{ deleted: boolean }>(`/api/connection-profiles/${profileId}/credentials/${kind}`, json('DELETE')),
+  budgets: () =>
+    call<{ settings: MeteredBudgetSettings; status: BudgetStatus; systemTimeZone: string }>('/api/budgets'),
+  saveBudgets: (settings: Omit<MeteredBudgetSettings, 'updatedAt'>) =>
+    call<{ settings: MeteredBudgetSettings }>('/api/budgets', json('PUT', settings)),
+  usageAnalytics: (query: Record<string, string>) =>
+    call<UsageAnalytics>(`/api/usage/analytics?${new URLSearchParams(query).toString()}`),
+  usageExportUrl: (query: Record<string, string>, format: 'csv' | 'json') =>
+    masterApiUrl(`/api/usage/export?${new URLSearchParams({ ...query, format }).toString()}`),
+  testDecisionGate: (body: {
+    decision: DecisionGateConfig;
+    fixtures: Array<Record<string, unknown>>;
+    billingMode: BillingMode;
+    maxCostUsd: number | null;
+    confirmExternal: boolean;
+  }) => call<Record<string, unknown>>('/api/decision-gates/test', json('POST', body)),
   addProject: (path: string) => call<{ project: ProjectProfile }>('/api/projects', json('POST', { path })),
   refreshProject: (id: string) =>
     call<{ project: ProjectProfile }>(`/api/projects/${id}/refresh`, json('POST')),
@@ -75,7 +116,11 @@ export const api = {
       maxDurationMinutes: workflow.maxDurationMinutes,
       retryPolicy: workflow.retryPolicy,
       isolatedWorktree: workflow.isolatedWorktree,
-      subscriptionOnly: workflow.subscriptionOnly,
+      subscriptionOnly: workflow.billingMode ? workflow.billingMode !== 'custom' : workflow.subscriptionOnly,
+      billingMode: workflow.billingMode,
+      customAllowedLanes: workflow.customAllowedLanes,
+      meteredBudget: workflow.meteredBudget,
+      externalDecisionDataPolicy: workflow.externalDecisionDataPolicy,
       lockProviders: workflow.lockProviders,
       defaultModelConfiguration: workflow.defaultModelConfiguration,
       stageDefaults: workflow.stageDefaults,
@@ -90,9 +135,13 @@ export const api = {
   },
   duplicateWorkflow: (id: string) =>
     call<{ workflow: WorkflowDefinition }>(`/api/workflows/${id}/duplicate`, json('POST')),
-  connectionProfiles: () => call<{ profiles: ConnectionProfile[] }>('/api/connection-profiles'),
+  connectionProfiles: () =>
+    call<{ profiles: ConnectionProfileWithCredentials[] }>('/api/connection-profiles'),
   saveConnectionProfile: (profile: Omit<ConnectionProfile, 'id' | 'createdAt' | 'updatedAt'>, id?: string) =>
-    call<{ profile: ConnectionProfile }>(id ? `/api/connection-profiles/${id}` : '/api/connection-profiles', json(id ? 'PUT' : 'POST', profile)),
+    call<{ profile: ConnectionProfile }>(
+      id ? `/api/connection-profiles/${id}` : '/api/connection-profiles',
+      json(id ? 'PUT' : 'POST', profile),
+    ),
   deleteConnectionProfile: (id: string) => call(`/api/connection-profiles/${id}`, json('DELETE')),
   modelPresets: () => call<{ presets: ModelPreset[] }>('/api/model-presets'),
   createModelPreset: (name: string, configuration: ModelConfiguration) =>
@@ -114,6 +163,7 @@ export const api = {
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
     subscriptionOnly?: boolean;
+    billingMode?: BillingMode;
     lockProviders?: boolean;
   }) => call<{ preview: RunPreview }>('/api/runs/preview', json('POST', input)),
   startRun: (input: {
@@ -125,6 +175,7 @@ export const api = {
     enigmaConfirmed?: boolean;
     refinePrompt?: boolean;
     subscriptionOnly?: boolean;
+    billingMode?: BillingMode;
     lockProviders?: boolean;
   }) => call<{ run: RunSummary }>('/api/runs', json('POST', input)),
   run: (id: string) =>
@@ -132,13 +183,17 @@ export const api = {
       run: RunSummary;
       effectiveRules: TuringRule[];
       findings: Array<Record<string, unknown>>;
+      decisions?: DecisionResult[];
       gitOperations: GitOperation[];
       events: Array<{ type: string; payload: Record<string, unknown>; createdAt: string }>;
     }>(`/api/runs/${id}`),
   replayRun: (id: string, enigmaConfirmed = false) =>
     call<{ run: RunSummary }>(`/api/runs/${id}/replay`, json('POST', { enigmaConfirmed })),
   duplicateRunWorkflow: (id: string) =>
-    call<{ workflow: WorkflowDefinition; providerAssignments: RunPreview['providerAssignments'] }>(`/api/runs/${id}/duplicate-workflow`, json('POST')),
+    call<{ workflow: WorkflowDefinition; providerAssignments: RunPreview['providerAssignments'] }>(
+      `/api/runs/${id}/duplicate-workflow`,
+      json('POST'),
+    ),
   executionOperations: (id: string) =>
     call<{ operations: ExecutionOperation[] }>(`/api/runs/${id}/execution-operations`),
   diff: (id: string) =>
@@ -250,26 +305,143 @@ export const api = {
       return {
         ...safeConfiguration,
         ...(connectionProfileId
-          ? { connectionReference: `${configuration.backendId ?? ''}:${configuration.providerId ?? ''}:${configuration.billingLane ?? 'unknown'}` }
+          ? {
+              connectionReference: `${configuration.backendId ?? ''}:${configuration.providerId ?? ''}:${configuration.billingLane ?? 'unknown'}`,
+            }
           : {}),
       };
     };
     return {
       version: 1,
       exportedAt: new Date().toISOString(),
-      workflows: sanitizeWorkflowExport(workflows.map((workflow) => ({
-        ...workflow,
-        defaultModelConfiguration: exportModelConfiguration(workflow.defaultModelConfiguration),
-        stageDefaults: workflow.stageDefaults
-          ? Object.fromEntries(Object.entries(workflow.stageDefaults).map(([kind, configuration]) => [kind, exportModelConfiguration(configuration)]))
-          : undefined,
-        stages: workflow.stages.map((stage) => ({
-          ...stage,
-          ...(stage.connectionProfileId
-            ? { connectionReference: `${stage.backendId ?? ''}:${stage.providerId ?? ''}:${stage.billingLane ?? 'unknown'}` }
-            : {}),
+      workflows: sanitizeWorkflowExport(
+        workflows.map((workflow) => ({
+          ...workflow,
+          defaultModelConfiguration: exportModelConfiguration(workflow.defaultModelConfiguration),
+          stageDefaults: workflow.stageDefaults
+            ? Object.fromEntries(
+                Object.entries(workflow.stageDefaults).map(([kind, configuration]) => [
+                  kind,
+                  exportModelConfiguration(configuration),
+                ]),
+              )
+            : undefined,
+          stages: workflow.stages.map((stage) => ({
+            ...stage,
+            ...(stage.connectionProfileId
+              ? {
+                  connectionReference: `${stage.backendId ?? ''}:${stage.providerId ?? ''}:${stage.billingLane ?? 'unknown'}`,
+                }
+              : {}),
+            ...(stage.decision
+              ? {
+                  decision: {
+                    ...stage.decision,
+                    ...(stage.decision.connectionProfileId
+                      ? { connectionReference: 'openrouter:openrouter:openrouter-metered' }
+                      : {}),
+                    judge: exportModelConfiguration(stage.decision.judge),
+                    escalation: stage.decision.escalation
+                      ? {
+                          ...stage.decision.escalation,
+                          ...(stage.decision.escalation.connectionProfileId
+                            ? { connectionReference: 'openrouter:openrouter:openrouter-metered' }
+                            : {}),
+                          judge: exportModelConfiguration(stage.decision.escalation.judge),
+                        }
+                      : undefined,
+                  },
+                }
+              : {}),
+          })),
         })),
-      }))),
+      ),
     };
   },
 };
+
+export type ConnectionProfileWithCredentials = ConnectionProfile & {
+  credentials?: { inference: boolean; management: boolean };
+};
+
+export interface BudgetWindow {
+  committedUsd: number;
+  capUsd: number | null;
+}
+export interface BudgetStatus {
+  timeZone: string;
+  run: BudgetWindow;
+  daily: BudgetWindow;
+  monthly: BudgetWindow;
+  warningRatio: number;
+}
+
+export interface MetricTotal {
+  value: number | null;
+  reported: number;
+  missing: number;
+}
+export interface UsageAggregate {
+  events: number;
+  requests: number;
+  durationMs: number;
+  inputTokens: MetricTotal;
+  outputTokens: MetricTotal;
+  cachedInputTokens: MetricTotal;
+  cacheWriteTokens: MetricTotal;
+  reasoningTokens: MetricTotal;
+  totalTokens: MetricTotal;
+  actualMeteredCostUsd: MetricTotal;
+  equivalentValueUsd: MetricTotal;
+  tokenProvenance: Record<string, number>;
+}
+export interface UsageGroupRow extends UsageAggregate {
+  key: string;
+  label: string;
+  billingLane: string | null;
+  providerId: string | null;
+  modelId: string | null;
+  roles: Record<string, number>;
+  projects: Record<string, number>;
+  reasoning: Record<string, number>;
+  upstreamProviders: Record<string, number>;
+}
+export interface UsageAnalytics {
+  filter: { from: string; to: string; timeZone: string } & Record<string, string | undefined>;
+  granularity: 'hour' | 'day';
+  totals: UsageAggregate;
+  activeModels: number;
+  activeBillingLanes: number;
+  series: Array<UsageAggregate & { bucket: string }>;
+  byBillingLane: UsageGroupRow[];
+  byModel: UsageGroupRow[];
+  byProvider: UsageGroupRow[];
+  byRole: UsageGroupRow[];
+  byProject: UsageGroupRow[];
+  byWorkflow: UsageGroupRow[];
+  byMachine: UsageGroupRow[];
+  byWorkload: UsageGroupRow[];
+  byReasoning: UsageGroupRow[];
+  decisions: {
+    decisions: number;
+    byType: Record<string, number>;
+    byOutcome: Record<string, number>;
+    autoRouted: number;
+    escalated: number;
+    costUsd: MetricTotal;
+    inputTokens: MetricTotal;
+    outputTokens: MetricTotal;
+    averageBooleanProbability: number | null;
+    averageChoiceConfidence: number | null;
+    averageScoreConfidence: number | null;
+    byEngineModel: Array<{
+      key: string;
+      engine: string;
+      modelId: string | null;
+      decisions: number;
+      costUsd: number | null;
+    }>;
+  };
+  events: Array<Record<string, unknown>>;
+  eventCount: number;
+}

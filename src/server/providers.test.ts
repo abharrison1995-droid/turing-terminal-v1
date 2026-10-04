@@ -18,16 +18,20 @@ describe('provider output contract', () => {
   });
 
   it('discovers exact OpenCode variants and safe capability metadata from verbose catalog output', () => {
-    const models = parseOpenCodeModels(`opencode-go/kimi-k3\n{\n  "name": "Kimi K3",\n  "variants": {\n    "high": { "settings": { "reasoningEffort": "high" } },\n    "max": { "settings": { "reasoningEffort": "max" } }\n  },\n  "capabilities": { "tools": true, "input": ["text"], "output": ["text"], "secret": "must-not-be-retained" },\n  "apiKey": "must-not-be-retained"\n}\n`);
-    expect(models).toEqual([{
-      id: 'opencode-go/kimi-k3',
-      name: 'Kimi K3',
-      providerId: 'opencode-go',
-      subscriptionBacked: true,
-      variantIds: ['high', 'max'],
-      capabilities: { tools: true, input: ['text'], output: ['text'] },
-      supportsTools: true,
-    }]);
+    const models = parseOpenCodeModels(
+      `opencode-go/kimi-k3\n{\n  "name": "Kimi K3",\n  "variants": {\n    "high": { "settings": { "reasoningEffort": "high" } },\n    "max": { "settings": { "reasoningEffort": "max" } }\n  },\n  "capabilities": { "tools": true, "input": ["text"], "output": ["text"], "secret": "must-not-be-retained" },\n  "apiKey": "must-not-be-retained"\n}\n`,
+    );
+    expect(models).toEqual([
+      {
+        id: 'opencode-go/kimi-k3',
+        name: 'Kimi K3',
+        providerId: 'opencode-go',
+        subscriptionBacked: true,
+        variantIds: ['high', 'max'],
+        capabilities: { tools: true, input: ['text'], output: ['text'] },
+        supportsTools: true,
+      },
+    ]);
   });
 
   it('accepts ChatGPT sign-in and discovers only visible Codex app-server models', () => {

@@ -1,20 +1,57 @@
 # Usage accounting
 
-Turing reports activity it can observe locally. It records one usage event for each provider invocation and each configured build/test process, with stage, backend, provider, billing lane, exact model/variant, project, run, duration, and token counts when the provider returns parseable usage data. These route fields provide Turing usage attribution; they are not provider invoices or proof that an account incurred no charge.
+## Canonical usage events
 
-## What the numbers mean
+One external inference or decision call is exactly **one** row in `usage_events`. CLI backends produce one event per invocation (per attempt); OpenRouter produces one per HTTP request (each agent turn, each Jev call); local build/test processes produce `deterministic` events with duration only.
 
-- **Events** count local provider or build/test process invocations, not provider billable requests.
-- **Stage and billing-lane attribution** identify the saved route used by each Turing stage. ClinePass and Cline usage billing remain distinct; OpenCode Go and its metered/Console route remain distinct. Subscription Only blocks Turing-managed metered routes, but cannot override billing behavior internal to a provider account.
-- **Duration** is elapsed time for each process. Parallel process durations are summed, so process minutes can exceed wall-clock minutes.
-- **Tokens** are shown only when emitted by the provider CLI in a recognized structured result. Missing values mean unavailable, not zero.
-- **Quota envelope** is optional and marked **USER CONFIGURED**. The user enters the allowance, unit, effective date, reset, and notes; these values are not provider telemetry.
-- **Observed consumption** is **PROVIDER MEASURED** when the CLI reports token counts and **LOCALLY MEASURED** for request count and process duration. A token forecast is unavailable if any sample in the selected window lacks the required token count.
-- **Remaining allowance and exhaustion date** are estimates from the manual envelope and this master's recorded use. The UI shows sample count, confidence, and provenance. A projected date is omitted when there is no burn rate or enough information.
-- **API-equivalent value** is marked **ESTIMATED**, not actual spend. It is computed only for an exact provider/model match in `src/server/pricing.ts` and complete input/output token counts. Cached input uses its public cached rate only if separately measured; otherwise cached tokens are assumed to be zero and labeled. Unknown aliases, unlisted models, and subscription-only usage have no estimate.
-- Public rates are stored as USD per million tokens with an effective date and direct pricing reference. Turing does not convert currencies or claim the provider charged this amount. Validate rates against the provider source before using them for financial decisions.
-- **Windows**: Today starts at local midnight. The 7-day and 30-day views use rolling day windows. Daily grouping follows the UTC timestamps stored by the service.
+The row is created **before** the call (`pending`, with any local estimate) and updated in place as telemetry arrives:
 
-The dashboard and usage page keep source labels visible. Use the provider's account dashboard for authoritative billing, subscription allowance, and reset information. Threshold notifications are sent only for a configured envelope once locally observed use reaches 80%; token thresholds are suppressed when token telemetry is incomplete.
+`PENDING → LOCALLY ESTIMATED → PROVIDER RECONCILED` (or `final` when only local measurement exists).
 
-For OpenCode Go, Turing cannot inspect or disable provider-side overflow into a Console balance through a supported mechanism. Run Preview reports that this fallback status cannot be verified and does not claim PAYG is disabled. Review the provider account's billing controls before relying on a subscription-only cost expectation. See [provider and context configuration](phase3.6-provider-model-context.md#billing-and-provider-lock).
+Later, more accurate telemetry never adds a second billable row. If Turing estimated 10,000 input tokens and the provider reports 9,714, headline totals use 9,714; the estimate stays in `estimated_input_tokens` and in the `observations_json` audit trail.
+
+### Provenance precedence
+
+1. **PROVIDER MEASURED**
+2. **LOCALLY MEASURED**
+3. **USER CONFIGURED**
+4. **ESTIMATED**
+5. **UNAVAILABLE**
+
+An observation replaces headline values only if it is at least as authoritative as the current one. Token provenance and cost provenance are tracked separately.
+
+### Recorded dimensions (where available)
+
+Event, Turing request and provider request IDs; timestamp (UTC); machine, project, workflow, run, stage, role; workload (`generative`, `decision`, `deterministic`); backend, connection profile, billing lane, provider, upstream provider; configured and resolved model, display name, variant, reasoning, context strategy; decision engine, type, outcome, batch ID; input, cached input, cache-write, reasoning, output, and total tokens; request count; duration and latency; status and finish reason; **actual metered cost** and its provenance; the original estimate. Dimensions a provider does not report stay null.
+
+## Actual spend vs estimated value
+
+- **Actual metered spend** — provider-reported charge (OpenRouter `usage.cost`). Only metered lanes can have it; subscription calls are not counted as "missing" spend.
+- **Estimated API-equivalent value** — **ESTIMATED**, never spend. Computed only for provider- or locally-measured tokens with an exact provider/model match in `src/server/pricing.ts` (rates with effective dates and sources live only there). Cached input uses the public cached rate when cached tokens are measured. Unmatched models show **Unavailable**, never a guessed price.
+
+## Analytics
+
+`src/server/usageAnalytics.ts` is the single query layer. Headline cards, the daily/hourly token chart, provider-lane, model, role, project, workflow, machine, workload, and reasoning breakdowns, model drill-down, decision analytics, and CSV/JSON exports all derive from one filtered event list, and tests assert that their totals reconcile.
+
+- **Filters:** date range (Today, Yesterday, 7 days, 30 days, this month, custom dates, or a configured quota envelope's billing period via `range=period&quotaId=…`), timezone, billing lane, provider, connection, model, project, workflow, role, machine, workload, reasoning/variant, run.
+- **Timezones:** events are stored in UTC and bucketed by local day/hour in the selected display timezone (default: the system timezone). Today means local midnight to local midnight, DST-correct.
+- **Unavailable is not zero:** each metric reports `value`, how many calls reported it, and how many did not. A metric no call reported is **Unavailable**. An empty day is genuinely zero.
+- **Lanes stay distinct:** the same model through OpenCode Go, ClinePass, and OpenRouter appears as three rows.
+- **Chart:** stacked bars split input into uncached and cached portions plus output, so the stack equals input + output. A legend and a table view accompany it.
+- **Decision analytics** are kept separate (see [Decision Layer](DECISION_LAYER.md)).
+
+## Export
+
+`GET /api/usage/export?format=csv|json` with the same filters as the view. Columns cover timestamps (UTC and local), machine, project, workflow, run, stage, role, workload, lane, connection, backend, provider, upstream provider, model, resolved model, variant, reasoning, context strategy, decision fields, every token dimension, request count, status, provenance, reconciliation state, actual cost, estimated value, and the original estimate. Exports contain no prompts, outputs, or credentials; CSV cells that look like spreadsheet formulas are neutralised.
+
+## Retention
+
+Detailed usage is kept until you delete it. 7/30-day views never discard data; the schema keeps per-event rows so later aggregation or cleanup can be added.
+
+## Quotas and forecasts
+
+Quota envelopes remain optional and **USER CONFIGURED** (allowance, unit, effective date, reset, notes). Forecasts use the envelope plus measured burn and are omitted when data is insufficient; a token forecast is unavailable while any sample in the window lacks token telemetry. Threshold notifications fire once at 80%.
+
+## OpenRouter key and account telemetry
+
+Key-level (`/api/v1/key`) and account-level (`/api/v1/credits`, management key) values are **PROVIDER MEASURED** and shown separately from Turing-recorded events and Turing budgets. See [OpenRouter](OPENROUTER.md).

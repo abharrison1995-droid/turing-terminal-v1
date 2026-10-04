@@ -42,7 +42,8 @@ export type StageKind =
   | 'conditionalBranch'
   | 'shellCommand'
   | 'notification'
-  | 'humanApproval';
+  | 'humanApproval'
+  | 'decisionGate';
 
 export type WorkflowConditionPath =
   'build.success' | 'tests.failed' | 'review.openCritical' | 'review.openHigh' | 'finalGate.status';
@@ -53,17 +54,56 @@ export interface WorkflowCondition {
   value: boolean | number | string;
 }
 
+/** How a model exposes reasoning control. Values stay provider-native; labels are presentational only. */
+export type ReasoningControl = 'effort' | 'variant' | 'budget' | 'provider-controlled' | 'none';
+export type ModelIdentityKind = 'pinned' | 'floating';
+export type ModelCatalogStatus = 'current' | 'last-known' | 'unavailable' | 'deprecated';
+export type CapabilityFamily = 'generative' | 'decision';
+
+export interface NumericRange {
+  min: number;
+  max: number;
+}
+
+/** Per-token USD prices reported by a metered provider catalog. Null means unknown, never zero. */
+export interface ModelPricingSnapshot {
+  promptUsdPerToken: number | null;
+  completionUsdPerToken: number | null;
+  requestUsd: number | null;
+  cacheReadUsdPerToken: number | null;
+  /** Highest conditional/override price seen; used for conservative reservations. */
+  maxPromptUsdPerToken: number | null;
+  maxCompletionUsdPerToken: number | null;
+  source: string;
+  observedAt: string;
+}
+
 export interface ModelOption {
   id: string;
   name: string;
   providerId: string;
   subscriptionBacked?: boolean;
+  /** Provider-native reasoning/effort values the selected model reports. */
   reasoningLevels?: string[];
   variantIds?: string[];
   capabilities?: Record<string, unknown>;
   discoveredAt?: string;
   adapterVersion?: string | null;
   supportsTools?: boolean;
+  family?: CapabilityFamily;
+  reasoningControl?: ReasoningControl;
+  reasoningBudgetRange?: NumericRange;
+  supportsTemperature?: boolean;
+  temperatureRange?: NumericRange;
+  supportsMaxOutput?: boolean;
+  maxOutputRange?: NumericRange;
+  supportsImages?: boolean;
+  supportsStructuredOutput?: boolean;
+  contextLength?: number | null;
+  identity?: ModelIdentityKind;
+  status?: ModelCatalogStatus;
+  deprecationDate?: string | null;
+  pricing?: ModelPricingSnapshot;
 }
 
 export interface ProviderCapabilities {
@@ -79,6 +119,31 @@ export interface ProviderCapabilities {
   structuredOutput: boolean;
   sessionResume: boolean;
   toolMediation: boolean;
+  /** Turing can bill this backend through a metered lane (OpenRouter, Cline usage-billing, …). */
+  meteredBilling?: boolean;
+  /** Turing can read whether the provider will silently fall back to pay-as-you-go. */
+  providerSideFallbackStatus?: boolean;
+  /** Structured decision API (for example Jev through OpenRouter Decisions). */
+  decisions?: boolean;
+}
+
+/** Provider-measured key/account telemetry. Key-level and account-level values are kept separate. */
+export interface ProviderSpendTelemetry {
+  scope: 'key' | 'account';
+  connectionProfileId: string | null;
+  label: string | null;
+  usageUsd: number | null;
+  usageDailyUsd: number | null;
+  usageWeeklyUsd: number | null;
+  usageMonthlyUsd: number | null;
+  limitUsd: number | null;
+  limitRemainingUsd: number | null;
+  limitReset: string | null;
+  expiresAt: string | null;
+  accountCreditsUsd: number | null;
+  accountUsageUsd: number | null;
+  provenance: 'provider_measured';
+  observedAt: string;
 }
 
 export interface ProviderStatus {
@@ -94,6 +159,10 @@ export interface ProviderStatus {
   checkedAt: string;
   capabilities: ProviderCapabilities;
   models: ModelOption[];
+  /** live = refreshed from the provider now; cache = last-known catalog after a failed refresh. */
+  catalogSource?: 'live' | 'cache' | 'adapter' | 'none';
+  catalogRefreshedAt?: string | null;
+  spendTelemetry?: ProviderSpendTelemetry[];
 }
 
 export type BillingLane =
@@ -105,7 +174,119 @@ export type BillingLane =
   | 'claude-subscription'
   | 'openai-api'
   | 'anthropic-api'
+  | 'openrouter-metered'
   | 'unknown';
+
+/**
+ * Run-level billing permission. Subscriptions Only blocks every metered lane. Subscriptions + Decision
+ * Budget additionally allows explicitly configured Decision Engine calls on a metered lane under budget.
+ * Custom allows explicitly configured lanes. No mode permits silent substitution.
+ */
+export type BillingMode = 'subscriptions-only' | 'subscriptions-plus-decision-budget' | 'custom';
+export type WorkloadType = 'generative' | 'decision' | 'deterministic';
+export type UnknownCostPolicy = 'block' | 'ask' | 'allow-with-warning';
+export type ExternalDataPolicy = 'allow' | 'ask-first' | 'block';
+
+export interface MeteredBudgetPolicy {
+  /** Hard Turing cap for metered spend in one run (USD). Null = no per-run cap (requires custom mode). */
+  perRunUsd: number | null;
+  unknownCostPolicy: UnknownCostPolicy;
+}
+
+/** Desktop-wide metered budgets, separate from any provider-enforced key limit. */
+export interface MeteredBudgetSettings {
+  dailyUsd: number | null;
+  monthlyUsd: number | null;
+  warningRatio: number;
+  timezone: string | null;
+  updatedAt: string | null;
+}
+
+export type UsageProvenance =
+  'provider_measured' | 'locally_measured' | 'user_configured' | 'estimated' | 'unavailable';
+
+export type DecisionEngineId =
+  'deterministic-rules' | 'jev-openrouter' | 'subscription-llm-judge' | 'openrouter-judge';
+export type DecisionQuestionType = 'boolean' | 'choice' | 'score';
+export type DecisionInputCategory =
+  'task' | 'plan' | 'implementation' | 'diff' | 'tests' | 'build' | 'findings' | 'finalGate';
+export type DecisionOutcome = 'pass' | 'fail' | 'uncertain' | 'choice';
+
+export interface DecisionRouteAction {
+  action: 'continue' | 'skip-stages' | 'fail-run' | 'human-approval' | 'escalate';
+  skipStageIds?: string[];
+}
+
+export interface DecisionRoutingPolicy {
+  /** The explicit DecisionResult field thresholds read. Probability and confidence are never interchangeable. */
+  field: 'probability' | 'confidence' | 'score';
+  passAtOrAbove?: number;
+  failAtOrBelow?: number;
+  /** Choice/score only: below this engine-reported confidence the result is UNCERTAIN. */
+  minConfidence?: number;
+  onPass: DecisionRouteAction;
+  onFail: DecisionRouteAction;
+  onUncertain: DecisionRouteAction;
+  choiceRoutes?: Record<string, DecisionRouteAction>;
+}
+
+export interface DecisionEngineRoute {
+  engine: DecisionEngineId;
+  modelId?: string;
+  connectionProfileId?: string;
+  /** Subscription judge route (backend/provider/lane/model/variant) — reuses the normal stage route model. */
+  judge?: ModelConfiguration;
+}
+
+export interface DecisionGateConfig extends DecisionEngineRoute {
+  questionType: DecisionQuestionType;
+  question: string;
+  /** boolean: {true,false} descriptions; choice: option id → description; score: ordered level descriptions. */
+  criteria?: Record<string, string> | string[];
+  inputs: DecisionInputCategory[];
+  maxStateChars?: number;
+  /** Deterministic Rules engine: structured proposition over Turing state. */
+  rule?: WorkflowCondition;
+  routing: DecisionRoutingPolicy;
+  escalation?: DecisionEngineRoute;
+  instructions?: string;
+}
+
+export interface DecisionResult {
+  id: string;
+  runId: string | null;
+  stageId: string | null;
+  batchId: string | null;
+  usageEventId: string | null;
+  engine: DecisionEngineId;
+  providerId: string | null;
+  billingLane: BillingLane | null;
+  configuredModelId: string | null;
+  resolvedModelId: string | null;
+  upstreamProvider: string | null;
+  questionId: string;
+  questionType: DecisionQuestionType;
+  question: string;
+  answer: string | boolean | number | null;
+  /** Boolean: engine-reported P(true). Never a confidence value. */
+  probability: number | null;
+  distribution: Record<string, number> | null;
+  /** Engine-reported confidence (for Jev: peakedness of the distribution). Never a probability. */
+  confidence: number | null;
+  confidenceKind: 'engine-distribution' | 'self-reported' | 'deterministic' | null;
+  score: number | null;
+  legend: Record<string, string> | null;
+  outcome: DecisionOutcome;
+  route: DecisionRouteAction & { reason: string };
+  configHash: string;
+  schemaVersion: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  costUsd: number | null;
+  costProvenance: UsageProvenance;
+  escalatedFromId: string | null;
+  createdAt: string;
+}
 
 export type ContextStrategy = 'focused' | 'changed-files' | 'artifacts-only' | 'full-project';
 
@@ -181,10 +362,18 @@ export interface WorkflowStage {
     capabilities: Record<string, unknown>;
     discoveredAt: string | null;
     adapterVersion: string | null;
-    status: 'current' | 'last-known' | 'unavailable' | 'deprecated';
+    status: ModelCatalogStatus;
+    identity?: ModelIdentityKind;
+    reasoningControl?: ReasoningControl;
   };
   customInstructions?: string;
   contextPolicy?: Partial<ContextPolicy>;
+  decision?: DecisionGateConfig;
+  /** Optional AI Orchestrator: it may only choose among these explicitly configured forward branches. */
+  orchestration?: {
+    branches: Array<{ id: string; label: string; skipStageIds: string[] }>;
+    defaultBranchId: string;
+  };
   maxIterations?: number;
   timeoutMinutes?: number;
   retryPolicy?: Partial<RetryPolicy>;
@@ -220,7 +409,12 @@ export interface WorkflowDefinition {
   maxDurationMinutes: number;
   retryPolicy: RetryPolicy;
   isolatedWorktree: boolean;
+  /** Derived compatibility flag: true unless billingMode is custom. */
   subscriptionOnly: boolean;
+  billingMode: BillingMode;
+  customAllowedLanes?: BillingLane[];
+  meteredBudget: MeteredBudgetPolicy;
+  externalDecisionDataPolicy: ExternalDataPolicy;
   lockProviders: boolean;
   defaultModelConfiguration?: ModelConfiguration;
   stageDefaults?: Partial<Record<StageKind, ModelConfiguration>>;
@@ -324,6 +518,7 @@ export interface RunSummary {
   permissionMode: PermissionMode;
   refinePrompt: boolean;
   subscriptionOnly?: boolean;
+  billingMode?: BillingMode;
   lockProviders?: boolean;
   status: RunStatus;
   branch: string | null;
@@ -337,25 +532,57 @@ export interface RunSummary {
   remainingMs: number | null;
 }
 
+export type UsageReconciliationState = 'pending' | 'locally_estimated' | 'provider_reconciled' | 'final';
+
+/** One canonical row per external inference/decision call. Later telemetry updates it in place. */
 export interface UsageEvent {
   id: string;
+  requestId: string | null;
+  providerRequestId: string | null;
   occurredAt: string;
-  providerId: string | null;
-  modelId: string | null;
-  connectionProfileId?: string | null;
-  billingLane?: BillingLane | null;
-  variantId?: string | null;
-  backend: string | null;
+  machineId: string | null;
   projectId: string | null;
+  projectName?: string | null;
+  workflowId: string | null;
   runId: string | null;
   stageId: string | null;
+  stageTitle?: string | null;
   role: string | null;
+  workloadType: WorkloadType;
+  backend: string | null;
+  connectionProfileId: string | null;
+  billingLane: BillingLane | null;
+  providerId: string | null;
+  upstreamProvider: string | null;
+  modelId: string | null;
+  resolvedModelId: string | null;
+  modelDisplayName: string | null;
+  variantId: string | null;
+  reasoning: string | null;
+  contextStrategy: string | null;
+  decisionEngine: string | null;
+  decisionType: string | null;
+  decisionOutcome: string | null;
+  batchId: string | null;
   inputTokens: number | null;
+  cachedInputTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
   outputTokens: number | null;
-  durationMs: number;
+  totalTokens: number | null;
   requestCount: number;
-  provenance: 'provider_reported' | 'locally_measured' | 'estimated' | 'unavailable';
+  durationMs: number;
+  latencyMs: number | null;
+  status: string;
+  finishReason: string | null;
+  tokenProvenance: UsageProvenance;
+  actualCostUsd: number | null;
+  actualCostProvenance: UsageProvenance;
   equivalentCostUsd: number | null;
+  reconciliationState: UsageReconciliationState;
+  estimatedInputTokens: number | null;
+  estimatedOutputTokens: number | null;
+  estimatedCostUsd: number | null;
 }
 
 export interface Approval {
@@ -436,6 +663,7 @@ export interface RunPreview {
   permissionMode: PermissionMode;
   refinePrompt: boolean;
   subscriptionOnly: boolean;
+  billingMode: BillingMode;
   lockProviders: boolean;
   effectiveRules: TuringRule[];
   branchStrategy: 'worktree' | 'current-branch';
@@ -444,6 +672,24 @@ export interface RunPreview {
   warnings: string[];
   providerAssignments: Array<{
     stage: string;
+    stageId?: string;
+    kind?: StageKind;
+    role?: string | null;
+    workload?: WorkloadType;
+    identity?: ModelIdentityKind;
+    billingAllowed?: boolean;
+    billingReason?: string | null;
+    decision?: {
+      engine: DecisionEngineId;
+      questionType: DecisionQuestionType;
+      question: string;
+      routingField: DecisionRoutingPolicy['field'];
+      inputs: DecisionInputCategory[];
+      external: boolean;
+      externalDataPolicy: ExternalDataPolicy;
+      configHash: string;
+      escalation: DecisionEngineId | null;
+    };
     backendId: string | null;
     providerId: string | null;
     modelId: string | null;
@@ -466,6 +712,27 @@ export interface RunPreview {
     ready: boolean;
   }>;
   billingSummary: Array<{ billingLane: BillingLane | 'not-used'; stages: string[] }>;
-  providerFallbackStatus: Array<{ backendId: string; status: 'known-disabled' | 'known-enabled' | 'unknown'; message: string }>;
+  routingSummary: {
+    subscriptions: Array<{ billingLane: BillingLane; label: string; stages: string[] }>;
+    metered: Array<{
+      billingLane: BillingLane;
+      label: string;
+      generativeStages: string[];
+      decisionStages: string[];
+    }>;
+    meteredNone: boolean;
+    runMeteredCapUsd: number | null;
+    dailyBudgetUsd: number | null;
+    monthlyBudgetUsd: number | null;
+    unknownCostPolicy: UnknownCostPolicy;
+    paygFallback: 'none' | 'configured';
+    externalDecisionDataPolicy: ExternalDataPolicy;
+  };
+  providerFallbackStatus: Array<{
+    backendId: string;
+    billingLane?: BillingLane;
+    status: 'known-disabled' | 'known-enabled' | 'unknown';
+    message: string;
+  }>;
   contextWarnings: string[];
 }

@@ -1,0 +1,185 @@
+/* Phase 3.6: billing, decision, and usage-analytics controls. Tokens only; functional styling
+   ahead of the dedicated /impeccable pass. */
+
+.billing-safety-fields,
+.decision-gate-editor {
+  display: grid;
+  gap: var(--s-3);
+}
+.decision-gate-editor {
+  padding: var(--s-3);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+.decision-route-field,
+.orchestrator-branch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-2) var(--s-3);
+}
+.orchestrator-branch {
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Usage explorer */
+.usage-explorer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-4);
+  margin-bottom: var(--s-4);
+}
+.usage-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-2) var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+.usage-controls .form-field {
+  min-width: 140px;
+  max-width: 220px;
+}
+.usage-export-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-left: auto;
+}
+.usage-export-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  text-decoration: none;
+}
+.usage-row-clickable {
+  cursor: pointer;
+}
+.usage-row-clickable:hover {
+  background: var(--hover);
+}
+.usage-row-clickable:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.breakdown-table .usage-table-head,
+.breakdown-table .usage-table-row {
+  grid-template-columns: minmax(0, 1.3fr) minmax(130px, 1fr) minmax(56px, 0.4fr) minmax(110px, 0.9fr);
+}
+.breakdown-table .usage-key .bar-track {
+  max-width: 220px;
+  margin-top: var(--s-1);
+}
+.breakdown-table .usage-key .bar-track i {
+  background: #2a78d6;
+}
+.usage-table-row span small {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+
+/* Token chart: blue / aqua / orange validated for CVD against --surface; aqua's low contrast is
+   relieved by the legend and the table view. */
+.token-chart {
+  display: grid;
+  gap: var(--s-2);
+}
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+}
+.chart-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+.chart-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.chart-legend .text-button {
+  margin-left: auto;
+}
+.chart-frame {
+  position: relative;
+}
+.chart-frame svg {
+  display: block;
+  width: 100%;
+  height: 200px;
+}
+.chart-frame g:focus {
+  outline: none;
+}
+.chart-axis {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+.chart-tick {
+  fill: var(--ink-3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tooltip {
+  position: absolute;
+  top: 0;
+  z-index: 2;
+  display: grid;
+  gap: 2px;
+  min-width: 160px;
+  padding: var(--s-2) var(--s-3);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--elev-float);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  /* Sit above the plot so the hovered bar stays visible. */
+  transform: translate(-50%, calc(-100% - 4px));
+}
+
+@media (max-width: 680px) {
+  .usage-controls {
+    padding: var(--s-3);
+  }
+  .usage-controls .window-switcher {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+  .usage-controls .form-field {
+    flex: 1 1 140px;
+    max-width: none;
+  }
+  .usage-export-actions {
+    margin-left: 0;
+  }
+  /* On phones keep tokens and spend; hide the request count column instead. */
+  .breakdown-table .usage-table-head,
+  .breakdown-table .usage-table-row {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  }
+  .breakdown-table .usage-table-head > :nth-child(3),
+  .breakdown-table .usage-table-row > :nth-child(3) {
+    display: none;
+  }
+  .breakdown-table .usage-table-head > :last-child,
+  .breakdown-table .usage-table-row > :last-child {
+    display: block;
+  }
+  .chart-frame svg {
+    height: 160px;
+  }
+}

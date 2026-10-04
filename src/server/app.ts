@@ -7,12 +7,65 @@ import { relative, resolve, join } from 'node:path';
 import { execFile as callbackExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import type { StageKind, WorkflowDefinition, WorkflowStage } from '../shared/types.js';
+import type {
+  BillingLane,
+  DecisionGateConfig,
+  StageKind,
+  WorkflowDefinition,
+  WorkflowStage,
+} from '../shared/types.js';
+import {
+  ALL_BILLING_LANES,
+  BILLING_MODES,
+  billingLaneLabel,
+  evaluateBillingLane,
+  inferBillingLane,
+  isMeteredLane,
+  isSubscriptionLane,
+  PROVIDER_FALLBACK_UNVERIFIABLE,
+  providerSideFallbackStatus,
+  resolveBillingMode,
+  routeMatchesBillingLane,
+  SUBSCRIPTION_LANES,
+} from '../shared/billing.js';
+import {
+  classifyModelIdentity,
+  reasoningControlFor,
+  validateModelSettings,
+} from '../shared/modelSettings.js';
+import { decisionEngineInfo, validateDecisionGate } from '../shared/decisions.js';
+import { isValidTimeZone, resolveRange, systemTimeZone, type RangePreset } from '../shared/timezone.js';
+import { allProviders, openRouterTelemetry } from './modelCatalog.js';
+import { SecretStore, secretRef } from './secretStore.js';
+import { budgetStatus, getBudgetSettings, saveBudgetSettings } from './meteredBudget.js';
+import {
+  exportRows,
+  loadUsageEvents,
+  queryUsageAnalytics,
+  toCsv,
+  type UsageFilter,
+} from './usageAnalytics.js';
+import {
+  decisionConfigHash,
+  decisionEngine,
+  listDecisionResults,
+  type DecisionContext,
+} from './decisionEngines.js';
+import { createMeteringHooks } from './metering.js';
+import { routeDecision } from '../shared/decisions.js';
 import { applyExecutionProfile, validateWorkflow } from './workflowValidation.js';
 import type { Db } from './db.js';
-import { getRunRow, localMachine, toApproval, toConnectionProfile, toModelPreset, toProject, toRun, toWorkflow } from './serialize.js';
+import {
+  getRunRow,
+  localMachine,
+  toApproval,
+  toConnectionProfile,
+  toModelPreset,
+  toProject,
+  toRun,
+  toWorkflow,
+} from './serialize.js';
 import { scanProject } from './projectScanner.js';
-import { discoverProviders } from './providers.js';
 import { RunEngine } from './runEngine.js';
 import { readGitDiff } from './git.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
@@ -50,8 +103,79 @@ const STAGE_KINDS = [
   'shellCommand',
   'notification',
   'humanApproval',
+  'decisionGate',
 ] as const satisfies readonly StageKind[];
-const billingLanes = ['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown'] as const;
+const billingLanes = ALL_BILLING_LANES as unknown as readonly [BillingLane, ...BillingLane[]];
+const nativeSettingsSchema = z.record(
+  z.string(),
+  z.union([z.string().max(500), z.number(), z.boolean(), z.null()]),
+);
+const modelConfigurationSchema = z.object({
+  backendId: z.string().max(80).optional(),
+  connectionProfileId: z.string().max(100).optional(),
+  providerId: z.string().max(80).optional(),
+  billingLane: z.enum(billingLanes).optional(),
+  modelId: z.string().max(180).optional(),
+  modelDisplayName: z.string().max(180).optional(),
+  variantId: z.string().max(80).optional(),
+  reasoning: z.string().max(80).optional(),
+  nativeSettings: nativeSettingsSchema.optional(),
+});
+const conditionSchema = z.object({
+  path: z.enum([
+    'build.success',
+    'tests.failed',
+    'review.openCritical',
+    'review.openHigh',
+    'finalGate.status',
+  ]),
+  operator: z.enum(['equals', 'notEquals', 'greaterThan', 'lessThan']),
+  value: z.union([z.boolean(), z.number(), z.string().max(80)]),
+});
+const routeActionSchema = z.object({
+  action: z.enum(['continue', 'skip-stages', 'fail-run', 'human-approval', 'escalate']),
+  skipStageIds: z.array(z.string().min(1).max(80)).max(50).optional(),
+});
+const decisionEngines = [
+  'deterministic-rules',
+  'jev-openrouter',
+  'subscription-llm-judge',
+  'openrouter-judge',
+] as const;
+const engineRouteSchema = z.object({
+  engine: z.enum(decisionEngines),
+  modelId: z.string().max(180).optional(),
+  connectionProfileId: z.string().max(100).optional(),
+  judge: modelConfigurationSchema.optional(),
+});
+const decisionSchema = engineRouteSchema.extend({
+  questionType: z.enum(['boolean', 'choice', 'score']),
+  question: z.string().trim().min(1).max(2_000),
+  criteria: z
+    .union([z.record(z.string().min(1).max(80), z.string().max(500)), z.array(z.string().max(500)).max(10)])
+    .optional(),
+  inputs: z
+    .array(z.enum(['task', 'plan', 'implementation', 'diff', 'tests', 'build', 'findings', 'finalGate']))
+    .max(8),
+  maxStateChars: z.number().int().min(1_000).max(96_000).optional(),
+  rule: conditionSchema.optional(),
+  routing: z.object({
+    field: z.enum(['probability', 'confidence', 'score']),
+    passAtOrAbove: z.number().finite().optional(),
+    failAtOrBelow: z.number().finite().optional(),
+    minConfidence: z.number().finite().optional(),
+    onPass: routeActionSchema,
+    onFail: routeActionSchema,
+    onUncertain: routeActionSchema,
+    choiceRoutes: z.record(z.string().max(80), routeActionSchema).optional(),
+  }),
+  escalation: engineRouteSchema.optional(),
+  instructions: z.string().max(4_000).optional(),
+});
+const meteredBudgetSchema = z.object({
+  perRunUsd: z.number().finite().min(0).max(1_000).nullable().default(null),
+  unknownCostPolicy: z.enum(['block', 'ask', 'allow-with-warning']).default('block'),
+});
 const AI_KINDS = new Set<WorkflowStage['kind']>([
   'planner',
   'promptRefinement',
@@ -87,6 +211,7 @@ const stageSchema = z.object({
     'shellCommand',
     'notification',
     'humanApproval',
+    'decisionGate',
   ]),
   role: z.string().max(80).optional(),
   backendId: z.string().max(80).optional(),
@@ -97,34 +222,58 @@ const stageSchema = z.object({
   connectionProfileId: z.string().max(100).optional(),
   modelDisplayName: z.string().max(180).optional(),
   variantId: z.string().max(80).optional(),
-  modelSnapshot: z.object({
-    providerId: z.string().max(80),
-    modelId: z.string().max(180),
-    displayName: z.string().max(180),
-    connectionProfileName: z.string().max(100).nullable().optional(),
-    billingLane: z.enum(billingLanes).optional(),
-    variantId: z.string().max(80).optional(),
-    capabilities: z.record(z.string(), z.unknown()),
-    discoveredAt: z.string().datetime().nullable(),
-    adapterVersion: z.string().max(120).nullable(),
-    status: z.enum(['current', 'last-known', 'unavailable', 'deprecated']),
-  }).optional(),
-  nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
+  modelSnapshot: z
+    .object({
+      providerId: z.string().max(80),
+      modelId: z.string().max(180),
+      displayName: z.string().max(180),
+      connectionProfileName: z.string().max(100).nullable().optional(),
+      billingLane: z.enum(billingLanes).optional(),
+      variantId: z.string().max(80).optional(),
+      capabilities: z.record(z.string(), z.unknown()),
+      discoveredAt: z.string().datetime().nullable(),
+      adapterVersion: z.string().max(120).nullable(),
+      status: z.enum(['current', 'last-known', 'unavailable', 'deprecated']),
+      identity: z.enum(['pinned', 'floating']).optional(),
+      reasoningControl: z.enum(['effort', 'variant', 'budget', 'provider-controlled', 'none']).optional(),
+    })
+    .optional(),
+  nativeSettings: z
+    .record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()]))
+    .optional(),
   customInstructions: z.string().max(8_000).optional(),
-  contextPolicy: z.object({
-    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).optional(),
-    maxFiles: z.number().int().min(1).max(500).optional(),
-    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).optional(),
-    maxFileBytes: z.number().int().min(1_024).max(2_000_000).optional(),
-    includeGlobs: z.array(z.string().max(160)).max(100).optional(),
-    excludeGlobs: z.array(z.string().max(160)).max(100).optional(),
-    includeCurrentDiff: z.boolean().optional(),
-    includeTestOutput: z.boolean().optional(),
-    includeBuildOutput: z.boolean().optional(),
-    includePreviousArtifact: z.boolean().optional(),
-    includePreviousTranscript: z.boolean().optional(),
-    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).optional(),
-  }).optional(),
+  contextPolicy: z
+    .object({
+      strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).optional(),
+      maxFiles: z.number().int().min(1).max(500).optional(),
+      maxEstimatedTokens: z.number().int().min(1_000).max(500_000).optional(),
+      maxFileBytes: z.number().int().min(1_024).max(2_000_000).optional(),
+      includeGlobs: z.array(z.string().max(160)).max(100).optional(),
+      excludeGlobs: z.array(z.string().max(160)).max(100).optional(),
+      includeCurrentDiff: z.boolean().optional(),
+      includeTestOutput: z.boolean().optional(),
+      includeBuildOutput: z.boolean().optional(),
+      includePreviousArtifact: z.boolean().optional(),
+      includePreviousTranscript: z.boolean().optional(),
+      onLimitExceeded: z.enum(['compact', 'ask', 'stop']).optional(),
+    })
+    .optional(),
+  decision: decisionSchema.optional(),
+  orchestration: z
+    .object({
+      branches: z
+        .array(
+          z.object({
+            id: z.string().trim().min(1).max(80),
+            label: z.string().trim().min(1).max(120),
+            skipStageIds: z.array(z.string().min(1).max(80)).max(50),
+          }),
+        )
+        .min(1)
+        .max(10),
+      defaultBranchId: z.string().trim().min(1).max(80),
+    })
+    .optional(),
   maxIterations: z.number().int().min(1).max(20).optional(),
   timeoutMinutes: z.number().int().min(1).max(360).optional(),
   retryPolicy: z
@@ -136,19 +285,7 @@ const stageSchema = z.object({
     .optional(),
   parallelism: z.number().int().min(1).max(8).optional(),
   command: z.array(z.string().max(200)).length(3).optional(),
-  condition: z
-    .object({
-      path: z.enum([
-        'build.success',
-        'tests.failed',
-        'review.openCritical',
-        'review.openHigh',
-        'finalGate.status',
-      ]),
-      operator: z.enum(['equals', 'notEquals', 'greaterThan', 'lessThan']),
-      value: z.union([z.boolean(), z.number(), z.string().max(80)]),
-    })
-    .optional(),
+  condition: conditionSchema.optional(),
   skipStageIds: z.array(z.string().min(1).max(80)).max(50).optional(),
   notificationMessage: z.string().max(1_000).optional(),
   commitMessage: z.string().trim().min(1).max(120).optional(),
@@ -180,49 +317,54 @@ const workflowSchema = z.object({
     }),
   isolatedWorktree: z.boolean(),
   subscriptionOnly: z.boolean().default(true),
+  billingMode: z
+    .enum(
+      BILLING_MODES as unknown as readonly [
+        'subscriptions-only',
+        'subscriptions-plus-decision-budget',
+        'custom',
+      ],
+    )
+    .optional(),
+  customAllowedLanes: z.array(z.enum(billingLanes)).max(20).optional(),
+  meteredBudget: meteredBudgetSchema.default({ perRunUsd: null, unknownCostPolicy: 'block' }),
+  externalDecisionDataPolicy: z.enum(['allow', 'ask-first', 'block']).default('ask-first'),
   lockProviders: z.boolean().default(true),
-  defaultModelConfiguration: z.object({
-    backendId: z.string().max(80).optional(),
-    connectionProfileId: z.string().max(100).optional(),
-    providerId: z.string().max(80).optional(),
-    billingLane: z.enum(['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown']).optional(),
-    modelId: z.string().max(180).optional(),
-    modelDisplayName: z.string().max(180).optional(),
-    variantId: z.string().max(80).optional(),
-    reasoning: z.string().max(80).optional(),
-    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
-  }).optional(),
-  stageDefaults: z.record(z.string(), z.object({
-    backendId: z.string().max(80).optional(),
-    connectionProfileId: z.string().max(100).optional(),
-    providerId: z.string().max(80).optional(),
-    billingLane: z.enum(['opencode-go-subscription', 'opencode-metered', 'clinepass-subscription', 'cline-usage-billing', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'unknown']).optional(),
-    modelId: z.string().max(180).optional(),
-    modelDisplayName: z.string().max(180).optional(),
-    variantId: z.string().max(80).optional(),
-    reasoning: z.string().max(80).optional(),
-    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
-  })).optional(),
+  defaultModelConfiguration: modelConfigurationSchema.optional(),
+  stageDefaults: z.record(z.string(), modelConfigurationSchema).optional(),
   globalInstructions: z.string().max(8_000).optional(),
-  contextPolicy: z.object({
-    strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).default('focused'),
-    maxFiles: z.number().int().min(1).max(500).default(24),
-    maxEstimatedTokens: z.number().int().min(1_000).max(500_000).default(32_000),
-    maxFileBytes: z.number().int().min(1_024).max(2_000_000).default(80_000),
-    includeGlobs: z.array(z.string().max(160)).max(100).default([]),
-    excludeGlobs: z.array(z.string().max(160)).max(100).default(['.git/**', 'node_modules/**', 'dist/**', 'build/**']),
-    includeCurrentDiff: z.boolean().default(true),
-    includeTestOutput: z.boolean().default(true),
-    includeBuildOutput: z.boolean().default(true),
-    includePreviousArtifact: z.boolean().default(true),
-    includePreviousTranscript: z.boolean().default(false),
-    onLimitExceeded: z.enum(['compact', 'ask', 'stop']).default('compact'),
-  }).default({
-    strategy: 'focused', maxFiles: 24, maxEstimatedTokens: 32_000, maxFileBytes: 80_000,
-    includeGlobs: [], excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
-    includeCurrentDiff: true, includeTestOutput: true, includeBuildOutput: true,
-    includePreviousArtifact: true, includePreviousTranscript: false, onLimitExceeded: 'compact',
-  }),
+  contextPolicy: z
+    .object({
+      strategy: z.enum(['focused', 'changed-files', 'artifacts-only', 'full-project']).default('focused'),
+      maxFiles: z.number().int().min(1).max(500).default(24),
+      maxEstimatedTokens: z.number().int().min(1_000).max(500_000).default(32_000),
+      maxFileBytes: z.number().int().min(1_024).max(2_000_000).default(80_000),
+      includeGlobs: z.array(z.string().max(160)).max(100).default([]),
+      excludeGlobs: z
+        .array(z.string().max(160))
+        .max(100)
+        .default(['.git/**', 'node_modules/**', 'dist/**', 'build/**']),
+      includeCurrentDiff: z.boolean().default(true),
+      includeTestOutput: z.boolean().default(true),
+      includeBuildOutput: z.boolean().default(true),
+      includePreviousArtifact: z.boolean().default(true),
+      includePreviousTranscript: z.boolean().default(false),
+      onLimitExceeded: z.enum(['compact', 'ask', 'stop']).default('compact'),
+    })
+    .default({
+      strategy: 'focused',
+      maxFiles: 24,
+      maxEstimatedTokens: 32_000,
+      maxFileBytes: 80_000,
+      includeGlobs: [],
+      excludeGlobs: ['.git/**', 'node_modules/**', 'dist/**', 'build/**'],
+      includeCurrentDiff: true,
+      includeTestOutput: true,
+      includeBuildOutput: true,
+      includePreviousArtifact: true,
+      includePreviousTranscript: false,
+      onLimitExceeded: 'compact',
+    }),
   stages: z.array(stageSchema).min(1).max(50),
 });
 
@@ -232,21 +374,13 @@ const connectionProfileSchema = z.object({
   providerId: z.string().trim().min(1).max(80),
   billingLane: z.enum(billingLanes),
   credentialStoreRef: z.string().max(200).nullable().optional(),
-  metadata: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).default({}),
+  metadata: z
+    .record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()]))
+    .default({}),
 });
 const modelPresetSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  configuration: z.object({
-    backendId: z.string().max(80).optional(),
-    connectionProfileId: z.string().max(100).optional(),
-    providerId: z.string().max(80).optional(),
-    billingLane: z.enum(billingLanes).optional(),
-    modelId: z.string().max(180).optional(),
-    modelDisplayName: z.string().max(180).optional(),
-    variantId: z.string().max(80).optional(),
-    reasoning: z.string().max(80).optional(),
-    nativeSettings: z.record(z.string(), z.union([z.string().max(500), z.number(), z.boolean(), z.null()])).optional(),
-  }),
+  configuration: modelConfigurationSchema,
 });
 const projectSchema = z.object({ path: z.string().trim().min(1).max(2_000) });
 const projectPatchSchema = z.object({
@@ -264,6 +398,7 @@ const runInputSchema = z.object({
   enigmaConfirmed: z.boolean().optional(),
   refinePrompt: z.boolean().optional(),
   subscriptionOnly: z.boolean().optional(),
+  billingMode: z.enum(['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom']).optional(),
   lockProviders: z.boolean().optional(),
 });
 const ruleSchema = z.object({
@@ -779,7 +914,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         Record<string, unknown>
       >
     ).map(toWorkflow);
-    const providers = await discoverProviders();
+    const providers = await allProviders(db);
     const runRows = db
       .prepare(
         `SELECT r.*, p.name AS project_name, w.name AS workflow_name FROM runs r
@@ -822,7 +957,279 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     };
   });
 
-  app.get('/api/providers', async () => ({ providers: await discoverProviders() }));
+  app.get('/api/providers', async () => ({ providers: await allProviders(db) }));
+  // Refresh live catalogs (or adapter metadata). No generation request is sent.
+  app.post('/api/providers/refresh', async () => ({ providers: await allProviders(db, { refresh: true }) }));
+  app.get('/api/providers/openrouter/telemetry', async () => {
+    const result = await openRouterTelemetry(db);
+    return { ...result, provenance: 'provider_measured' };
+  });
+
+  // Credentials are write-only and desktop-only: no API route ever returns a stored secret, and
+  // paired phones cannot set, replace, or remove them.
+  app.put('/api/connection-profiles/:id/credentials/:kind', async (request, reply) => {
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply.code(403).send({ error: 'Provider credentials can be managed on the desktop only.' });
+    const { id, kind } = request.params as { id: string; kind: string };
+    if (kind !== 'inference' && kind !== 'management')
+      return reply.code(400).send({ error: 'Choose an inference or management credential.' });
+    const profile = db.prepare('SELECT backend_id FROM connection_profiles WHERE id = ?').get(id) as
+      { backend_id: string } | undefined;
+    if (!profile) return reply.code(404).send({ error: 'Connection profile was not found.' });
+    if (profile.backend_id !== 'openrouter')
+      return reply.code(400).send({
+        error: 'This backend authenticates through its official CLI; Turing does not store its credentials.',
+      });
+    const parsed = z.object({ secret: z.string().trim().min(8).max(512) }).safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'Enter the credential value.' });
+    try {
+      SecretStore.forDatabase(db).write(secretRef(id, kind), parsed.data.secret);
+    } catch (error) {
+      return reply.code(400).send({ error: redactSecrets(message(error)) });
+    }
+    return {
+      profile: withCredentialState(
+        db,
+        toConnectionProfile(
+          db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+        ),
+      ),
+    };
+  });
+  app.delete('/api/connection-profiles/:id/credentials/:kind', async (request, reply) => {
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply.code(403).send({ error: 'Provider credentials can be managed on the desktop only.' });
+    const { id, kind } = request.params as { id: string; kind: string };
+    if (kind !== 'inference' && kind !== 'management')
+      return reply.code(400).send({ error: 'Choose an inference or management credential.' });
+    SecretStore.forDatabase(db).delete(secretRef(id, kind));
+    return { deleted: true };
+  });
+
+  app.get('/api/budgets', async (request) => {
+    const { runId } = request.query as { runId?: string };
+    const settings = getBudgetSettings(db);
+    return { settings, status: budgetStatus(db, runId ?? null, null), systemTimeZone: systemTimeZone() };
+  });
+  app.put('/api/budgets', async (request, reply) => {
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply.code(403).send({ error: 'Metered budgets can be changed on the desktop only.' });
+    const parsed = z
+      .object({
+        dailyUsd: z.number().finite().min(0).max(10_000).nullable(),
+        monthlyUsd: z.number().finite().min(0).max(100_000).nullable(),
+        warningRatio: z.number().finite().min(0.1).max(1).default(0.8),
+        timezone: z.string().max(80).nullable().default(null),
+      })
+      .safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid budget settings.' });
+    if (parsed.data.timezone && !isValidTimeZone(parsed.data.timezone))
+      return reply.code(400).send({ error: 'Unknown timezone.' });
+    return { settings: saveBudgetSettings(db, parsed.data) };
+  });
+
+  app.get('/api/usage/analytics', async (request, reply) => {
+    const filter = usageFilterFromQuery(db, request.query as Record<string, string | undefined>);
+    if ('error' in filter) return reply.code(400).send({ error: filter.error });
+    return queryUsageAnalytics(db, filter);
+  });
+  app.get('/api/usage/export', async (request, reply) => {
+    const query = request.query as Record<string, string | undefined>;
+    const filter = usageFilterFromQuery(db, query);
+    if ('error' in filter) return reply.code(400).send({ error: filter.error });
+    const rows = exportRows(loadUsageEvents(db, filter), filter.timeZone);
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (query.format === 'json') {
+      reply.header('content-disposition', `attachment; filename="turing-usage-${stamp}.json"`);
+      return {
+        exportedAt: new Date().toISOString(),
+        filter,
+        columns: rows.length ? Object.keys(rows[0]!) : [],
+        rows,
+      };
+    }
+    reply.header('content-type', 'text/csv; charset=utf-8');
+    reply.header('content-disposition', `attachment; filename="turing-usage-${stamp}.csv"`);
+    return toCsv(rows);
+  });
+
+  // Decision policy test mode: evaluate a Decision Gate configuration against deterministic fixtures.
+  app.post('/api/decision-gates/test', async (request, reply) => {
+    const parsed = z
+      .object({
+        decision: decisionSchema,
+        fixtures: z
+          .array(
+            z.object({
+              name: z.string().max(120).default(''),
+              state: z.record(z.string(), z.unknown()).default({}),
+              conditionValues: z
+                .record(z.string(), z.union([z.boolean(), z.number(), z.string()]))
+                .optional(),
+              expected: z.union([z.boolean(), z.string().max(80), z.number()]).optional(),
+            }),
+          )
+          .min(1)
+          .max(200),
+        billingMode: z
+          .enum(['subscriptions-only', 'subscriptions-plus-decision-budget', 'custom'])
+          .default('subscriptions-only'),
+        maxCostUsd: z.number().finite().min(0).max(10).nullable().default(null),
+        confirmExternal: z.boolean().default(false),
+      })
+      .safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid decision test.' });
+    const config = parsed.data.decision as DecisionGateConfig;
+    const errors = validateDecisionGate(config, 'Test', []).filter(
+      (error) => !error.includes('can only skip later stages'),
+    );
+    if (errors.length) return reply.code(400).send({ error: errors.join(' ') });
+    const external = [config, ...(config.escalation ? [config.escalation] : [])].some(
+      (route) => decisionEngineInfo(route.engine).external,
+    );
+    if (external && !parsed.data.confirmExternal)
+      return reply
+        .code(400)
+        .send({ error: 'Confirm that fixture state may be sent to the external Decision Engine.' });
+    const batchId = randomUUID();
+    const scope = `decision-test:${batchId}`;
+    const openRouterRoutes = new Map<
+      string,
+      { key: string; model: import('../shared/types.js').ModelOption | undefined }
+    >();
+    for (const route of [config, ...(config.escalation ? [config.escalation] : [])]) {
+      if (route.engine !== 'jev-openrouter' && route.engine !== 'openrouter-judge') continue;
+      const key = route.connectionProfileId
+        ? SecretStore.forDatabase(db).read(secretRef(route.connectionProfileId, 'inference'))
+        : null;
+      if (!key)
+        return reply
+          .code(400)
+          .send({ error: 'Select an OpenRouter connection with a stored inference key.' });
+      const status = (await allProviders(db)).find((provider) => provider.id === 'openrouter');
+      openRouterRoutes.set(`${route.connectionProfileId}::${route.modelId}`, {
+        key,
+        model: status?.models.find((model) => model.id === route.modelId),
+      });
+    }
+    const results: Array<Record<string, unknown>> = [];
+    let cost = 0;
+    let costReported = 0;
+    const costProvenances = new Set<string>();
+    for (const [index, fixture] of parsed.data.fixtures.entries()) {
+      const context: DecisionContext = {
+        signal: AbortSignal.timeout(120_000),
+        conditionValue: (path) => fixture.conditionValues?.[path] ?? null,
+        resolveOpenRouter: (route) => {
+          const resolved = openRouterRoutes.get(`${route.connectionProfileId}::${route.modelId}`);
+          if (!resolved) throw new Error('OpenRouter route is not configured.');
+          return resolved;
+        },
+        metering: (route, question) =>
+          createMeteringHooks(db, {
+            usageRunId: null,
+            reservationScopeId: scope,
+            stageId: null,
+            billingMode: parsed.data.billingMode,
+            perRunUsd: parsed.data.maxCostUsd,
+            unknownCostPolicy: 'block',
+            workload: 'decision',
+            connectionProfileId: route.connectionProfileId ?? null,
+            role: 'decision-test',
+            modelId: route.modelId ?? '',
+            modelDisplayName: null,
+            reasoning: null,
+            contextStrategy: 'fixture',
+            decisionEngine: route.engine,
+            decisionType: question.questionType,
+            batchId,
+          }),
+      };
+      try {
+        const [decision] = await decisionEngine(config.engine).evaluate(
+          [
+            {
+              id: randomUUID(),
+              batchId,
+              route: config,
+              question: {
+                questionId: `fixture_${index}`,
+                questionType: config.questionType,
+                question: config.question,
+                criteria: config.criteria,
+                instructions: config.instructions,
+              },
+              state: fixture.state,
+              rule: config.rule,
+            },
+          ],
+          context,
+        );
+        const routed = routeDecision({ ...decision!, questionType: config.questionType }, config.routing);
+        if (decision!.costUsd !== null) {
+          cost += decision!.costUsd;
+          costReported += 1;
+          costProvenances.add(decision!.costProvenance);
+        }
+        const actual =
+          config.questionType === 'boolean'
+            ? routed.outcome === 'pass'
+              ? true
+              : routed.outcome === 'fail'
+                ? false
+                : null
+            : decision!.answer;
+        results.push({
+          name: fixture.name || `Fixture ${index + 1}`,
+          outcome: routed.outcome,
+          route: routed.route,
+          answer: decision!.answer,
+          probability: decision!.probability,
+          confidence: decision!.confidence,
+          score: decision!.score,
+          expected: fixture.expected ?? null,
+          correct: fixture.expected === undefined ? null : actual === fixture.expected,
+        });
+      } catch (error) {
+        results.push({
+          name: fixture.name || `Fixture ${index + 1}`,
+          error: redactSecrets(message(error)).slice(0, 400),
+        });
+      }
+    }
+    const scored = results.filter((item) => item.correct !== null && item.correct !== undefined);
+    const field = (key: 'probability' | 'confidence') =>
+      results.map((item) => item[key]).filter((value): value is number => typeof value === 'number');
+    const stats = (values: number[]) =>
+      values.length
+        ? {
+            count: values.length,
+            min: Math.min(...values),
+            max: Math.max(...values),
+            mean: values.reduce((a, b) => a + b, 0) / values.length,
+          }
+        : null;
+    return {
+      batchId,
+      configHash: decisionConfigHash(config),
+      results,
+      accuracy: scored.length ? scored.filter((item) => item.correct === true).length / scored.length : null,
+      probability: stats(field('probability')),
+      confidence: stats(field('confidence')),
+      escalationRate: results.length
+        ? results.filter((item) => item.outcome === 'uncertain').length / results.length
+        : null,
+      errors: results.filter((item) => item.error).length,
+      actualCostUsd: costReported ? cost : null,
+      costProvenance: !costReported
+        ? 'unavailable'
+        : costProvenances.has('provider_measured')
+          ? 'provider_measured'
+          : 'locally_measured',
+    };
+  });
   app.get('/api/projects', async () => ({
     projects: (
       db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all() as Array<
@@ -1021,59 +1428,145 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     ).map(toWorkflow),
   }));
   app.get('/api/connection-profiles', async () => ({
-    profiles: (db.prepare('SELECT * FROM connection_profiles ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>).map(toConnectionProfile),
+    profiles: (
+      db.prepare('SELECT * FROM connection_profiles ORDER BY name COLLATE NOCASE').all() as Array<
+        Record<string, unknown>
+      >
+    )
+      .map(toConnectionProfile)
+      .map((profile) => withCredentialState(db, profile)),
   }));
   app.post('/api/connection-profiles', async (request, reply) => {
     const parsed = connectionProfileSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
-    if (hasCredentialMaterial(parsed.data.metadata))
-      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (hasCredentialMaterial(parsed.data.metadata) || hasCredentialMaterial(parsed.data.name))
+      return reply
+        .code(400)
+        .send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    if (!routeMatchesBillingLane(parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane))
+      return reply.code(400).send({
+        error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.`,
+      });
     const reference = parsed.data.credentialStoreRef ?? null;
-    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
-      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    if (
+      reference &&
+      (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference))
+    )
+      return reply
+        .code(400)
+        .send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
     const id = randomUUID();
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO connection_profiles (id, name, backend_id, provider_id, billing_lane, credential_store_ref, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), now, now);
-    return reply.code(201).send({ profile: toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>) });
+    db.prepare(
+      'INSERT INTO connection_profiles (id, name, backend_id, provider_id, billing_lane, credential_store_ref, metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      id,
+      parsed.data.name,
+      parsed.data.backendId,
+      parsed.data.providerId,
+      parsed.data.billingLane,
+      reference,
+      JSON.stringify(parsed.data.metadata),
+      now,
+      now,
+    );
+    return reply.code(201).send({
+      profile: withCredentialState(
+        db,
+        toConnectionProfile(
+          db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+        ),
+      ),
+    });
   });
   app.put('/api/connection-profiles/:id', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    if (!db.prepare('SELECT id FROM connection_profiles WHERE id = ?').get(id)) return reply.code(404).send({ error: 'Connection profile was not found.' });
+    if (!db.prepare('SELECT id FROM connection_profiles WHERE id = ?').get(id))
+      return reply.code(404).send({ error: 'Connection profile was not found.' });
     const parsed = connectionProfileSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
-    if (hasCredentialMaterial(parsed.data.metadata))
-      return reply.code(400).send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid connection profile.' });
+    if (hasCredentialMaterial(parsed.data.metadata) || hasCredentialMaterial(parsed.data.name))
+      return reply
+        .code(400)
+        .send({ error: 'Connection profile metadata cannot contain credentials or secret fields.' });
+    if (!routeMatchesBillingLane(parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane))
+      return reply.code(400).send({
+        error: `Provider ${parsed.data.providerId} on ${parsed.data.backendId} does not bill through ${billingLaneLabel(parsed.data.billingLane)}.`,
+      });
     const reference = parsed.data.credentialStoreRef ?? null;
-    if (reference && (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference)))
-      return reply.code(400).send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
-    db.prepare('UPDATE connection_profiles SET name = ?, backend_id = ?, provider_id = ?, billing_lane = ?, credential_store_ref = ?, metadata_json = ?, updated_at = ? WHERE id = ?')
-      .run(parsed.data.name, parsed.data.backendId, parsed.data.providerId, parsed.data.billingLane, reference, JSON.stringify(parsed.data.metadata), new Date().toISOString(), id);
-    return { profile: toConnectionProfile(db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>) };
+    if (
+      reference &&
+      (!/^(keyring|cli):[A-Za-z0-9._:-]{1,180}$/.test(reference) || hasCredentialMaterial(reference))
+    )
+      return reply
+        .code(400)
+        .send({ error: 'Credential references must be symbolic keyring: or cli: identifiers.' });
+    db.prepare(
+      'UPDATE connection_profiles SET name = ?, backend_id = ?, provider_id = ?, billing_lane = ?, credential_store_ref = ?, metadata_json = ?, updated_at = ? WHERE id = ?',
+    ).run(
+      parsed.data.name,
+      parsed.data.backendId,
+      parsed.data.providerId,
+      parsed.data.billingLane,
+      reference,
+      JSON.stringify(parsed.data.metadata),
+      new Date().toISOString(),
+      id,
+    );
+    return {
+      profile: toConnectionProfile(
+        db.prepare('SELECT * FROM connection_profiles WHERE id = ?').get(id) as Record<string, unknown>,
+      ),
+    };
   });
   app.delete('/api/connection-profiles/:id', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const inUse = db.prepare("SELECT COUNT(*) AS count FROM workflows WHERE instr(config_json, ?) > 0").get(id) as { count: number };
-    if (inUse.count) return reply.code(409).send({ error: 'This connection profile is referenced by a saved workflow. Remove those references first.' });
+    const inUse = db
+      .prepare('SELECT COUNT(*) AS count FROM workflows WHERE instr(config_json, ?) > 0')
+      .get(id) as { count: number };
+    if (inUse.count)
+      return reply.code(409).send({
+        error: 'This connection profile is referenced by a saved workflow. Remove those references first.',
+      });
     const result = db.prepare('DELETE FROM connection_profiles WHERE id = ?').run(id);
+    if (result.changes) SecretStore.forDatabase(db).deleteProfile(id);
     if (!result.changes) return reply.code(404).send({ error: 'Connection profile was not found.' });
     return reply.code(204).send();
   });
   app.get('/api/model-presets', async () => ({
-    presets: (db.prepare('SELECT * FROM model_presets ORDER BY name COLLATE NOCASE').all() as Array<Record<string, unknown>>).map(toModelPreset),
+    presets: (
+      db.prepare('SELECT * FROM model_presets ORDER BY name COLLATE NOCASE').all() as Array<
+        Record<string, unknown>
+      >
+    ).map(toModelPreset),
   }));
   app.post('/api/model-presets', async (request, reply) => {
     const parsed = modelPresetSchema.safeParse(request.body);
-    if (!parsed.success) return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid model preset.' });
-    if (hasCredentialMaterial(parsed.data.configuration)) return reply.code(400).send({ error: 'Model presets cannot contain credential material.' });
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid model preset.' });
+    if (hasCredentialMaterial(parsed.data.configuration))
+      return reply.code(400).send({ error: 'Model presets cannot contain credential material.' });
     const id = randomUUID();
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO model_presets (id, name, configuration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-      .run(id, parsed.data.name, JSON.stringify(parsed.data.configuration), now, now);
-    return reply.code(201).send({ preset: toModelPreset(db.prepare('SELECT * FROM model_presets WHERE id = ?').get(id) as Record<string, unknown>) });
+    db.prepare(
+      'INSERT INTO model_presets (id, name, configuration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(id, parsed.data.name, JSON.stringify(parsed.data.configuration), now, now);
+    return reply.code(201).send({
+      preset: toModelPreset(
+        db.prepare('SELECT * FROM model_presets WHERE id = ?').get(id) as Record<string, unknown>,
+      ),
+    });
   });
   app.delete('/api/model-presets/:id', async (request, reply) => {
-    const result = db.prepare('DELETE FROM model_presets WHERE id = ?').run((request.params as { id: string }).id);
+    const result = db
+      .prepare('DELETE FROM model_presets WHERE id = ?')
+      .run((request.params as { id: string }).id);
     if (!result.changes) return reply.code(404).send({ error: 'Model preset was not found.' });
     return reply.code(204).send();
   });
@@ -1095,7 +1588,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         .code(409)
         .send({ error: 'A workflow with this name already exists. Duplicate it and choose another name.' });
     const now = new Date().toISOString();
-    const { name, description, template, ...config } = parsed.data;
+    const { name, description, template, ...config } = normalizeWorkflowBilling(parsed.data);
     db.prepare(
       'INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)',
     ).run(id, name, description, template, JSON.stringify(config), now, now);
@@ -1121,7 +1614,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       promptRefinementDefault: parsed.data.promptRefinementDefault,
     });
     if (errors.length) return reply.code(400).send({ error: errors.join(' ') });
-    const { name, description, template, ...config } = parsed.data;
+    const { name, description, template, ...config } = normalizeWorkflowBilling(parsed.data);
     db.prepare(
       'UPDATE workflows SET name = ?, description = ?, template = ?, config_json = ?, version = version + 1, updated_at = ? WHERE id = ?',
     ).run(name, description, template, JSON.stringify(config), new Date().toISOString(), id);
@@ -1143,6 +1636,10 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       executionProfile: source.executionProfile,
       permissionMode: source.permissionMode,
       subscriptionOnly: source.subscriptionOnly,
+      billingMode: source.billingMode,
+      customAllowedLanes: source.customAllowedLanes,
+      meteredBudget: source.meteredBudget,
+      externalDecisionDataPolicy: source.externalDecisionDataPolicy,
       lockProviders: source.lockProviders,
       defaultModelConfiguration: source.defaultModelConfiguration,
       stageDefaults: source.stageDefaults,
@@ -1203,25 +1700,43 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
 
   app.post('/api/runs/:id/replay', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
+      Record<string, unknown> | undefined;
     if (!source) return reply.code(404).send({ error: 'Run was not found.' });
-    if (source.permission_mode === 'enigma' && !(request.body as { enigmaConfirmed?: boolean } | undefined)?.enigmaConfirmed)
-      return reply.code(400).send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
+    if (
+      source.permission_mode === 'enigma' &&
+      !(request.body as { enigmaConfirmed?: boolean } | undefined)?.enigmaConfirmed
+    )
+      return reply
+        .code(400)
+        .send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
     const historicalWorkflow = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(db, {
-      task: String(source.prompt),
-      projectId: String(source.project_id),
-      workflowId: String(source.workflow_id),
-      profile: String(source.profile) as WorkflowDefinition['executionProfile'],
-      permissionMode: String(source.permission_mode) as WorkflowDefinition['permissionMode'],
-      refinePrompt: Boolean(source.refinement_requested),
-      subscriptionOnly: historicalWorkflow.subscriptionOnly,
-      lockProviders: historicalWorkflow.lockProviders,
-    }, historicalWorkflow);
-    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
-    if (!preview.canStart) return reply.code(409).send({ error: `Historical configuration cannot be replayed as saved: ${preview.warnings.join(' ')}`, warnings: preview.warnings, providerAssignments: preview.providerAssignments });
+    const preview = await makePreview(
+      db,
+      {
+        task: String(source.prompt),
+        projectId: String(source.project_id),
+        workflowId: String(source.workflow_id),
+        profile: String(source.profile) as WorkflowDefinition['executionProfile'],
+        permissionMode: String(source.permission_mode) as WorkflowDefinition['permissionMode'],
+        refinePrompt: Boolean(source.refinement_requested),
+        subscriptionOnly: historicalWorkflow.subscriptionOnly,
+        lockProviders: historicalWorkflow.lockProviders,
+      },
+      historicalWorkflow,
+    );
+    if (!preview)
+      return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    if (!preview.canStart)
+      return reply.code(409).send({
+        error: `Historical configuration cannot be replayed as saved: ${preview.warnings.join(' ')}`,
+        warnings: preview.warnings,
+        providerAssignments: preview.providerAssignments,
+      });
     if (preview.branchStrategy === 'worktree' && preview.project.dirty !== false)
-      return reply.code(409).send({ error: 'The project must be clean before an isolated replay can start.' });
+      return reply
+        .code(409)
+        .send({ error: 'The project must be clean before an isolated replay can start.' });
     const replay = createQueuedRun(db, engine, preview, {
       rulesSnapshot: safeJson(source.rules_snapshot_json, []),
       eventType: 'run_replayed',
@@ -1232,15 +1747,25 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
 
   app.post('/api/runs/:id/duplicate-workflow', async (request, reply) => {
     const id = (request.params as { id: string }).id;
-    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const source = db.prepare('SELECT * FROM runs WHERE id = ?').get(id) as
+      Record<string, unknown> | undefined;
     if (!source) return reply.code(404).send({ error: 'Run was not found.' });
     const snapshot = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(db, {
-      task: String(source.prompt), projectId: String(source.project_id), workflowId: String(source.workflow_id),
-      profile: snapshot.executionProfile, permissionMode: snapshot.permissionMode,
-      subscriptionOnly: snapshot.subscriptionOnly, lockProviders: snapshot.lockProviders,
-    }, snapshot);
-    if (!preview) return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
+    const preview = await makePreview(
+      db,
+      {
+        task: String(source.prompt),
+        projectId: String(source.project_id),
+        workflowId: String(source.workflow_id),
+        profile: snapshot.executionProfile,
+        permissionMode: snapshot.permissionMode,
+        subscriptionOnly: snapshot.subscriptionOnly,
+        lockProviders: snapshot.lockProviders,
+      },
+      snapshot,
+    );
+    if (!preview)
+      return reply.code(404).send({ error: 'Historical project or workflow is no longer available.' });
     const name = `${snapshot.name} copy`;
     const workflowId = `${slug(snapshot.name) || 'workflow'}-history-${randomUUID().slice(0, 6)}`;
     const excludedWorkflowFields = new Set(['id', 'name', 'version', 'isDefault', 'createdAt', 'updatedAt']);
@@ -1248,9 +1773,15 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       Object.entries(preview.workflow).filter(([key]) => !excludedWorkflowFields.has(key)),
     );
     const now = new Date().toISOString();
-    db.prepare('INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)')
-      .run(workflowId, name, snapshot.description, snapshot.template, JSON.stringify(configuration), now, now);
-    return reply.code(201).send({ workflow: toWorkflow(db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as Record<string, unknown>), providerAssignments: preview.providerAssignments });
+    db.prepare(
+      'INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)',
+    ).run(workflowId, name, snapshot.description, snapshot.template, JSON.stringify(configuration), now, now);
+    return reply.code(201).send({
+      workflow: toWorkflow(
+        db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as Record<string, unknown>,
+      ),
+      providerAssignments: preview.providerAssignments,
+    });
   });
 
   app.get('/api/runs', async (request) => {
@@ -1316,6 +1847,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       run: toRun(db, row),
       effectiveRules: safeJson(row.rules_snapshot_json, []),
       findings,
+      decisions: listDecisionResults(db, String(row.id)),
       gitOperations: gitOperations.map((operation) => ({
         id: operation.id,
         runId: operation.run_id,
@@ -1496,9 +2028,11 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     else start.setTime(Date.now() - days * 86_400_000);
     const since = start.toISOString();
     const events = db
-      .prepare(`SELECT u.*, s.title AS stage_title FROM usage_events u
+      .prepare(
+        `SELECT u.*, s.title AS stage_title FROM usage_events u
         LEFT JOIN stages s ON s.id = u.stage_id
-        WHERE u.occurred_at >= ? ORDER BY u.occurred_at DESC LIMIT 5000`)
+        WHERE u.occurred_at >= ? ORDER BY u.occurred_at DESC LIMIT 5000`,
+      )
       .all(since) as Array<Record<string, unknown>>;
     const providers = groupUsage(events, 'provider_id');
     const models = groupUsage(events, 'model_id');
@@ -1722,47 +2256,82 @@ function createQueuedRun(
        permission_mode, refinement_requested, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
     ).run(
-      id, preview.machine.id, preview.project.id, preview.workflow.id, JSON.stringify(workflowSnapshot),
-      preview.task, preview.profile, preview.permissionMode, Number(preview.refinePrompt), now,
+      id,
+      preview.machine.id,
+      preview.project.id,
+      preview.workflow.id,
+      JSON.stringify(workflowSnapshot),
+      preview.task,
+      preview.profile,
+      preview.permissionMode,
+      Number(preview.refinePrompt),
+      now,
     );
     db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
-      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules), id,
+      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules),
+      id,
     );
     const insert = db.prepare(`INSERT INTO stages
       (id, run_id, stage_key, kind, title, sequence, backend_id, provider_id, model_id, connection_profile_id, billing_lane, variant_id, model_snapshot_json, status, input_json, logs)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`);
-    workflowSnapshot.stages.forEach((stage, sequence) => insert.run(
-      randomUUID(), id, stage.id, stage.kind, stage.label, sequence,
-      stage.backendId ?? null, stage.providerId ?? null, stage.modelId ?? null,
-      stage.connectionProfileId ?? null, stage.billingLane ?? null, stage.variantId ?? null,
-      stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
-      stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt) ? 'skipped' : 'pending',
+    workflowSnapshot.stages.forEach((stage, sequence) =>
+      insert.run(
+        randomUUID(),
+        id,
+        stage.id,
+        stage.kind,
+        stage.label,
+        sequence,
+        stage.backendId ?? null,
+        stage.providerId ?? null,
+        stage.modelId ?? null,
+        stage.connectionProfileId ?? null,
+        stage.billingLane ?? null,
+        stage.variantId ?? null,
+        stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
+        stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt)
+          ? 'skipped'
+          : 'pending',
+        JSON.stringify({
+          role: stage.role ?? null,
+          reasoning: stage.reasoning ?? null,
+          variantId: stage.variantId ?? null,
+          nativeSettings: stage.nativeSettings ?? {},
+          billingLane: stage.billingLane ?? null,
+          connectionProfileId: stage.connectionProfileId ?? null,
+        }),
+      ),
+    );
+    db.prepare(
+      'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      randomUUID(),
+      id,
+      options.eventType ?? 'run_queued',
       JSON.stringify({
-        role: stage.role ?? null,
-        reasoning: stage.reasoning ?? null,
-        variantId: stage.variantId ?? null,
-        nativeSettings: stage.nativeSettings ?? {},
-        billingLane: stage.billingLane ?? null,
-        connectionProfileId: stage.connectionProfileId ?? null,
-      }),
-    ));
-    db.prepare('INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(randomUUID(), id, options.eventType ?? 'run_queued', JSON.stringify({
         projectId: preview.project.id,
         workflowId: preview.workflow.id,
         machineId: preview.machine.id,
         refinePrompt: preview.refinePrompt,
         subscriptionOnly: preview.subscriptionOnly,
+        billingMode: preview.billingMode,
+        meteredCapUsd: preview.routingSummary.runMeteredCapUsd,
         lockProviders: preview.lockProviders,
         ...options.eventDetails,
-      }), now);
+      }),
+      now,
+    );
   });
   create();
   engine.start(id);
   return toRun(db, getRunRow(db, id)!);
 }
 
-async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workflowOverride?: WorkflowDefinition) {
+async function makePreview(
+  db: Db,
+  input: z.infer<typeof runInputSchema>,
+  workflowOverride?: WorkflowDefinition,
+) {
   let projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as
     Record<string, unknown> | undefined;
   const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(input.workflowId) as
@@ -1800,24 +2369,43 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   const profile = input.profile ?? source.executionProfile;
   const permissionMode = input.permissionMode ?? source.permissionMode;
   const refinePrompt = input.refinePrompt ?? source.promptRefinementDefault;
+  const billingMode = resolveBillingMode(source, {
+    billingMode: input.billingMode,
+    subscriptionOnly: input.subscriptionOnly,
+  });
   const workflow: WorkflowDefinition = {
     ...source,
     executionProfile: profile,
     permissionMode,
-    subscriptionOnly: input.subscriptionOnly ?? source.subscriptionOnly,
+    billingMode,
+    subscriptionOnly: billingMode !== 'custom',
+    meteredBudget: source.meteredBudget ?? { perRunUsd: null, unknownCostPolicy: 'block' },
+    externalDecisionDataPolicy: source.externalDecisionDataPolicy ?? 'ask-first',
     lockProviders: input.lockProviders ?? source.lockProviders,
-    stages: applyExecutionProfile(source.stages.map((stage) => inheritStageConfiguration(source, stage)), profile, source.maxParallelAgents),
+    stages: applyExecutionProfile(
+      source.stages.map((stage) => inheritStageConfiguration(source, stage)),
+      profile,
+      source.maxParallelAgents,
+    ),
   };
   const effectiveRules = resolveEffectiveRules(db, project.id);
-  const providers = await discoverProviders();
-  const connections = (db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>).map(toConnectionProfile);
+  const providers = await allProviders(db);
+  const connections = (
+    db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>
+  ).map(toConnectionProfile);
   const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
+  const secrets = SecretStore.forDatabase(db);
+  const budgetSettings = getBudgetSettings(db);
   const profileMismatch = new Set<string>();
   workflow.stages = workflow.stages.map((stage) => {
     if (!AI_KINDS.has(stage.kind)) return stage;
     const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
     if (stage.connectionProfileId && !connection) profileMismatch.add(stage.id);
-    if (!connection) return { ...stage, billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId) };
+    if (!connection)
+      return {
+        ...stage,
+        billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId),
+      };
     return {
       ...stage,
       backendId: connection.backendId,
@@ -1825,96 +2413,283 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       billingLane: connection.billingLane,
     };
   });
-  const providerAssignments = workflow.stages
-    .filter(
-      (stage) =>
-        AI_KINDS.has(stage.kind) &&
-        stage.enabled !== false &&
-        (stage.kind !== 'promptRefinement' || refinePrompt),
-    )
-    .map((stage) => {
-      const provider = providers.find((candidate) => candidate.id === stage.backendId);
-      const selectedModel = provider?.models.find((model) => model.id === stage.modelId);
-      const modelCatalogAvailable = Boolean(provider?.capabilities.modelDiscovery && provider.models.length);
-      const modelExists = modelCatalogAvailable ? Boolean(selectedModel) : Boolean(stage.modelId?.trim());
-      const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
-      const billingLane = stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId);
-      const billingLaneMatchesRoute = routeMatchesBillingLane(stage.backendId, stage.providerId, billingLane);
-      const catalogStatus = selectedModel
-        ? 'current' as const
-        : modelCatalogAvailable
-          ? 'unavailable' as const
-          : stage.modelSnapshot?.status === 'deprecated'
-            ? 'deprecated' as const
-            : stage.modelSnapshot
-              ? 'last-known' as const
-              : 'last-known' as const;
-      const subscriptionReady =
-        provider?.id === 'claude-code'
-          ? provider.subscriptionAuthenticated === true
-          : provider?.id === 'codex-cli'
-            ? provider.subscriptionAuthenticated === true && selectedModel?.subscriptionBacked === true
-            : provider?.id === 'opencode'
-              ? selectedModel
-                ? isSubscriptionLane(billingLane)
-                  ? selectedModel.subscriptionBacked === true
-                  : selectedModel.subscriptionBacked === false
-                : false
-              : provider?.id === 'cline'
-              ? ['openai-codex', 'cline-pass'].includes(stage.providerId ?? '') || ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
-              : false;
-      const subscriptionLane = isSubscriptionLane(billingLane);
-      const laneAllowed = !workflow.subscriptionOnly || subscriptionLane;
+  const activeStages = workflow.stages.filter(
+    (stage) => stage.enabled !== false && (stage.kind !== 'promptRefinement' || refinePrompt),
+  );
+  const routeStatus = (route: {
+    stageId: string;
+    backendId?: string;
+    providerId?: string;
+    modelId?: string;
+    billingLane?: BillingLane;
+    variantId?: string;
+    reasoning?: string;
+    nativeSettings?: WorkflowStage['nativeSettings'];
+    connectionProfileId?: string;
+    workload: 'generative' | 'decision';
+    family?: 'generative' | 'decision';
+  }) => {
+    const provider = providers.find((candidate) => candidate.id === route.backendId);
+    const selectedModel = provider?.models.find((model) => model.id === route.modelId);
+    const modelCatalogAvailable = Boolean(
+      provider?.capabilities.modelDiscovery && provider.models.length && provider.catalogSource !== 'cache',
+    );
+    const modelExists = modelCatalogAvailable
+      ? Boolean(selectedModel)
+      : Boolean(route.modelId?.trim()) && (route.backendId !== 'openrouter' || Boolean(selectedModel));
+    const billingLane = route.billingLane ?? inferBillingLane(route.backendId, route.providerId);
+    const billingLaneMatchesRoute = routeMatchesBillingLane(route.backendId, route.providerId, billingLane);
+    const catalogStatus = selectedModel
+      ? selectedModel.status === 'deprecated'
+        ? ('deprecated' as const)
+        : selectedModel.status === 'last-known' || provider?.catalogSource === 'cache'
+          ? ('last-known' as const)
+          : ('current' as const)
+      : modelCatalogAvailable
+        ? ('unavailable' as const)
+        : ('last-known' as const);
+    const connection = route.connectionProfileId ? connectionById.get(route.connectionProfileId) : undefined;
+    const openRouterReady =
+      route.backendId !== 'openrouter' ||
+      Boolean(
+        connection &&
+        connection.backendId === 'openrouter' &&
+        secrets.has(secretRef(connection.id, 'inference')),
+      );
+    const subscriptionReady =
+      provider?.id === 'claude-code'
+        ? provider.subscriptionAuthenticated === true
+        : provider?.id === 'codex-cli'
+          ? provider.subscriptionAuthenticated === true && selectedModel?.subscriptionBacked === true
+          : provider?.id === 'opencode'
+            ? selectedModel
+              ? isSubscriptionLane(billingLane)
+                ? selectedModel.subscriptionBacked === true
+                : selectedModel.subscriptionBacked === false
+              : false
+            : provider?.id === 'cline'
+              ? ['openai-codex', 'cline-pass'].includes(route.providerId ?? '') ||
+                ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
+              : provider?.id === 'openrouter'
+                ? openRouterReady &&
+                  (!route.family || !selectedModel?.family || selectedModel.family === route.family)
+                : false;
+    const billing = evaluateBillingLane({
+      mode: billingMode,
+      lane: billingLane,
+      workload: route.workload,
+      customAllowedLanes: workflow.customAllowedLanes,
+    });
+    const settingErrors = validateModelSettings({
+      backendId: route.backendId,
+      model: selectedModel,
+      catalogAvailable: modelCatalogAvailable,
+      reasoning: route.reasoning,
+      variantId: route.variantId,
+      nativeSettings: route.nativeSettings,
+    });
+    const ready = Boolean(
+      provider?.detected &&
+      provider.capabilities.toolMediation &&
+      subscriptionReady &&
+      billingLaneMatchesRoute &&
+      route.providerId?.trim() &&
+      route.modelId?.trim() &&
+      modelExists &&
+      billing.allowed &&
+      !profileMismatch.has(route.stageId) &&
+      !settingErrors.length,
+    );
+    return {
+      provider,
+      selectedModel,
+      billingLane,
+      catalogStatus,
+      connection,
+      billing,
+      settingErrors,
+      ready,
+      openRouterReady,
+    };
+  };
+  const warnings: string[] = [];
+  const providerAssignments: RunPreviewAssignment[] = [];
+  for (const stage of activeStages) {
+    if (AI_KINDS.has(stage.kind)) {
+      const status = routeStatus({
+        ...stage,
+        stageId: stage.id,
+        workload: 'generative',
+        family: 'generative',
+      });
       const modelSnapshot = {
         providerId: stage.providerId ?? '',
         modelId: stage.modelId ?? '',
-        displayName: stage.modelDisplayName ?? selectedModel?.name ?? stage.modelId ?? '',
-        connectionProfileName: connection?.name ?? stage.modelSnapshot?.connectionProfileName ?? null,
-        billingLane,
+        displayName: stage.modelDisplayName ?? status.selectedModel?.name ?? stage.modelId ?? '',
+        connectionProfileName: status.connection?.name ?? stage.modelSnapshot?.connectionProfileName ?? null,
+        billingLane: status.billingLane,
         ...(stage.variantId ? { variantId: stage.variantId } : {}),
         capabilities: {
-          ...(selectedModel?.capabilities ?? {}),
-          ...(selectedModel?.reasoningLevels ? { reasoningLevels: selectedModel.reasoningLevels } : {}),
-          ...(selectedModel?.variantIds ? { variants: selectedModel.variantIds } : {}),
-          supportsTools: selectedModel?.supportsTools ?? selectedModel?.capabilities?.tools ?? null,
+          ...(status.selectedModel?.capabilities ?? {}),
+          ...(status.selectedModel?.reasoningLevels
+            ? { reasoningLevels: status.selectedModel.reasoningLevels }
+            : {}),
+          ...(status.selectedModel?.variantIds ? { variants: status.selectedModel.variantIds } : {}),
+          ...(status.selectedModel?.pricing ? { pricing: status.selectedModel.pricing } : {}),
+          supportsTools:
+            status.selectedModel?.supportsTools ?? status.selectedModel?.capabilities?.tools ?? null,
         },
-        discoveredAt: selectedModel ? provider?.checkedAt ?? null : stage.modelSnapshot?.discoveredAt ?? null,
-        adapterVersion: provider?.version ?? stage.modelSnapshot?.adapterVersion ?? null,
-        status: catalogStatus,
+        discoveredAt: status.selectedModel
+          ? (status.selectedModel.discoveredAt ?? status.provider?.checkedAt ?? null)
+          : (stage.modelSnapshot?.discoveredAt ?? null),
+        adapterVersion: status.provider?.version ?? stage.modelSnapshot?.adapterVersion ?? null,
+        status: status.catalogStatus,
+        identity: classifyModelIdentity(stage.backendId, stage.modelId),
+        reasoningControl: reasoningControlFor(stage.backendId, status.selectedModel),
       };
       stage.modelSnapshot = modelSnapshot;
-      return {
+      if (stage.backendId === 'openrouter' && !status.openRouterReady)
+        warnings.push(`${stage.label}: select an OpenRouter connection with a stored inference key.`);
+      for (const error of status.settingErrors) warnings.push(`${stage.label}: ${error}`);
+      if (!status.billing.allowed && status.billing.reason)
+        warnings.push(`${stage.label}: ${status.billing.reason}`);
+      providerAssignments.push({
         stage: stage.label,
+        stageId: stage.id,
+        kind: stage.kind,
+        role: stage.role ?? null,
+        workload: 'generative',
+        identity: modelSnapshot.identity,
+        billingAllowed: status.billing.allowed,
+        billingReason: status.billing.reason,
         backendId: stage.backendId ?? null,
         providerId: stage.providerId ?? null,
         modelId: stage.modelId ?? null,
         modelDisplayName: modelSnapshot.displayName,
         variantId: stage.variantId ?? null,
-        connectionProfileName: connection?.name ?? null,
-        billingLane,
+        connectionProfileName: status.connection?.name ?? null,
+        billingLane: status.billingLane,
         reasoning: stage.reasoning ?? null,
         nativeSettings: stage.nativeSettings ?? {},
-        catalogStatus,
+        catalogStatus: status.catalogStatus,
         context: estimateStageContext(input.task, stage, effectiveRules, workflow.contextPolicy),
-        ready: Boolean(
-          provider?.detected &&
-          provider.capabilities.toolMediation &&
-          subscriptionReady &&
-          billingLaneMatchesRoute &&
-          stage.providerId?.trim() &&
-          stage.modelId?.trim() &&
-          modelExists &&
-          laneAllowed &&
-          !profileMismatch.has(stage.id) &&
-          (!stage.variantId || Boolean(selectedModel?.variantIds?.includes(stage.variantId))) &&
-          (!stage.reasoning || !selectedModel?.reasoningLevels || selectedModel.reasoningLevels.includes(stage.reasoning)),
-        ),
-      };
+        ready: status.ready,
+      });
+      continue;
+    }
+    if (stage.kind !== 'decisionGate') continue;
+    const config = stage.decision;
+    const engine = config?.engine ?? 'deterministic-rules';
+    const info = decisionEngineInfo(engine);
+    const laterIds = workflow.stages.slice(workflow.stages.indexOf(stage) + 1).map((item) => item.id);
+    const configErrors = validateDecisionGate(config, stage.label, laterIds);
+    const routes = config ? [config, ...(config.escalation ? [config.escalation] : [])] : [];
+    let ready = configErrors.length === 0;
+    let billingLane: BillingLane | undefined;
+    let backendId: string | null = 'turing-local';
+    let providerId: string | null = null;
+    let modelId: string | null = null;
+    let billingAllowed = true;
+    let billingReason: string | null = null;
+    for (const [index, route] of routes.entries()) {
+      if (route.engine === 'deterministic-rules') continue;
+      const judge = route.engine === 'subscription-llm-judge' ? route.judge : undefined;
+      const routeInput = judge
+        ? { ...judge, billingLane: judge.billingLane ?? inferBillingLane(judge.backendId, judge.providerId) }
+        : {
+            backendId: 'openrouter',
+            providerId: 'openrouter',
+            billingLane: 'openrouter-metered' as const,
+            modelId: route.modelId,
+            connectionProfileId: route.connectionProfileId,
+          };
+      const status = routeStatus({
+        ...routeInput,
+        stageId: stage.id,
+        workload: 'decision',
+        family: route.engine === 'jev-openrouter' ? 'decision' : 'generative',
+      });
+      if (index === 0) {
+        billingLane = status.billingLane;
+        backendId = routeInput.backendId ?? null;
+        providerId = routeInput.providerId ?? null;
+        modelId = routeInput.modelId ?? null;
+        billingAllowed = status.billing.allowed;
+        billingReason = status.billing.reason;
+      }
+      if (!status.ready) {
+        ready = false;
+        warnings.push(
+          `${stage.label}: ${index === 0 ? 'Decision Engine' : 'escalation engine'} route is not ready${status.billing.reason ? ` — ${status.billing.reason}` : route.engine !== 'subscription-llm-judge' && !status.openRouterReady ? ' — select an OpenRouter connection with a stored inference key' : ''}.`,
+        );
+      }
+      if (
+        isMeteredLane(status.billingLane) &&
+        billingMode === 'subscriptions-plus-decision-budget' &&
+        workflow.meteredBudget.perRunUsd === null
+      ) {
+        ready = false;
+        warnings.push(
+          `${stage.label}: set a per-run metered cap; Subscriptions + Decision Budget requires one.`,
+        );
+      }
+    }
+    const external = routes.some((route) => decisionEngineInfo(route.engine).external);
+    if (external && workflow.externalDecisionDataPolicy === 'block') {
+      ready = false;
+      warnings.push(`${stage.label}: external decision data is blocked for this workflow.`);
+    }
+    for (const error of configErrors) warnings.push(error);
+    const maxStateChars = config?.maxStateChars ?? 24_000;
+    providerAssignments.push({
+      stage: stage.label,
+      stageId: stage.id,
+      kind: stage.kind,
+      role: 'decision-gate',
+      workload: engine === 'deterministic-rules' ? 'deterministic' : 'decision',
+      identity: classifyModelIdentity(backendId ?? undefined, modelId ?? undefined),
+      billingAllowed,
+      billingReason,
+      decision: config
+        ? {
+            engine,
+            questionType: config.questionType,
+            question: config.question,
+            routingField: config.routing.field,
+            inputs: config.inputs,
+            external,
+            externalDataPolicy: workflow.externalDecisionDataPolicy,
+            configHash: decisionConfigHash(config),
+            escalation: config.escalation?.engine ?? null,
+          }
+        : undefined,
+      backendId,
+      providerId,
+      modelId,
+      modelDisplayName: modelId ?? info.label,
+      variantId: null,
+      connectionProfileName: config?.connectionProfileId
+        ? (connectionById.get(config.connectionProfileId)?.name ?? null)
+        : null,
+      billingLane,
+      reasoning: null,
+      nativeSettings: {},
+      catalogStatus: undefined,
+      context: {
+        label: `Decision state: ${(config?.inputs ?? []).join(', ') || 'structured rule only'}`,
+        estimatedInputTokens: engine === 'deterministic-rules' ? 0 : Math.ceil(maxStateChars / 4),
+        maxEstimatedTokens: Math.ceil(maxStateChars / 4),
+        maxFiles: 0,
+        maxFileBytes: 0,
+        onLimitExceeded: 'compact',
+        estimateOnly: true,
+      },
+      ready,
     });
+  }
   const hasPromptRefinementStage = workflow.stages.some(
     (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
   );
-  const warnings: string[] = [];
   if (refinePrompt && !hasPromptRefinementStage)
     warnings.push('Prompt refinement is enabled, but this workflow has no enabled prompt refinement stage.');
   if (!input.task.trim()) warnings.push('Enter a task description.');
@@ -1931,33 +2706,98 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
       'One or more execution backends are missing, have no explicit provider/model, or no longer report the configured model.',
     );
   for (const assignment of providerAssignments) {
-    if (assignment.backendId && assignment.providerId && !routeMatchesBillingLane(assignment.backendId, assignment.providerId, assignment.billingLane ?? 'unknown'))
-      warnings.push(`${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabelForServer(assignment.billingLane ?? 'unknown')} billing lane.`);
-    if (profileMismatch.has(workflow.stages.find((stage) => stage.label === assignment.stage)?.id ?? ''))
-      warnings.push(`Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`);
-    if ((assignment.billingLane === 'opencode-go-subscription') && !warnings.includes('Provider-side PAYG fallback status cannot be verified by Turing Terminal.'))
-      warnings.push('Provider-side PAYG fallback status cannot be verified by Turing Terminal.');
+    if (
+      assignment.workload === 'generative' &&
+      assignment.backendId &&
+      assignment.providerId &&
+      !routeMatchesBillingLane(
+        assignment.backendId,
+        assignment.providerId,
+        assignment.billingLane ?? 'unknown',
+      )
+    )
+      warnings.push(
+        `${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabel(assignment.billingLane ?? 'unknown')} billing lane.`,
+      );
+    if (profileMismatch.has(assignment.stageId ?? ''))
+      warnings.push(
+        `Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`,
+      );
+    if (
+      assignment.billingLane &&
+      isSubscriptionLane(assignment.billingLane) &&
+      !warnings.includes(PROVIDER_FALLBACK_UNVERIFIABLE)
+    )
+      warnings.push(PROVIDER_FALLBACK_UNVERIFIABLE);
+    if (assignment.identity === 'floating')
+      warnings.push(
+        `${assignment.stage}: ${assignment.modelId} is a floating/routed model alias; history records the resolved model where telemetry reports it, so reruns may not be identical.`,
+      );
     if (assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-      warnings.push(`${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`);
+      warnings.push(
+        `${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`,
+      );
   }
   const billingGroups = new Map<string, string[]>();
   for (const assignment of providerAssignments) {
+    if (assignment.workload === 'deterministic') continue;
     const lane = assignment.billingLane ?? 'unknown';
     billingGroups.set(lane, [...(billingGroups.get(lane) ?? []), assignment.stage]);
   }
-  const usedLanes = [...billingGroups.entries()].map(([billingLane, stages]) => ({ billingLane: billingLane as import('../shared/types.js').BillingLane, stages }));
+  const usedLanes = [...billingGroups.entries()].map(([lane, stages]) => ({
+    billingLane: lane as BillingLane,
+    stages,
+  }));
   const billingSummary = [
     ...usedLanes,
-    ...(['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription', 'openai-api', 'anthropic-api', 'cline-usage-billing', 'opencode-metered'] as const)
-      .filter((lane) => !billingGroups.has(lane))
-      .map((billingLane) => ({ billingLane, stages: [] as string[] })),
+    ...ALL_BILLING_LANES.filter((lane) => lane !== 'unknown' && !billingGroups.has(lane)).map(
+      (billingLane) => ({ billingLane, stages: [] as string[] }),
+    ),
   ];
-  const providerFallbackStatus = usedLanes
-    .filter((item) => item.billingLane === 'opencode-go-subscription')
-    .map(() => ({ backendId: 'opencode', status: 'unknown' as const, message: 'Provider-side PAYG fallback status cannot be verified by Turing Terminal.' }));
+  const meteredAssignments = providerAssignments.filter(
+    (assignment) => assignment.billingLane && isMeteredLane(assignment.billingLane),
+  );
+  const routingSummary = {
+    subscriptions: SUBSCRIPTION_LANES.map((lane) => ({
+      billingLane: lane,
+      label: billingLaneLabel(lane),
+      stages: providerAssignments
+        .filter((assignment) => assignment.billingLane === lane)
+        .map((assignment) => assignment.stage),
+    })),
+    metered: [...new Set(meteredAssignments.map((assignment) => assignment.billingLane!))].map((lane) => ({
+      billingLane: lane,
+      label: billingLaneLabel(lane),
+      generativeStages: meteredAssignments
+        .filter((item) => item.billingLane === lane && item.workload === 'generative')
+        .map((item) => item.stage),
+      decisionStages: meteredAssignments
+        .filter((item) => item.billingLane === lane && item.workload === 'decision')
+        .map((item) => item.stage),
+    })),
+    meteredNone: meteredAssignments.length === 0,
+    runMeteredCapUsd: workflow.meteredBudget.perRunUsd,
+    dailyBudgetUsd: budgetSettings.dailyUsd,
+    monthlyBudgetUsd: budgetSettings.monthlyUsd,
+    unknownCostPolicy: workflow.meteredBudget.unknownCostPolicy,
+    // Turing has no automatic API/PAYG fallback path. Metered lanes appear only when explicitly configured.
+    paygFallback: 'none' as const,
+    externalDecisionDataPolicy: workflow.externalDecisionDataPolicy,
+  };
+  const providerFallbackStatus = usedLanes.flatMap((item) => {
+    const status = providerSideFallbackStatus(item.billingLane);
+    if (!status) return [];
+    const backend =
+      providerAssignments.find((assignment) => assignment.billingLane === item.billingLane)?.backendId ??
+      'unknown';
+    return [{ backendId: backend, billingLane: item.billingLane, ...status }];
+  });
   const contextWarnings = providerAssignments
     .filter((assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-    .map((assignment) => `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`);
+    .map(
+      (assignment) =>
+        `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`,
+    );
   const machineRow = localMachine(db);
   const machine = {
     id: String(machineRow.id),
@@ -1969,7 +2809,9 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
   };
   const hasRunnableStage = workflow.stages.some((stage) => stage.enabled !== false);
   const contextBudgetBlocked = providerAssignments.some(
-    (assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens && assignment.context.onLimitExceeded !== 'compact',
+    (assignment) =>
+      assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens &&
+      assignment.context.onLimitExceeded !== 'compact',
   );
   return {
     project,
@@ -1980,11 +2822,14 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     permissionMode,
     refinePrompt,
     subscriptionOnly: workflow.subscriptionOnly,
+    billingMode,
     lockProviders: workflow.lockProviders,
     effectiveRules,
     branchStrategy:
       workflow.isolatedWorktree && project.gitRoot ? ('worktree' as const) : ('current-branch' as const),
-    expectedAiStages: providerAssignments.filter((assignment) => assignment.ready).length,
+    expectedAiStages: providerAssignments.filter(
+      (assignment) => assignment.ready && assignment.workload === 'generative',
+    ).length,
     canStart:
       Boolean(input.task.trim()) &&
       hasRunnableStage &&
@@ -1995,12 +2840,16 @@ async function makePreview(db: Db, input: z.infer<typeof runInputSchema>, workfl
     warnings,
     providerAssignments,
     billingSummary,
+    routingSummary,
     providerFallbackStatus,
     contextWarnings,
   };
 }
 
+type RunPreviewAssignment = import('../shared/types.js').RunPreview['providerAssignments'][number];
+
 function inheritStageConfiguration(workflow: WorkflowDefinition, stage: WorkflowStage): WorkflowStage {
+  if (!AI_KINDS.has(stage.kind)) return { ...stage };
   const defaults = {
     ...(workflow.defaultModelConfiguration ?? {}),
     ...(workflow.stageDefaults?.[stage.kind] ?? {}),
@@ -2011,13 +2860,14 @@ function inheritStageConfiguration(workflow: WorkflowDefinition, stage: Workflow
   };
   const nodeChangedConnection = Boolean(
     (stage.backendId && defaults.backendId && stage.backendId !== defaults.backendId) ||
-      (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
-      (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
+    (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
+    (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
   );
   return {
     ...stage,
     backendId: inherited.backendId,
-    connectionProfileId: stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
+    connectionProfileId:
+      stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
     providerId: inherited.providerId,
     billingLane: inherited.billingLane,
     modelId: inherited.modelId,
@@ -2028,65 +2878,101 @@ function inheritStageConfiguration(workflow: WorkflowDefinition, stage: Workflow
   };
 }
 
-function inferBillingLane(backendId?: string, providerId?: string): import('../shared/types.js').BillingLane {
-  if (backendId === 'opencode') return providerId === 'opencode-go' ? 'opencode-go-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'opencode-metered';
-  if (backendId === 'cline') return providerId === 'cline-pass' ? 'clinepass-subscription' : providerId === 'openai-codex' ? 'chatgpt-subscription' : providerId === 'openai' ? 'openai-api' : providerId === 'anthropic' ? 'anthropic-api' : 'cline-usage-billing';
-  if (backendId === 'codex-cli') return 'chatgpt-subscription';
-  if (backendId === 'claude-code') return 'claude-subscription';
-  return 'unknown';
+function normalizeWorkflowBilling<
+  T extends { billingMode?: import('../shared/types.js').BillingMode; subscriptionOnly: boolean },
+>(value: T): T {
+  const billingMode = resolveBillingMode(value);
+  return { ...value, billingMode, subscriptionOnly: billingMode !== 'custom' };
 }
 
-function isSubscriptionLane(lane: string): boolean {
-  return ['opencode-go-subscription', 'clinepass-subscription', 'chatgpt-subscription', 'claude-subscription'].includes(lane);
+function withCredentialState(db: Db, profile: import('../shared/types.js').ConnectionProfile) {
+  const store = SecretStore.forDatabase(db);
+  return {
+    ...profile,
+    credentials: {
+      inference: store.has(secretRef(profile.id, 'inference')),
+      management: store.has(secretRef(profile.id, 'management')),
+    },
+  };
 }
 
-function routeMatchesBillingLane(backendId?: string, providerId?: string, lane?: string): boolean {
-  if (backendId === 'opencode' && providerId === 'opencode-go') return lane === 'opencode-go-subscription';
-  if (backendId === 'opencode' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'opencode' && providerId === 'openai') return lane === 'openai-api';
-  if (backendId === 'opencode' && providerId === 'anthropic') return lane === 'anthropic-api';
-  if (backendId === 'opencode' && providerId) return lane === 'opencode-metered';
-  if (backendId === 'cline' && providerId === 'cline-pass') return lane === 'clinepass-subscription';
-  if (backendId === 'cline' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'cline' && providerId === 'cline') return lane === 'cline-usage-billing';
-  if (backendId === 'cline' && providerId === 'openai') return lane === 'openai-api';
-  if (backendId === 'cline' && providerId === 'anthropic') return lane === 'anthropic-api';
-  if (backendId === 'codex-cli' && providerId === 'openai-codex') return lane === 'chatgpt-subscription';
-  if (backendId === 'claude-code' && providerId === 'anthropic-subscription') return lane === 'claude-subscription';
-  return false;
+function usageFilterFromQuery(
+  db: Db,
+  query: Record<string, string | undefined>,
+): UsageFilter | { error: string } {
+  const timeZone = query.tz && isValidTimeZone(query.tz) ? query.tz : systemTimeZone();
+  const preset = (['today', 'yesterday', '7d', '30d', 'month', 'custom', 'period'] as const).includes(
+    query.range as 'today',
+  )
+    ? (query.range as RangePreset | 'period')
+    : '7d';
+  let range: { from: string; to: string };
+  if (preset === 'period') {
+    // Current billing/reset period from a user-configured quota envelope.
+    const quota = query.quotaId
+      ? (db.prepare('SELECT effective_at, reset_at FROM quota_envelopes WHERE id = ?').get(query.quotaId) as
+          { effective_at: string; reset_at: string } | undefined)
+      : undefined;
+    if (!quota) return { error: 'Choose a configured quota envelope for the billing-period view.' };
+    range = { from: quota.effective_at, to: quota.reset_at };
+  } else range = resolveRange({ preset, timeZone, fromDay: query.from, toDay: query.to });
+  const pick = (key: string) => (query[key] && query[key]!.length <= 200 ? query[key] : undefined);
+  return {
+    ...range,
+    timeZone,
+    billingLane: pick('billingLane'),
+    providerId: pick('providerId'),
+    connectionProfileId: pick('connectionProfileId'),
+    modelId: pick('modelId'),
+    projectId: pick('projectId'),
+    workflowId: pick('workflowId'),
+    role: pick('role'),
+    machineId: pick('machineId'),
+    workloadType: pick('workloadType'),
+    reasoning: pick('reasoning'),
+    runId: pick('runId'),
+  };
 }
 
-function billingLaneLabelForServer(lane: string): string {
-  return ({
-    'opencode-go-subscription': 'OpenCode Go subscription',
-    'opencode-metered': 'OpenCode metered',
-    'clinepass-subscription': 'ClinePass subscription',
-    'cline-usage-billing': 'Cline usage-billing',
-    'chatgpt-subscription': 'ChatGPT subscription',
-    'claude-subscription': 'Claude subscription',
-    'openai-api': 'OpenAI API',
-    'anthropic-api': 'Anthropic API',
-    unknown: 'unknown',
-  } as Record<string, string>)[lane] ?? lane;
-}
-
-function estimateStageContext(task: string, stage: WorkflowStage, rules: import('../shared/types.js').TuringRule[], workflowPolicy: WorkflowDefinition['contextPolicy']) {
+function estimateStageContext(
+  task: string,
+  stage: WorkflowStage,
+  rules: import('../shared/types.js').TuringRule[],
+  workflowPolicy: WorkflowDefinition['contextPolicy'],
+) {
   const policy = { ...workflowPolicy, ...(stage.contextPolicy ?? {}) };
   const reviewKinds = ['reviewer', 'parallelReview', 'finalGate', 'consolidate'];
-  const includeCurrentDiff = stage.contextPolicy?.includeCurrentDiff ?? (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
-  const includePreviousTranscript = stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
-  const applicableRules = rules.filter((rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind));
+  const includeCurrentDiff =
+    stage.contextPolicy?.includeCurrentDiff ??
+    (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
+  const includePreviousTranscript =
+    stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
+  const applicableRules = rules.filter(
+    (rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind),
+  );
   const instructions = stage.customInstructions?.length ?? 0;
-  const ruleChars = applicableRules.reduce((total, rule) => total + rule.content.length + rule.name.length + 80, 0);
+  const ruleChars = applicableRules.reduce(
+    (total, rule) => total + rule.content.length + rule.name.length + 80,
+    0,
+  );
   const transcriptAllowance = includePreviousTranscript ? 16_000 : 0;
-  const estimatedInputTokens = Math.ceil((task.length + instructions + ruleChars + (includeCurrentDiff ? 2_000 : 0) + transcriptAllowance + 1_600) / 4);
-  const label = policy.strategy === 'changed-files'
-    ? 'Changed Files + Selected Artifacts'
-    : policy.strategy === 'artifacts-only'
-      ? 'Structured Artifacts + Explicit Files'
-      : policy.strategy === 'full-project'
-        ? 'Broad Project Context'
-        : 'Focused Context';
+  const estimatedInputTokens = Math.ceil(
+    (task.length +
+      instructions +
+      ruleChars +
+      (includeCurrentDiff ? 2_000 : 0) +
+      transcriptAllowance +
+      1_600) /
+      4,
+  );
+  const label =
+    policy.strategy === 'changed-files'
+      ? 'Changed Files + Selected Artifacts'
+      : policy.strategy === 'artifacts-only'
+        ? 'Structured Artifacts + Explicit Files'
+        : policy.strategy === 'full-project'
+          ? 'Broad Project Context'
+          : 'Focused Context';
   return {
     label,
     estimatedInputTokens,
@@ -2250,8 +3136,9 @@ function hasCredentialMaterial(value: unknown): boolean {
   if (typeof value === 'string') return redactSecrets(value) !== value;
   if (Array.isArray(value)) return value.some(hasCredentialMaterial);
   if (value && typeof value === 'object')
-    return Object.entries(value as Record<string, unknown>).some(([key, item]) =>
-      /secret|token|api.?key|password|cookie|credential/i.test(key) || hasCredentialMaterial(item),
+    return Object.entries(value as Record<string, unknown>).some(
+      ([key, item]) =>
+        /secret|token|api.?key|password|cookie|credential/i.test(key) || hasCredentialMaterial(item),
     );
   return false;
 }

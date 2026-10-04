@@ -1,6 +1,7 @@
 import type { ExecutionProfile, WorkflowDefinition, WorkflowStage } from '../shared/types.js';
 import { validateCondition } from './conditions.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
+import { validateDecisionGate } from '../shared/decisions.js';
 
 const stageKinds = new Set<WorkflowStage['kind']>([
   'planner',
@@ -23,6 +24,7 @@ const stageKinds = new Set<WorkflowStage['kind']>([
   'shellCommand',
   'notification',
   'humanApproval',
+  'decisionGate',
 ]);
 
 export function validateWorkflow(
@@ -87,6 +89,22 @@ export function validateWorkflow(
             `Conditional branch “${stage.label}” can only skip later stages; backward branches are not allowed.`,
           );
       }
+    }
+    const laterStageIds = workflow.stages.slice(index + 1).map((candidate) => candidate.id);
+    if (stage.kind === 'decisionGate')
+      errors.push(...validateDecisionGate(stage.decision, stage.label, laterStageIds));
+    if (stage.orchestration) {
+      if (stage.kind !== 'orchestrator')
+        errors.push(`Stage “${stage.label}” can define branches only as an AI Orchestrator.`);
+      const branchIds = stage.orchestration.branches.map((branch) => branch.id);
+      if (new Set(branchIds).size !== branchIds.length)
+        errors.push(`Orchestrator “${stage.label}” has duplicate branch IDs.`);
+      if (!branchIds.includes(stage.orchestration.defaultBranchId))
+        errors.push(`Orchestrator “${stage.label}” needs a default branch from its configured branches.`);
+      for (const branch of stage.orchestration.branches)
+        for (const target of branch.skipStageIds)
+          if (!laterStageIds.includes(target))
+            errors.push(`Orchestrator “${stage.label}” branch “${branch.label}” can only skip later stages.`);
     }
     if (stage.kind === 'shellCommand' && !isSafeProjectCommand(stage.command ?? []))
       errors.push(

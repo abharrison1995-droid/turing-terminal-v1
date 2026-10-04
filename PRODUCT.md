@@ -8,7 +8,7 @@ web
 
 ## Stack
 
-React and TypeScript for one interface shared by the desktop shell and the phone PWA, with a local Node.js master for orchestration and SQLite persistence. The desktop shell is Tauri, packaged for Windows (NSIS installer) and Linux (.deb and AppImage) as 1.0.0-rc1, and it bundles Node. macOS is not packaged.
+React and TypeScript for one interface shared by the desktop shell and the phone PWA, with a local Node.js master for orchestration and SQLite persistence. The desktop shell is Tauri, packaged for Windows (NSIS installer) and Linux (.deb and AppImage) as 1.0.0-rc2, and it bundles Node. macOS is not packaged.
 
 ## Users
 
@@ -47,7 +47,7 @@ Use the name Turing Terminal. The interface should feel like a calm, technical e
 
 The implementation directive is the product brief. There are no supplied logos, customer claims, benchmark claims, pricing claims, or production usage data. Do not invent them.
 
-Release state is 1.0.0-rc1 for acceptance testing. Physical Windows and Linux installs and phone pairing over Tailscale have not yet been verified on real devices (see README and docs/RELEASE_NOTES_1.0.0-rc1.md), so do not present them as proven.
+Release state is 1.0.0-rc2 for acceptance testing. Physical Windows and Linux installs and phone pairing over Tailscale have not yet been verified on real devices (see README and docs/RELEASE_NOTES_1.0.0-rc2.md), so do not present them as proven.
 
 ## Product Principles
 
