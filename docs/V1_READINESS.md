@@ -80,6 +80,8 @@ Two capabilities remain before final acceptance. After they land, V1 enters stri
 
 ## Hardening after feature freeze
 
+Known RC2 defect to fix here: `reconcileInterruptedRuns` ignores `queued` runs, so an ordinary run queued at crash time is never restarted (design Q4). Deliberately not fixed in the Goal Stage 0A extraction.
+
 Push/PR CI, full regression, migration coverage, restart/recovery, Goal resume, route-pool correctness, catalog failure behaviour, no free-to-PAYG transition, live provider validation, physical installs, iPhone/Tailscale, multi-master isolation, security review, package verification, documentation reconciliation. Then cut the next RC (expected RC3).
 
 ## Exit criteria for `1.0.0`

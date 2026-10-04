@@ -1,6 +1,6 @@
 # Grand Project / Goal Engine design
 
-**Status: design proposal, revision 2, for final architecture review. No implementation exists.** Written on branch `feature/grand-project-goal-engine` from the `v1.0.0-rc2` baseline. File and symbol references were read from that source; where this document says "proposed" it describes something that does not exist yet.
+**Status: design proposal, revision 2.1. Stage 0A (launcher extraction) is implemented; nothing else is.** Written on branch `feature/grand-project-goal-engine` from the `v1.0.0-rc2` baseline. File and symbol references were read from that source; where this document says "proposed" it describes something that does not exist yet.
 
 Revision 2 incorporates the independent architecture review: Goal integration branches (Q1), a bounded `RunEngine` extension, atomic Goal run launch with database idempotency, repository-bound evidence, a Goal-level finding lifecycle, versioned Goal definitions with safe amendment, role-specific route validation, provenance-aware availability, stronger final-review independence, asynchronous authoring, and a split Stage 0. A change log is in section 25.
 
@@ -147,7 +147,7 @@ CREATE TABLE goal_runtime (                   -- mutable; 1:1 with goals
 CREATE TABLE goal_cycles (
   id TEXT PRIMARY KEY,
   goal_id TEXT NOT NULL REFERENCES goals(id),
-  definition_version INTEGER NOT NULL,        -- the approved version this cycle was created under
+  definition_version INTEGER,                 -- version this cycle ran under; NULL only for kind = 'authoring'
   milestone_id TEXT REFERENCES goal_milestones(id),
   sequence INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('authoring','execution','remediation','review','verification')),
@@ -163,6 +163,7 @@ CREATE TABLE goal_cycles (
   next_action_code TEXT,
   created_at TEXT NOT NULL, finished_at TEXT,
   UNIQUE (goal_id, sequence),
+  CHECK ((kind = 'authoring') OR (definition_version IS NOT NULL)),
   FOREIGN KEY (goal_id, definition_version) REFERENCES goal_definition_versions(goal_id, version)
 );
 
@@ -192,6 +193,11 @@ CREATE UNIQUE INDEX idx_runs_goal_cycle_purpose ON runs(goal_cycle_id, goal_run_
 -- trigger: goal_definition_versions rows with status approved/superseded reject UPDATE of the five definition columns and hash
 CREATE UNIQUE INDEX idx_goal_one_active_per_project ON goals(project_id)
   WHERE status IN ('running','reviewing','needs_user','blocked','paused');
+-- Authoring cycles exist before any definition does, so definition_version may be NULL only when kind = 'authoring'.
+-- Every other kind must carry a version (the CHECK above). A composite FOREIGN KEY is not enforced when any column is NULL,
+-- so non-null values stay protected. No placeholder 'version 0' is created. Authoring usage is attributed through
+-- run -> goal_cycle -> goal, not through a definition. Stage 0B tests: NULL accepted for authoring, rejected for every other kind,
+-- and a non-null version that does not exist is rejected by the foreign key.
 CREATE INDEX idx_goal_cycles_goal ON goal_cycles(goal_id, sequence);
 CREATE INDEX idx_runs_goal_cycle ON runs(goal_cycle_id);
 ```
@@ -569,7 +575,7 @@ Within one transaction: if `origin` is present, first `SELECT id FROM runs WHERE
 
 ### 9.1 Versioning
 
-The full approved definition (contract, milestones, routing, review policy, limits) is stored in `goal_definition_versions`, hashed deterministically (SHA-256 of canonical JSON), and **immutable once `approved`** (enforced by trigger). `goals.current_definition_version` points to the approved version. Each cycle stores its `definition_version`; each route resolution stores the version and hash (section 10.4); each evidence row stores `definition_version` and `verifier_digest`; each review stores its version. History is never rewritten: a cycle created under version 3 is explained by version 3 even after version 4 is approved. Approvals of pool first use are bound to the member identity hash, not to a definition version, so they survive amendments that do not change the member.
+The full approved definition (contract, milestones, routing, review policy, limits) is stored in `goal_definition_versions`, hashed deterministically (SHA-256 of canonical JSON), and **immutable once `approved`** (enforced by trigger). `goals.current_definition_version` points to the approved version. Each non-authoring cycle stores its `definition_version` (authoring cycles store NULL, since no approved definition exists yet); each route resolution stores the version and hash (section 10.4); each evidence row stores `definition_version` and `verifier_digest`; each review stores its version. History is never rewritten: a cycle created under version 3 is explained by version 3 even after version 4 is approved. Approvals of pool first use are bound to the member identity hash, not to a definition version, so they survive amendments that do not change the member.
 
 ### 9.2 Amendment flow
 
@@ -868,14 +874,14 @@ Only after stage 7 and a prove-it review does the Model Opportunity Layer begin:
 
 **Open questions (none block Stage 0A)**
 
-- **Q1 — Subject-state capture.** Section 11.1 uses engine-captured `subjectTree` and, as a fallback, deterministic `verification` runs. Is the small additive engine change in 2.1(2) acceptable, or should HEAD-bound evidence come only from verification runs (no engine change, one extra deterministic run per evidence refresh)? Recommendation: keep both.
+- **Q1 — Subject-state capture. (decided, rev 2.1: keep both.)** Section 11.1 uses engine-captured `subjectTree` and, as a fallback, deterministic `verification` runs. Is the small additive engine change in 2.1(2) acceptable, or should HEAD-bound evidence come only from verification runs (no engine change, one extra deterministic run per evidence refresh)? Recommendation: keep both.
 - **Q2 — Validation probe design.** Fixture repositories and seeded defects for each profile, and the UX for the user to approve the allowance a probe consumes.
-- **Q3 — "Applied externally."** After a diverged base requires manual reconciliation, may the user close the Goal as applied externally (a recorded user attestation that bypasses `apply_to_base`)? Recommendation: yes, recorded as `user_confirmation` evidence bound to the integration head.
-- **Q4 — RC2 `queued` orphan gap.** RC2's `reconcileInterruptedRuns` ignores `queued` runs, so an ordinary run queued at the moment of a crash stays queued. Goal reconcile covers only Goal runs. Fixing ordinary runs is a separate hardening defect, not Goal scope.
-- **Q5 — SQLite behaviours to prove in Stage 0B.** `ALTER TABLE ADD COLUMN ... REFERENCES` plus triggers on the migrated RC2 database under foreign keys, and deferred circular foreign keys. If any fails, the fallback is a `runs` table rebuild, which would need its own review.
-- **Q6 — Retention.** RC2 never removes run worktrees or branches; a long Goal creates one worktree and branch per run (`~/.turing-terminal/worktrees/<runId>`). A retention policy (prune integrated run worktrees after evidence is collected, keep branches) is needed before long Goals are practical.
-- **Q7 — Family normalisation table** (`modelFamily()`): maintenance burden and where aliases live.
-- **Q8 — Orchestrator in the authority set** for final-review independence: default off (implementers and remediation only). Confirm.
+- **Q3 — "Applied externally." (decided, rev 2.1: allowed.)** The user action is "Mark as applied externally". It requires explicit confirmation, records the Goal integration head and the observed base head where available, and creates `user_confirmation` evidence. History and UI distinguish **Applied by Turing** from **Applied externally / user attested**. Original question: After a diverged base requires manual reconciliation, may the user close the Goal as applied externally (a recorded user attestation that bypasses `apply_to_base`)? Recommendation: yes, recorded as `user_confirmation` evidence bound to the integration head.
+- **Q4 — RC2 `queued` orphan gap. (decided: tracked for final hardening, not Stage 0A.)** RC2's `reconcileInterruptedRuns` ignores `queued` runs, so an ordinary run queued at the moment of a crash stays queued. Goal reconcile covers only Goal runs. Fixing ordinary runs is a separate hardening defect, not Goal scope.
+- **Q5 — SQLite behaviours to prove in Stage 0B (against a migrated RC2 database, foreign keys on; stop and review the fallback if any fails).** `ALTER TABLE ADD COLUMN ... REFERENCES` plus triggers on the migrated RC2 database under foreign keys, and deferred circular foreign keys. If any fails, the fallback is a `runs` table rebuild, which would need its own review.
+- **Q6 — Retention. (decided: must be designed and tested before Stage 4.)** A run worktree or branch may be removed automatically only when: the run is terminal; its committed result is durably integrated or deliberately rejected; required evidence is extracted and persisted; the worktree is clean; its commit is reachable from the Goal integration ref or another retained ref; and no recovery operation references the worktree. Never delete merely because a run is old. RC2 never removes run worktrees or branches; a long Goal creates one worktree and branch per run (`~/.turing-terminal/worktrees/<runId>`). A retention policy (prune integrated run worktrees after evidence is collected, keep branches) is needed before long Goals are practical.
+- **Q7 — Family normalisation table (decided: small version-controlled table in source; unknown identities fail conservatively to "independence not established")** (`modelFamily()`): maintenance burden and where aliases live.
+- **Q8 — Orchestrator in the authority set** for final-review independence: default off (implementers and remediation only). Confirmed in rev 2.1: default is implementers and remediation only; a stricter Goal policy may include the orchestrator.
 
 **Risks**
 
@@ -916,3 +922,9 @@ Only after stage 7 and a prove-it review does the Model Opportunity Layer begin:
 19. **Duration semantics** with monotonic accumulation (12.2).
 20. **Stage 0 split into 0A and 0B;** integration git module is its own stage (22).
 21. Core architecture retained (supervisor above `RunEngine`, finite child runs, strict state machine, structured `NextTask`, deterministic completion, bounded memory, reviews, existing usage/billing/routing, Opportunity Layer deferred).
+
+### Revision 2.1
+
+- `goal_cycles.definition_version` is nullable and a `CHECK` requires it for every kind except `authoring` (section 4.1). The foreign key still protects non-null values.
+- Q1, Q3, Q4, Q6, Q7 and Q8 decided as annotated in section 23.
+- Stage 0A implemented in `src/server/runLauncher.ts` (`buildPreview`, `queueRun`, `startQueuedRun`, `createRun`).
