@@ -1,0 +1,597 @@
+import Database from 'better-sqlite3';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { openDatabase, type Db } from './db.js';
+
+const folders: string[] = [];
+afterEach(() => {
+  for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
+});
+
+const NOW = '2026-01-01T00:00:00.000Z';
+const SHA = 'a'.repeat(40);
+
+function tempRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), 'turing-goal-schema-'));
+  folders.push(root);
+  return root;
+}
+
+function fresh(): Db {
+  return openDatabase(tempRoot());
+}
+
+/** Builds the exact RC2 schema (migrations 001-014 only) with some history, then returns the data dir. */
+function rc2Directory(): string {
+  const root = tempRoot();
+  mkdirSync(root, { recursive: true });
+  const raw = new Database(join(root, 'turing.sqlite'));
+  raw.pragma('foreign_keys = ON');
+  raw.exec('CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+  const directory = join(process.cwd(), 'migrations');
+  for (const name of readdirSync(directory)
+    .filter((file) => file.endsWith('.sql') && file < '015')
+    .sort()) {
+    raw.exec(readFileSync(join(directory, name), 'utf8'));
+    raw.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(name, NOW);
+  }
+  raw
+    .prepare(
+      "INSERT INTO machines (id, name, hostname, os, status, last_seen_at) VALUES ('m1','m','h','linux','online',?)",
+    )
+    .run(NOW);
+  raw.prepare("INSERT INTO settings (key, value, updated_at) VALUES ('local_machine_id','m1',?)").run(NOW);
+  raw
+    .prepare(
+      "INSERT INTO projects (id, machine_id, name, path, created_at) VALUES ('p1','m1','P','/tmp/p',?)",
+    )
+    .run(NOW);
+  raw
+    .prepare(
+      "INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES ('w','W','d','t','{}',1,0,?,?)",
+    )
+    .run(NOW, NOW);
+  raw
+    .prepare(
+      `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at)
+       VALUES ('r1','m1','p1','w','{}','history','economy','normal','completed',?)`,
+    )
+    .run(NOW);
+  raw.close();
+  return root;
+}
+
+function machineId(db: Db): string {
+  return (db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string })
+    .value;
+}
+
+function project(db: Db, id: string): void {
+  db.prepare("INSERT INTO projects (id, machine_id, name, path, created_at) VALUES (?, ?, 'P', ?, ?)").run(
+    id,
+    machineId(db),
+    `/tmp/${id}`,
+    NOW,
+  );
+}
+
+function goal(db: Db, id: string, projectId: string, status = 'draft', extra: Record<string, unknown> = {}) {
+  db.prepare(
+    `INSERT INTO goals (id, machine_id, project_id, title, status, current_definition_version, active_milestone_id, created_at, updated_at)
+     VALUES (?, ?, ?, 'Goal', ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    machineId(db),
+    projectId,
+    status,
+    extra.currentDefinitionVersion ?? null,
+    extra.activeMilestoneId ?? null,
+    NOW,
+    NOW,
+  );
+}
+
+function definition(db: Db, goalId: string, version: number, status = 'proposed') {
+  db.prepare(
+    `INSERT INTO goal_definition_versions
+     (goal_id, version, parent_version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
+      definition_hash, change_summary, created_by, approved_by, created_at, approved_at)
+     VALUES (?, ?, NULL, ?, '{}', '[]', '{}', '{}', '{}', 'hash', 'initial', 'user', ?, ?, ?)`,
+  ).run(
+    goalId,
+    version,
+    status,
+    status === 'approved' ? 'user' : null,
+    NOW,
+    status === 'approved' ? NOW : null,
+  );
+}
+
+function milestone(db: Db, id: string, goalId: string, key = id) {
+  db.prepare(
+    "INSERT INTO goal_milestones (id, goal_id, milestone_key, ordinal, status) VALUES (?, ?, ?, 0, 'pending')",
+  ).run(id, goalId, key);
+}
+
+function cycle(
+  db: Db,
+  id: string,
+  goalId: string,
+  sequence: number,
+  kind: string,
+  definitionVersion: number | null,
+  milestoneId: string | null = null,
+) {
+  db.prepare(
+    `INSERT INTO goal_cycles (id, goal_id, definition_version, milestone_id, sequence, kind, trigger_code, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'test', 'planned', ?)`,
+  ).run(id, goalId, definitionVersion, milestoneId, sequence, kind, NOW);
+}
+
+function run(db: Db, id: string, projectId: string, origin: Record<string, string | null> = {}) {
+  db.prepare(
+    `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at,
+       goal_cycle_id, goal_run_purpose, goal_base_commit)
+     VALUES (?, ?, ?, ?, '{}', 'task', 'economy', 'normal', 'queued', ?, ?, ?, ?)`,
+  ).run(
+    id,
+    machineId(db),
+    projectId,
+    (db.prepare('SELECT id FROM workflows LIMIT 1').get() as { id: string }).id,
+    NOW,
+    origin.cycle ?? null,
+    origin.purpose ?? null,
+    origin.base ?? null,
+  );
+}
+
+function seedGoalWithDefinition(db: Db, goalId: string, projectId: string) {
+  goal(db, goalId, projectId);
+  definition(db, goalId, 1, 'approved');
+  milestone(db, `${goalId}-m1`, goalId);
+  db.prepare('UPDATE goals SET current_definition_version = 1, active_milestone_id = ? WHERE id = ?').run(
+    `${goalId}-m1`,
+    goalId,
+  );
+}
+
+const GOAL_TABLES = [
+  'goals',
+  'goal_definition_versions',
+  'goal_milestones',
+  'goal_runtime',
+  'goal_cycles',
+  'goal_integration_ops',
+];
+
+describe('migration 015_goal_core', () => {
+  it('creates the Goal schema on a fresh database with foreign keys enabled', () => {
+    const db = fresh();
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(
+      db.prepare("SELECT name FROM schema_migrations WHERE name = '015_goal_core.sql'").get(),
+    ).toBeTruthy();
+    for (const table of GOAL_TABLES)
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
+      ).toBeTruthy();
+    const columns = (db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>).map(
+      (c) => c.name,
+    );
+    expect(columns).toEqual(
+      expect.arrayContaining(['goal_cycle_id', 'goal_run_purpose', 'goal_base_commit']),
+    );
+    expect(columns).not.toContain('goal_id');
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('upgrades an exact RC2 database in place, keeping history and enforcing foreign keys', () => {
+    const root = rc2Directory();
+    const before = new Database(join(root, 'turing.sqlite'), { readonly: true });
+    expect(before.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 14 });
+    expect(
+      (before.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>).some((c) =>
+        c.name.startsWith('goal'),
+      ),
+    ).toBe(false);
+    before.close();
+
+    const db = openDatabase(root);
+    expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 15 });
+    expect(
+      db
+        .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
+        .get(),
+    ).toEqual({
+      status: 'completed',
+      goal_cycle_id: null,
+      goal_run_purpose: null,
+      goal_base_commit: null,
+    });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    // ALTER TABLE ADD COLUMN ... REFERENCES is enforced on the migrated runs table.
+    expect(() => run(db, 'bad', 'p1', { cycle: 'missing-cycle', purpose: 'execution' })).toThrow(
+      /FOREIGN KEY/,
+    );
+    // The pre-existing run still accepts ordinary updates.
+    db.prepare("UPDATE runs SET status = 'failed' WHERE id = 'r1'").run();
+    db.close();
+  });
+
+  it('is idempotent across reopen', () => {
+    const root = tempRoot();
+    openDatabase(root).close();
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 15 });
+    db.close();
+  });
+});
+
+describe('Goal foreign keys and deferred circular references', () => {
+  it('defers the Goal to definition and milestone pointers until commit', () => {
+    const db = fresh();
+    project(db, 'p');
+    const write = db.transaction(() => {
+      goal(db, 'g', 'p', 'draft', { currentDefinitionVersion: 1, activeMilestoneId: 'm' });
+      definition(db, 'g', 1, 'approved');
+      milestone(db, 'm', 'g');
+    });
+    write();
+    expect(
+      db.prepare('SELECT current_definition_version AS v, active_milestone_id AS m FROM goals').get(),
+    ).toEqual({
+      v: 1,
+      m: 'm',
+    });
+    db.close();
+  });
+
+  it('rejects a dangling current definition or active milestone at commit', () => {
+    const db = fresh();
+    project(db, 'p');
+    expect(db.transaction(() => goal(db, 'g1', 'p', 'draft', { currentDefinitionVersion: 7 }))).toThrow(
+      /FOREIGN KEY/,
+    );
+    expect(db.transaction(() => goal(db, 'g2', 'p', 'draft', { activeMilestoneId: 'nope' }))).toThrow(
+      /FOREIGN KEY/,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goals').get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('allows a draft Goal with NULL pointers', () => {
+    const db = fresh();
+    project(db, 'p');
+    goal(db, 'g', 'p');
+    expect(db.prepare('SELECT current_definition_version AS v FROM goals').get()).toEqual({ v: null });
+    db.close();
+  });
+
+  it('protects project, machine and ownership references', () => {
+    const db = fresh();
+    expect(() => goal(db, 'g', 'no-project')).toThrow(/FOREIGN KEY/);
+    project(db, 'p');
+    goal(db, 'g', 'p');
+    expect(() => definition(db, 'missing-goal', 1)).toThrow(/FOREIGN KEY/);
+    expect(() => db.prepare("DELETE FROM goals WHERE id = 'g'").run()).not.toThrow();
+    db.close();
+  });
+
+  it('does not delete a Goal that has history', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    expect(() => db.prepare("DELETE FROM goals WHERE id = 'g'").run()).toThrow(/FOREIGN KEY/);
+    db.close();
+  });
+});
+
+describe('Goal definition invariants', () => {
+  it('permits only one approved definition per Goal', () => {
+    const db = fresh();
+    project(db, 'p');
+    goal(db, 'g', 'p');
+    definition(db, 'g', 1, 'approved');
+    expect(() => definition(db, 'g', 2, 'approved')).toThrow(/UNIQUE/);
+    definition(db, 'g', 2, 'proposed');
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ? WHERE goal_id = 'g' AND version = 2",
+        )
+        .run(NOW),
+    ).toThrow(/UNIQUE/);
+    db.close();
+  });
+
+  it('supports an atomic amendment: N superseded, N+1 approved, pointer moved', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    definition(db, 'g', 2, 'proposed');
+    db.transaction(() => {
+      db.prepare(
+        "UPDATE goal_definition_versions SET status = 'superseded' WHERE goal_id = 'g' AND version = 1",
+      ).run();
+      db.prepare(
+        "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ? WHERE goal_id = 'g' AND version = 2",
+      ).run(NOW);
+      db.prepare("UPDATE goals SET current_definition_version = 2 WHERE id = 'g'").run();
+    })();
+    expect(db.prepare('SELECT version, status FROM goal_definition_versions ORDER BY version').all()).toEqual(
+      [
+        { version: 1, status: 'superseded' },
+        { version: 2, status: 'approved' },
+      ],
+    );
+    expect(db.prepare("SELECT current_definition_version AS v FROM goals WHERE id = 'g'").get()).toEqual({
+      v: 2,
+    });
+    db.close();
+  });
+
+  it('rolls back an amendment that points at a missing version', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    expect(
+      db.transaction(() => {
+        db.prepare("UPDATE goals SET current_definition_version = 9 WHERE id = 'g'").run();
+      }),
+    ).toThrow(/FOREIGN KEY/);
+    expect(db.prepare("SELECT current_definition_version AS v FROM goals WHERE id = 'g'").get()).toEqual({
+      v: 1,
+    });
+    db.close();
+  });
+
+  it('keeps decided definitions immutable and enforces status transitions', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    for (const column of [
+      'contract_json',
+      'milestones_json',
+      'routing_json',
+      'review_json',
+      'limits_json',
+      'definition_hash',
+    ])
+      expect(() =>
+        db
+          .prepare(
+            `UPDATE goal_definition_versions SET ${column} = 'changed' WHERE goal_id = 'g' AND version = 1`,
+          )
+          .run(),
+      ).toThrow(/immutable/);
+    expect(() =>
+      db.prepare("DELETE FROM goal_definition_versions WHERE goal_id = 'g' AND version = 1").run(),
+    ).toThrow(/cannot be deleted/);
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE goal_definition_versions SET status = 'proposed' WHERE goal_id = 'g' AND version = 1",
+        )
+        .run(),
+    ).toThrow(/illegal|immutable/);
+    // A proposed version stays editable and may be rejected, after which it is terminal.
+    definition(db, 'g', 2, 'proposed');
+    db.prepare(
+      "UPDATE goal_definition_versions SET contract_json = '{\"a\":1}' WHERE goal_id = 'g' AND version = 2",
+    ).run();
+    db.prepare(
+      "UPDATE goal_definition_versions SET status = 'rejected' WHERE goal_id = 'g' AND version = 2",
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE goal_definition_versions SET status = 'proposed' WHERE goal_id = 'g' AND version = 2",
+        )
+        .run(),
+    ).toThrow(/illegal|immutable/);
+    db.close();
+  });
+
+  it('only lets the user approve a definition', () => {
+    const db = fresh();
+    project(db, 'p');
+    goal(db, 'g', 'p');
+    definition(db, 'g', 1, 'proposed');
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE goal_definition_versions SET status = 'approved' WHERE goal_id = 'g' AND version = 1",
+        )
+        .run(),
+    ).toThrow(/approved by the user/);
+    expect(() =>
+      db
+        .prepare(
+          "UPDATE goal_definition_versions SET approved_by = 'authoring_run' WHERE goal_id = 'g' AND version = 1",
+        )
+        .run(),
+    ).toThrow(/CHECK/);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO goal_definition_versions (goal_id, version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
+            definition_hash, change_summary, created_by, created_at) VALUES ('g', 2, 'approved', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'authoring_run', ?)`,
+        )
+        .run(NOW),
+    ).toThrow(/approved by the user/);
+    db.close();
+  });
+});
+
+describe('Goal cycle invariants', () => {
+  it('allows a NULL definition version only for authoring cycles', () => {
+    const db = fresh();
+    project(db, 'p');
+    goal(db, 'g', 'p');
+    cycle(db, 'c0', 'g', 0, 'authoring', null);
+    for (const [index, kind] of (['execution', 'remediation', 'review', 'verification'] as const).entries())
+      expect(() => cycle(db, `bad-${kind}`, 'g', index + 1, kind, null)).toThrow(/CHECK/);
+    db.close();
+  });
+
+  it('keeps the foreign key on non-null definition versions', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    cycle(db, 'ok', 'g', 1, 'execution', 1);
+    expect(() => cycle(db, 'dangling', 'g', 2, 'execution', 5)).toThrow(/FOREIGN KEY/);
+    db.close();
+  });
+
+  it('rejects cross-Goal definition versions, milestones and active milestones', () => {
+    const db = fresh();
+    project(db, 'p1');
+    project(db, 'p2');
+    seedGoalWithDefinition(db, 'g1', 'p1');
+    seedGoalWithDefinition(db, 'g2', 'p2');
+    definition(db, 'g1', 2, 'proposed');
+    // Goal 2 has no version 2 even though Goal 1 does.
+    expect(() => cycle(db, 'x1', 'g2', 1, 'execution', 2)).toThrow(/FOREIGN KEY/);
+    // A cycle may not use another Goal's milestone.
+    expect(() => cycle(db, 'x2', 'g2', 1, 'execution', 1, 'g1-m1')).toThrow(/FOREIGN KEY/);
+    cycle(db, 'ok', 'g2', 1, 'execution', 1, 'g2-m1');
+    // A Goal may not activate another Goal's milestone.
+    expect(() => db.prepare("UPDATE goals SET active_milestone_id = 'g1-m1' WHERE id = 'g2'").run()).toThrow(
+      /FOREIGN KEY/,
+    );
+    // Nor point at another Goal's definition version.
+    expect(() => db.prepare("UPDATE goals SET current_definition_version = 2 WHERE id = 'g2'").run()).toThrow(
+      /FOREIGN KEY/,
+    );
+    db.close();
+  });
+
+  it('enforces a unique sequence per Goal and the same-owner target keys', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    cycle(db, 'c1', 'g', 1, 'execution', 1);
+    expect(() => cycle(db, 'c2', 'g', 1, 'execution', 1)).toThrow(/UNIQUE/);
+    expect(() => milestone(db, 'dup', 'g', 'g-m1')).toThrow(/UNIQUE/);
+    db.close();
+  });
+});
+
+describe('Goal integration operation invariants', () => {
+  const op = (db: Db, id: string, goalId: string, cycleId: string | null, runId: string | null) =>
+    db
+      .prepare(
+        `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, run_id, op, new_commit, status, checks_json, created_at)
+         VALUES (?, ?, ?, ?, 'advance', ?, 'planned', '[]', ?)`,
+      )
+      .run(id, goalId, cycleId, runId, SHA, NOW);
+
+  it('requires the cycle and run to belong to the same Goal', () => {
+    const db = fresh();
+    project(db, 'p1');
+    project(db, 'p2');
+    seedGoalWithDefinition(db, 'g1', 'p1');
+    seedGoalWithDefinition(db, 'g2', 'p2');
+    cycle(db, 'c1', 'g1', 1, 'execution', 1);
+    cycle(db, 'c2', 'g2', 1, 'execution', 1);
+    run(db, 'r1', 'p1', { cycle: 'c1', purpose: 'execution', base: SHA });
+    run(db, 'r2', 'p2', { cycle: 'c2', purpose: 'execution', base: SHA });
+    op(db, 'ok', 'g1', 'c1', 'r1');
+    op(db, 'no-run', 'g1', null, null);
+    expect(() => op(db, 'cross-cycle', 'g1', 'c2', null)).toThrow(/FOREIGN KEY/);
+    expect(() => op(db, 'cross-run', 'g1', 'c1', 'r2')).toThrow(/does not belong/);
+    expect(() => op(db, 'run-without-cycle', 'g1', null, 'r1')).toThrow(/does not belong/);
+    db.close();
+  });
+});
+
+describe('project lease', () => {
+  it('allows one active Goal per project and many inactive ones', () => {
+    const db = fresh();
+    project(db, 'p');
+    project(db, 'q');
+    goal(db, 'draft1', 'p', 'draft');
+    goal(db, 'draft2', 'p', 'draft');
+    goal(db, 'ready1', 'p', 'ready');
+    goal(db, 'done', 'p', 'completed');
+    goal(db, 'running', 'p', 'running');
+    for (const status of ['reviewing', 'needs_user', 'blocked', 'paused', 'running'])
+      expect(() => goal(db, `second-${status}`, 'p', status)).toThrow(/UNIQUE/);
+    goal(db, 'other-project', 'q', 'running');
+    db.prepare("UPDATE goals SET status = 'completed' WHERE id = 'running'").run();
+    goal(db, 'next', 'p', 'needs_user');
+    db.close();
+  });
+});
+
+describe('Goal-origin run metadata', () => {
+  const seeded = () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    cycle(db, 'c1', 'g', 1, 'execution', 1);
+    cycle(db, 'c0', 'g', 0, 'authoring', null);
+    return db;
+  };
+
+  it('keeps ordinary runs entirely NULL and rejects partial origin', () => {
+    const db = seeded();
+    run(db, 'ordinary', 'p');
+    expect(() => run(db, 'p1', 'p', { purpose: 'execution' })).toThrow(/inconsistent/);
+    expect(() => run(db, 'p2', 'p', { base: SHA })).toThrow(/inconsistent/);
+    expect(() => run(db, 'p3', 'p', { cycle: 'c1' })).toThrow(/inconsistent/);
+    db.close();
+  });
+
+  it('allows a NULL base commit for authoring but validates the shape of a present one', () => {
+    const db = seeded();
+    run(db, 'authoring', 'p', { cycle: 'c0', purpose: 'authoring' });
+    run(db, 'exec', 'p', { cycle: 'c1', purpose: 'execution', base: SHA });
+    for (const [index, bad] of ['abc', 'A'.repeat(40), 'g'.repeat(40), `${SHA}0`].entries())
+      expect(() => run(db, `bad${index}`, 'p', { cycle: 'c1', purpose: 'proposal', base: bad })).toThrow(
+        /CHECK/,
+      );
+    run(db, 'sha256', 'p', { cycle: 'c1', purpose: 'review', base: 'b'.repeat(64) });
+    expect(() => run(db, 'purpose', 'p', { cycle: 'c1', purpose: 'bogus', base: SHA })).toThrow(/CHECK/);
+    db.close();
+  });
+
+  it('makes (cycle, purpose) unique so a duplicate launch cannot create a second run', () => {
+    const db = seeded();
+    run(db, 'first', 'p', { cycle: 'c1', purpose: 'execution', base: SHA });
+    expect(() => run(db, 'second', 'p', { cycle: 'c1', purpose: 'execution', base: SHA })).toThrow(/UNIQUE/);
+    run(db, 'review', 'p', { cycle: 'c1', purpose: 'review', base: SHA });
+    expect(
+      db.prepare('SELECT run_id, goal_id, cycle_id, purpose FROM goal_runs ORDER BY run_id').all(),
+    ).toEqual([
+      { run_id: 'first', goal_id: 'g', cycle_id: 'c1', purpose: 'execution' },
+      { run_id: 'review', goal_id: 'g', cycle_id: 'c1', purpose: 'review' },
+    ]);
+    db.close();
+  });
+
+  it('makes origin immutable once the run exists', () => {
+    const db = seeded();
+    run(db, 'ordinary', 'p');
+    run(db, 'exec', 'p', { cycle: 'c1', purpose: 'execution', base: SHA });
+    expect(() =>
+      db
+        .prepare("UPDATE runs SET goal_cycle_id = 'c1', goal_run_purpose = 'review' WHERE id = 'ordinary'")
+        .run(),
+    ).toThrow(/immutable/);
+    expect(() =>
+      db.prepare("UPDATE runs SET goal_base_commit = ? WHERE id = 'exec'").run('c'.repeat(40)),
+    ).toThrow(/immutable/);
+    expect(() => db.prepare("UPDATE runs SET goal_cycle_id = NULL WHERE id = 'exec'").run()).toThrow(
+      /immutable/,
+    );
+    // Ordinary updates are unaffected.
+    db.prepare("UPDATE runs SET status = 'running' WHERE id = 'exec'").run();
+    db.prepare("UPDATE runs SET status = 'running' WHERE id = 'ordinary'").run();
+    db.close();
+  });
+});

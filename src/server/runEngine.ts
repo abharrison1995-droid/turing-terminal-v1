@@ -44,7 +44,7 @@ import { evaluateDecisionGate, saveDecisionResult, type DecisionContext } from '
 import type { Db } from './db.js';
 import { getRunRow } from './serialize.js';
 import { executeProvider, type ProviderRunResult } from './providers.js';
-import { readGitDiff } from './git.js';
+import { captureSubjectState, readGitDiff, type SubjectState } from './git.js';
 import { redactSecrets, safeChildEnvironment } from './security.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
 import { rulesForStage } from './rules.js';
@@ -148,6 +148,10 @@ export class RunEngine {
     const controller = new AbortController();
     this.active.set(runId, controller);
     void this.execute(runId, controller, resume).finally(() => this.active.delete(runId));
+  }
+
+  isActive(runId: string): boolean {
+    return this.active.has(runId);
   }
 
   cancel(runId: string): boolean {
@@ -408,21 +412,22 @@ export class RunEngine {
             };
           } else if (stage.kind === 'shellCommand') {
             if (!stage.command) throw new Error('Shell command stage has no configured command.');
-            output = await this.executeCommand(
-              runId,
-              stageId,
-              stage,
-              stage.command,
-              working.path,
-              stageSignal,
-            );
+            const subject = await this.captureSubject(row, working.path);
+            output = {
+              ...(await this.executeCommand(runId, stageId, stage, stage.command, working.path, stageSignal)),
+              ...subject,
+            };
           } else if (stage.kind === 'build' || stage.kind === 'test') {
             const command =
               stage.kind === 'build'
                 ? parseJson<string[] | null>(project.build_command_json, null)
                 : parseJson<string[] | null>(project.test_command_json, null);
+            const subject = command ? await this.captureSubject(row, working.path) : {};
             output = command
-              ? await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)
+              ? {
+                  ...(await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)),
+                  ...subject,
+                }
               : {
                   skipped: true,
                   reason: `No ${stage.kind} command was detected. Configure a project command to run this stage.`,
@@ -716,6 +721,22 @@ export class RunEngine {
     }
   }
 
+  /**
+   * Repository state a deterministic stage is about to verify. Captured only for runs that carry a trusted base
+   * commit, so ordinary run rows are unchanged. A capture failure never fails the stage.
+   */
+  private async captureSubject(
+    row: Record<string, unknown>,
+    workingPath: string,
+  ): Promise<Partial<SubjectState>> {
+    if (!row.goal_base_commit) return {};
+    try {
+      return await captureSubjectState(workingPath);
+    } catch {
+      return {};
+    }
+  }
+
   private async prepareWorkingCopy(
     runId: string,
     workflow: WorkflowDefinition,
@@ -723,10 +744,15 @@ export class RunEngine {
   ): Promise<{ path: string; worktreePath: string | null; branch: string | null }> {
     const project = this.db
       .prepare(
-        `SELECT p.git_root, r.worktree_path, r.branch FROM projects p
+        `SELECT p.git_root, r.worktree_path, r.branch, r.goal_base_commit FROM projects p
          JOIN runs r ON r.project_id = p.id WHERE r.id = ?`,
       )
-      .get(runId) as { git_root: string | null; worktree_path: string | null; branch: string | null };
+      .get(runId) as {
+      git_root: string | null;
+      worktree_path: string | null;
+      branch: string | null;
+      goal_base_commit: string | null;
+    };
     if (!project.git_root || !workflow.isolatedWorktree)
       return { path: projectPath, worktreePath: null, branch: null };
     const gitRoot = project.git_root;
@@ -752,13 +778,18 @@ export class RunEngine {
         branch: project.branch,
       };
     }
-    const status = await git(['status', '--porcelain'], gitRoot);
-    if (status.trim())
-      throw new Error(
-        'This workflow uses an isolated Git worktree, but the project has uncommitted changes. Commit or stash them, or turn off worktree isolation for this workflow.',
-      );
-    const startingCommit = await git(['rev-parse', 'HEAD'], gitRoot);
-    const baseBranch = (await git(['branch', '--show-current'], gitRoot)) || null;
+    // A trusted base commit (set only by server code at queue time) is the exact worktree start point. The
+    // source checkout is not involved, so it may be dirty and no base branch is recorded.
+    const trustedBase = project.goal_base_commit;
+    if (!trustedBase) {
+      const status = await git(['status', '--porcelain'], gitRoot);
+      if (status.trim())
+        throw new Error(
+          'This workflow uses an isolated Git worktree, but the project has uncommitted changes. Commit or stash them, or turn off worktree isolation for this workflow.',
+        );
+    }
+    const startingCommit = trustedBase ?? (await git(['rev-parse', 'HEAD'], gitRoot));
+    const baseBranch = trustedBase ? null : (await git(['branch', '--show-current'], gitRoot)) || null;
     const branch = `turing/${runId.slice(0, 8)}`;
     const dataDir = resolve(
       process.env.TT_DATA_DIR ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.turing-terminal'),

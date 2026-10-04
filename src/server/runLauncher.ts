@@ -48,6 +48,63 @@ export interface RunInput {
   lockProviders?: boolean;
 }
 
+export type GoalRunPurpose =
+  'authoring' | 'proposal' | 'execution' | 'review' | 'remediation' | 'verification';
+
+const GOAL_RUN_PURPOSES: readonly GoalRunPurpose[] = [
+  'authoring',
+  'proposal',
+  'execution',
+  'review',
+  'remediation',
+  'verification',
+];
+const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const TRUSTED_ORIGIN = Symbol('turing.trusted-run-origin');
+
+/**
+ * Server-internal Goal origin of a run. It can only be produced by createRunOrigin and carries a module-private
+ * symbol, so a value deserialised from an HTTP body or the database can never pass for one.
+ */
+export interface RunOrigin {
+  readonly [TRUSTED_ORIGIN]: true;
+  readonly goalCycleId: string;
+  readonly goalRunPurpose: GoalRunPurpose;
+  /** Full lowercase commit SHA the run worktree starts from. Absent for purposes with no integration base yet. */
+  readonly goalBaseCommit?: string;
+}
+
+/** Trusted, server-only launch context. Never part of RunInput or any HTTP schema. */
+export interface RunLaunchContext {
+  origin?: RunOrigin;
+}
+
+export class RunOriginError extends Error {}
+
+export function createRunOrigin(
+  goalCycleId: string,
+  goalRunPurpose: GoalRunPurpose,
+  goalBaseCommit?: string,
+): RunOrigin {
+  if (!goalCycleId) throw new RunOriginError('A Goal run origin needs a cycle.');
+  if (!GOAL_RUN_PURPOSES.includes(goalRunPurpose))
+    throw new RunOriginError(`Unknown Goal run purpose: ${String(goalRunPurpose)}.`);
+  if (goalBaseCommit !== undefined && !COMMIT_SHA.test(goalBaseCommit))
+    throw new RunOriginError('A Goal base commit must be a full lowercase commit SHA.');
+  return {
+    [TRUSTED_ORIGIN]: true,
+    goalCycleId,
+    goalRunPurpose,
+    ...(goalBaseCommit ? { goalBaseCommit } : {}),
+  };
+}
+
+function isTrustedRunOrigin(value: unknown): value is RunOrigin {
+  return (
+    typeof value === 'object' && value !== null && (value as Record<symbol, unknown>)[TRUSTED_ORIGIN] === true
+  );
+}
+
 export type RunPreview = NonNullable<Awaited<ReturnType<typeof buildPreview>>>;
 
 export interface QueueRunOptions {
@@ -68,15 +125,43 @@ const AI_KINDS = new Set<WorkflowStage['kind']>([
   'finalGate',
 ]);
 
-export function queueRun(db: Db, preview: RunPreview, options: QueueRunOptions = {}): { runId: string } {
+/**
+ * Persists a queued run, its stages, rules snapshot and queued event in one transaction and does not start it.
+ * A Goal-origin preview (carrying a verified RunOrigin) also records the origin on the run row in the same
+ * transaction; a second request for the same (cycle, purpose) returns the existing run instead of creating one.
+ */
+export function queueRun(
+  db: Db,
+  preview: RunPreview,
+  options: QueueRunOptions = {},
+): { runId: string; existed: boolean } {
   const id = randomUUID();
   const now = new Date().toISOString();
   const workflowSnapshot = preview.workflow;
+  const origin = preview.origin;
+  if (origin !== undefined && !isTrustedRunOrigin(origin))
+    throw new RunOriginError('Run origin was not created by trusted server code.');
+  let existingRunId: string | null = null;
   const create = db.transaction(() => {
+    if (origin) {
+      const existing = db
+        .prepare('SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?')
+        .get(origin.goalCycleId, origin.goalRunPurpose) as { id: string } | undefined;
+      if (existing) {
+        existingRunId = existing.id;
+        return;
+      }
+      const owner = db
+        .prepare('SELECT g.project_id FROM goal_cycles c JOIN goals g ON g.id = c.goal_id WHERE c.id = ?')
+        .get(origin.goalCycleId) as { project_id: string } | undefined;
+      if (!owner) throw new RunOriginError('The Goal cycle for this run does not exist.');
+      if (owner.project_id !== preview.project.id)
+        throw new RunOriginError('The Goal cycle belongs to a different project than this run.');
+    }
     db.prepare(
       `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile,
-       permission_mode, refinement_requested, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+       permission_mode, refinement_requested, status, created_at, goal_cycle_id, goal_run_purpose, goal_base_commit)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
     ).run(
       id,
       preview.machine.id,
@@ -88,6 +173,9 @@ export function queueRun(db: Db, preview: RunPreview, options: QueueRunOptions =
       preview.permissionMode,
       Number(preview.refinePrompt),
       now,
+      origin?.goalCycleId ?? null,
+      origin?.goalRunPurpose ?? null,
+      origin?.goalBaseCommit ?? null,
     );
     db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
       JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules),
@@ -139,28 +227,46 @@ export function queueRun(db: Db, preview: RunPreview, options: QueueRunOptions =
         billingMode: preview.billingMode,
         meteredCapUsd: preview.routingSummary.runMeteredCapUsd,
         lockProviders: preview.lockProviders,
+        ...(origin ? { goalCycleId: origin.goalCycleId, goalRunPurpose: origin.goalRunPurpose } : {}),
         ...options.eventDetails,
       }),
       now,
     );
   });
   create();
-  return { runId: id };
+  return existingRunId ? { runId: existingRunId, existed: true } : { runId: id, existed: false };
 }
 
-/** Starts execution of a run that queueRun has already persisted. */
-export function startQueuedRun(engine: RunEngine, runId: string): void {
+export type StartQueuedRunResult =
+  { started: true } | { started: false; reason: 'not-found' | 'not-queued' | 'already-active' };
+
+/**
+ * Starts a run that queueRun persisted. Safe to call repeatedly (for example from recovery): only a persisted
+ * `queued` run that is not already executing is started; paused, waiting, running and terminal runs are never
+ * re-entered through this fresh-start path.
+ */
+export function startQueuedRun(db: Db, engine: RunEngine, runId: string): StartQueuedRunResult {
+  const row = db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string } | undefined;
+  if (!row) return { started: false, reason: 'not-found' };
+  if (row.status !== 'queued') return { started: false, reason: 'not-queued' };
+  if (engine.isActive(runId)) return { started: false, reason: 'already-active' };
   engine.start(runId);
+  return { started: true };
 }
 
 /** Ordinary run path: persist the queued run, then start it immediately. */
 export function createRun(db: Db, engine: RunEngine, preview: RunPreview, options: QueueRunOptions = {}) {
   const { runId } = queueRun(db, preview, options);
-  startQueuedRun(engine, runId);
+  startQueuedRun(db, engine, runId);
   return toRun(db, getRunRow(db, runId)!);
 }
 
-export async function buildPreview(db: Db, input: RunInput, workflowOverride?: WorkflowDefinition) {
+export async function buildPreview(
+  db: Db,
+  input: RunInput,
+  workflowOverride?: WorkflowDefinition,
+  context: RunLaunchContext = {},
+) {
   let projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as
     Record<string, unknown> | undefined;
   const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(input.workflowId) as
@@ -217,6 +323,10 @@ export async function buildPreview(db: Db, input: RunInput, workflowOverride?: W
       source.maxParallelAgents,
     ),
   };
+  const origin = await verifyRunOrigin(context.origin, project, workflow);
+  // A trusted explicit base commit makes the registered checkout's dirtiness informational: the run worktree starts
+  // from that commit and never reads the checkout. Ordinary runs keep blocking on a dirty or unverifiable checkout.
+  const checkoutBlocksIsolation = !origin?.goalBaseCommit;
   const effectiveRules = resolveEffectiveRules(db, project.id);
   const providers = await allProviders(db);
   const connections = (
@@ -522,9 +632,9 @@ export async function buildPreview(db: Db, input: RunInput, workflowOverride?: W
   if (refinePrompt && !hasPromptRefinementStage)
     warnings.push('Prompt refinement is enabled, but this workflow has no enabled prompt refinement stage.');
   if (!input.task.trim()) warnings.push('Enter a task description.');
-  if (project.dirty && workflow.isolatedWorktree)
+  if (checkoutBlocksIsolation && project.dirty && workflow.isolatedWorktree)
     warnings.push('Project has uncommitted changes; commit or stash before isolated execution.');
-  if (project.gitRoot && project.dirty === null && workflow.isolatedWorktree)
+  if (checkoutBlocksIsolation && project.gitRoot && project.dirty === null && workflow.isolatedWorktree)
     warnings.push(
       'Git status could not be verified; isolated execution is blocked until the project refresh succeeds.',
     );
@@ -665,14 +775,41 @@ export async function buildPreview(db: Db, input: RunInput, workflowOverride?: W
       (!refinePrompt || hasPromptRefinementStage) &&
       providerAssignments.every((assignment) => assignment.ready) &&
       !contextBudgetBlocked &&
-      !(workflow.isolatedWorktree && project.gitRoot && project.dirty !== false),
+      !(checkoutBlocksIsolation && workflow.isolatedWorktree && project.gitRoot && project.dirty !== false),
     warnings,
+    ...(origin ? { origin } : {}),
     providerAssignments,
     billingSummary,
     routingSummary,
     providerFallbackStatus,
     contextWarnings,
   };
+}
+
+async function verifyRunOrigin(
+  origin: RunOrigin | undefined,
+  project: { gitRoot: string | null },
+  workflow: WorkflowDefinition,
+): Promise<RunOrigin | undefined> {
+  if (origin === undefined) return undefined;
+  if (!isTrustedRunOrigin(origin))
+    throw new RunOriginError('Run origin was not created by trusted server code.');
+  if (!origin.goalBaseCommit) return origin;
+  if (!COMMIT_SHA.test(origin.goalBaseCommit))
+    throw new RunOriginError('A Goal base commit must be a full lowercase commit SHA.');
+  if (!workflow.isolatedWorktree)
+    throw new RunOriginError('A Goal run with a base commit requires an isolated worktree workflow.');
+  if (!project.gitRoot) throw new RunOriginError('A Goal run with a base commit requires a Git project.');
+  try {
+    await execFile('git', ['cat-file', '-e', `${origin.goalBaseCommit}^{commit}`], {
+      cwd: project.gitRoot,
+      windowsHide: true,
+      timeout: 5_000,
+    });
+  } catch {
+    throw new RunOriginError('The Goal base commit does not exist in the registered repository.');
+  }
+  return origin;
 }
 
 type RunPreviewAssignment = import('../shared/types.js').RunPreview['providerAssignments'][number];

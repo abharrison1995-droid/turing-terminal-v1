@@ -112,7 +112,7 @@ describe('run launcher', () => {
   it('starts a queued run only when startQueuedRun is called', async () => {
     const start = vi.spyOn(engine, 'start');
     const { runId } = queueRun(db, await preview());
-    startQueuedRun(engine, runId);
+    startQueuedRun(db, engine, runId);
     expect(start).toHaveBeenCalledExactlyOnceWith(runId);
     await vi.waitFor(() => {
       expect(db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).toMatchObject({
@@ -134,16 +134,12 @@ describe('run launcher', () => {
     });
   });
 
-  it('carries no Goal metadata on runs at this stage', () => {
-    const columns = (db.prepare('PRAGMA table_info(runs)').all() as Array<{ name: string }>).map(
-      (column) => column.name,
-    );
-    expect(columns.filter((name) => name.startsWith('goal'))).toEqual([]);
-    const tables = (
-      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
-        name: string;
-      }>
-    ).map((table) => table.name);
-    expect(tables.filter((name) => name.startsWith('goal'))).toEqual([]);
+  it('leaves Goal origin columns NULL on ordinary runs', async () => {
+    const run = createRun(db, engine, await preview());
+    expect(
+      db
+        .prepare('SELECT goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = ?')
+        .get(run.id),
+    ).toEqual({ goal_cycle_id: null, goal_run_purpose: null, goal_base_commit: null });
   });
 });
