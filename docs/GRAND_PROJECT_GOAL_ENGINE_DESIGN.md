@@ -82,7 +82,7 @@ No other `RunEngine` behaviour changes. Everything else is supervisor-side.
 Two additive migrations, split by whether `runs` needs a foreign key into them (SQLite cannot add a foreign key to an existing column later without a table rebuild, so everything `runs` points at must exist when the column is added):
 
 - **`015_goal_core.sql` (Stage 0B)**: `goals`, `goal_definition_versions`, `goal_milestones`, `goal_runtime`, `goal_cycles`, `goal_integration_ops`, the three new `runs` columns, indexes, and triggers. Ships with schema tests and **no supervisor logic**.
-- **`016_goal_evidence_reviews.sql` (Stage 2)**: `goal_evidence`, `goal_reviews`, `goal_findings`, `goal_finding_observations`, `goal_approvals`, `goal_events`, `route_validations`.
+- **`017_goal_evidence_reviews.sql` (Stage 2)**: `goal_evidence`, `goal_reviews`, `goal_findings`, `goal_finding_observations`, `goal_approvals`, `goal_events`, `route_validations`.
 
 Both are applied by the existing `runMigrations()` (lexical, transactional, recorded in `schema_migrations`). A database upgraded from RC2 keeps all history; no backfill. `db.test.ts` is extended for both migrations, and a dedicated test exercises every foreign key and trigger under `PRAGMA foreign_keys = ON` (which `openDatabase` sets).
 
@@ -123,7 +123,7 @@ CREATE TABLE goal_definition_versions (       -- immutable once approved (trigge
   change_summary TEXT NOT NULL,
   created_by TEXT NOT NULL CHECK (created_by IN ('user','authoring_run','amendment_assist')),
   approved_by TEXT CHECK (approved_by IS NULL OR approved_by = 'user'),
-  approval_id TEXT,                           -- goal_approvals.id (016); no FK across migrations
+  approval_id TEXT,                           -- goal_approvals.id (017); no FK across migrations
   created_at TEXT NOT NULL, approved_at TEXT,
   PRIMARY KEY (goal_id, version)
 );
@@ -171,7 +171,7 @@ CREATE TABLE goal_cycles (
   created_at TEXT NOT NULL, finished_at TEXT,
   UNIQUE (goal_id, sequence),
   CHECK ((kind = 'authoring') OR (definition_version IS NOT NULL)),
-  UNIQUE (goal_id, id),                       -- target of same-owner composite foreign keys (016 tables)
+  UNIQUE (goal_id, id),                       -- target of same-owner composite foreign keys (017 tables)
   FOREIGN KEY (goal_id, definition_version) REFERENCES goal_definition_versions(goal_id, version),
   FOREIGN KEY (goal_id, milestone_id) REFERENCES goal_milestones(goal_id, id)   -- a cycle cannot use another Goal's milestone
 );
@@ -223,7 +223,7 @@ CREATE INDEX idx_goal_cycles_goal ON goal_cycles(goal_id, sequence);
 CREATE INDEX idx_runs_goal_cycle ON runs(goal_cycle_id);
 ```
 
-**Same-owner rule (applies to 016 as well).** Wherever a row carries both `goal_id` and a child key (`milestone_id`, `cycle_id`, `review_id`), the pair is a composite foreign key to `(goal_id, id)` of the child table, never a bare child id next to an independent `goal_id`. 016 tables follow this and are tested with deliberate cross-Goal inserts.
+**Same-owner rule (applies to 017 as well).** Wherever a row carries both `goal_id` and a child key (`milestone_id`, `cycle_id`, `review_id`), the pair is a composite foreign key to `(goal_id, id)` of the child table, never a bare child id next to an independent `goal_id`. 017 tables follow this and are tested with deliberate cross-Goal inserts.
 
 `runs.goal_id` is intentionally **not** added: the Goal of a run is `runs.goal_cycle_id → goal_cycles.goal_id`. A convenience view `goal_runs(run_id, goal_id, cycle_id, purpose)` supports queries. `goal_cycles.proposal_run_id` and `goal_cycles.run_id` from revision 1 are removed (answering the review's question: they are not necessary and would be a second source of truth).
 
@@ -231,7 +231,7 @@ Foreign keys that were application-only in revision 1 are now declared: `goals.a
 
 The unique index `idx_goal_one_active_per_project` is the **project lease**. `needs_user` is in the set, so a Goal that is being amended (section 9.3) keeps its lease. `draft` and `ready` do not hold it; starting a Goal can fail on the index, which the API reports as "another Goal is active on this project".
 
-### 4.2 `016_goal_evidence_reviews.sql` (Stage 2; summary)
+### 4.2 `017_goal_evidence_reviews.sql` (Stage 2; summary)
 
 ```sql
 CREATE TABLE goal_evidence (                  -- immutable; no superseded_by
@@ -858,7 +858,7 @@ interface GoalMemory {
 
 Deterministic only (no live providers), using existing fixtures and fake provider adapters.
 
-1. **Migrations**: 014 → 015 → 016 upgrade; every foreign key and trigger under `PRAGMA foreign_keys = ON`, including the circular `goals`↔`goal_milestones` deferral; immutability triggers; unique partial indexes; all-or-none origin trigger.
+1. **Migrations**: 014 → 015 → 016 (integration-op audit) → 017 upgrade; every foreign key and trigger under `PRAGMA foreign_keys = ON`, including the circular `goals`↔`goal_milestones` deferral; immutability triggers; unique partial indexes; all-or-none origin trigger.
 2. **Run origin (Stage 0B)**: goal fields are ignored when sent in an HTTP body; ordinary runs unchanged byte-for-byte in rows, events, and behaviour; `prepareWorkingCopy` starts from `goal_base_commit` and ignores a dirty user checkout; engine `subjectTree` capture matches a recomputed tree and leaves the real index untouched.
 3. **Launch/idempotency**: queue-before-start; crash injection between queue, link, and start; duplicate `queueRun` yields one run (unique index); reconcile starts a `queued` Goal run exactly once; no second provider call.
 4. **Integration git module** (temp repositories): CAS create and advance; stale expected-old fails without moving the ref; non-descendant, dirty worktree, out-of-scope path, sensitive path, secret-looking diff, and `no_change` cases; `planned` op recovery for each of the three ref states; Goal ref checked out elsewhere is detected; final apply happy path and diverged/dirty/wrong-branch paths performing no merge.
@@ -879,7 +879,7 @@ Deterministic only (no live providers), using existing fixtures and fake provide
 - A database with no goals behaves exactly as RC2. Existing-table changes are three nullable `runs` columns; existing run queries select `r.*` and `toRun` maps named columns, so they are unaffected (covered by regression tests). Ordinary runs have `NULL` goal columns.
 - Existing workflows are untouched; Goals reference saved workflows by id and apply routes through `workflowOverride`. Goal templates in workflow export/import are deferred.
 - API and `DashboardSnapshot` changes are additive; older phone PWAs ignore `goals`.
-- Release notes for the next RC must state migrations 015 and 016. Rollback is not supported by the migration runner; RC2 binaries ignore unknown tables and columns.
+- Release notes for the next RC must state migrations 015, 016 and 017. Rollback is not supported by the migration runner; RC2 binaries ignore unknown tables and columns.
 
 ## 22. Staged implementation plan
 
@@ -888,7 +888,7 @@ Each stage ends with the full gate green, a coherent commit, and an update to `d
 - **Stage 0A: launcher extraction (behaviour-preserving).** Move `makePreview` and `createQueuedRun` into `src/server/runLauncher.ts`; introduce `buildPreview`, `queueRun`, `startQueuedRun`, and `createRun` with ordinary semantics identical to RC2 (`createRun` = queue then start). No schema, no Goal metadata. Run the complete regression gate; **commit independently**.
 - **Stage 0B: Goal-origin run support.** Migration `015_goal_core.sql` (schema and triggers only, no supervisor); `RunOrigin`, `goal_cycle_id`/`goal_run_purpose`/`goal_base_commit` persisted atomically in `queueRun`; unique idempotency index; trusted-only base commit; the bounded engine changes of section 2.1 (`prepareWorkingCopy` from `goal_base_commit`, `subjectTree` capture); tests for crash/idempotency, trusted-origin enforcement, dirty-checkout bypass, and unchanged ordinary runs. Commit independently.
 - **Stage 1: integration git module.** `goalGit.ts`: CAS create/advance of `turing/goal/<id>`, ancestry/tree/blob reads, invariant checks, `goal_integration_ops` recovery, final-apply preconditions. Tested thoroughly against temp repositories before anything depends on it.
-- **Stage 2: definitions, validation, state machine, evidence.** Migration 016; `shared/goals.ts`; definition versioning and amendment; validators; `transitionGoal`; evidence staleness; `evaluateCompletion`; Goal findings lifecycle; route validation schema.
+- **Stage 2: definitions, validation, state machine, evidence.** Migration 017; `shared/goals.ts`; definition versioning and amendment; validators; `transitionGoal`; evidence staleness; `evaluateCompletion`; Goal findings lifecycle; route validation schema.
 - **Stage 3: supervisor core with a fake executor.** Tick loop, bounds, duration accounting, cycle persistence, memory builder, reconcile wired into `index.ts`.
 - **Stage 4: real child runs.** Planning, execution, review, and verification workflows seeded as built-ins; evidence from real stage outputs; usage `goalId` filter; async authoring.
 - **Stage 5: routing.** Pinned routes, static pools, availability, validation probes (user-initiated), independence, derived selection, first-use gate.
@@ -969,3 +969,8 @@ Only after stage 7 and a prove-it review does the Model Opportunity Layer begin:
 - `queueRun` does not update `goal_cycles.status` (section 8.2 listed `launching`). Cycle status transitions belong to the supervisor and its state machine (Stage 2); the cycle status is deliberately not set speculatively here.
 - Subject-state capture is taken **before** the command runs (the state being verified), only for runs that carry a `goal_base_commit` (ordinary run rows stay byte-identical), and the tree is HEAD with the **project scope** replaced by the working state. Files outside the project scope stay as HEAD has them, which matches what a scoped commit stage would commit; out-of-scope edits are scope violations handled at integration. Capture failure omits the fields and never fails a stage.
 - An origin problem (untrusted object, malformed or missing base commit, non-isolated workflow, cycle of another project) throws `RunOriginError` rather than producing a non-startable preview, so a supervisor that ignores a preview cannot silently create an ordinary run.
+
+### Revision 2.3 (Stage 0B.1 hardening)
+
+- `createRunOrigin` returns a frozen object, so a verified origin cannot be mutated between preview and queueing.
+- Migration `015_goal_core.sql` is never edited once applied. `016_goal_integration_op_audit.sql` is additive: it adds `recovery_json`, makes the op identity (`id`, `goal_id`, `cycle_id`, `run_id`, `op`, `expected_old`, `new_commit`, `created_at`) and `checks_json` immutable, allows only `planned -> applied | aborted | failed` (all three terminal and fully immutable), requires inserts to be `planned`, forbids deletes, and allows at most one `planned` op per Goal. Recovery observations are written to `recovery_json`, never over the authorised checks. The planned evidence/review migration is therefore `017_goal_evidence_reviews.sql`.

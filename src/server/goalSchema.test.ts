@@ -23,8 +23,8 @@ function fresh(): Db {
   return openDatabase(tempRoot());
 }
 
-/** Builds the exact RC2 schema (migrations 001-014 only) with some history, then returns the data dir. */
-function rc2Directory(): string {
+/** Builds a schema from the migrations strictly before `through` (default: exact RC2, 001-014) with some history, then returns the data dir. */
+function rc2Directory(through = '015'): string {
   const root = tempRoot();
   mkdirSync(root, { recursive: true });
   const raw = new Database(join(root, 'turing.sqlite'));
@@ -32,7 +32,7 @@ function rc2Directory(): string {
   raw.exec('CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
   const directory = join(process.cwd(), 'migrations');
   for (const name of readdirSync(directory)
-    .filter((file) => file.endsWith('.sql') && file < '015')
+    .filter((file) => file.endsWith('.sql') && file < through)
     .sort()) {
     raw.exec(readFileSync(join(directory, name), 'utf8'));
     raw.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(name, NOW);
@@ -201,7 +201,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 15 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -226,7 +226,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 15 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
     db.close();
   });
 });
@@ -501,7 +501,10 @@ describe('Goal integration operation invariants', () => {
     run(db, 'r1', 'p1', { cycle: 'c1', purpose: 'execution', base: SHA });
     run(db, 'r2', 'p2', { cycle: 'c2', purpose: 'execution', base: SHA });
     op(db, 'ok', 'g1', 'c1', 'r1');
+    // The 016 audit hardening allows one unresolved op per Goal, so resolve it before the next.
+    db.prepare("UPDATE goal_integration_ops SET status = 'applied' WHERE id = 'ok'").run();
     op(db, 'no-run', 'g1', null, null);
+    db.prepare("UPDATE goal_integration_ops SET status = 'aborted' WHERE id = 'no-run'").run();
     expect(() => op(db, 'cross-cycle', 'g1', 'c2', null)).toThrow(/FOREIGN KEY/);
     expect(() => op(db, 'cross-run', 'g1', 'c1', 'r2')).toThrow(/does not belong/);
     expect(() => op(db, 'run-without-cycle', 'g1', null, 'r1')).toThrow(/does not belong/);
@@ -592,6 +595,174 @@ describe('Goal-origin run metadata', () => {
     // Ordinary updates are unaffected.
     db.prepare("UPDATE runs SET status = 'running' WHERE id = 'exec'").run();
     db.prepare("UPDATE runs SET status = 'running' WHERE id = 'ordinary'").run();
+    db.close();
+  });
+});
+
+describe('migration 016_goal_integration_op_audit', () => {
+  it('upgrades a database that already holds 015 data, preserving integration ops', () => {
+    const root = rc2Directory('016');
+    const raw = new Database(join(root, 'turing.sqlite'));
+    raw.pragma('foreign_keys = ON');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 15 });
+    raw
+      .prepare(
+        "INSERT INTO goals (id, machine_id, project_id, title, status, created_at, updated_at) VALUES ('g','m1','p1','G','draft',?,?)",
+      )
+      .run(NOW, NOW);
+    for (const [id, status] of [
+      ['op-applied', 'applied'],
+      ['op-planned', 'planned'],
+    ] as const)
+      raw
+        .prepare(
+          `INSERT INTO goal_integration_ops (id, goal_id, op, new_commit, status, checks_json, created_at)
+           VALUES (?, 'g', 'init_ref', ?, ?, '[]', ?)`,
+        )
+        .run(id, SHA, status, NOW);
+    raw.close();
+
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
+    expect(
+      db.prepare('SELECT id, status, recovery_json FROM goal_integration_ops ORDER BY id').all(),
+    ).toEqual([
+      { id: 'op-applied', status: 'applied', recovery_json: null },
+      { id: 'op-planned', status: 'planned', recovery_json: null },
+    ]);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    // The new protection applies to rows that existed before the upgrade.
+    expect(() =>
+      db.prepare("UPDATE goal_integration_ops SET status = 'planned' WHERE id = 'op-applied'").run(),
+    ).toThrow(/immutable/);
+    db.prepare("UPDATE goal_integration_ops SET status = 'aborted' WHERE id = 'op-planned'").run();
+    db.close();
+  });
+});
+
+describe('goal integration op audit protection', () => {
+  const insertOp = (db: Db, id = 'op1', extra: Partial<Record<string, string | null>> = {}) =>
+    db
+      .prepare(
+        `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, op, expected_old, new_commit, status, checks_json, created_at)
+         VALUES (?, 'g', ?, 'advance', ?, ?, ?, '[{"check":"c1","ok":true}]', ?)`,
+      )
+      .run(
+        id,
+        extra.cycle ?? null,
+        extra.expectedOld ?? SHA,
+        extra.newCommit ?? 'b'.repeat(40),
+        extra.status ?? 'planned',
+        NOW,
+      );
+
+  const seeded = () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    cycle(db, 'c1', 'g', 1, 'execution', 1);
+    cycle(db, 'c2', 'g', 2, 'execution', 1);
+    return db;
+  };
+
+  it('rejects changes to every identity field and to the authorised checks', () => {
+    const db = seeded();
+    run(db, 'r1', 'p', { cycle: 'c1', purpose: 'execution', base: SHA });
+    run(db, 'r2', 'p', { cycle: 'c2', purpose: 'execution', base: SHA });
+    db.prepare(
+      `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, run_id, op, expected_old, new_commit, status, checks_json, created_at)
+       VALUES ('op1', 'g', 'c1', 'r1', 'advance', ?, ?, 'planned', '[]', ?)`,
+    ).run(SHA, 'b'.repeat(40), NOW);
+    const attempts: Array<[string, unknown]> = [
+      ['id', 'other'],
+      ['cycle_id', 'c2'],
+      ['run_id', 'r2'],
+      ['op', 'init_ref'],
+      ['expected_old', 'c'.repeat(40)],
+      ['new_commit', 'c'.repeat(40)],
+      ['created_at', '2027-01-01T00:00:00.000Z'],
+      ['checks_json', '[{"check":"c1","ok":false}]'],
+    ];
+    for (const [column, value] of attempts)
+      expect(() =>
+        db.prepare(`UPDATE goal_integration_ops SET ${column} = ? WHERE id = 'op1'`).run(value),
+      ).toThrow(/immutable/);
+    expect(() =>
+      db.prepare("UPDATE goal_integration_ops SET goal_id = 'other' WHERE id = 'op1'").run(),
+    ).toThrow();
+    expect(() => db.prepare("DELETE FROM goal_integration_ops WHERE id = 'op1'").run()).toThrow(
+      /cannot be deleted/,
+    );
+    db.close();
+  });
+
+  it('allows planned to become applied, aborted or failed with result fields only', () => {
+    const db = seeded();
+    for (const [index, status] of (['applied', 'aborted', 'failed'] as const).entries()) {
+      insertOp(db, `op-${status}`, { newCommit: String(index).repeat(40) });
+      db.prepare(
+        'UPDATE goal_integration_ops SET status = ?, error_code = ?, finished_at = ?, recovery_json = \'{"observed":1}\' WHERE id = ?',
+      ).run(status, status === 'failed' ? 'goal_ref_conflict' : null, NOW, `op-${status}`);
+    }
+    expect(db.prepare('SELECT id, status FROM goal_integration_ops ORDER BY id').all()).toEqual([
+      { id: 'op-aborted', status: 'aborted' },
+      { id: 'op-applied', status: 'applied' },
+      { id: 'op-failed', status: 'failed' },
+    ]);
+    db.close();
+  });
+
+  it('treats applied, aborted and failed as terminal and never returns to planned', () => {
+    const db = seeded();
+    for (const terminal of ['applied', 'aborted', 'failed']) {
+      insertOp(db, `op-${terminal}`);
+      db.prepare('UPDATE goal_integration_ops SET status = ? WHERE id = ?').run(terminal, `op-${terminal}`);
+      for (const next of ['planned', 'applied', 'aborted', 'failed'])
+        if (next !== terminal)
+          expect(() =>
+            db.prepare('UPDATE goal_integration_ops SET status = ? WHERE id = ?').run(next, `op-${terminal}`),
+          ).toThrow(/immutable/);
+      for (const column of ['error_code', 'finished_at', 'recovery_json'])
+        expect(() =>
+          db.prepare(`UPDATE goal_integration_ops SET ${column} = 'x' WHERE id = ?`).run(`op-${terminal}`),
+        ).toThrow(/immutable/);
+    }
+    db.close();
+  });
+
+  it('rejects an illegal status value and inserting a non-planned op', () => {
+    const db = seeded();
+    insertOp(db, 'op1');
+    expect(() =>
+      db.prepare("UPDATE goal_integration_ops SET status = 'bogus' WHERE id = 'op1'").run(),
+    ).toThrow();
+    expect(() => insertOp(db, 'op2', { status: 'applied' })).toThrow(/inserted as planned/);
+    db.close();
+  });
+
+  it('allows only one unresolved operation per Goal until it is resolved', () => {
+    const db = seeded();
+    insertOp(db, 'op1');
+    expect(() => insertOp(db, 'op2')).toThrow(/UNIQUE/);
+    db.prepare("UPDATE goal_integration_ops SET status = 'applied', finished_at = ? WHERE id = 'op1'").run(
+      NOW,
+    );
+    insertOp(db, 'op2');
+    db.close();
+  });
+
+  it('lets recovery observations be recorded while planned without touching the authorised checks', () => {
+    const db = seeded();
+    insertOp(db, 'op1');
+    db.prepare(
+      'UPDATE goal_integration_ops SET recovery_json = \'{"ref":"absent"}\' WHERE id = \'op1\'',
+    ).run();
+    expect(
+      db.prepare("SELECT checks_json, recovery_json FROM goal_integration_ops WHERE id = 'op1'").get(),
+    ).toEqual({
+      checks_json: '[{"check":"c1","ok":true}]',
+      recovery_json: '{"ref":"absent"}',
+    });
     db.close();
   });
 });

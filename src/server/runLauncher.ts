@@ -63,8 +63,8 @@ const COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const TRUSTED_ORIGIN = Symbol('turing.trusted-run-origin');
 
 /**
- * Server-internal Goal origin of a run. It can only be produced by createRunOrigin and carries a module-private
- * symbol, so a value deserialised from an HTTP body or the database can never pass for one.
+ * Server-internal Goal origin of a run. It can only be produced by createRunOrigin, is frozen, and carries a
+ * module-private symbol, so a value deserialised from an HTTP body or the database can never pass for one.
  */
 export interface RunOrigin {
   readonly [TRUSTED_ORIGIN]: true;
@@ -91,12 +91,12 @@ export function createRunOrigin(
     throw new RunOriginError(`Unknown Goal run purpose: ${String(goalRunPurpose)}.`);
   if (goalBaseCommit !== undefined && !COMMIT_SHA.test(goalBaseCommit))
     throw new RunOriginError('A Goal base commit must be a full lowercase commit SHA.');
-  return {
-    [TRUSTED_ORIGIN]: true,
+  return Object.freeze({
+    [TRUSTED_ORIGIN]: true as const,
     goalCycleId,
     goalRunPurpose,
     ...(goalBaseCommit ? { goalBaseCommit } : {}),
-  };
+  });
 }
 
 function isTrustedRunOrigin(value: unknown): value is RunOrigin {

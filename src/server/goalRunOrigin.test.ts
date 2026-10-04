@@ -190,6 +190,36 @@ describe('Goal-origin run launch', () => {
       expect(db.prepare('SELECT COUNT(*) AS n FROM runs').get()).toEqual({ n: 0 });
     });
 
+    it('freezes a trusted origin so it cannot change between preview and queueing', async () => {
+      const cycleId = seedGoal();
+      const origin = createRunOrigin(cycleId, 'execution', baseCommit);
+      expect(Object.isFrozen(origin)).toBe(true);
+      const mutable = origin as unknown as Record<string, unknown>;
+      for (const [key, value] of [
+        ['goalCycleId', 'other-cycle'],
+        ['goalRunPurpose', 'review'],
+        ['goalBaseCommit', 'f'.repeat(40)],
+      ] as const) {
+        expect(() => {
+          mutable[key] = value;
+        }).toThrow(TypeError);
+        expect(() => {
+          delete mutable[key];
+        }).toThrow(TypeError);
+      }
+      expect(() => {
+        mutable.extra = true;
+      }).toThrow(TypeError);
+      const preview = await buildPreview(db, input(gateWorkflowId), undefined, { origin });
+      expect(preview!.origin).toBe(origin);
+      const { runId } = queueRun(db, preview!);
+      expect(rowOf(runId)).toMatchObject({
+        goal_cycle_id: cycleId,
+        goal_run_purpose: 'execution',
+        goal_base_commit: baseCommit,
+      });
+    });
+
     it('validates origin construction and the base commit', async () => {
       expect(() => createRunOrigin('c', 'execution', 'abc')).toThrow(RunOriginError);
       expect(() => createRunOrigin('c', 'execution', baseCommit.toUpperCase())).toThrow(RunOriginError);
