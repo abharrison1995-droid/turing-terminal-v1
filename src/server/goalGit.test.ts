@@ -701,6 +701,135 @@ describe('advanceGoalRef', () => {
     });
   });
 
+  describe('stage outcomes (Stage 1.1)', () => {
+    const addStages = (h: Harness, runId: string, statuses: string[]) =>
+      statuses.forEach((status, index) =>
+        h.db
+          .prepare(
+            `INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status) VALUES (?, ?, ?, 'build', 'S', ?, ?)`,
+          )
+          .run(randomUUID(), runId, `s${index}`, index, status),
+      );
+
+    it('refuses a completed run containing a failed continueOnFailure stage', async () => {
+      const h = await initialised();
+      const cycle = h.newCycle();
+      const run = h.makeRun(cycle, { 'a.txt': '1\n' });
+      // The run reached 'completed' although the middle stage failed and carried continueOnFailure.
+      h.db
+        .prepare('UPDATE runs SET workflow_snapshot_json = ? WHERE id = ?')
+        .run(JSON.stringify({ stages: [{ id: 's1', continueOnFailure: true }] }), run.runId);
+      addStages(h, run.runId, ['passed', 'failed', 'passed']);
+      const result = await advanceGoalRef(h.db, {
+        goalId: h.goalId,
+        cycleId: cycle,
+        runId: run.runId,
+        expectedHead: h.base,
+      });
+      expect(result).toMatchObject({ outcome: 'rejected', code: 'run_stage_failed' });
+      if (result.outcome === 'rejected')
+        expect(result.checks.at(-1)!.detail).toEqual({ stages: [{ stage_key: 's1', status: 'failed' }] });
+      expect(git(h.repo, 'rev-parse', h.ref)).toBe(h.base);
+      expect(ops(h).filter((op) => op.op === 'advance')).toHaveLength(0);
+    });
+
+    it.each(['cancelled'])('refuses a %s stage as failed', async (status) => {
+      const h = await initialised();
+      const cycle = h.newCycle();
+      const run = h.makeRun(cycle, { 'a.txt': '1\n' });
+      addStages(h, run.runId, ['passed', status]);
+      expect(
+        await advanceGoalRef(h.db, {
+          goalId: h.goalId,
+          cycleId: cycle,
+          runId: run.runId,
+          expectedHead: h.base,
+        }),
+      ).toMatchObject({ code: 'run_stage_failed' });
+    });
+
+    it.each(['pending', 'running', 'waiting_for_user', 'waiting_for_approval', 'unknown_state'])(
+      'refuses a completed run with a %s stage as incomplete',
+      async (status) => {
+        const h = await initialised();
+        const cycle = h.newCycle();
+        const run = h.makeRun(cycle, { 'a.txt': '1\n' });
+        addStages(h, run.runId, ['passed', status]);
+        expect(
+          await advanceGoalRef(h.db, {
+            goalId: h.goalId,
+            cycleId: cycle,
+            runId: run.runId,
+            expectedHead: h.base,
+          }),
+        ).toMatchObject({ code: 'run_stage_incomplete' });
+        expect(ops(h)).toHaveLength(1);
+      },
+    );
+
+    it('accepts passed and skipped stages', async () => {
+      const h = await initialised();
+      const cycle = h.newCycle();
+      const run = h.makeRun(cycle, { 'a.txt': '1\n' });
+      addStages(h, run.runId, ['passed', 'skipped', 'passed']);
+      expect(
+        await advanceGoalRef(h.db, {
+          goalId: h.goalId,
+          cycleId: cycle,
+          runId: run.runId,
+          expectedHead: h.base,
+        }),
+      ).toMatchObject({ outcome: 'advanced' });
+    });
+  });
+
+  describe('bookkeeping invariants (Stage 1.1)', () => {
+    async function crashedAfterCas(h: Harness) {
+      const cycle = h.newCycle();
+      const run = h.makeRun(cycle, { 'a.txt': '1\n' });
+      await expect(
+        advanceGoalRef(
+          h.db,
+          { goalId: h.goalId, cycleId: cycle, runId: run.runId, expectedHead: h.base },
+          {},
+          {
+            beforeCas: () => {
+              git(h.repo, 'update-ref', h.ref, run.tip);
+              throw new Error('crash');
+            },
+          },
+        ),
+      ).rejects.toThrow('crash');
+      return { cycle, run };
+    }
+
+    it('rolls back and leaves the op planned when the runtime row is missing', async () => {
+      const h = await initialised();
+      await crashedAfterCas(h);
+      h.db.pragma('foreign_keys = OFF');
+      h.db.prepare('DELETE FROM goal_runtime WHERE goal_id = ?').run(h.goalId);
+      h.db.pragma('foreign_keys = ON');
+      await expect(recoverIntegrationOps(h.db, h.goalId)).rejects.toMatchObject({
+        code: 'bookkeeping_invariant',
+      });
+      expect(ops(h).at(-1)).toMatchObject({ status: 'planned', finished_at: null });
+    });
+
+    it('rolls back the runtime update when the cycle row cannot be updated', async () => {
+      const h = await initialised();
+      const { cycle } = await crashedAfterCas(h);
+      // Re-point the op at a cycle belonging to nobody by removing the cycle (planned ops are not FK-cascaded).
+      h.db.pragma('foreign_keys = OFF');
+      h.db.prepare('DELETE FROM goal_cycles WHERE id = ?').run(cycle);
+      h.db.pragma('foreign_keys = ON');
+      await expect(recoverIntegrationOps(h.db, h.goalId)).rejects.toMatchObject({
+        code: 'bookkeeping_invariant',
+      });
+      expect(ops(h).at(-1)!.status).toBe('planned');
+      expect(runtime(h).integration_head).toBe(h.base);
+    });
+  });
+
   describe('recovery', () => {
     async function crashed(h: Harness, mutate: (tip: string) => void) {
       const cycle = h.newCycle();

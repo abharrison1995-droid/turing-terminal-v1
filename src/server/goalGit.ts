@@ -356,24 +356,43 @@ function completeOp(db: Db, op: OpRow): boolean {
         baseCommit: string;
         ref: string;
       };
-      db.prepare(
-        `INSERT INTO goal_runtime (goal_id, goal_branch, integration_head, base_branch, base_commit, updated_at)
+      const upsert = db
+        .prepare(
+          `INSERT INTO goal_runtime (goal_id, goal_branch, integration_head, base_branch, base_commit, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (goal_id) DO UPDATE SET goal_branch = excluded.goal_branch,
            integration_head = excluded.integration_head, base_branch = excluded.base_branch,
            base_commit = excluded.base_commit, updated_at = excluded.updated_at`,
-      ).run(op.goal_id, goalBranchName(op.goal_id), op.new_commit, detail.baseBranch, detail.baseCommit, now);
-    } else if (op.op === 'advance') {
-      db.prepare('UPDATE goal_runtime SET integration_head = ?, updated_at = ? WHERE goal_id = ?').run(
-        op.new_commit,
-        now,
-        op.goal_id,
-      );
-      if (op.cycle_id)
-        db.prepare('UPDATE goal_cycles SET result_integration_commit = ? WHERE id = ?').run(
+        )
+        .run(
+          op.goal_id,
+          goalBranchName(op.goal_id),
           op.new_commit,
-          op.cycle_id,
+          detail.baseBranch,
+          detail.baseCommit,
+          now,
         );
+      if (upsert.changes !== 1)
+        throw new GoalGitError(
+          'bookkeeping_invariant',
+          'The Goal runtime row was not written; the op stays planned.',
+        );
+    } else if (op.op === 'advance') {
+      const runtimeUpdate = db
+        .prepare('UPDATE goal_runtime SET integration_head = ?, updated_at = ? WHERE goal_id = ?')
+        .run(op.new_commit, now, op.goal_id);
+      if (runtimeUpdate.changes !== 1)
+        throw new GoalGitError(
+          'bookkeeping_invariant',
+          'The Goal runtime row is missing; the op stays planned.',
+        );
+      if (op.cycle_id) {
+        const cycleUpdate = db
+          .prepare('UPDATE goal_cycles SET result_integration_commit = ? WHERE id = ? AND goal_id = ?')
+          .run(op.new_commit, op.cycle_id, op.goal_id);
+        if (cycleUpdate.changes !== 1)
+          throw new GoalGitError('bookkeeping_invariant', 'The cycle row is missing; the op stays planned.');
+      }
     }
     return true;
   })();
@@ -651,6 +670,21 @@ export async function advanceGoalRef(
 
   if (run.status !== 'completed') return reject('run_not_completed', `The run is ${run.status}.`);
   pass('run_completed');
+  const unclean = db
+    .prepare(
+      `SELECT stage_key, status FROM stages WHERE run_id = ? AND status NOT IN ('passed', 'skipped') ORDER BY sequence`,
+    )
+    .all(input.runId) as Array<{ stage_key: string; status: string }>;
+  if (unclean.length) {
+    // continueOnFailure lets a run reach 'completed' past a failed stage; that outcome is never integration-safe.
+    const failed = unclean.filter((stage) => stage.status === 'failed' || stage.status === 'cancelled');
+    return reject(
+      failed.length ? 'run_stage_failed' : 'run_stage_incomplete',
+      `${unclean.length} stage(s) did not conclude cleanly.`,
+      { stages: unclean.slice(0, 20) },
+    );
+  }
+  pass('stages_clean');
 
   const expectedBranch = `turing/${input.runId.slice(0, 8)}`;
   if (!run.branch || run.branch !== expectedBranch || !RUN_BRANCH.test(run.branch))
