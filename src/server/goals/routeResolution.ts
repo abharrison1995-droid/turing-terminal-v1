@@ -431,6 +431,9 @@ export function loadAuthoritySet(
 
 // --- Services -----------------------------------------------------------------------------------------------------
 
+/** Extra billing terms the caller proves from the registered workflow; the Goal's own mode is always applied too. */
+export type RoutingBillingTerms = Pick<RoutingRequest, 'workflowBilling' | 'customAllowedLanes'>;
+
 function loadApproved(db: Db, goalId: string): GoalDefinitionVersion {
   const goal = db
     .prepare('SELECT current_definition_version AS version FROM goals WHERE id = ?')
@@ -468,13 +471,19 @@ const definedRoles = (stored: GoalDefinitionVersion, roles?: readonly GoalRole[]
  */
 export function previewGoalRoutes(
   db: Db,
-  input: { goalId: string; environment: RoutingEnvironment; roles?: readonly GoalRole[] },
+  input: {
+    goalId: string;
+    environment: RoutingEnvironment;
+    roles?: readonly GoalRole[];
+    billing?: RoutingBillingTerms;
+  },
 ): { definitionVersion: number; definitionHash: string; result: RoutingResult } {
   const stored = loadApproved(db, input.goalId);
   const policy = stored.definition.routing.independence;
   const result = resolveRoutes(
     requestFor(stored, definedRoles(stored, input.roles), input.environment, {
       independenceContext: { authority: loadAuthoritySet(db, input.goalId, policy.against) },
+      ...(input.billing ?? {}),
     }),
   );
   return { definitionVersion: stored.version, definitionHash: stored.definitionHash, result };
@@ -486,7 +495,13 @@ export function previewGoalRoutes(
  */
 export function resolveRolesForCycle(
   db: Db,
-  input: { goalId: string; cycleId: string; roles: readonly GoalRole[]; environment: RoutingEnvironment },
+  input: {
+    goalId: string;
+    cycleId: string;
+    roles: readonly GoalRole[];
+    environment: RoutingEnvironment;
+    billing?: RoutingBillingTerms;
+  },
 ): RoutingResult {
   const stored = loadApproved(db, input.goalId);
   const cycle = db
@@ -511,6 +526,7 @@ export function resolveRolesForCycle(
       persistedResolutions: current.valid,
       invalidPersistedRoles: current.malformed,
       independenceContext: { authority: loadAuthoritySet(db, input.goalId, policy.against) },
+      ...(input.billing ?? {}),
     }),
   );
   for (const outcome of Object.values(result.roles))

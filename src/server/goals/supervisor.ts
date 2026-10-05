@@ -24,7 +24,7 @@ import {
   type CycleRow,
 } from './cycles.js';
 import { loadDefinitionVersion } from './definitions.js';
-import type { GoalExecutor, GoalRunPurpose } from './executor.js';
+import type { FirstUseRequest, GoalExecutor, GoalRunPurpose } from './executor.js';
 import { evaluateCriteria } from './freshness.js';
 import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
@@ -38,7 +38,7 @@ import { runPreflight, type PreflightFailureCode } from './preflight.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { pathInMilestoneScope, scopePrefixes } from './scope.js';
 import { transitionGoal } from './stateMachine.js';
-import type { GoalActor, GoalReasonCode } from '../../shared/goals.js';
+import type { GoalActor, GoalApproval, GoalReasonCode } from '../../shared/goals.js';
 
 /**
  * The Goal supervisor core (design 8.3, 12). `tickGoal` performs at most one meaningful persisted action for a Goal and
@@ -219,6 +219,8 @@ export class GoalSupervisor {
     | { ok: true }
     | {
         ok: false;
+        /** Present with `gate_pending` when the Goal waits on a first-use approval of a pool member. */
+        approvalId?: string;
         code:
           | PreflightFailureCode
           | 'scheduler_full'
@@ -253,7 +255,20 @@ export class GoalSupervisor {
     const paused = options.reasonCode === 'run_resumed' ? this.interruptedRun(goalId) : undefined;
     if (options.reasonCode === 'run_resumed' && !paused) return { ok: false, code: 'no_paused_run' };
     const preflight = await runPreflight(this.db, goalId, { executor: this.executor, now: this.now() });
-    if (!preflight.ok) return { ok: false, code: preflight.code };
+    if (!preflight.ok) {
+      // A pool member that has never been used needs the user's approval. The request is created or reused, the Goal
+      // keeps its status, and nothing is queued or started: Start is simply retried after the decision.
+      if (
+        (preflight.code === 'approval_required' || preflight.code === 'approval_pending') &&
+        preflight.approval
+      )
+        return {
+          ok: false,
+          code: 'gate_pending',
+          approvalId: this.ensureFirstUseApproval(goalId, preflight.approval).id,
+        };
+      return { ok: false, code: preflight.code };
+    }
     try {
       transitionGoal(this.db, {
         goalId,
@@ -409,6 +424,67 @@ export class GoalSupervisor {
   }
 
   /**
+   * The pending first-use approval for exactly this pool member, created at most once: an equal pending request (same
+   * pool and member identity) is reused. Asking never advances round robin and never starts anything.
+   */
+  private ensureFirstUseApproval(goalId: string, request: FirstUseRequest): GoalApproval {
+    return this.db.transaction(() => {
+      const existing = pendingGoalApprovals(this.db, goalId).find(
+        (approval) =>
+          approval.gate === 'pool_route_first_use' &&
+          approval.detail.poolId === request.poolId &&
+          approval.detail.memberIdentityHash === request.memberIdentityHash,
+      );
+      return (
+        existing ??
+        requestGoalApproval(this.db, {
+          goalId,
+          gate: 'pool_route_first_use',
+          risk: 'low',
+          reason:
+            `Approve first use of pool member ${request.memberIndex + 1} of pool "${request.poolId}" for the ${request.role} role.`.slice(
+              0,
+              300,
+            ),
+          requestedBy: 'supervisor',
+          detail: {
+            poolId: request.poolId,
+            memberIdentityHash: request.memberIdentityHash,
+            role: request.role,
+            memberIndex: request.memberIndex,
+          },
+          now: this.now(),
+        })
+      );
+    })();
+  }
+
+  /** `running -> needs_user(gate_pending)` for a first-use approval, in one transaction with the approval request. */
+  private requestFirstUseGate(goalId: string, request: FirstUseRequest): string {
+    return this.db.transaction(() => {
+      const approval = this.ensureFirstUseApproval(goalId, request);
+      transitionGoal(this.db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'gate_pending',
+        actor: 'supervisor',
+        detail: { approvalId: approval.id, gate: 'pool_route_first_use' },
+        now: this.now(),
+      });
+      return approval.id;
+    })();
+  }
+
+  /** The first-use request carried by a queue failure, when that is what the failure is. */
+  private firstUseFailure(error: unknown): FirstUseRequest | null {
+    const candidate = error as { code?: unknown; approval?: FirstUseRequest } | null;
+    return (candidate?.code === 'approval_required' || candidate?.code === 'approval_pending') &&
+      candidate.approval
+      ? candidate.approval
+      : null;
+  }
+
+  /**
    * Requests a gate in one transaction with the `running -> needs_user(gate_pending)` edge. At most one pending approval
    * exists per exact action: an equal pending request is reused, never duplicated.
    */
@@ -455,6 +531,15 @@ export class GoalSupervisor {
     const approvalId = this.approvalIdOf(goal.status_detail_json);
     const approval = approvalId ? getGoalApproval(this.db, approvalId) : undefined;
     if (!approval || approval.status === 'pending') return { action: 'waiting_gate', goalId };
+    if (approval.gate === 'pool_route_first_use') {
+      // A first-use decision never cancels the cycle. Approval lets the same preflight re-resolve; a denial makes the
+      // pool consider its next member (the denied one is no longer eligible), or refuse when none is left.
+      const resumed = await this.resumeGoal(goalId, { actor: 'supervisor', reasonCode: 'gate_resolved' });
+      if (resumed.ok) return { action: 'resumed', goalId };
+      return resumed.code === 'gate_pending'
+        ? { action: 'waiting_gate', goalId, ...(resumed.approvalId ? { code: resumed.approvalId } : {}) }
+        : { action: 'preflight_failed', goalId, code: resumed.code };
+    }
     if (approval.status === 'denied') {
       // A denial never continues silently: the proposed cycle is cancelled and the Goal stays with the user.
       const cycle = activeCycle(this.db, goalId);
@@ -971,7 +1056,12 @@ export class GoalSupervisor {
           baseCommit: cycle.baseIntegrationCommit!,
           memory: rebuildGoalMemory(this.db, goalId, { now: this.now() }),
         });
-      } catch {
+      } catch (error) {
+        const first = this.firstUseFailure(error);
+        if (first) {
+          const approvalId = this.requestFirstUseGate(goalId, first);
+          return { action: 'gate_requested', goalId, cycleId: cycle.id, code: approvalId };
+        }
         return this.fail(cycle, 'proposal_queue_error');
       }
       return { action: 'proposal_queued', goalId, cycleId: cycle.id };
@@ -1107,7 +1197,12 @@ export class GoalSupervisor {
               task: cycle.validatedTask!,
               baseCommit: cycle.baseIntegrationCommit!,
             });
-          } catch {
+          } catch (error) {
+            const first = this.firstUseFailure(error);
+            if (first) {
+              const approvalId = this.requestFirstUseGate(goalId, first);
+              return { action: 'gate_requested', goalId, cycleId: cycle.id, code: approvalId };
+            }
             return this.fail(cycle, 'launch_error');
           }
           return { action: 'run_queued', goalId, cycleId: cycle.id };

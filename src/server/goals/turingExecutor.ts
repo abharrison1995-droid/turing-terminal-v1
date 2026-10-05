@@ -14,6 +14,7 @@ import { toWorkflow } from '../serialize.js';
 import { getCycle, type CycleRow } from './cycles.js';
 import { loadDefinitionVersion } from './definitions.js';
 import type {
+  FirstUseRequest,
   ChildRunRequest,
   GoalExecutor,
   ProposalRequest,
@@ -23,6 +24,7 @@ import type {
 } from './executor.js';
 import { applyGoalScope, formatExecutionTask, formatPlanningTask } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
+import { readStoredResolutions } from './routeResolution.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
 import {
@@ -45,6 +47,10 @@ export type TuringExecutorErrorCode =
   | 'workflow_not_found'
   | 'reserved_workflow_conflict'
   | 'plan_unavailable'
+  | 'approval_required'
+  | 'approval_pending'
+  | 'plan_route_unbound'
+  | 'plan_route_mismatch'
   | 'plan_workflow_mismatch'
   | 'plan_not_isolated'
   | 'plan_forbidden_stage'
@@ -61,6 +67,8 @@ export class TuringExecutorError extends Error {
   constructor(
     readonly code: TuringExecutorErrorCode | string,
     message: string,
+    /** Present on `approval_required` / `approval_pending`: the exact pool member awaiting the user's first-use approval. */
+    readonly approval?: FirstUseRequest,
   ) {
     super(message);
     this.name = 'TuringExecutorError';
@@ -160,6 +168,10 @@ export class TuringGoalExecutor implements GoalExecutor {
   constructor(
     private readonly db: Db,
     private readonly plans: GoalRunPlanProvider,
+    private readonly options: {
+      /** Refuse any plan that is not bound to the cycle's persisted 5A resolution. The fixed test provider omits it. */
+      requireResolvedRoutes?: boolean;
+    } = {},
   ) {}
 
   checkRoutes(goalId: string): Promise<RouteReadiness> {
@@ -294,6 +306,60 @@ export class TuringGoalExecutor implements GoalExecutor {
     };
   }
 
+  /**
+   * When the plan came from a persisted routing resolution, the concrete route of every model-backed stage must equal
+   * `route_resolution_json.roles[role].selected.configuration` of this cycle, field for field. A mismatch (or a missing
+   * binding where one is required) is refused before anything is queued.
+   */
+  private verifyRouteBinding(
+    cycleId: string,
+    plan: Extract<Awaited<ReturnType<GoalRunPlanProvider['planRun']>>, { ready: true }>,
+    verified: WorkflowDefinition,
+  ): void {
+    if (!plan.routeBinding) {
+      if (this.options.requireResolvedRoutes)
+        throw new TuringExecutorError(
+          'plan_route_unbound',
+          'The run plan is not bound to a persisted route resolution.',
+        );
+      return;
+    }
+    const row = this.db
+      .prepare('SELECT route_resolution_json AS json FROM goal_cycles WHERE id = ?')
+      .get(cycleId) as { json: string | null } | undefined;
+    const stored = readStoredResolutions(row?.json ?? null)[plan.routeBinding.role];
+    if (!stored || stored.selected.identityHash !== plan.routeBinding.identityHash)
+      throw new TuringExecutorError(
+        'plan_route_mismatch',
+        'The cycle has no matching persisted route resolution.',
+      );
+    const fields = [
+      'backendId',
+      'providerId',
+      'billingLane',
+      'modelId',
+      'connectionProfileId',
+      'variantId',
+      'reasoning',
+      'nativeSettings',
+    ] as const;
+    const same = (left: unknown, right: unknown) =>
+      JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+    const modelBacked = verified.stages.filter((stage) => isModelBackedStage(stage.kind));
+    if (
+      modelBacked.length === 0 ||
+      !modelBacked.every((stage) =>
+        fields.every((field) =>
+          same((stage as unknown as Record<string, unknown>)[field], stored.selected.configuration[field]),
+        ),
+      )
+    )
+      throw new TuringExecutorError(
+        'plan_route_mismatch',
+        'The run plan route differs from the persisted route resolution.',
+      );
+  }
+
   private async queue(
     loaded: Loaded,
     purpose: 'proposal' | 'execution' | 'remediation',
@@ -312,8 +378,11 @@ export class TuringGoalExecutor implements GoalExecutor {
       baseCommit,
       ...(task ? { task } : {}),
     });
-    if (!plan.ready)
+    if (!plan.ready) {
+      if (plan.code === 'approval_required' || plan.code === 'approval_pending')
+        throw new TuringExecutorError(plan.code, plan.message.slice(0, 300), plan.approval);
       throw new TuringExecutorError('plan_unavailable', `${plan.code}: ${plan.message}`.slice(0, 300));
+    }
     const milestone = loaded.definition.milestones.find((item) => item.key === loaded.cycle.milestoneKey);
     if (!milestone)
       throw new TuringExecutorError('definition_mismatch', 'The cycle milestone is not in the definition.');
@@ -321,6 +390,7 @@ export class TuringGoalExecutor implements GoalExecutor {
       this.verifyPlan(plan.workflowOverride, registered, loaded.definition),
       milestone.allowedScope,
     );
+    this.verifyRouteBinding(loaded.cycle.id, plan, verified);
     // No billing, mode, budget or lane field is passed: effective authority stays the stricter of Goal, plan and the
     // existing desktop budget, evaluated by buildPreview exactly as for any run.
     const preview = await buildPreview(

@@ -1,4 +1,4 @@
-import type { BlockedReason, GoalMilestoneSpec, NextTask } from '../../shared/goals.js';
+import type { BlockedReason, GoalMilestoneSpec, GoalRole, NextTask } from '../../shared/goals.js';
 import type { GoalMemory } from './memory.js';
 
 /**
@@ -16,7 +16,24 @@ export type RouteReadiness =
       ready: false;
       code: Extract<BlockedReason, 'route_unavailable' | 'provider_unavailable' | 'provider_exhausted'>;
       message: string;
+    }
+  | {
+      /** A pool member that has never been used by this Goal needs the user's first-use approval (supervisor gate). */
+      ready: false;
+      code: 'approval_required' | 'approval_pending';
+      message: string;
+      approval: FirstUseRequest;
     };
+
+/** The exact pool member that needs first-use approval. Bounded, finite fields only. */
+export interface FirstUseRequest {
+  poolId: string;
+  memberIdentityHash: string;
+  role: GoalRole;
+  memberIndex: number;
+  /** The existing pending approval, when there already is one. */
+  approvalId?: string;
+}
 
 export interface ProposalRequest {
   goalId: string;

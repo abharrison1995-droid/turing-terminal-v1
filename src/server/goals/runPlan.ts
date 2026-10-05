@@ -1,6 +1,6 @@
-import type { NextTask } from '../../shared/goals.js';
+import type { GoalRole, NextTask } from '../../shared/goals.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
-import type { GoalRunPurpose, RouteReadiness } from './executor.js';
+import type { FirstUseRequest, GoalRunPurpose, RouteReadiness } from './executor.js';
 
 /**
  * The Stage 4 / Stage 5 seam. Stage 4 consumes an ALREADY CONCRETE workflow (a registered Goal workflow whose AI stages
@@ -21,11 +21,25 @@ export interface GoalRunPlanRequest {
 }
 
 export type GoalRunPlan =
-  | { ready: true; workflowOverride: WorkflowDefinition }
+  | {
+      ready: true;
+      workflowOverride: WorkflowDefinition;
+      /**
+       * Present when the route came from a persisted 5A resolution: the role and the selected identity the executor must
+       * re-prove against the cycle's stored resolution before anything is queued.
+       */
+      routeBinding?: { role: GoalRole; identityHash: string };
+    }
   | {
       ready: false;
       code: 'route_unavailable' | 'provider_unavailable' | 'provider_exhausted';
       message: string;
+    }
+  | {
+      ready: false;
+      code: 'approval_required' | 'approval_pending';
+      message: string;
+      approval: FirstUseRequest;
     };
 
 export interface GoalRunPlanProvider {

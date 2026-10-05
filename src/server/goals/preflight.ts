@@ -4,7 +4,7 @@ import { pendingGoalApprovals } from './approvals.js';
 import { evaluateBounds } from './bounds.js';
 import { activeCycle } from './cycles.js';
 import { loadDefinitionVersion, validateStoredDefinition, verifyDefinitionHash } from './definitions.js';
-import type { GoalExecutor } from './executor.js';
+import type { FirstUseRequest, GoalExecutor } from './executor.js';
 
 /**
  * Goal preflight: the deterministic checks every start and resume must pass before `-> running`. It returns a
@@ -27,6 +27,8 @@ export type PreflightFailureCode =
   | 'route_unavailable'
   | 'provider_unavailable'
   | 'provider_exhausted'
+  | 'approval_required'
+  | 'approval_pending'
   | 'bound_cycles'
   | 'bound_failures'
   | 'bound_remediation'
@@ -36,7 +38,7 @@ export type PreflightFailureCode =
 
 export type PreflightResult =
   | { ok: true; head: string; initializedRef: boolean }
-  | { ok: false; code: PreflightFailureCode; message: string };
+  | { ok: false; code: PreflightFailureCode; message: string; approval?: FirstUseRequest };
 
 const STARTABLE = new Set(['ready', 'needs_user', 'blocked', 'paused']);
 const fail = (code: PreflightFailureCode, message: string): PreflightResult => ({ ok: false, code, message });
@@ -124,7 +126,14 @@ export async function runPreflight(
     if (breach) return fail(breach.reason, breach.message);
     // 7. Routing readiness comes only from the executor.
     const routes = await deps.executor.checkRoutes(goalId);
-    if (!routes.ready) return fail(routes.code, routes.message);
+    if (!routes.ready) {
+      return {
+        ok: false,
+        code: routes.code,
+        message: routes.message,
+        ...('approval' in routes ? { approval: routes.approval } : {}),
+      };
+    }
     return { ok: true, head: verified.head, initializedRef };
   } catch (error) {
     if (error instanceof GoalGitError) return fail('git_state_invalid', error.message);

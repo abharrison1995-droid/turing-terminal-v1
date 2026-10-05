@@ -11,6 +11,8 @@ import { ActiveTimeTracker } from './activeTime.js';
 import { goalRepoFixture, milestone, simpleDefinition, type GoalRepoFixture } from './repoKit.js';
 import { GoalSupervisor } from './supervisor.js';
 import { TuringGoalExecutor } from './turingExecutor.js';
+import type { Db } from '../db.js';
+import type { GoalRunPlanProvider } from './runPlan.js';
 import { FixedGoalRunPlanProvider, type FixedRoute } from './testPlanProvider.js';
 
 const git = (cwd: string, ...args: string[]) =>
@@ -21,6 +23,8 @@ export interface RealRunHarness {
   engine: RunEngine;
   app: ReturnType<typeof createApp>;
   plans: FixedGoalRunPlanProvider;
+  /** The provider the executor actually uses (the fixed one unless `planProvider` was given). */
+  provider: GoalRunPlanProvider;
   executor: TuringGoalExecutor;
   supervisor: GoalSupervisor;
   /** A supervisor and executor on the same database, as after a process restart (a fresh engine too). */
@@ -59,6 +63,9 @@ export async function realRunHarness(
     definition?: GoalDefinition;
     /** Non-built-in workflows registered and selected for a purpose (context-authority tests). */
     custom?: Array<{ purpose: 'planning' | 'execution'; workflow: WorkflowDefinition }>;
+    /** A real route-plan provider in place of the fixed test provider (Stage 5B). */
+    planProvider?: (db: Db) => GoalRunPlanProvider;
+    requireResolvedRoutes?: boolean;
   } = {},
 ): Promise<RealRunHarness> {
   const definition =
@@ -114,8 +121,11 @@ export async function realRunHarness(
       workflow.updatedAt,
     );
   }
+  const provider: GoalRunPlanProvider = options.planProvider ? options.planProvider(db) : plans;
   const make = (runEngine: RunEngine) => {
-    const executor = new TuringGoalExecutor(db, plans);
+    const executor = new TuringGoalExecutor(db, provider, {
+      requireResolvedRoutes: options.requireResolvedRoutes ?? false,
+    });
     return {
       executor,
       supervisor: new GoalSupervisor({
@@ -151,6 +161,7 @@ export async function realRunHarness(
     engine,
     app,
     plans,
+    provider,
     ...first,
     baseCommit: fx.head(),
     restart() {
