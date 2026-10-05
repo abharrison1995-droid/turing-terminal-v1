@@ -24,6 +24,7 @@
     "src/server/goals/fakeExecutor.ts",
     "src/server/goals/supervisorKit.ts",
     "src/server/goals/testPlanProvider.ts",
-    "src/server/goals/turingRunKit.ts"
+    "src/server/goals/turingRunKit.ts",
+    "src/server/goals/routingKit.ts"
   ]
 }
