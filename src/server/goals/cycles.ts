@@ -4,6 +4,7 @@ import type { Db } from '../db.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { writeGoalEvent } from './events.js';
 import { evaluateBounds, type BoundBreach } from './bounds.js';
+import { readReviewPlan } from './reviewPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
 
 /**
@@ -216,6 +217,14 @@ export function transitionCycle(db: Db, request: CycleTransition): CycleRow {
       const { verifierDigests: _discard, ...rest } = outcome;
       void _discard;
       outcome = kept ? { ...rest, verifierDigests: kept } : rest;
+    }
+    // The plan a review cycle was created with is its identity (kind, reviewer count, range start): write-once, carried
+    // into every later outcome, and never replaceable by a later transition.
+    if (outcome && current.kind === 'review') {
+      const kept = readReviewPlan(current.outcome);
+      const { reviewPlan: _discard, ...rest } = outcome;
+      void _discard;
+      outcome = kept ? { ...rest, reviewPlan: kept } : rest;
     }
     const outcomeJson = outcome ? JSON.stringify(outcome) : null;
     if (outcomeJson && outcomeJson.length > MAX_OUTCOME_CHARS)

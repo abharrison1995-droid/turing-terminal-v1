@@ -1,0 +1,374 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { activeCycle, computeCounters, CycleError } from './cycles.js';
+import { listGoalEvents } from './events.js';
+import { cleanupRepoFixtures } from './repoKit.js';
+import { createReviewCycle } from './reviewCycle.js';
+import { reviewForCycle } from './reviews.js';
+import { GOAL_BUILTIN_WORKFLOWS } from '../../shared/goalWorkflows.js';
+import { harness, type Harness } from './supervisorKit.js';
+
+afterEach(cleanupRepoFixtures);
+
+const BUILT_IN = {
+  planning: 'goal-planning-v1',
+  execution: 'goal-execution-v1',
+  review: 'goal-review-v1',
+  verification: 'goal-verification-v1',
+};
+
+/** A running Goal with the built-in review workflow selected, then one review cycle of the given kind. */
+async function reviewing(
+  kind: 'periodic' | 'milestone' | 'final' | 'repeated_failure' | 'scope_change' = 'final',
+  options: { reviewedFromCommit?: string | null } = {},
+) {
+  const h = harness({
+    tune: (definition) => {
+      definition.routing.workflows = { ...BUILT_IN };
+    },
+  });
+  await h.start();
+  const created = createReviewCycle(h.fx.db, {
+    goalId: h.fx.goalId,
+    reviewKind: kind,
+    triggerCode: 'test_trigger',
+    ...(kind === 'milestone' ? { milestoneKey: 'm1' } : {}),
+    ...(options.reviewedFromCommit !== undefined ? { reviewedFromCommit: options.reviewedFromCommit } : {}),
+  });
+  if (!created.created) throw new Error('expected a new review cycle');
+  return { h, cycle: created.cycle };
+}
+const reviewRun = (h: Harness) =>
+  h.fx.db.prepare("SELECT id, status FROM runs WHERE goal_run_purpose = 'review'").all() as Array<{
+    id: string;
+    status: string;
+  }>;
+const reviewRows = (h: Harness) =>
+  h.fx.db.prepare('SELECT * FROM goal_reviews WHERE goal_id = ?').all(h.fx.goalId) as Array<
+    Record<string, unknown>
+  >;
+
+describe('createReviewCycle', () => {
+  it('creates a planned review cycle on the current head and moves the Goal to reviewing', async () => {
+    const { h, cycle } = await reviewing('final');
+    expect(cycle).toMatchObject({
+      kind: 'review',
+      status: 'planned',
+      triggerCode: 'test_trigger',
+      definitionVersion: 1,
+      baseIntegrationCommit: h.fx.head(),
+      milestoneId: null,
+    });
+    expect(cycle.outcome).toEqual({
+      reviewPlan: { reviewKind: 'final', reviewerCount: 2, reviewedFromCommit: null },
+    });
+    expect(h.status()).toMatchObject({ status: 'reviewing', reason: 'review_triggered' });
+    expect(listGoalEvents(h.fx.db, h.fx.goalId).some((e) => e.type === 'cycle_created')).toBe(true);
+  });
+
+  it('records the milestone, and counts against neither execution nor remediation bounds', async () => {
+    const { h, cycle } = await reviewing('milestone');
+    expect(cycle.milestoneKey).toBe('m1');
+    expect(computeCounters(h.fx.db, h.fx.goalId)).toEqual({
+      cyclesExecuted: 0,
+      consecutiveFailedCycles: 0,
+      remediationAttempts: {},
+    });
+  });
+
+  it('refuses a milestone review without a milestone, and a Goal that is not running', async () => {
+    const h = harness({ tune: (d) => void (d.routing.workflows = { ...BUILT_IN }) });
+    await h.start();
+    expect(() =>
+      createReviewCycle(h.fx.db, { goalId: h.fx.goalId, reviewKind: 'milestone', triggerCode: 't' }),
+    ).toThrow(CycleError);
+    createReviewCycle(h.fx.db, { goalId: h.fx.goalId, reviewKind: 'final', triggerCode: 't' });
+    expect(() =>
+      createReviewCycle(h.fx.db, { goalId: h.fx.goalId, reviewKind: 'final', triggerCode: 't' }),
+    ).toThrow(/running Goal/);
+  });
+
+  it('is idempotent while another cycle is active', async () => {
+    const h = harness({ tune: (d) => void (d.routing.workflows = { ...BUILT_IN }) });
+    await h.start();
+    await h.until('cycle_created');
+    const active = activeCycle(h.fx.db, h.fx.goalId)!;
+    const result = createReviewCycle(h.fx.db, { goalId: h.fx.goalId, reviewKind: 'final', triggerCode: 't' });
+    expect(result).toMatchObject({ created: false, reason: 'active_cycle_exists' });
+    expect(result.cycle.id).toBe(active.id);
+    expect(h.status().status).toBe('running');
+  });
+
+  it('derives the reviewer count from the periodic policy, clamped by the workflow parallelism', async () => {
+    const h = harness({
+      tune: (d) => {
+        d.routing.workflows = { ...BUILT_IN };
+        d.review.periodic = { everyNExecutionCycles: 2, reviewerCount: 3, scope: 'full_diff' };
+      },
+    });
+    await h.start();
+    const periodic = createReviewCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      reviewKind: 'periodic',
+      triggerCode: 't',
+    });
+    expect(
+      (periodic.cycle.outcome as { reviewPlan: { reviewerCount: number } }).reviewPlan.reviewerCount,
+    ).toBe(2);
+  });
+});
+
+describe('review launch', () => {
+  it('queues the run, binds the immutable review row, and only then starts the run', async () => {
+    const { h, cycle } = await reviewing('final');
+    const boundAtStart: Array<unknown> = [];
+    h.startRun.mockImplementationOnce((runId) => {
+      boundAtStart.push(reviewForCycle(h.fx.db, cycle.id)?.runId === runId);
+      h.setRunStatus(runId, 'running');
+      return { started: true };
+    });
+    expect(await h.until('review_run_started')).toEqual([
+      'launch_started',
+      'review_run_queued',
+      'review_bound',
+      'review_run_started',
+    ]);
+    expect(boundAtStart).toEqual([true]);
+    expect(h.executor.reviewQueueCalls).toEqual([
+      {
+        goalId: h.fx.goalId,
+        cycleId: cycle.id,
+        baseCommit: h.fx.head(),
+        reviewKind: 'final',
+        reviewRole: 'final_reviewer',
+        reviewerCount: 2,
+      },
+    ]);
+    const review = reviewForCycle(h.fx.db, cycle.id)!;
+    expect(review).toMatchObject({
+      status: 'pending',
+      reviewKind: 'final',
+      cycleId: cycle.id,
+      runId: reviewRun(h)[0]!.id,
+      reviewedToCommit: h.fx.head(),
+      reviewedToTree: h.fx.tree(),
+      reviewedFromCommit: null,
+    });
+    expect(h.cycle()!.status).toBe('running');
+    expect(h.status().status).toBe('reviewing');
+  });
+
+  it('persists the honest range start the cycle was planned with', async () => {
+    const start = (() => {
+      const probe = harness();
+      return probe.fx.head();
+    })();
+    void start;
+    const h = harness({ tune: (d) => void (d.routing.workflows = { ...BUILT_IN }) });
+    await h.start();
+    const first = h.fx.head();
+    h.fx.advance({ 'src/b.ts': 'export const b = 1;\n' }, 'b');
+    createReviewCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      reviewKind: 'periodic',
+      triggerCode: 't',
+      reviewedFromCommit: first,
+    });
+    await h.until('review_bound');
+    expect(reviewRows(h)[0]).toMatchObject({ reviewed_from_commit: first, reviewed_to_commit: h.fx.head() });
+  });
+
+  it('fails the cycle when the planned range start is not in the Goal history', async () => {
+    const h = harness({ tune: (d) => void (d.routing.workflows = { ...BUILT_IN }) });
+    await h.start();
+    createReviewCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      reviewKind: 'periodic',
+      triggerCode: 't',
+      reviewedFromCommit: h.fx.orphanCommit(),
+    });
+    await h.until('review_run_queued');
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_bind_from_commit_invalid' });
+    expect(reviewRows(h)).toHaveLength(0);
+  });
+
+  it('never starts or duplicates anything across repeated ticks and restarts', async () => {
+    const { h, cycle } = await reviewing('milestone');
+    await h.until('review_run_started');
+    for (const tick of [
+      () => h.tick(),
+      async () => (await h.restart().supervisor.tickGoal(h.fx.goalId)).action,
+    ]) {
+      expect(await tick()).toBe('review_waiting');
+    }
+    expect(reviewRun(h)).toHaveLength(1);
+    expect(reviewRows(h)).toHaveLength(1);
+    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(reviewForCycle(h.fx.db, cycle.id)!.milestoneId).toBe(h.fx.milestoneId('m1'));
+  });
+
+  it('crash after queueing: a new supervisor binds the existing run instead of queueing another', async () => {
+    const { h } = await reviewing('final');
+    await h.until('review_run_queued');
+    const fresh = h.restart();
+    expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_bound');
+    expect(fresh.executor.reviewQueueCalls).toHaveLength(0);
+    expect(reviewRun(h)).toHaveLength(1);
+    expect(reviewRows(h)).toHaveLength(1);
+    expect(h.startRun).not.toHaveBeenCalled();
+  });
+
+  it('crash after binding: the queued run starts exactly once', async () => {
+    const { h } = await reviewing('final');
+    await h.until('review_bound');
+    const fresh = h.restart();
+    expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_run_started');
+    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(reviewRows(h)).toHaveLength(1);
+  });
+
+  it('observes an already active run and consumes a terminal one without restarting it', async () => {
+    const { h } = await reviewing('final');
+    await h.until('review_bound');
+    h.setRunStatus(reviewRun(h)[0]!.id, 'running');
+    expect(await h.tick()).toBe('review_run_started');
+    expect(h.startRun).not.toHaveBeenCalled();
+    h.setRunStatus(reviewRun(h)[0]!.id, 'completed');
+    expect(await h.tick()).toBe('collection_started');
+    expect(h.cycle()!.status).toBe('collecting');
+  });
+
+  it('does not start when the Goal head moved after the cycle captured it (no silent later head)', async () => {
+    const { h, cycle } = await reviewing('final');
+    await h.until('review_run_queued');
+    h.fx.advance({ 'src/late.ts': 'export const late = 1;\n' }, 'late');
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.startRun).not.toHaveBeenCalled();
+    expect(h.cycle()).toMatchObject({ status: 'failed' });
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_base_moved' });
+    expect(reviewRows(h)).toHaveLength(0);
+    expect(h.status()).toMatchObject({ status: 'needs_user', reason: 'review_needs_decision' });
+    expect(activeCycle(h.fx.db, h.fx.goalId)).toBeUndefined();
+    void cycle;
+  });
+});
+
+describe('review infrastructure failures', () => {
+  it('a failed run closes the pending review failed, fails the cycle and hands the Goal to the user', async () => {
+    const { h, cycle } = await reviewing('final');
+    await h.until('review_run_started');
+    const runId = reviewRun(h)[0]!.id;
+    h.setRunStatus(runId, 'failed');
+    expect(await h.tick()).toBe('collection_started');
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(reviewForCycle(h.fx.db, cycle.id)).toMatchObject({
+      status: 'failed',
+      report: null,
+      verdict: null,
+    });
+    expect(h.cycle()).toMatchObject({ status: 'failed' });
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'run_failed' });
+    expect(h.status()).toMatchObject({ status: 'needs_user', reason: 'review_needs_decision' });
+    // The run is terminal and nothing was recorded for it: the evidence-collected marker says so (zero rows).
+    const marker = listGoalEvents(h.fx.db, h.fx.goalId).filter((e) => e.type === 'run_evidence_collected');
+    expect(marker).toHaveLength(1);
+    expect(JSON.parse(JSON.stringify(marker[0]!.payload))).toMatchObject({ runId, evidenceCount: 0 });
+    // No automatic retry: further ticks do nothing.
+    expect(await h.tick()).not.toBe('review_run_queued');
+    expect(reviewRun(h)).toHaveLength(1);
+  });
+
+  it('a cancelled run cancels the review and the cycle', async () => {
+    const { h, cycle } = await reviewing('periodic');
+    await h.until('review_run_started');
+    h.setRunStatus(reviewRun(h)[0]!.id, 'cancelled');
+    await h.tick();
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(reviewForCycle(h.fx.db, cycle.id)!.status).toBe('cancelled');
+    expect(h.cycle()).toMatchObject({ status: 'cancelled' });
+  });
+
+  it('a queue failure fails the cycle without any review row', async () => {
+    const { h } = await reviewing('final');
+    h.executor.queueReviewRun = async () => {
+      throw Object.assign(new Error('boom'), { code: 'plan_unavailable' });
+    };
+    await h.tick();
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_queue_error', queueCode: 'plan_unavailable' });
+    expect(reviewRows(h)).toHaveLength(0);
+    expect(h.status().reason).toBe('review_needs_decision');
+  });
+
+  it('surfaces a first-use approval as a typed decision and keeps the cycle active', async () => {
+    const { h, cycle } = await reviewing('final');
+    h.executor.queueReviewRun = async () => {
+      throw Object.assign(new Error('needs approval'), {
+        code: 'approval_required',
+        approval: {
+          poolId: 'reviewers',
+          memberIdentityHash: 'a'.repeat(64),
+          role: 'final_reviewer',
+          memberIndex: 0,
+        },
+      });
+    };
+    await h.tick();
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.status()).toMatchObject({ status: 'needs_user', reason: 'review_needs_decision' });
+    const detail = JSON.parse(
+      (
+        h.fx.db.prepare('SELECT status_detail_json AS d FROM goals WHERE id = ?').get(h.fx.goalId) as {
+          d: string;
+        }
+      ).d,
+    ) as Record<string, unknown>;
+    expect(detail).toMatchObject({
+      code: 'approval_required',
+      gate: 'pool_route_first_use',
+      role: 'final_reviewer',
+    });
+    expect(typeof detail.approvalId).toBe('string');
+    expect(activeCycle(h.fx.db, h.fx.goalId)!.id).toBe(cycle.id);
+    expect(reviewRun(h)).toHaveLength(0);
+  });
+
+  it('a paused review run hands the Goal to the user and a resume restores reviewing', async () => {
+    const { h, cycle } = await reviewing('final');
+    await h.until('review_run_started');
+    h.setRunStatus(reviewRun(h)[0]!.id, 'paused');
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.status()).toMatchObject({ status: 'needs_user', reason: 'review_needs_decision' });
+    expect(activeCycle(h.fx.db, h.fx.goalId)!.id).toBe(cycle.id);
+    const resumed = await h.supervisor.resumeGoal(h.fx.goalId, { actor: 'user', reasonCode: 'run_resumed' });
+    expect(resumed).toEqual({ ok: true });
+    expect(h.resumeRun).toHaveBeenCalledWith(reviewRun(h)[0]!.id);
+    expect(h.status().status).toBe('running');
+    expect(await h.tick()).toBe('review_restored');
+    expect(h.status()).toMatchObject({ status: 'reviewing', reason: 'review_triggered' });
+  });
+});
+
+describe('migration 022 review identity', () => {
+  it('allows at most one review per cycle and per run', async () => {
+    const { h, cycle } = await reviewing('final');
+    await h.until('review_bound');
+    const row = reviewRows(h)[0]!;
+    const insert = (cycleId: string | null, runId: string | null) =>
+      h.fx.db
+        .prepare(
+          `INSERT INTO goal_reviews (id, goal_id, cycle_id, definition_version, run_id, review_kind, status,
+             reviewed_to_commit, reviewed_to_tree, created_at) VALUES (?, ?, ?, 1, ?, 'final', 'pending', ?, ?, 'now')`,
+        )
+        .run(`x${Math.random()}`, h.fx.goalId, cycleId, runId, row.reviewed_to_commit, row.reviewed_to_tree);
+    expect(() => insert(cycle.id, null)).toThrow(/UNIQUE/);
+    expect(() => insert(null, row.run_id as string)).toThrow(/UNIQUE/);
+    // Rows without a cycle or run (legacy, manual) are unaffected.
+    insert(null, null);
+    insert(null, null);
+  });
+
+  it('is part of the shipped built-in workflow set', () => {
+    expect(GOAL_BUILTIN_WORKFLOWS.some((workflow) => workflow.id === 'goal-review-v1')).toBe(true);
+  });
+});

@@ -19,11 +19,16 @@ import type {
   GoalExecutor,
   ProposalRequest,
   ProposalResult,
+  ReviewRunRequest,
   RouteReadiness,
   VerificationRunRequest,
 } from './executor.js';
-import { applyGoalScope, formatExecutionTask, formatPlanningTask } from './goalPrompts.js';
+import { applyGoalScope, formatExecutionTask, formatPlanningTask, formatReviewTask } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
+import { readReviewPlan } from './reviewPlan.js';
+import { reviewRoleForKind } from './reviewRole.js';
+import { materializeReviewWorkflow, reviewerCountFor } from './reviewWorkflow.js';
+import { resolveGoalRepository } from './repository.js';
 import { readStoredResolutions } from './routeResolution.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
@@ -61,7 +66,10 @@ export type TuringExecutorErrorCode =
   | 'verification_invalid'
   | 'verification_unmaterializable'
   | 'verification_inputs_mismatch'
-  | 'verification_run_inconsistent';
+  | 'verification_run_inconsistent'
+  | 'review_invalid'
+  | 'review_plan_mismatch'
+  | 'review_repository_unavailable';
 
 export class TuringExecutorError extends Error {
   constructor(
@@ -591,6 +599,128 @@ export class TuringGoalExecutor implements GoalExecutor {
       },
       verificationWorkflow(registered, materialized.stages),
       { origin: createRunOrigin(loaded.cycle.id, 'verification', request.baseCommit) },
+    );
+    if (!preview)
+      throw new TuringExecutorError('preview_unavailable', 'The project or workflow is not registered.');
+    if (!preview.canStart)
+      throw new TuringExecutorError(
+        'preview_not_startable',
+        `The run preview refused to start: ${preview.warnings.slice(0, 3).join(' | ')}`.slice(0, 400),
+      );
+    return { runId: queueRun(this.db, preview).runId };
+  }
+
+  /**
+   * The trusted proof that a review request is exactly what the review cycle persisted: the cycle is a review cycle of
+   * the current definition, its plan (kind, reviewer count) equals the request, the role is the shared mapping's role
+   * for the kind, and the reviewer count equals what approved authority yields. Nothing in the request chooses a role,
+   * route, workflow or count.
+   */
+  private proveReviewRequest(
+    cycle: CycleRow,
+    definition: Loaded['definition'],
+    registered: WorkflowDefinition,
+    request: ReviewRunRequest,
+  ): void {
+    const plan = readReviewPlan(cycle.outcome);
+    if (cycle.kind !== 'review' || !plan)
+      throw new TuringExecutorError('review_invalid', 'The cycle is not a review cycle with a valid plan.');
+    if (request.reviewRole !== reviewRoleForKind(request.reviewKind))
+      throw new TuringExecutorError(
+        'review_invalid',
+        'The reviewer role is not the role of the review kind.',
+      );
+    if (plan.reviewKind !== request.reviewKind || plan.reviewerCount !== request.reviewerCount)
+      throw new TuringExecutorError('review_plan_mismatch', "The request is not the cycle's review plan.");
+    if (reviewerCountFor(definition, registered, request.reviewKind) !== request.reviewerCount)
+      throw new TuringExecutorError(
+        'review_plan_mismatch',
+        'The reviewer count is not what the approved definition permits.',
+      );
+  }
+
+  async queueReviewRun(request: ReviewRunRequest): Promise<{ runId: string }> {
+    const already = this.existing(request.goalId, request.cycleId, 'review', request.baseCommit);
+    if (already) {
+      const cycle = getCycle(this.db, request.cycleId)!;
+      const plan = readReviewPlan(cycle.outcome);
+      if (
+        cycle.kind !== 'review' ||
+        !plan ||
+        plan.reviewKind !== request.reviewKind ||
+        plan.reviewerCount !== request.reviewerCount ||
+        request.reviewRole !== reviewRoleForKind(request.reviewKind)
+      )
+        throw new TuringExecutorError('review_plan_mismatch', "The request is not the cycle's review plan.");
+      return { runId: already };
+    }
+    const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
+    const workflowId = loaded.definition.routing.workflows.review;
+    const registered = this.registeredWorkflow(workflowId);
+    this.proveReviewRequest(loaded.cycle, loaded.definition, registered, request);
+    const plan = await this.plans.planRun({
+      goalId: loaded.goalId,
+      cycleId: loaded.cycle.id,
+      purpose: 'review',
+      reviewRole: request.reviewRole,
+      definitionVersion: loaded.cycle.definitionVersion!,
+      workflowId,
+      baseCommit: request.baseCommit,
+    });
+    if (!plan.ready) {
+      if (plan.code === 'approval_required' || plan.code === 'approval_pending')
+        throw new TuringExecutorError(plan.code, plan.message.slice(0, 300), plan.approval);
+      throw new TuringExecutorError('plan_unavailable', `${plan.code}: ${plan.message}`.slice(0, 300));
+    }
+    const verified = materializeReviewWorkflow(
+      this.verifyPlan(plan.workflowOverride, registered, loaded.definition),
+      {
+        reviewerCount: request.reviewerCount,
+      },
+    );
+    this.verifyRouteBinding(loaded.cycle.id, plan, verified);
+    const resolved = await resolveGoalRepository(this.db, loaded.goalId);
+    if (!resolved.ok)
+      throw new TuringExecutorError('review_repository_unavailable', resolved.detail.slice(0, 300));
+    if (resolved.state.head !== request.baseCommit)
+      throw new TuringExecutorError(
+        'base_commit_mismatch',
+        'The Goal head is no longer the review cycle base commit.',
+      );
+    const milestone = loaded.cycle.milestoneKey
+      ? loaded.definition.milestones.find((item) => item.key === loaded.cycle.milestoneKey)
+      : undefined;
+    if (loaded.cycle.milestoneKey && !milestone)
+      throw new TuringExecutorError('definition_mismatch', 'The cycle milestone is not in the definition.');
+    const open = this.db
+      .prepare(
+        "SELECT id, severity, description, affected_files_json FROM goal_findings WHERE goal_id = ? AND status = 'open'",
+      )
+      .all(loaded.goalId) as Array<{
+      id: string;
+      severity: 'critical' | 'high' | 'medium' | 'low';
+      description: string;
+      affected_files_json: string;
+    }>;
+    const text = formatReviewTask({
+      definition: loaded.definition,
+      reviewKind: request.reviewKind,
+      ...(milestone ? { milestone } : {}),
+      fromCommit: readReviewPlan(loaded.cycle.outcome)!.reviewedFromCommit,
+      toCommit: resolved.state.head,
+      toTree: resolved.state.tree,
+      openFindings: open.map((row) => ({
+        id: row.id,
+        severity: row.severity,
+        description: row.description,
+        affectedFiles: (JSON.parse(row.affected_files_json) as string[]) ?? [],
+      })),
+    });
+    const preview = await buildPreview(
+      this.db,
+      { task: text, projectId: loaded.projectId, workflowId },
+      verified,
+      { origin: createRunOrigin(loaded.cycle.id, 'review', request.baseCommit) },
     );
     if (!preview)
       throw new TuringExecutorError('preview_unavailable', 'The project or workflow is not registered.');

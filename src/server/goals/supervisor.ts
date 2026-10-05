@@ -28,7 +28,10 @@ import type { FirstUseRequest, GoalExecutor, GoalRunPurpose } from './executor.j
 import { evaluateCriteria } from './freshness.js';
 import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
-import { pruneRunWorktree } from './retention.js';
+import { pruneRunWorktree, recordRunEvidenceCollected } from './retention.js';
+import { closeReview, createReview, GoalReviewError, reviewForCycle } from './reviews.js';
+import { readReviewPlan, type ReviewPlan } from './reviewPlan.js';
+import { reviewRoleForKind } from './reviewRole.js';
 import { materializeVerification, milestoneDeterministicVerifiers } from './verification.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
 import { rebuildGoalMemory } from './memory.js';
@@ -81,6 +84,12 @@ export const TICK_ACTIONS = [
   'evidence_collected',
   'evidence_collection_error',
   'verification_unavailable',
+  'review_restored',
+  'review_run_queued',
+  'review_bound',
+  'review_run_started',
+  'review_waiting',
+  'review_decision_needed',
 ] as const;
 export type TickAction = (typeof TICK_ACTIONS)[number];
 
@@ -336,13 +345,23 @@ export class GoalSupervisor {
         v: number;
       }
     ).v;
-    finalizeCycle(this.db, {
-      cycleId: cycle.id,
-      to: 'cancelled',
-      outcomeCode: 'definition_superseded',
-      detail: { fromVersion: cycle.definitionVersion, toVersion: current, runIds: runs.map((run) => run.id) },
-      now: this.now(),
-    });
+    this.db.transaction(() => {
+      // A review that never completed cannot change current findings and is closed with its cycle.
+      const pending = cycle.kind === 'review' ? reviewForCycle(this.db, cycle.id) : undefined;
+      if (pending?.status === 'pending')
+        closeReview(this.db, { reviewId: pending.id, status: 'cancelled', now: this.now() });
+      finalizeCycle(this.db, {
+        cycleId: cycle.id,
+        to: 'cancelled',
+        outcomeCode: 'definition_superseded',
+        detail: {
+          fromVersion: cycle.definitionVersion,
+          toVersion: current,
+          runIds: runs.map((run) => run.id),
+        },
+        now: this.now(),
+      });
+    })();
     this.afterCycle(goalId);
     return 'retired';
   }
@@ -407,8 +426,11 @@ export class GoalSupervisor {
       if (collected) return collected;
     }
     if (goal.status === 'needs_user') return this.tickNeedsUser(goalId, goal);
+    if (goal.status === 'reviewing') return this.tickReviewing(goalId);
     if (goal.status !== 'running') return { action: 'idle', goalId };
     const cycle = activeCycle(this.db, goalId);
+    // A review cycle left active by a resumed `needs_user(review_needs_decision)` returns the Goal to `reviewing`.
+    if (cycle?.kind === 'review') return this.restoreReviewing(goalId, cycle);
     return cycle ? this.tickCycle(goalId, cycle) : this.tickNoCycle(goalId);
   }
 
@@ -946,6 +968,7 @@ export class GoalSupervisor {
 
   /** The purpose of the run a cycle owns in its current status. */
   private currentPurpose(cycle: CycleRow): GoalRunPurpose {
+    if (cycle.kind === 'review') return 'review';
     return cycle.kind !== 'verification' && ['planned', 'proposing', 'proposed'].includes(cycle.status)
       ? 'proposal'
       : this.workPurpose(cycle);
@@ -1419,6 +1442,274 @@ export class GoalSupervisor {
     return { action: 'integration_blocked', goalId, cycleId: cycle.id, code };
   }
 
+  // --- Review cycles (Stage 6A) ----------------------------------------------------------------------------------
+
+  /**
+   * A `needs_user(review_needs_decision)` Goal that the user resumed is `running` again with its review cycle still
+   * active: it goes back to `reviewing` (the same edge that created the cycle) and the review continues where it was.
+   */
+  private async restoreReviewing(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    if (this.isSuperseded(goalId, cycle)) return this.tickSuperseded(goalId, cycle);
+    transitionGoal(this.db, {
+      goalId,
+      to: 'reviewing',
+      reasonCode: 'review_triggered',
+      actor: 'supervisor',
+      detail: { cycleId: cycle.id, resumed: true },
+      now: this.now(),
+    });
+    this.tracker.sync(goalId);
+    return { action: 'review_restored', goalId, cycleId: cycle.id };
+  }
+
+  /** The Goal cannot continue the review on its own: hand it to the user (`reviewing -> needs_user`). */
+  private reviewDecision(
+    goalId: string,
+    cycleId: string | undefined,
+    code: string,
+    detail: Record<string, unknown> = {},
+  ): TickResult {
+    transitionGoal(this.db, {
+      goalId,
+      to: 'needs_user',
+      reasonCode: 'review_needs_decision',
+      actor: 'supervisor',
+      detail: { code, ...(cycleId ? { cycleId } : {}), ...detail },
+      now: this.now(),
+    });
+    this.tracker.sync(goalId);
+    return { action: 'review_decision_needed', goalId, ...(cycleId ? { cycleId } : {}), code };
+  }
+
+  /**
+   * An infrastructure failure of a review (provider failure, unreadable output, route failure, a cancelled run, a
+   * repository-binding failure). No report is ever fabricated: the pending review is closed `failed` (or `cancelled`),
+   * the cycle ends the same way, and the Goal goes to the user, all in one transaction. A terminal run is marked
+   * evidence-collected (zero rows: a review failure records no evidence) so its worktree becomes retention-eligible.
+   * Nothing retries automatically.
+   */
+  private async reviewInfraFailure(
+    goalId: string,
+    cycle: CycleRow,
+    code: string,
+    options: { cancelled?: boolean; detail?: Record<string, unknown> } = {},
+  ): Promise<TickResult> {
+    const run = this.runForPurpose(cycle.id, 'review');
+    const to = options.cancelled ? 'cancelled' : 'failed';
+    const detail = {
+      ...(run ? { runId: run.id } : {}),
+      ...options.detail,
+    };
+    this.db.transaction(() => {
+      const review = reviewForCycle(this.db, cycle.id);
+      if (review?.status === 'pending')
+        closeReview(this.db, { reviewId: review.id, status: to, now: this.now() });
+      finalizeCycle(this.db, { cycleId: cycle.id, to, outcomeCode: code, detail, now: this.now() });
+      transitionGoal(this.db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'review_needs_decision',
+        actor: 'supervisor',
+        detail: { code, cycleId: cycle.id, ...detail },
+        now: this.now(),
+      });
+      if (run && TERMINAL_RUN.has(run.status)) {
+        const stored = (
+          this.db
+            .prepare('SELECT COUNT(*) AS n FROM goal_evidence WHERE goal_id = ? AND run_id = ?')
+            .get(goalId, run.id) as { n: number }
+        ).n;
+        recordRunEvidenceCollected(this.db, {
+          goalId,
+          runId: run.id,
+          evidenceCount: stored,
+          now: this.now(),
+        });
+      }
+    })();
+    this.tracker.sync(goalId);
+    this.afterCycle(goalId);
+    const cleanup = run ? await this.tryPrune(run.id) : undefined;
+    return {
+      action: 'review_decision_needed',
+      goalId,
+      cycleId: cycle.id,
+      code,
+      ...(cleanup ? { cleanup } : {}),
+    };
+  }
+
+  /** The Goal ref check for a reviewing Goal: a problem is a review failure, never a `blocked` transition. */
+  private async reviewRefProblem(
+    goalId: string,
+    cycle: CycleRow,
+  ): Promise<'goal_ref_changed' | 'goal_ref_missing' | 'git_state_invalid' | 'review_base_moved' | null> {
+    let verification;
+    try {
+      verification = await verifyGoalRef(this.db, goalId);
+    } catch (error) {
+      if (error instanceof GoalGitError) return 'git_state_invalid';
+      throw error;
+    }
+    if (!verification.ok)
+      return verification.code === 'goal_ref_missing' || verification.code === 'goal_ref_changed'
+        ? verification.code
+        : 'git_state_invalid';
+    // The cycle reviews exactly the head it captured: a later head is never silently reviewed instead.
+    const head = (
+      this.db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(goalId) as
+        { integration_head: string | null } | undefined
+    )?.integration_head;
+    return head && head === cycle.baseIntegrationCommit ? null : 'review_base_moved';
+  }
+
+  private async tickReviewing(goalId: string): Promise<TickResult> {
+    const cycle = activeCycle(this.db, goalId);
+    if (!cycle || cycle.kind !== 'review')
+      return this.reviewDecision(goalId, undefined, 'review_cycle_missing');
+    if (this.isSuperseded(goalId, cycle)) {
+      const result = await this.tickSuperseded(goalId, cycle);
+      if (result.action === 'superseded_cycle_retired')
+        return this.reviewDecision(goalId, cycle.id, 'definition_superseded');
+      return result;
+    }
+    const plan = readReviewPlan(cycle.outcome);
+    if (!plan) return this.reviewInfraFailure(goalId, cycle, 'review_plan_invalid');
+    switch (cycle.status) {
+      case 'planned':
+        transitionCycle(this.db, { cycleId: cycle.id, to: 'launching', now: this.now() });
+        return { action: 'launch_started', goalId, cycleId: cycle.id };
+      case 'launching':
+        return this.reviewLaunching(goalId, cycle, plan);
+      case 'running':
+        return this.reviewRunning(goalId, cycle);
+      case 'collecting':
+        return this.reviewCollecting(goalId, cycle);
+      default:
+        return this.reviewInfraFailure(goalId, cycle, 'review_state_invalid');
+    }
+  }
+
+  /**
+   * The restart-safe launch order: cycle exists -> review run queued -> immutable Goal review bound to the cycle, the
+   * queued run and the exact repository state -> ONLY THEN is the run started. Each tick does one step and re-derives
+   * its position from persisted rows (run absent / run without a review row / bound review with a queued run), so a
+   * crash between any two steps resumes without a duplicate run or review row.
+   */
+  private async reviewLaunching(goalId: string, cycle: CycleRow, plan: ReviewPlan): Promise<TickResult> {
+    const run = this.runForPurpose(cycle.id, 'review');
+    const review = reviewForCycle(this.db, cycle.id);
+    if (!run) {
+      if (review) return this.reviewInfraFailure(goalId, cycle, 'review_binding_invalid');
+      const problem = await this.reviewRefProblem(goalId, cycle);
+      if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
+      try {
+        await this.executor.queueReviewRun({
+          goalId,
+          cycleId: cycle.id,
+          baseCommit: cycle.baseIntegrationCommit!,
+          reviewKind: plan.reviewKind,
+          reviewRole: reviewRoleForKind(plan.reviewKind),
+          reviewerCount: plan.reviewerCount,
+        });
+      } catch (error) {
+        const first = this.firstUseFailure(error);
+        if (first) {
+          // A reviewing Goal cannot enter `gate_pending`: the exact pool member is surfaced as a typed approval request
+          // and the Goal goes to the user with the cycle still active. Nothing is substituted and nothing is queued.
+          const approval = this.ensureFirstUseApproval(goalId, first);
+          return this.reviewDecision(goalId, cycle.id, 'approval_required', {
+            approvalId: approval.id,
+            gate: 'pool_route_first_use',
+            role: first.role,
+          });
+        }
+        const queueCode = (error as { code?: unknown } | null)?.code;
+        return this.reviewInfraFailure(goalId, cycle, 'review_queue_error', {
+          detail: { queueCode: typeof queueCode === 'string' ? queueCode.slice(0, 80) : 'unknown' },
+        });
+      }
+      return { action: 'review_run_queued', goalId, cycleId: cycle.id };
+    }
+    if (!review) {
+      const problem = await this.reviewRefProblem(goalId, cycle);
+      if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
+      try {
+        const created = await createReview(this.db, {
+          goalId,
+          definitionVersion: cycle.definitionVersion!,
+          reviewKind: plan.reviewKind,
+          cycleId: cycle.id,
+          runId: run.id,
+          ...(cycle.milestoneId ? { milestoneId: cycle.milestoneId } : {}),
+          ...(plan.reviewedFromCommit ? { reviewedFromCommit: plan.reviewedFromCommit } : {}),
+          now: this.now(),
+        });
+        if (created.reviewedToCommit !== cycle.baseIntegrationCommit)
+          return this.reviewInfraFailure(goalId, cycle, 'review_base_moved');
+      } catch (error) {
+        if (error instanceof GoalReviewError)
+          return this.reviewInfraFailure(goalId, cycle, `review_bind_${error.code}`);
+        throw error;
+      }
+      return { action: 'review_bound', goalId, cycleId: cycle.id };
+    }
+    if (
+      review.runId !== run.id ||
+      review.cycleId !== cycle.id ||
+      review.status !== 'pending' ||
+      review.reviewKind !== plan.reviewKind ||
+      review.definitionVersion !== cycle.definitionVersion ||
+      review.reviewedToCommit !== cycle.baseIntegrationCommit
+    )
+      return this.reviewInfraFailure(goalId, cycle, 'review_binding_invalid');
+    if (PAUSED_RUN.has(run.status)) return this.reviewPause(goalId, cycle, run);
+    if (run.status === 'queued') {
+      const problem = await this.reviewRefProblem(goalId, cycle);
+      if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
+      const started = this.deps.startRun(run.id);
+      if (!started.started && started.reason === 'not-found')
+        return this.reviewInfraFailure(goalId, cycle, 'run_not_found');
+      if (!started.started && started.reason === 'not-queued') {
+        const current = this.runById(run.id);
+        if (!current) return this.reviewInfraFailure(goalId, cycle, 'run_not_found');
+        if (PAUSED_RUN.has(current.status)) return this.reviewPause(goalId, cycle, current);
+        if (!ACTIVE_RUN.has(current.status) && !TERMINAL_RUN.has(current.status))
+          return this.reviewInfraFailure(goalId, cycle, 'run_state_invalid', {
+            detail: { runStatus: current.status },
+          });
+      }
+    }
+    transitionCycle(this.db, { cycleId: cycle.id, to: 'running', now: this.now() });
+    return { action: 'review_run_started', goalId, cycleId: cycle.id };
+  }
+
+  /** A paused review run is the user's decision; the cycle stays active and a resume restores `reviewing`. */
+  private reviewPause(goalId: string, cycle: CycleRow, run: RunRow): TickResult {
+    return this.reviewDecision(goalId, cycle.id, 'run_paused', { runId: run.id });
+  }
+
+  private async reviewRunning(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    const run = this.runForPurpose(cycle.id, 'review');
+    if (!run) return this.reviewInfraFailure(goalId, cycle, 'run_missing');
+    if (PAUSED_RUN.has(run.status)) return this.reviewPause(goalId, cycle, run);
+    if (run.status === 'queued' || ACTIVE_RUN.has(run.status))
+      return { action: 'review_waiting', goalId, cycleId: cycle.id };
+    transitionCycle(this.db, { cycleId: cycle.id, to: 'collecting', now: this.now() });
+    return { action: 'collection_started', goalId, cycleId: cycle.id };
+  }
+
+  private async reviewCollecting(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    const run = this.runForPurpose(cycle.id, 'review');
+    if (!run) return this.reviewInfraFailure(goalId, cycle, 'run_missing');
+    if (FAILED_RUN.has(run.status))
+      return this.reviewInfraFailure(goalId, cycle, 'run_failed', { detail: { runStatus: run.status } });
+    if (CANCELLED_RUN.has(run.status))
+      return this.reviewInfraFailure(goalId, cycle, 'run_cancelled', { cancelled: true });
+    if (run.status !== 'completed') return { action: 'review_waiting', goalId, cycleId: cycle.id };
+    return { action: 'review_waiting', goalId, cycleId: cycle.id, code: 'consumption_not_available' };
+  }
+
   // --- Recovery and shutdown ------------------------------------------------------------------------------------
 
   /**
@@ -1456,6 +1747,11 @@ export class GoalSupervisor {
       }
       reconcileCounters(this.db, goal.id, this.now());
       this.tracker.sync(goal.id);
+      if (goal.status === 'reviewing') {
+        // The review tick verifies the ref itself (a ref problem fails the review cycle, it cannot block a reviewing Goal).
+        results.push(await this.tickGoal(goal.id));
+        continue;
+      }
       if (goal.status === 'running') {
         // After planned-op recovery (which may legitimately move the head) and before any tick that could queue or
         // start provider work: a missing or moved Goal ref must stop everything.

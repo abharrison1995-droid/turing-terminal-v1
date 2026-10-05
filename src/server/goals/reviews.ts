@@ -106,6 +106,18 @@ export function getReview(db: Db, reviewId: string): GoalReviewRow | undefined {
   return row ? toReview(row) : undefined;
 }
 
+/** The review bound to a cycle (migration 022 allows at most one). */
+export function reviewForCycle(db: Db, cycleId: string): GoalReviewRow | undefined {
+  const row = db.prepare('SELECT * FROM goal_reviews WHERE cycle_id = ?').get(cycleId) as DbRow | undefined;
+  return row ? toReview(row) : undefined;
+}
+
+/** The review bound to a run (migration 022 allows at most one). */
+export function reviewForRun(db: Db, runId: string): GoalReviewRow | undefined {
+  const row = db.prepare('SELECT * FROM goal_reviews WHERE run_id = ?').get(runId) as DbRow | undefined;
+  return row ? toReview(row) : undefined;
+}
+
 export function listReviews(db: Db, goalId: string): GoalReviewRow[] {
   return (
     db

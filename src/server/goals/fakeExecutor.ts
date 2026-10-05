@@ -5,6 +5,7 @@ import type {
   GoalRunPurpose,
   ProposalRequest,
   ProposalResult,
+  ReviewRunRequest,
   RouteReadiness,
 } from './executor.js';
 
@@ -31,6 +32,7 @@ export class FakeGoalExecutor implements GoalExecutor {
   readonly proposalQueueCalls: ProposalRequest[] = [];
   readonly queueCalls: ChildRunRequest[] = [];
   readonly readCalls: string[] = [];
+  readonly reviewQueueCalls: ReviewRunRequest[] = [];
   /** Opt-in: tests that need verification cycles assign it; without it none is ever scheduled. */
   queueVerificationRun?: GoalExecutor['queueVerificationRun'];
 
@@ -89,6 +91,19 @@ export class FakeGoalExecutor implements GoalExecutor {
         goalId: request.goalId,
         cycleId: request.cycleId,
         purpose: request.purpose,
+        baseCommit: request.baseCommit,
+      });
+    return { runId };
+  }
+
+  async queueReviewRun(request: ReviewRunRequest): Promise<{ runId: string }> {
+    this.reviewQueueCalls.push(request);
+    const runId =
+      this.existing(request.cycleId, 'review') ??
+      this.makeRun({
+        goalId: request.goalId,
+        cycleId: request.cycleId,
+        purpose: 'review',
         baseCommit: request.baseCommit,
       });
     return { runId };

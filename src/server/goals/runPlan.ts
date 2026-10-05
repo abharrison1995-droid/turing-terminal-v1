@@ -1,6 +1,7 @@
 import type { GoalRole, NextTask } from '../../shared/goals.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
 import type { FirstUseRequest, GoalRunPurpose, RouteReadiness } from './executor.js';
+import type { GoalReviewRole } from './reviewRole.js';
 
 /**
  * The Stage 4 / Stage 5 seam. Stage 4 consumes an ALREADY CONCRETE workflow (a registered Goal workflow whose AI stages
@@ -8,17 +9,26 @@ import type { FirstUseRequest, GoalRunPurpose, RouteReadiness } from './executor
  * pools, picks members, rotates, evaluates validation freshness, refreshes catalogs, probes, infers fallbacks, or writes
  * route-resolution records.
  */
-export interface GoalRunPlanRequest {
+interface GoalRunPlanBase {
   goalId: string;
   cycleId: string;
-  purpose: Extract<GoalRunPurpose, 'proposal' | 'execution' | 'remediation'>;
   definitionVersion: number;
   /** The registered workflow the approved definition selects for this purpose. */
   workflowId: string;
   baseCommit: string;
-  /** Present for execution and remediation. */
-  task?: NextTask;
 }
+
+export type GoalRunPlanRequest =
+  | (GoalRunPlanBase & {
+      purpose: Extract<GoalRunPurpose, 'proposal' | 'execution' | 'remediation'>;
+      /** Present for execution and remediation. */
+      task?: NextTask;
+    })
+  | (GoalRunPlanBase & {
+      purpose: 'review';
+      /** The reviewer role, derived from the review kind by the shared server mapping. */
+      reviewRole: GoalReviewRole;
+    });
 
 export type GoalRunPlan =
   | {

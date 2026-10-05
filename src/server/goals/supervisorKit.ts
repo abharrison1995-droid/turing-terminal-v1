@@ -133,7 +133,8 @@ export function harness(
     const branch = `turing/${runId.slice(0, 8)}`;
     const worktree = join(dirname(fx.repo), `wt-${runId.slice(0, 8)}`);
     git(fx.repo, 'worktree', 'add', '-q', '-b', branch, worktree, request.baseCommit);
-    for (const [path, content] of Object.entries(files.current)) {
+    // A review run reads the Goal head exactly as it is; only work runs commit files.
+    for (const [path, content] of request.purpose === 'review' ? [] : Object.entries(files.current)) {
       const full = join(worktree, path);
       if (content === null) rmSync(full, { force: true });
       else {

@@ -1,5 +1,12 @@
-import type { BlockedReason, GoalMilestoneSpec, GoalRole, NextTask } from '../../shared/goals.js';
+import type {
+  BlockedReason,
+  GoalMilestoneSpec,
+  GoalReviewKind,
+  GoalRole,
+  NextTask,
+} from '../../shared/goals.js';
 import type { GoalMemory } from './memory.js';
+import type { GoalReviewRole } from './reviewRole.js';
 
 /**
  * The only seam between the supervisor and model-backed work. The supervisor owns every decision and every state
@@ -60,7 +67,7 @@ export interface ChildRunRequest {
 }
 
 /** The runs a cycle can own. One run per (cycle, purpose) is enforced by a unique index. */
-export type GoalRunPurpose = 'proposal' | 'execution' | 'remediation' | 'verification';
+export type GoalRunPurpose = 'proposal' | 'execution' | 'review' | 'remediation' | 'verification';
 
 /**
  * A deterministic verification run: only the listed build/test/lint verifiers (by digest) of the cycle's milestone,
@@ -71,6 +78,21 @@ export interface VerificationRunRequest {
   cycleId: string;
   baseCommit: string;
   verifierDigests: string[];
+}
+
+/**
+ * A read-only Goal review run of a review cycle. The reviewer role is derived from the review kind by the one shared
+ * server mapping (`reviewRoleForKind`); the executor refuses a request whose role disagrees, and recomputes the reviewer
+ * count from the approved definition and the registered workflow. Nothing about the route, billing or workflow comes
+ * from the request.
+ */
+export interface ReviewRunRequest {
+  goalId: string;
+  cycleId: string;
+  baseCommit: string;
+  reviewKind: GoalReviewKind;
+  reviewRole: GoalReviewRole;
+  reviewerCount: number;
 }
 
 export interface GoalExecutor {
@@ -100,6 +122,11 @@ export interface GoalExecutor {
    * executor omits it).
    */
   queueVerificationRun?(request: VerificationRunRequest): Promise<{ runId: string }>;
+  /**
+   * Persists a `queued` review run for (cycle, 'review'), idempotently, without starting it. The supervisor binds an
+   * immutable Goal review row to the queued run BEFORE it starts the run.
+   */
+  queueReviewRun(request: ReviewRunRequest): Promise<{ runId: string }>;
 }
 
 /** Production executor for Stage 3/3.1: never ready, never queues a proposal or child run. No provider work can start. */
@@ -123,6 +150,10 @@ export class DisabledGoalExecutor implements GoalExecutor {
   }
 
   async queueChildRun(): Promise<{ runId: string }> {
+    throw new Error('Goal execution is not enabled in this build.');
+  }
+
+  async queueReviewRun(): Promise<{ runId: string }> {
     throw new Error('Goal execution is not enabled in this build.');
   }
 }

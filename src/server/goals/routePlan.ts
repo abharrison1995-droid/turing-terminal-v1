@@ -15,6 +15,7 @@ import {
   RouteResolutionError,
   type RoutingBillingTerms,
 } from './routeResolution.js';
+import { isGoalReviewRole } from './reviewRole.js';
 import { observeRouteSnapshot } from './routingSnapshot.js';
 import type { RoutingEnvironment } from './routing.js';
 import type { GoalRunPlan, GoalRunPlanProvider, GoalRunPlanRequest } from './runPlan.js';
@@ -24,7 +25,7 @@ import { PLAN_ROUTE_FIELDS, TuringExecutorError, registeredGoalWorkflow } from '
  * The roles a Goal's run purposes draw their route from. Verification is deterministic and route-free, and Stage 6
  * (reviewer runs) is not planned here. Proposal is made by the orchestrator; execution and remediation by the implementer.
  */
-export const PURPOSE_ROLE: Readonly<Record<GoalRunPlanRequest['purpose'], GoalRole>> = {
+export const PURPOSE_ROLE: Readonly<Record<Exclude<GoalRunPlanRequest['purpose'], 'review'>, GoalRole>> = {
   proposal: 'orchestrator',
   execution: 'implementer',
   remediation: 'implementer',
@@ -271,7 +272,14 @@ export class ResolvedGoalRunPlanProvider implements GoalRunPlanProvider {
   }
 
   async planRun(request: GoalRunPlanRequest): Promise<GoalRunPlan> {
-    const role = PURPOSE_ROLE[request.purpose];
+    // A review draws its role from the request, which is validated against the closed set of reviewer roles; every
+    // other purpose has exactly one fixed role.
+    const role: GoalRole | undefined =
+      request.purpose === 'review'
+        ? isGoalReviewRole(request.reviewRole)
+          ? request.reviewRole
+          : undefined
+        : PURPOSE_ROLE[request.purpose];
     if (!role) return { ready: false, code: 'route_unavailable', message: 'This purpose has no route role.' };
     // Re-prove the cycle, definition and base before resolving anything.
     const goal = this.db
