@@ -17,6 +17,7 @@ export type RetentionReason =
   | 'cycle_missing'
   | 'cycle_not_terminal'
   | 'proposal_not_consumed'
+  | 'authoring_not_consumed'
   | 'planned_integration_op'
   | 'evidence_not_collected'
   | 'integration_not_proven'
@@ -71,6 +72,32 @@ const samePath = (a: string, b: string): boolean => {
   }
 };
 
+/**
+ * An authoring run's output is durably consumed only when its cycle is terminal AND the matching record exists: for a
+ * success the `goal_authoring_completed` event for this run and cycle plus the proposed (or later decided) version 1
+ * authored by an authoring run; for a failed or cancelled cycle the `goal_authoring_failed` record for this run.
+ */
+function authoringConsumed(db: Db, cycle: CycleRow, runId: string): boolean {
+  const event = (type: string) =>
+    db
+      .prepare(
+        `SELECT 1 FROM goal_events WHERE goal_id = ? AND type = ?
+           AND json_extract(payload_json, '$.runId') = ? AND json_extract(payload_json, '$.cycleId') = ? LIMIT 1`,
+      )
+      .get(cycle.goal_id, type, runId, cycle.id);
+  if (cycle.status === 'succeeded')
+    return (
+      !!event('goal_authoring_completed') &&
+      !!db
+        .prepare(
+          "SELECT 1 FROM goal_definition_versions WHERE goal_id = ? AND version = 1 AND created_by = 'authoring_run'",
+        )
+        .get(cycle.goal_id)
+    );
+  if (cycle.status === 'failed' || cycle.status === 'cancelled') return !!event('goal_authoring_failed');
+  return false;
+}
+
 /** Read-only. Never mutates the database, the repository or the filesystem. */
 export async function inspectRunRetention(db: Db, runId: string): Promise<RetentionInspection> {
   const run = db
@@ -84,7 +111,8 @@ export async function inspectRunRetention(db: Db, runId: string): Promise<Retent
 
   const reasons: RetentionReason[] = [];
   const purpose = run.goal_run_purpose;
-  if (purpose !== 'proposal' && !EVIDENCE_PURPOSES.has(purpose)) reasons.push('unsupported_purpose');
+  if (purpose !== 'proposal' && purpose !== 'authoring' && !EVIDENCE_PURPOSES.has(purpose))
+    reasons.push('unsupported_purpose');
   if (!TERMINAL_RUN.has(run.status)) reasons.push('run_not_terminal');
 
   const cycle = db
@@ -100,6 +128,8 @@ export async function inspectRunRetention(db: Db, runId: string): Promise<Retent
     if (cycle.validated_task_json === null && !cycleTerminal) reasons.push('proposal_not_consumed');
   } else if (cycle && !cycleTerminal) {
     reasons.push('cycle_not_terminal');
+  } else if (cycle && purpose === 'authoring' && !authoringConsumed(db, cycle, run.id)) {
+    reasons.push('authoring_not_consumed');
   }
 
   const planned = db

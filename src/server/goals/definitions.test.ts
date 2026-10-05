@@ -8,6 +8,8 @@ import {
   approveDefinition,
   beginAmendment,
   createGoalDraft,
+  createGoalShell,
+  proposeAuthoredDefinition,
   editProposedDefinition,
   loadDefinitionVersion,
   rejectDefinition,
@@ -99,6 +101,40 @@ function amended(): GoalDefinition {
   d.limits.maxExecutionCycles = 40;
   return d;
 }
+
+describe('createGoalShell and proposeAuthoredDefinition', () => {
+  it('creates a draft with no definition row and no current-definition pointer', () => {
+    const db = freshDatabase();
+    const { goalId } = createGoalShell(db, { projectId: seedProject(db), title: 'Shell' });
+    expect(goalRow(db, goalId)).toMatchObject({ status: 'draft', current_definition_version: null });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_definition_versions').get()).toEqual({ n: 0 });
+    expect(eventTypes(db, goalId)).toEqual(['goal_created']);
+    expect(() => createGoalShell(db, { projectId: 'ghost', title: 'G' })).toThrow(
+      expect.objectContaining({ code: 'project_not_found' }),
+    );
+  });
+
+  it('stores authored v1 as proposed once and never approves it', () => {
+    const db = freshDatabase();
+    const { goalId } = createGoalShell(db, { projectId: seedProject(db), title: 'Shell' });
+    const { definitionHash } = proposeAuthoredDefinition(db, {
+      goalId,
+      definition: validDefinition(),
+      changeSummary: 'Drafted',
+    });
+    expect(loadDefinitionVersion(db, goalId, 1)).toMatchObject({
+      status: 'proposed',
+      createdBy: 'authoring_run',
+      parentVersion: null,
+      approvedBy: null,
+      definitionHash,
+    });
+    expect(goalRow(db, goalId)).toMatchObject({ status: 'draft', current_definition_version: null });
+    expect(() =>
+      proposeAuthoredDefinition(db, { goalId, definition: validDefinition(), changeSummary: 'again' }),
+    ).toThrow(expect.objectContaining({ code: 'proposal_exists' }));
+  });
+});
 
 describe('createGoalDraft', () => {
   it('creates a draft Goal, its runtime row and a proposed version 1', () => {

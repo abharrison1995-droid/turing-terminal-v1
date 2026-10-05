@@ -1220,3 +1220,40 @@ connectionProfileId, modelDisplayName, variantId, nativeSettings` on stages in t
 - **Supervisor**: `evidence_collected` is one action per terminal run, taken before the next cycle decision (cycle N terminal → evidence N → milestone refresh → N+1) and, via `maintainEvidence()` (scheduler pass and startup reconcile) and the non-running tick path, for needs_user/blocked/paused Goals without resuming them. After the marker the worktree is pruned best-effort; the run branch is kept. A run that fails to collect three times is skipped (fail closed).
 - **Verification cycles**: `createCycle(kind='verification', triggerCode='evidence_refresh')` captures the definition version, active milestone and current head, is outside the execution/remediation counters and bounds (still bounded by active time and wall clock), and keeps one active cycle per Goal. Path planned → launching → running → collecting → succeeded|failed|cancelled; `tickCycle` chooses the path by kind. Scheduling happens after fresh criterion/milestone evaluation: required build/test/lint verifiers of the active milestone that are stale or inconclusive (or missing once the Goal has integrated something) trigger one cycle; a fresh `contradicted` verifier never does, and a head that already had a terminal verification cycle is not verified again. An unmaterialisable verifier launches nothing and sends the Goal to `needs_user(verification_failed)` with the verifier named. Scheduling requires an executor that implements the optional `queueVerificationRun` (the disabled production executor does not).
 - **Workflow** (`goals/verification.ts`, `TuringGoalExecutor.queueVerificationRun`): the registered `goal-verification-v1` with its stages replaced by `materializeVerifierStage` output named `gv-<digest>` (each `continueOnFailure`), queued through `buildPreview` → `queueRun` with `RunOrigin(cycleId, 'verification', base)`. No model stage, plan provider, route or usage spend.
+
+## Stage 4B.2 implementation notes (asynchronous Goal authoring)
+
+- **API**: `POST /api/goals/authoring` takes `{projectId, title ≤ 200, prompt ≤ 8000, route}` (strict; `route` is the
+  existing `modelConfiguration` shape, strict, no secrets) and answers `202 {goalId, cycleId, runId}` without waiting for
+  the model. `POST /api/goals/:goalId/authoring/retry` (`{prompt, route}`) and `GET /api/goals/:goalId/authoring`
+  (bounded status) are the only other routes. Goal origin fields, `modelSnapshot`, permission, billing and context
+  fields are rejected (400).
+- **Route authority** (`goals/authoring.ts`): starts from the registered `goal-authoring-v1` (reserved built-in verified
+  as in the executor, now the shared `registeredGoalWorkflow`), applies the exact route (`PLAN_ROUTE_FIELDS`, with
+  backendId/providerId/modelId/billingLane required) to the single `goal-author` stage only, and proves the rest
+  identical via `canonicalNonRouteWorkflow`. `buildPreview` stays the readiness and billing authority (the workflow is
+  subscriptions-only); a metered, incompatible or disconnected route is refused, the preview must keep the pinned route,
+  and no other route is ever chosen.
+- **Empty draft**: `createGoalDraft` is split into `createGoalShell` (Goal, `goal_runtime`, `goal_created`; no version
+  row, `current_definition_version` NULL) and `createGoalDraft`. No placeholder or version zero exists.
+- **Atomic order**: validate, build the preview (origin `createRunOrigin(cycleId, 'authoring')`, no base commit, so the
+  conservative dirty-checkout block applies), then one transaction: Goal shell, authoring cycle (`kind=authoring`,
+  definition/milestone/base NULL, sequence 0, or max+1 on retry), `cycle_created`, nested `queueRun`, cycle → `proposing`.
+  Any failure rolls everything back; a refused preview creates nothing. `startQueuedRun` runs once after commit.
+- **Consumption**: reads only a completed `authoring` run's `goal-author` planner `output_json.text`, bounded before
+  parsing, parsed with the existing definition schema (a structural mismatch fails; semantic issues still produce an
+  editable proposed v1). One transaction proves the Goal is still a draft with no version, creates proposed v1
+  (`created_by=authoring_run`), emits `definition_proposed`, moves the cycle proposing → proposed → succeeded and emits
+  `goal_authoring_completed`. It never approves and never sets `current_definition_version`.
+- **Failure**: the cycle ends failed/cancelled, `goal_authoring_failed {cycleId, runId, code}` is written (no model
+  output) and the draft carries `status_reason_code = authoring_failed` through `setDraftStatusReason` (a typed,
+  draft-only helper that never writes `goals.status`). Retry is allowed after a failed or cancelled cycle and refused once
+  any definition version exists or while a cycle is open.
+- **Reconciliation** (`AuthoringReconciler`, run at startup and every 15 s, independent of the HTTP request, no project
+  lease for drafts): queued → start once; active → observe; paused → expose, never auto-resume; completed → consume once;
+  failed/cancelled → finalize once; consumed → nothing. It then prunes consumed authoring worktrees.
+- **Retention**: `authoring` is a supported purpose. A worktree is pruned only when the cycle is terminal and the
+  consumption record exists (completed event for this run and cycle plus v1 authored by an authoring run, or the failure
+  event). Otherwise `authoring_not_consumed`. The branch is retained; no `run_evidence_collected` is needed.
+- **Usage**: the existing `goalId` filter already reaches authoring runs through `goal_runs` (run → cycle → Goal); a
+  regression covers it. No migration. Production autonomous Goals still use `DisabledGoalExecutor`.

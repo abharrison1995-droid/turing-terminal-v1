@@ -118,6 +118,23 @@ export function canonicalNonRouteWorkflow(workflow: WorkflowDefinition): string 
   );
 }
 
+/** The registered workflow row; a reserved Goal id that differs from Turing's built-in definition is refused. */
+export function registeredGoalWorkflow(db: Db, workflowId: string): WorkflowDefinition {
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as
+    Record<string, unknown> | undefined;
+  if (!row)
+    throw new TuringExecutorError('workflow_not_found', `Workflow "${workflowId}" is not registered.`);
+  if (isReservedGoalWorkflowId(workflowId)) {
+    const expected = goalBuiltinById(workflowId);
+    if (!expected || canonicalStoredWorkflow(row) !== canonicalGoalBuiltin(expected))
+      throw new TuringExecutorError(
+        'reserved_workflow_conflict',
+        `Reserved Goal workflow "${workflowId}" differs from Turing's built-in definition.`,
+      );
+  }
+  return toWorkflow(row);
+}
+
 interface Loaded {
   goalId: string;
   projectId: string;
@@ -216,19 +233,7 @@ export class TuringGoalExecutor implements GoalExecutor {
 
   /** The registered workflow row for a purpose; a reserved id that differs from Turing's built-in is refused. */
   private registeredWorkflow(workflowId: string): WorkflowDefinition {
-    const row = this.db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as
-      Record<string, unknown> | undefined;
-    if (!row)
-      throw new TuringExecutorError('workflow_not_found', `Workflow "${workflowId}" is not registered.`);
-    if (isReservedGoalWorkflowId(workflowId)) {
-      const expected = goalBuiltinById(workflowId);
-      if (!expected || canonicalStoredWorkflow(row) !== canonicalGoalBuiltin(expected))
-        throw new TuringExecutorError(
-          'reserved_workflow_conflict',
-          `Reserved Goal workflow "${workflowId}" differs from Turing's built-in definition.`,
-        );
-    }
-    return toWorkflow(row);
+    return registeredGoalWorkflow(this.db, workflowId);
   }
 
   /**

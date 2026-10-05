@@ -89,8 +89,9 @@ export interface GoalEventPayloads {
     kind: string;
     triggerCode: string;
     milestoneKey: string | null;
-    definitionVersion: number;
-    baseIntegrationCommit: string;
+    /** Null only for an authoring cycle, which exists before any definition does. */
+    definitionVersion: number | null;
+    baseIntegrationCommit: string | null;
   };
   cycle_finished: {
     cycleId: string;
@@ -112,6 +113,10 @@ export interface GoalEventPayloads {
     definitionVersion: number;
     evidenceCount: number;
   };
+  /** A persisted authoring run's output became proposed definition v1. Bounded refs only; never the definition. */
+  goal_authoring_completed: { cycleId: string; runId: string; version: number; definitionHash: string };
+  /** Authoring ended without a definition. `code` is an enumerated failure code; no model output is recorded. */
+  goal_authoring_failed: { cycleId: string; runId: string | null; code: string };
 }
 
 const MAX_PAYLOAD_CHARS = 16_384;

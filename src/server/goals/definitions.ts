@@ -168,19 +168,15 @@ function insertVersion(
   return hash;
 }
 
-/** Creates a draft Goal with its mutable runtime row and a proposed version 1. The proposal may be incomplete. */
-export function createGoalDraft(
+/**
+ * Creates a draft Goal and its mutable runtime row with NO definition: no version row exists and
+ * `current_definition_version` stays NULL. Must run inside the caller's transaction when it is part of a larger
+ * atomic step (a nested call simply joins it).
+ */
+export function createGoalShell(
   db: Db,
-  input: {
-    projectId: string;
-    title: string;
-    definition: GoalDefinition;
-    changeSummary?: string;
-    createdBy?: GoalDefinitionAuthor;
-    goalId?: string;
-    now?: string;
-  },
-): { goalId: string; version: number; definitionHash: string } {
+  input: { projectId: string; title: string; goalId?: string; now?: string },
+): { goalId: string } {
   const now = input.now ?? new Date().toISOString();
   return db.transaction(() => {
     const project = db.prepare('SELECT machine_id FROM projects WHERE id = ?').get(input.projectId) as
@@ -198,6 +194,31 @@ export function createGoalDraft(
       { projectId: input.projectId, title: input.title.slice(0, 200) },
       now,
     );
+    return { goalId };
+  })();
+}
+
+/** Creates a draft Goal with its mutable runtime row and a proposed version 1. The proposal may be incomplete. */
+export function createGoalDraft(
+  db: Db,
+  input: {
+    projectId: string;
+    title: string;
+    definition: GoalDefinition;
+    changeSummary?: string;
+    createdBy?: GoalDefinitionAuthor;
+    goalId?: string;
+    now?: string;
+  },
+): { goalId: string; version: number; definitionHash: string } {
+  const now = input.now ?? new Date().toISOString();
+  return db.transaction(() => {
+    const { goalId } = createGoalShell(db, {
+      projectId: input.projectId,
+      title: input.title,
+      goalId: input.goalId,
+      now,
+    });
     const definitionHash = insertVersion(db, {
       goalId,
       version: 1,
@@ -208,6 +229,39 @@ export function createGoalDraft(
       now,
     });
     return { goalId, version: 1, definitionHash };
+  })();
+}
+
+/**
+ * Stores an authoring run's output as proposed version 1 of a Goal that has no definition yet. Proves, inside the
+ * caller's transaction, that the Goal is still a draft with no version and no current-definition pointer. It never
+ * approves and never sets `goals.current_definition_version`.
+ */
+export function proposeAuthoredDefinition(
+  db: Db,
+  input: { goalId: string; definition: GoalDefinition; changeSummary: string; now?: string },
+): { version: 1; definitionHash: string } {
+  const now = input.now ?? new Date().toISOString();
+  return db.transaction(() => {
+    const goal = db
+      .prepare('SELECT status, current_definition_version FROM goals WHERE id = ?')
+      .get(input.goalId) as { status: string; current_definition_version: number | null } | undefined;
+    if (!goal) throw new GoalDefinitionError('goal_not_found', 'The Goal does not exist.');
+    const existing = db
+      .prepare('SELECT 1 FROM goal_definition_versions WHERE goal_id = ? LIMIT 1')
+      .get(input.goalId);
+    if (goal.status !== 'draft' || goal.current_definition_version !== null || existing)
+      throw new GoalDefinitionError('proposal_exists', 'The Goal already has a definition.');
+    const definitionHash = insertVersion(db, {
+      goalId: input.goalId,
+      version: 1,
+      parentVersion: null,
+      definition: input.definition,
+      changeSummary: input.changeSummary,
+      createdBy: 'authoring_run',
+      now,
+    });
+    return { version: 1 as const, definitionHash };
   })();
 }
 

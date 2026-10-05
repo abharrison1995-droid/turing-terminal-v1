@@ -6,6 +6,7 @@ import { deliverPushNotice } from './webPush.js';
 import { startQueuedRun } from './runLauncher.js';
 import { createGoalSupervisor } from './goals/supervisor.js';
 import { DisabledGoalExecutor } from './goals/executor.js';
+import { AuthoringReconciler } from './goals/authoring.js';
 
 const host = process.env.TT_HOST ?? '127.0.0.1';
 assertLoopbackHost(host);
@@ -26,6 +27,12 @@ const goalSupervisor = createGoalSupervisor({
   resumeRun: (runId) => engine.start(runId, true),
 });
 await goalSupervisor.reconcile();
+// Stage 4B.2: user-triggered Goal authoring runs are consumed from persisted state, with or without the HTTP request
+// that started them. This is the only Goal path that starts a model run, and it uses the user's exact pinned route.
+const authoringReconciler = new AuthoringReconciler(database, (runId) =>
+  startQueuedRun(database, engine, runId),
+);
+await authoringReconciler.reconcile();
 const app = createApp({ database, engine });
 
 app.get('/api/events', async (request, reply) => {
@@ -63,9 +70,11 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535)
 await app.listen({ host, port });
 app.log.info({ host, port }, 'Turing Terminal local master is ready');
 goalSupervisor.start();
+authoringReconciler.start();
 
 const shutdown = async () => {
   goalSupervisor.shutdown();
+  authoringReconciler.shutdown();
   await app.close();
   process.exit(0);
 };

@@ -218,3 +218,37 @@ export function transitionGoal(db: Db, request: TransitionRequest): { from: Goal
     }
   return result;
 }
+
+/** Reasons a Goal that is still a draft can carry. They describe the draft; they never change its status. */
+export const DRAFT_STATUS_REASONS = ['authoring_failed'] as const;
+export type DraftStatusReason = (typeof DRAFT_STATUS_REASONS)[number];
+
+/**
+ * Records (or clears, with `null`) a typed reason on a Goal that is, and stays, a draft. This is deliberately not a
+ * `draft -> draft` transition: it never writes `goals.status`, emits no `state_changed` event and is refused for any
+ * other status. `transitionGoal` remains the only status writer.
+ */
+export function setDraftStatusReason(
+  db: Db,
+  goalId: string,
+  reason: DraftStatusReason | null,
+  detail?: Record<string, unknown>,
+  now = new Date().toISOString(),
+): void {
+  if (reason !== null && !DRAFT_STATUS_REASONS.includes(reason))
+    throw new GoalStateError('unknown_reason_code', `"${reason}" is not a draft status reason.`);
+  const json = detail && reason !== null ? JSON.stringify(detail) : null;
+  if (json && json.length > MAX_DETAIL_CHARS)
+    throw new GoalStateError('precondition_failed', 'Status detail is too large.');
+  const result = db
+    .prepare(
+      `UPDATE goals SET status_reason_code = ?, status_detail_json = ?, updated_at = ?
+       WHERE id = ? AND status = 'draft'`,
+    )
+    .run(reason, json, now, goalId);
+  if (result.changes === 0) {
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      throw new GoalStateError('goal_not_found', 'The Goal does not exist.');
+    throw new GoalStateError('precondition_failed', 'A draft reason applies only to a draft Goal.');
+  }
+}

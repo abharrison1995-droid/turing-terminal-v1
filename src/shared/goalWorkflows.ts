@@ -21,6 +21,7 @@ export const GOAL_WORKFLOW_IDS = {
 
 /** The stage key whose persisted output is the proposal a Goal planning run returns. */
 export const GOAL_PROPOSE_STAGE_KEY = 'goal-propose';
+export const GOAL_AUTHOR_STAGE_KEY = 'goal-author';
 export const GOAL_TEMPLATE = 'goal-builtin';
 
 const RESERVED_ID = /^goal-[a-z]+-v\d+$/;
@@ -128,7 +129,7 @@ export const GOAL_BUILTIN_WORKFLOWS: readonly BuiltIn[] = [
     'Turing Goal · Authoring',
     'Reserved for the Goal Engine. Read-only: drafts a Goal definition as strict JSON.',
     'normal',
-    [stage('goal-author', 'Draft Goal definition', 'planner', 'planner', { timeoutMinutes: 30 })],
+    [stage(GOAL_AUTHOR_STAGE_KEY, 'Draft Goal definition', 'planner', 'planner', { timeoutMinutes: 30 })],
   ),
 ];
 

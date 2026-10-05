@@ -14,7 +14,12 @@ import {
 } from '../../shared/goals.js';
 import type { CompletionEvaluation } from '../../shared/goals.js';
 import { listGoalEvents } from './events.js';
-import { GoalStateError, isLegalGoalTransition, transitionGoal } from './stateMachine.js';
+import {
+  GoalStateError,
+  isLegalGoalTransition,
+  setDraftStatusReason,
+  transitionGoal,
+} from './stateMachine.js';
 import { cleanupTestDatabases, freshDatabase, goalAt, seedProject } from './testKit.js';
 
 // The exhaustive tests run hundreds of attempts; they deliberately share one database (a fresh project per attempt),
@@ -376,5 +381,44 @@ describe('the completed transition needs a completion proof', () => {
         actor: 'user',
       }),
     ).toThrow(expect.objectContaining({ code: 'actor_not_allowed' }));
+  });
+});
+
+describe('setDraftStatusReason', () => {
+  it('records and clears a typed reason on a draft without touching status or the event log', () => {
+    const goalId = goalAt(shared, seedProject(shared), 'draft');
+    const events = () => listGoalEvents(shared, goalId).length;
+    const before = events();
+    setDraftStatusReason(shared, goalId, 'authoring_failed', { code: 'output_malformed' });
+    expect(
+      shared
+        .prepare('SELECT status, status_reason_code, status_detail_json FROM goals WHERE id = ?')
+        .get(goalId),
+    ).toEqual({
+      status: 'draft',
+      status_reason_code: 'authoring_failed',
+      status_detail_json: '{"code":"output_malformed"}',
+    });
+    setDraftStatusReason(shared, goalId, null);
+    expect(
+      shared
+        .prepare('SELECT status, status_reason_code, status_detail_json FROM goals WHERE id = ?')
+        .get(goalId),
+    ).toEqual({ status: 'draft', status_reason_code: null, status_detail_json: null });
+    expect(events()).toBe(before);
+  });
+
+  it('is refused for any Goal that is not a draft, an unknown Goal or an untyped reason', () => {
+    const running = goalAt(shared, seedProject(shared), 'running');
+    expect(() => setDraftStatusReason(shared, running, 'authoring_failed')).toThrow(
+      expect.objectContaining({ code: 'precondition_failed' }),
+    );
+    expect(() => setDraftStatusReason(shared, 'ghost', 'authoring_failed')).toThrow(
+      expect.objectContaining({ code: 'goal_not_found' }),
+    );
+    const draft = goalAt(shared, seedProject(shared), 'draft');
+    expect(() => setDraftStatusReason(shared, draft, 'paused_by_user' as never)).toThrow(
+      expect.objectContaining({ code: 'unknown_reason_code' }),
+    );
   });
 });
