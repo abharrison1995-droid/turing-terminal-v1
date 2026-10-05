@@ -15,6 +15,7 @@ import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
 export type GoalReviewErrorCode =
   | 'goal_not_found'
   | 'definition_not_found'
+  | 'definition_not_current'
   | 'milestone_required'
   | 'milestone_not_found'
   | 'cycle_not_found'
@@ -133,8 +134,21 @@ export async function createReview(
 ): Promise<{ id: string; reviewedToCommit: string; reviewedToTree: string }> {
   if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId))
     throw new GoalReviewError('goal_not_found', 'The Goal does not exist.');
-  if (!loadDefinitionVersion(db, input.goalId, input.definitionVersion))
+  const version = loadDefinitionVersion(db, input.goalId, input.definitionVersion);
+  if (!version)
     throw new GoalReviewError('definition_not_found', 'No such definition version for this Goal.');
+  // A new review starts only under the current approved authority. An in-flight review is not invalidated by a later
+  // amendment (it may still complete as history), but it can no longer change current findings (see findings.ts).
+  const current = db
+    .prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?')
+    .get(input.goalId) as {
+    v: number | null;
+  };
+  if (current.v !== input.definitionVersion || version.status !== 'approved')
+    throw new GoalReviewError(
+      'definition_not_current',
+      'A review can only start against the current approved definition version.',
+    );
   if (input.reviewKind === 'milestone' && !input.milestoneId)
     throw new GoalReviewError('milestone_required', 'A milestone review names its milestone.');
   if (

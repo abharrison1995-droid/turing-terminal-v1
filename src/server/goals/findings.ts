@@ -14,6 +14,7 @@ export type GoalFindingErrorCode =
   | 'goal_not_found'
   | 'review_not_found'
   | 'review_not_completed'
+  | 'review_not_current'
   | 'review_findings_already_applied'
   | 'repository_unavailable'
   | 'repository_changed'
@@ -47,6 +48,8 @@ export interface GoalFinding {
   lastSeenReviewId: string;
   resolvedByReviewId: string | null;
   resolutionBasis: unknown;
+  /** The user approval that authorises accepted_by_user / dismissed_by_user; null for every other status. */
+  decisionApprovalId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +67,7 @@ interface FindingRow {
   last_seen_review_id: string;
   resolved_by_review_id: string | null;
   resolution_basis_json: string | null;
+  decision_approval_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -82,6 +86,7 @@ function toFinding(row: FindingRow): GoalFinding {
     lastSeenReviewId: row.last_seen_review_id,
     resolvedByReviewId: row.resolved_by_review_id,
     resolutionBasis: row.resolution_basis_json ? JSON.parse(row.resolution_basis_json) : null,
+    decisionApprovalId: row.decision_approval_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -147,8 +152,7 @@ export function findingFingerprint(finding: {
     .digest('hex');
 }
 
-export type ResolutionRefusal =
-  'review_not_current' | 'deterministic_evidence_missing' | 'no_deterministic_verifier';
+export type ResolutionRefusal = 'deterministic_evidence_missing' | 'no_deterministic_verifier';
 
 export interface ApplyFindingsResult {
   opened: string[];
@@ -210,6 +214,13 @@ export async function applyReviewFindings(
   const resolved = await resolveGoalRepository(db, goalId);
   if (!resolved.ok) throw new GoalFindingError('repository_unavailable', resolved.detail);
   const { state } = resolved;
+  // Only a review of the current definition version and the current integration tree may change current Goal findings
+  // (open, reopen, resolve or observe). A historical review stays visible and immutable but is lifecycle-inert.
+  if (review.definitionVersion !== goal.current_definition_version || review.reviewedToTree !== state.tree)
+    throw new GoalFindingError(
+      'review_not_current',
+      'The review is for an earlier definition version or tree; it cannot change current findings.',
+    );
 
   // Deterministic gate for high-severity resolution (computed before the transaction; read-only).
   let deterministic: { ok: boolean; refusal: ResolutionRefusal | null; digests: string[] };
@@ -232,7 +243,6 @@ export async function applyReviewFindings(
   const needsDeterministic = (severity: FindingSeverity) =>
     (severity === 'critical' || severity === 'high') &&
     definition.contract.completionPolicy.highSeverityResolution === 'review-plus-head-bound-verifier';
-  const reviewIsCurrent = review.reviewedToTree === state.tree;
 
   const now = input.now ?? new Date().toISOString();
   const result: ApplyFindingsResult = {
@@ -260,8 +270,16 @@ export async function applyReviewFindings(
       db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(goalId) as
         { integration_head: string | null } | undefined
     )?.integration_head;
-    if (head !== state.head)
-      throw new GoalFindingError('repository_changed', 'The Goal ref moved while applying the review.');
+    const currentVersion = (
+      db.prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?').get(goalId) as {
+        v: number | null;
+      }
+    ).v;
+    if (head !== state.head || currentVersion !== review.definitionVersion)
+      throw new GoalFindingError(
+        'repository_changed',
+        'The Goal ref or definition moved while applying the review.',
+      );
 
     const observed = new Set<string>();
     const observe = (
@@ -321,8 +339,7 @@ export async function applyReviewFindings(
       // status === 'resolved'
       if (finding.status !== 'open') continue; // nothing to resolve; user decisions are never overwritten
       let refusal: ResolutionRefusal | null = null;
-      if (!reviewIsCurrent) refusal = 'review_not_current';
-      else if (needsDeterministic(finding.severity) && !deterministic.ok) refusal = deterministic.refusal;
+      if (needsDeterministic(finding.severity) && !deterministic.ok) refusal = deterministic.refusal;
       if (refusal) {
         observe(finding.id, 'still_open', `resolution_refused:${refusal}: ${entry.basis}`, link);
         touch(finding.id);
@@ -469,12 +486,9 @@ export function decideFinding(
         'approval_invalid',
         'The approval is not a user decision bound to this finding, decision and definition.',
       );
-    db.prepare('UPDATE goal_findings SET status = ?, updated_at = ? WHERE id = ? AND status = ?').run(
-      input.decision,
-      now,
-      input.findingId,
-      'open',
-    );
+    db.prepare(
+      'UPDATE goal_findings SET status = ?, decision_approval_id = ?, updated_at = ? WHERE id = ? AND status = ?',
+    ).run(input.decision, input.approvalId, now, input.findingId, 'open');
     writeGoalEvent(
       db,
       input.goalId,

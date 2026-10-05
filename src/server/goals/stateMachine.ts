@@ -11,7 +11,7 @@ import {
   type GoalStatus,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
-import { checkCompletionProof } from './completionProof.js';
+import { checkCompletionProof } from './completionEvaluation.js';
 import { writeGoalEvent } from './events.js';
 import type { CompletionEvaluation } from '../../shared/goals.js';
 

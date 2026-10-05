@@ -17,8 +17,11 @@ import { validDefinition } from './testKit.js';
 import { verifierDigest } from './verifierDigest.js';
 
 const folders: string[] = [];
+const databases: Db[] = [];
 
+/** Closes every fixture database, then removes the temporary repositories. Call from `afterEach`. */
 export function cleanupRepoFixtures(): void {
+  for (const db of databases.splice(0)) if (db.open) db.close();
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 }
 
@@ -150,6 +153,7 @@ export function goalRepoFixture(
   const base = git(repo, 'rev-parse', 'HEAD');
 
   const db = openDatabase(root);
+  databases.push(db);
   const machine = (
     db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string }
   ).value;

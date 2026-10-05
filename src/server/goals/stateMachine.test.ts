@@ -1,5 +1,4 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import type { Db } from '../db.js';
 import {
   BLOCKED_REASONS,
   GOAL_LEASE_STATUSES,
@@ -14,14 +13,13 @@ import {
   type GoalStatus,
 } from '../../shared/goals.js';
 import type { CompletionEvaluation } from '../../shared/goals.js';
-import { issueCompletionProof } from './completionProof.js';
 import { listGoalEvents } from './events.js';
 import { GoalStateError, isLegalGoalTransition, transitionGoal } from './stateMachine.js';
 import { cleanupTestDatabases, freshDatabase, goalAt, seedProject } from './testKit.js';
 
+// The exhaustive tests run hundreds of attempts; they deliberately share one database (a fresh project per attempt),
+// so this suite cleans up once, after all of them.
 afterAll(cleanupTestDatabases);
-
-// The exhaustive tests run hundreds of attempts; they share one database and use a fresh project per attempt.
 const shared = freshDatabase();
 
 const ALL_REASONS: GoalReasonCode[] = [
@@ -31,38 +29,6 @@ const ALL_REASONS: GoalReasonCode[] = [
   ...GOAL_TRANSITION_REASONS,
 ];
 const PASS = [{ code: 'preflight', ok: true }];
-const HEAD = 'a'.repeat(40);
-
-/** An evaluation issued the way evaluateCompletion issues one, bound to the Goal's current state in the database. */
-function proofFor(db: Db, goalId: string, over: Partial<CompletionEvaluation> = {}): CompletionEvaluation {
-  db.prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?').run(HEAD, goalId);
-  const row = db
-    .prepare(
-      'SELECT g.current_definition_version AS v, d.definition_hash AS h FROM goals g JOIN goal_definition_versions d ON d.goal_id = g.id AND d.version = g.current_definition_version WHERE g.id = ?',
-    )
-    .get(goalId) as { v: number; h: string };
-  return issueCompletionProof({
-    ok: true,
-    goalId,
-    definitionVersion: row.v,
-    definitionHash: row.h,
-    integrationHead: HEAD,
-    integrationTree: 'b'.repeat(40),
-    evaluatedAt: '2026-01-01T00:00:00.000Z',
-    criteria: [],
-    milestones: [],
-    findings: {
-      open: { critical: 0, high: 0, medium: 0, low: 0 },
-      limits: { critical: 0, high: 0, medium: null },
-      ok: true,
-    },
-    finalReview: { required: false, ok: true, reviewId: null, reason: null },
-    finalAcceptance: { required: false, ok: true, approvalId: null, reason: null },
-    finalApply: { required: false, ok: true, basis: 'not_required', reason: null },
-    failures: [],
-    ...over,
-  });
-}
 
 function attempt(from: GoalStatus, to: GoalStatus, reasonCode: GoalReasonCode, actor: GoalActor = 'user') {
   const db = shared;
@@ -77,7 +43,6 @@ function attempt(from: GoalStatus, to: GoalStatus, reasonCode: GoalReasonCode, a
           reasonCode,
           actor,
           preconditions: PASS,
-          completionProof: to === 'completed' ? proofFor(db, goalId) : undefined,
         }),
       };
     } catch (error) {
@@ -112,14 +77,18 @@ describe('transitionGoal', () => {
   const legal = GOAL_TRANSITIONS.flatMap((rule) =>
     rule.reasons.map((reason) => [rule.from, rule.to, reason, rule.actors[0]!] as const),
   );
-  it.each(legal)('allows %s -> %s with %s', (from, to, reason, actor) => {
-    const { outcome, row, db, goalId } = attempt(from, to, reason, actor);
-    expect(outcome.ok).toBe(true);
-    expect(row).toEqual({ status: to, status_reason_code: reason });
-    const last = listGoalEvents(db, goalId).at(-1)!;
-    expect(last.type).toBe('state_changed');
-    expect(last.payload).toEqual({ from, to, reasonCode: reason, actor });
-  });
+  // The completed edge needs a proof only evaluateCompletion can issue; completion.test.ts drives it for real.
+  it.each(legal.filter(([, to]) => to !== 'completed'))(
+    'allows %s -> %s with %s',
+    (from, to, reason, actor) => {
+      const { outcome, row, db, goalId } = attempt(from, to, reason, actor);
+      expect(outcome.ok).toBe(true);
+      expect(row).toEqual({ status: to, status_reason_code: reason });
+      const last = listGoalEvents(db, goalId).at(-1)!;
+      expect(last.type).toBe('state_changed');
+      expect(last.payload).toEqual({ from, to, reasonCode: reason, actor });
+    },
+  );
 
   it('refuses every illegal from/to pair without changing anything', () => {
     for (const from of GOAL_STATUSES)
@@ -366,16 +335,11 @@ describe('the completed transition needs a completion proof', () => {
   const status = (goalId: string) =>
     (shared.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: string }).status;
 
-  it('completes with a current proof and stamps completed_at', () => {
-    const goalId = running();
-    expect(run(goalId, proofFor(shared, goalId))).toEqual({ from: 'running', to: 'completed' });
-    expect(status(goalId)).toBe('completed');
-  });
-
-  it('no longer accepts a raw completion_evaluated precondition', () => {
+  it('refuses the edge without a proof, and no longer accepts a raw completion_evaluated precondition', () => {
     const goalId = running();
     for (const precondition of [
       [],
+      PASS,
       [{ code: 'completion_evaluated', ok: true }],
       [...PASS, { code: 'completion_evaluated', ok: true }],
     ])
@@ -385,56 +349,21 @@ describe('the completed transition needs a completion proof', () => {
     expect(status(goalId)).toBe('running');
   });
 
-  it('rejects forged, cloned and serialised proofs', () => {
+  it('refuses a hand-written evaluation: no importable function issues proof', () => {
     const goalId = running();
-    const real = proofFor(shared, goalId);
-    for (const forged of [
-      { ...real },
-      structuredClone(real),
-      JSON.parse(JSON.stringify(real)),
-      { ok: true },
-      true,
-      'completion_evaluated',
-      null,
-    ])
+    const hand = {
+      ok: true,
+      goalId,
+      definitionVersion: 1,
+      definitionHash: 'x',
+      integrationHead: 'y',
+      failures: [],
+    };
+    for (const forged of [hand, { ...hand }, Object.freeze({ ...hand }), true, 'completion_evaluated'])
       expect(() => run(goalId, forged)).toThrow(
         expect.objectContaining({ code: 'completion_proof_required' }),
       );
     expect(status(goalId)).toBe('running');
-  });
-
-  it('rejects a proof that did not pass or belongs to another Goal', () => {
-    const goalId = running();
-    const other = running();
-    expect(() => run(goalId, proofFor(shared, goalId, { ok: false }))).toThrow(
-      expect.objectContaining({ code: 'completion_proof_failed' }),
-    );
-    expect(() => run(goalId, proofFor(shared, other))).toThrow(
-      expect.objectContaining({ code: 'completion_proof_required' }),
-    );
-    expect(status(goalId)).toBe('running');
-  });
-
-  it('refuses a proof made stale by a moved head, a changed definition version or a changed stored hash', () => {
-    const moved = running();
-    const proofMoved = proofFor(shared, moved);
-    shared
-      .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
-      .run('c'.repeat(40), moved);
-    expect(() => run(moved, proofMoved)).toThrow(expect.objectContaining({ code: 'completion_proof_stale' }));
-
-    const versioned = running();
-    const proofVersion = proofFor(shared, versioned);
-    expect(() => run(versioned, issueCompletionProof({ ...proofVersion, definitionVersion: 2 }))).toThrow(
-      expect.objectContaining({ code: 'completion_proof_stale' }),
-    );
-
-    const hashed = running();
-    const proofHash = proofFor(shared, hashed);
-    expect(() => run(hashed, issueCompletionProof({ ...proofHash, definitionHash: 'f'.repeat(64) }))).toThrow(
-      expect.objectContaining({ code: 'completion_proof_stale' }),
-    );
-    for (const id of [moved, versioned, hashed]) expect(status(id)).toBe('running');
   });
 
   it('is only available to the supervisor', () => {
@@ -445,7 +374,6 @@ describe('the completed transition needs a completion proof', () => {
         to: 'completed',
         reasonCode: 'completion_verified',
         actor: 'user',
-        completionProof: proofFor(shared, goalId),
       }),
     ).toThrow(expect.objectContaining({ code: 'actor_not_allowed' }));
   });

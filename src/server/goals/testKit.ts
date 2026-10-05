@@ -138,15 +138,20 @@ import type { GoalStatus } from '../../shared/goals.js';
 import { approveDefinition, createGoalDraft } from './definitions.js';
 
 const folders: string[] = [];
+const databases: Db[] = [];
 
+/** Closes every database opened by `freshDatabase`, then removes its folder. Call from `afterEach`. */
 export function cleanupTestDatabases(): void {
+  for (const db of databases.splice(0)) if (db.open) db.close();
   for (const folder of folders.splice(0)) rmSync(folder, { recursive: true, force: true });
 }
 
 export function freshDatabase(): Db {
   const root = mkdtempSync(join(tmpdir(), 'turing-goals-'));
   folders.push(root);
-  return openDatabase(root);
+  const db = openDatabase(root);
+  databases.push(db);
+  return db;
 }
 
 export function seedProject(db: Db, name = 'P'): string {

@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { CompletionEvaluation, GoalDefinition } from '../../shared/goals.js';
-import { checkCompletionProof } from './completionProof.js';
-import { completeGoal, evaluateCompletion } from './completion.js';
+import { checkCompletionProof, evaluateCompletion } from './completionEvaluation.js';
+import { completeGoal } from './completion.js';
 import { listGoalEvents } from './events.js';
 import { applyReviewFindings, decideFinding } from './findings.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
@@ -19,7 +19,7 @@ import {
 import { completeReview, createReview } from './reviews.js';
 import { transitionGoal } from './stateMachine.js';
 
-afterAll(cleanupRepoFixtures);
+afterEach(cleanupRepoFixtures);
 
 function running(options: DefinitionOptions = {}) {
   const fx = goalRepoFixture({ definition: simpleDefinition(options) });
@@ -558,5 +558,15 @@ describe('completeGoal and completion proofs', () => {
     expect(result.completed).toBe(false);
     expect(codes(result.evaluation)).toEqual(['goal_ref_unavailable']);
     expect(status(fx)).toBe('running');
+  });
+
+  it('exposes no function that can mint proof: the issuer is module-private', async () => {
+    const evaluationModule = await import('./completionEvaluation.js');
+    const completionModule = await import('./completion.js');
+    expect(Object.keys(evaluationModule).sort()).toEqual(['checkCompletionProof', 'evaluateCompletion']);
+    for (const mod of [evaluationModule, completionModule, await import('./stateMachine.js')])
+      expect(
+        Object.keys(mod).filter((name) => /issue|mint|proof/i.test(name) && name !== 'checkCompletionProof'),
+      ).toEqual([]);
   });
 });

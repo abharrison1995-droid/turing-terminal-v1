@@ -1,9 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { approveDefinition, beginAmendment, rejectDefinition } from './definitions.js';
 import { listGoalEvents } from './events.js';
 import { cleanupRepoFixtures, goalRepoFixture, newFinding, reportOf } from './repoKit.js';
 import { GoalReviewError, closeReview, completeReview, createReview, getReview } from './reviews.js';
 
-afterAll(cleanupRepoFixtures);
+afterEach(cleanupRepoFixtures);
 
 const final = (fx: ReturnType<typeof goalRepoFixture>) =>
   createReview(fx.db, { goalId: fx.goalId, definitionVersion: 1, reviewKind: 'final' });
@@ -165,5 +166,43 @@ describe('closeReview', () => {
     completeReview(fx.db, { reviewId: id, report: reportOf() });
     expect(() => closeReview(fx.db, { reviewId: id, status: 'cancelled' })).toThrow(GoalReviewError);
     expect(() => fx.db.prepare("UPDATE goal_reviews SET status = 'pending' WHERE id = ?").run(id)).toThrow();
+  });
+});
+
+describe('reviews start only under the current approved definition', () => {
+  const amendment = (fx: ReturnType<typeof goalRepoFixture>) => {
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const amended = structuredClone(fx.definition);
+    amended.limits.maxExecutionCycles += 1;
+    return beginAmendment(fx.db, { goalId: fx.goalId, actor: 'user', definition: amended }).version;
+  };
+  const start = (fx: ReturnType<typeof goalRepoFixture>, definitionVersion: number) =>
+    createReview(fx.db, { goalId: fx.goalId, definitionVersion, reviewKind: 'final' });
+  const reviewCount = (fx: ReturnType<typeof goalRepoFixture>) =>
+    (fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get() as { n: number }).n;
+
+  it('refuses a proposed, a rejected, a superseded and a nonexistent version without creating a row', async () => {
+    const fx = goalRepoFixture();
+    const proposed = amendment(fx);
+    await expect(start(fx, proposed)).rejects.toMatchObject({ code: 'definition_not_current' });
+    rejectDefinition(fx.db, { goalId: fx.goalId, version: proposed, actor: 'user' });
+    await expect(start(fx, proposed)).rejects.toMatchObject({ code: 'definition_not_current' });
+
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const second = amendment(fx);
+    approveDefinition(fx.db, { goalId: fx.goalId, version: second, actor: 'user' });
+    await expect(start(fx, 1)).rejects.toMatchObject({ code: 'definition_not_current' }); // superseded
+    await expect(start(fx, 9)).rejects.toMatchObject({ code: 'definition_not_found' });
+    expect(reviewCount(fx)).toBe(0);
+    expect((await start(fx, second)).reviewedToTree).toBe(fx.tree());
+  });
+
+  it('lets a review begun before an amendment still complete, as history', async () => {
+    const fx = goalRepoFixture();
+    const { id } = await start(fx, 1);
+    const next = amendment(fx);
+    approveDefinition(fx.db, { goalId: fx.goalId, version: next, actor: 'user' });
+    completeReview(fx.db, { reviewId: id, report: reportOf() });
+    expect(getReview(fx.db, id)).toMatchObject({ status: 'completed', definitionVersion: 1 });
   });
 });

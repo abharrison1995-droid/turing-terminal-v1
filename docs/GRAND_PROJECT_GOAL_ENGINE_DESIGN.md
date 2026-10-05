@@ -1021,7 +1021,7 @@ Stage 2A is deterministic and has no supervisor, model, route-discovery or evide
 ## Stage 2B implementation notes (evidence, reviews, findings, completion evaluation)
 
 Modules under `src/server/goals/`: `verifierDigest`, `repository`, `freshness`, `evidence`, `reviews`, `findings`,
-`milestones`, `completionProof`, `completion`. Nothing here schedules work or calls a provider.
+`milestones`, `completionEvaluation` (evaluator + sealed proof registry; formerly `completionProof`), `completion`. Nothing here schedules work or calls a provider.
 
 - **Verifier digest.** SHA-256 over canonical JSON of `{criterionKey, verifier}` (sorted keys, array order significant).
   Evidence carries the digest of the verifier it was recorded for; an amendment keeps old evidence only for verifiers
@@ -1034,7 +1034,7 @@ Modules under `src/server/goals/`: `verifierDigest`, `repository`, `freshness`, 
 - **Criterion evaluation.** Per verifier the latest non-stale evidence (by `recorded_at`, then insertion order) decides:
   satisfied, contradicted, inconclusive, stale or missing. A criterion needs all of its verifiers satisfied; the worst
   state is reported with the evidence ids.
-- **Completion** is `evaluateCompletion` (pure, structured, deep-frozen, registered in a WeakSet). The `completed`
+- **Completion** is `evaluateCompletion` (structured, deep-frozen, registered in a module-private WeakSet; see 2B.1). The `completed`
   transition accepts only such an object and re-reads the definition version, its hash and the integration head; `completeGoal`
   also re-verifies the ref. There is no boolean precondition.
 
@@ -1049,5 +1049,35 @@ Differences from the design text, chosen deliberately:
 7. High/critical resolution under the default policy requires fresh build/test evidence; with no build/test verifier a
    high finding cannot be resolved by review (`no_deterministic_verifier`).
 8. `run_result` evidence is refused at record time and ignored if present; it never backs a verifier.
-9. User accept/dismiss of findings is enforced in the service (approved user `finding_decision` approval), not by a SQL trigger.
+9. ~~User accept/dismiss of findings is enforced in the service only.~~ Superseded by Stage 2B.1 / migration 019 (below).
 10. Added `completeGoal` and `syncMilestoneRuntime` (runtime status is a cache, never consulted for completion).
+
+## Stage 2B.1 hardening notes
+
+- **Proof issuance is module-private.** The proof registry and `issueCompletionProof` live inside
+  `completionEvaluation.ts` and are not exported. The module exports exactly `evaluateCompletion` and
+  `checkCompletionProof`; `completion.ts` keeps `recordCompletionEvaluation` and `completeGoal`. No importable function
+  accepts a caller-supplied `CompletionEvaluation` and registers it. Tests obtain proof only by running the real
+  evaluator against a real fixture repository; a test asserts the export surface so a minting function cannot reappear.
+- **Stale reviews cannot mutate current findings.** `applyReviewFindings` requires
+  `review.definitionVersion == goals.current_definition_version` and `review.reviewedToTree == current integration tree`
+  before any lifecycle write; otherwise `review_not_current` and nothing changes (no finding, reopen, resolve,
+  observation, `last_seen_review_id` or event). The version is re-checked with the head inside the write transaction.
+  A completed review stays immutable, visible history and is lifecycle-inert once stale. (The earlier per-finding
+  `review_not_current` resolution refusal is gone: the whole application is refused instead.)
+- **Reviews start only under current approved authority.** `createReview` requires the definition version to be the
+  Goal's `current_definition_version` with status `approved`; otherwise `definition_not_current` (a nonexistent version
+  stays `definition_not_found`). A review already in flight when an amendment lands may still complete as history.
+- **Migration 019 — finding decision authority.** `goal_findings.decision_approval_id` (nullable FK to `goal_approvals`).
+  `open -> accepted_by_user | dismissed_by_user` requires that pointer to name an approval of the same Goal, gate
+  `finding_decision`, `approved` by the `user`, whose detail has `findingId == finding.id`, `decision == new status`, and
+  `definitionVersion`/`definitionHash` equal to the Goal's current approved definition. User decisions are sticky (no
+  return to open, resolved or the opposite decision) and the pointer is immutable once set; a finding cannot be created
+  already decided or carry a pointer without a user decision. `decideFinding` persists status, pointer and event in one
+  transaction; the event carries the same `approvalId`. Rows decided before 019 keep a NULL pointer and are sticky.
+- **Test fixtures.** Goal fixtures close their database and remove their temporary repository after each test
+  (`afterEach`); suites that deliberately share a database (`stateMachine.test.ts`) clean up once. Turing-owned temp
+  prefixes created by tests: `turing-goalrepo-`, `turing-goals-`, `turing-goal-schema-`, `turing-goal-git-`,
+  `turing-subject-`, `turing-goal-origin-` (plus the older `turing-db-`, `turing-git-`, `turing-api-`, etc.); an
+  interrupted run can leave these behind and they are safe to delete by prefix. `turing-goal-git-no-hooks` is a single
+  reused production directory, not a leak. `npm ci` is part of the mandatory gate.

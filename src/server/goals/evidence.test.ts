@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { EvidenceVerdict, GoalDefinition } from '../../shared/goals.js';
 import { approveDefinition, beginAmendment } from './definitions.js';
 import { GoalEvidenceError, recordEvidence, recordUserConfirmationEvidence } from './evidence.js';
@@ -13,7 +13,7 @@ import {
 } from './repoKit.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 
-afterAll(cleanupRepoFixtures);
+afterEach(cleanupRepoFixtures);
 
 async function evaluate(fx: GoalRepoFixture, version = 1) {
   const resolved = await resolveGoalRepository(fx.db, fx.goalId);

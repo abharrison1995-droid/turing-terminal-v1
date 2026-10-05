@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   GoalFindingError,
   applyReviewFindings,
@@ -16,10 +16,11 @@ import {
   reportOf,
   type GoalRepoFixture,
 } from './repoKit.js';
-import { completeReview, createReview } from './reviews.js';
+import { listGoalEvents } from './events.js';
+import { completeReview, createReview, listReviews } from './reviews.js';
 import type { ReviewReport } from '../../shared/goals.js';
 
-afterAll(cleanupRepoFixtures);
+afterEach(cleanupRepoFixtures);
 
 async function review(fx: GoalRepoFixture, report: ReviewReport, extra: { runId?: string } = {}) {
   const { id } = await createReview(fx.db, {
@@ -184,18 +185,10 @@ describe('applyReviewFindings', () => {
     expect(finding.resolvedByReviewId).toBeTruthy();
   });
 
-  it('resolves a medium finding on the review alone, but never one reviewed at a stale tree', async () => {
+  it('resolves a medium finding on the review alone', async () => {
     const fx = goalRepoFixture();
     const id = await open(fx, { severity: 'medium' });
     expect((await apply(fx, reportOf({ existingFindings: [entry(id, 'resolved')] }))).resolved).toEqual([id]);
-
-    const stale = goalRepoFixture();
-    const sid = await open(stale, { severity: 'medium' });
-    const reviewId = await review(stale, reportOf({ existingFindings: [entry(sid, 'resolved')] }));
-    stale.advance({ 'src/new.ts': 'n' });
-    const result = await applyReviewFindings(stale.db, { reviewId });
-    expect(result.resolutionsRefused).toEqual([{ goalFindingId: sid, code: 'review_not_current' }]);
-    expect(getGoalFinding(stale.db, sid)!.status).toBe('open');
   });
 
   it('cannot resolve a high finding when the definition has no build or test verifier', async () => {
@@ -298,6 +291,26 @@ describe('decideFinding', () => {
     expect(openFindingCounts(fx.db, fx.goalId).high).toBe(0);
   });
 
+  it('persists the approval pointer with the status, and the event references the same approval', async () => {
+    const fx = goalRepoFixture();
+    const id = await open(fx);
+    const approvalId = approval(fx, id, 'dismissed_by_user');
+    const decided = decideFinding(fx.db, {
+      goalId: fx.goalId,
+      findingId: id,
+      decision: 'dismissed_by_user',
+      approvalId,
+      actor: 'user',
+    });
+    expect(decided).toMatchObject({ status: 'dismissed_by_user', decisionApprovalId: approvalId });
+    expect(getGoalFinding(fx.db, id)!.decisionApprovalId).toBe(approvalId);
+    const event = listGoalEvents(fx.db, fx.goalId).find((entry) => entry.type === 'finding_decided')!;
+    expect(event.payload).toMatchObject({ goalFindingId: id, decision: 'dismissed_by_user', approvalId });
+    // Every non-user-decided finding has no pointer.
+    const open2 = await open(fx, { category: 'other', description: 'x' });
+    expect(getGoalFinding(fx.db, open2)!.decisionApprovalId).toBeNull();
+  });
+
   it('refuses non-user actors and approvals bound to something else', async () => {
     const fx = goalRepoFixture();
     const id = await open(fx);
@@ -387,5 +400,107 @@ describe('decideFinding', () => {
     );
     expect(again).toMatchObject({ opened: [], reopened: [] });
     expect(getGoalFinding(fx.db, id)!.status).toBe('dismissed_by_user');
+  });
+});
+
+/** Counts of everything a finding lifecycle write could touch, to prove a refused review changed nothing. */
+function lifecycleSnapshot(fx: GoalRepoFixture) {
+  const count = (sql: string) => (fx.db.prepare(sql).get(fx.goalId) as { n: number }).n;
+  return {
+    findings: fx.db.prepare('SELECT * FROM goal_findings WHERE goal_id = ? ORDER BY id').all(fx.goalId),
+    observations: count('SELECT COUNT(*) AS n FROM goal_finding_observations WHERE goal_id = ?'),
+    events: fx.db.prepare('SELECT type FROM goal_events WHERE goal_id = ? ORDER BY rowid').all(fx.goalId),
+  };
+}
+
+async function amend(fx: GoalRepoFixture): Promise<number> {
+  const { beginAmendment, approveDefinition } = await import('./definitions.js');
+  const amended = structuredClone(fx.definition);
+  amended.limits.maxExecutionCycles += 1;
+  const { version } = beginAmendment(fx.db, { goalId: fx.goalId, actor: 'user', definition: amended });
+  approveDefinition(fx.db, { goalId: fx.goalId, version, actor: 'user' });
+  return version;
+}
+
+describe('stale reviews are lifecycle-inert', () => {
+  const refuses = (promise: Promise<unknown>) =>
+    expect(promise).rejects.toMatchObject({ name: 'GoalFindingError', code: 'review_not_current' });
+
+  it('refuses a review of an older tree: no new finding, no reopen, no resolve, no observation, no event', async () => {
+    const fx = goalRepoFixture();
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const resolvedId = await open(fx, { severity: 'medium', description: 'resolved one' });
+    await apply(fx, reportOf({ existingFindings: [entry(resolvedId, 'resolved')] }));
+    const openId = await open(fx, { severity: 'medium', description: 'open one' });
+
+    const newer = await review(
+      fx,
+      reportOf({
+        verdict: 'pass_with_findings',
+        newFindings: [newFinding({ description: 'brand new' })] as never,
+      }),
+    );
+    const reopen = await review(
+      fx,
+      reportOf({ existingFindings: [entry(resolvedId, 'still_open'), entry(openId, 'resolved')] }),
+    );
+    const observe = await review(fx, reportOf({ existingFindings: [entry(openId, 'still_open')] }));
+    fx.advance({ 'src/later.ts': 'later' });
+    const before = lifecycleSnapshot(fx);
+    for (const reviewId of [newer, reopen, observe]) await refuses(applyReviewFindings(fx.db, { reviewId }));
+    expect(lifecycleSnapshot(fx)).toEqual(before);
+    expect(getGoalFinding(fx.db, resolvedId)!.status).toBe('resolved');
+    expect(getGoalFinding(fx.db, openId)!.status).toBe('open');
+  });
+
+  it('refuses a review of an earlier definition version even though the tree is unchanged', async () => {
+    const fx = goalRepoFixture();
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const resolvedId = await open(fx, { severity: 'medium', description: 'resolved one' });
+    await apply(fx, reportOf({ existingFindings: [entry(resolvedId, 'resolved')] }));
+    const openId = await open(fx, { severity: 'medium', description: 'open one' });
+    const newer = await review(
+      fx,
+      reportOf({
+        verdict: 'pass_with_findings',
+        newFindings: [newFinding({ description: 'brand new' })] as never,
+      }),
+    );
+    const reopen = await review(
+      fx,
+      reportOf({ existingFindings: [entry(resolvedId, 'still_open'), entry(openId, 'resolved')] }),
+    );
+
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    expect(await amend(fx)).toBe(2);
+    const before = lifecycleSnapshot(fx);
+    for (const reviewId of [newer, reopen]) await refuses(applyReviewFindings(fx.db, { reviewId }));
+    expect(lifecycleSnapshot(fx)).toEqual(before);
+  });
+
+  it('keeps the stale review as immutable, visible history', async () => {
+    const fx = goalRepoFixture();
+    const reviewId = await review(fx, reportOf());
+    fx.advance({ 'src/later.ts': 'later' });
+    await refuses(applyReviewFindings(fx.db, { reviewId }));
+    expect(listReviews(fx.db, fx.goalId).map((row) => [row.id, row.status])).toEqual([
+      [reviewId, 'completed'],
+    ]);
+  });
+
+  it('a review created and completed after an amendment may apply', async () => {
+    const fx = goalRepoFixture();
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const version = await amend(fx);
+    const { id } = await createReview(fx.db, {
+      goalId: fx.goalId,
+      definitionVersion: version,
+      reviewKind: 'final',
+    });
+    completeReview(fx.db, {
+      reviewId: id,
+      report: reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding()] as never }),
+    });
+    expect((await applyReviewFindings(fx.db, { reviewId: id })).opened).toHaveLength(1);
   });
 });
