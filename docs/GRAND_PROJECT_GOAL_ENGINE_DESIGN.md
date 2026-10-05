@@ -1099,13 +1099,43 @@ Deliberate differences from the design above:
 - Clean shutdown persists active-time deltas and launches nothing, but leaves a running Goal `running` (not
   `paused(master_shutdown)`), so the next start continues without a user action. Child runs are never cancelled.
 - The production executor is disabled: preflight fails with `route_unavailable` until Stage 5 supplies routing.
-- `scope_violation` counts as a failed cycle (consecutive-failure bound) without an immediate `needs_user` escalation.
+- (Scope-violation handling superseded by Stage 3.1 below.)
 - A denied `eachCycle` gate cancels that cycle; the Goal stays `needs_user(gate_pending)` until the user resumes it.
 - `reconcile()` performs at most one tick per running Goal.
 - Milestone refresh is a derived-cache update performed inside a tick.
 - Migration 020 has no delete trigger on `goal_cycles` (an existing Stage 1 test deletes a cycle row).
-- A cycle counts toward `cycles` bounds when it ends `succeeded` or `failed`; rejected and cancelled cycles do not.
+- (Counting rules superseded by Stage 3.1 below.)
 - Spend is read from the canonical `metered_reservations` ledger; `maxMeteredUsd` is only an extra ceiling and a
   subscriptions-only Goal has a ceiling of zero.
 - Authoring, review and verification matrices exist but are not orchestrated; remediation cycles are not created by the
   supervisor yet (Stage 6).
+
+## Stage 3.1 implementation notes (persisted proposal runs and fail-closed corrections)
+
+- **Proposals are runs.** The executor no longer has any "call a model now" method. `queueProposalRun` persists (or
+  returns) the `(cycle, 'proposal')` run, never starts it and never waits; `readProposal(runId)` reads the structured
+  output a completed proposal run already persisted (Stage 4: the planner stage's `stages.output_json.text`) and does no
+  provider work. The `proposing` cycle status is unchanged; the proposal run supplies the sub-state: absent ->
+  `proposal_queued`; queued -> `proposal_run_started` (no validation in that tick); active -> `waiting_for_proposal`;
+  paused -> `needs_user(run_interrupted)`; failed -> cycle `failed(proposal_run_failed)`; cancelled -> cycle `cancelled`
+  (no replacement run); completed -> `readProposal`, strict NextTask validation, `proposed` or `rejected`.
+  A restart observes the existing run and can never issue a second proposal request.
+- **Run lookup by purpose.** `runForPurpose(cycleId, purpose)` distinguishes `proposal`, `execution` and `remediation`;
+  the unique index on `(goal_cycle_id, goal_run_purpose)` stays authoritative. No pointer columns were added.
+- **Structured start results.** `startRun` returns `startQueuedRun`'s result and the supervisor classifies it: `started`
+  and `already-active` are in flight; `not-found` fails the cycle (`run_not_found`); `not-queued` re-reads the persisted
+  run (active = in flight, paused = `run_interrupted`, terminal = observed without restarting, anything else =
+  `run_state_invalid`).
+- **Resume ordering.** `resumeGoal(..., 'run_resumed')` identifies the paused run first (refusing with `no_paused_run`),
+  runs preflight, commits the Goal to `running`, and only then resumes that exact run. A resume that throws puts the Goal
+  back to `needs_user(run_interrupted)` with bounded detail (`resume_failed`).
+- **Startup ref verification.** `reconcile()` verifies the Goal ref after planned-op recovery and before any tick that
+  could queue or start work; missing/moved/invalid Git state blocks the Goal with no queue or start call.
+- **Counters.** Execution and remediation cycles ending `succeeded`, `failed` or `rejected` count toward
+  `maxExecutionCycles` and (for remediation) `maxRemediationAttempts`; `cancelled` counts for nothing. Consecutive
+  failures are unchanged (`failed`/`rejected` extend, `succeeded` resets).
+- **Scope violation.** An actual work-run diff outside the milestone scope is never integrated; the cycle finishes
+  `failed(scope_violation)` and, in the same transaction, the Goal goes to `needs_user(scope_violation)`, so no further
+  autonomous cycle starts. The exits are the existing amendment reasons. An invalid proposal naming an out-of-scope path
+  is still just a rejected proposal.
+- No migration was added. Production remains wired to `DisabledGoalExecutor`.

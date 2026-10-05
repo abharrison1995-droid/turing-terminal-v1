@@ -288,18 +288,18 @@ describe('cycle creation', () => {
 });
 
 describe('runtime counters', () => {
-  it('count executed execution/remediation cycles, ignore rejected and cancelled, and update with the finishing cycle', () => {
+  it('count succeeded, failed and rejected execution/remediation cycles, ignore cancelled, and update with the finishing cycle', () => {
     const fx = running();
     finish(fx, 'succeeded');
     expect(counters(fx)).toMatchObject({ cycles_executed: 1, consecutive_failed_cycles: 0 });
     finish(fx, 'failed');
     expect(counters(fx)).toMatchObject({ cycles_executed: 2, consecutive_failed_cycles: 1 });
     finish(fx, 'rejected');
-    expect(counters(fx)).toMatchObject({ cycles_executed: 2, consecutive_failed_cycles: 2 });
+    expect(counters(fx)).toMatchObject({ cycles_executed: 3, consecutive_failed_cycles: 2 });
     finish(fx, 'cancelled');
-    expect(counters(fx)).toMatchObject({ cycles_executed: 2, consecutive_failed_cycles: 2 });
+    expect(counters(fx)).toMatchObject({ cycles_executed: 3, consecutive_failed_cycles: 2 });
     finish(fx, 'succeeded');
-    expect(counters(fx)).toMatchObject({ cycles_executed: 3, consecutive_failed_cycles: 0 });
+    expect(counters(fx)).toMatchObject({ cycles_executed: 4, consecutive_failed_cycles: 0 });
   });
 
   it('count remediation attempts per milestone', () => {
@@ -310,8 +310,10 @@ describe('runtime counters', () => {
     finish(fx, 'succeeded', 'remediation', 'm1');
     finish(fx, 'failed', 'remediation', 'm2');
     finish(fx, 'succeeded', 'execution', 'm2');
-    expect(JSON.parse(counters(fx).remediation_attempts_json)).toEqual({ m1: 2, m2: 1 });
-    expect(computeCounters(fx.db, fx.goalId).remediationAttempts).toEqual({ m1: 2, m2: 1 });
+    finish(fx, 'rejected', 'remediation', 'm2');
+    finish(fx, 'cancelled', 'remediation', 'm2');
+    expect(JSON.parse(counters(fx).remediation_attempts_json)).toEqual({ m1: 2, m2: 2 });
+    expect(computeCounters(fx.db, fx.goalId).remediationAttempts).toEqual({ m1: 2, m2: 2 });
   });
 
   it('are restored from history after the cache is corrupted, without rewriting history', () => {

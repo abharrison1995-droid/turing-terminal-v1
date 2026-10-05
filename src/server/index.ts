@@ -22,9 +22,7 @@ engine.reconcileInterruptedRuns();
 const goalSupervisor = createGoalSupervisor({
   db: database,
   executor: new DisabledGoalExecutor(),
-  startRun: (runId) => {
-    startQueuedRun(database, engine, runId);
-  },
+  startRun: (runId) => startQueuedRun(database, engine, runId),
   resumeRun: (runId) => engine.start(runId, true),
 });
 await goalSupervisor.reconcile();

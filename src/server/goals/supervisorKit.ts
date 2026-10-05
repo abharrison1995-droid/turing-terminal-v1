@@ -5,10 +5,9 @@ import { dirname, join } from 'node:path';
 import { vi } from 'vitest';
 import type { GoalDefinition } from '../../shared/goals.js';
 import { ActiveTimeTracker } from './activeTime.js';
-import type { ChildRunRequest } from './executor.js';
-import { FakeGoalExecutor } from './fakeExecutor.js';
+import { FakeGoalExecutor, type FakeRunRequest } from './fakeExecutor.js';
 import { goalRepoFixture, milestone, simpleDefinition, type GoalRepoFixture } from './repoKit.js';
-import { GoalSupervisor, type TickAction } from './supervisor.js';
+import { GoalSupervisor, type StartRunResult, type TickAction } from './supervisor.js';
 
 /** Test harness: a real temporary Git repository, a Goal with an approved definition, a fake executor and fake time. */
 const git = (cwd: string, ...args: string[]) =>
@@ -23,14 +22,24 @@ export const GOOD_TASK = {
   rationale: 'The build criterion needs the module.',
 };
 
+/** One scripted provider answer for a proposal run. */
+export type ProposalScript =
+  { ok: true; proposal: unknown } | { ok: false; code: string } | { raw: string } | { noOutput: true };
+
 export interface Harness {
   fx: GoalRepoFixture;
   supervisor: GoalSupervisor;
   executor: FakeGoalExecutor;
   tracker: ActiveTimeTracker;
   clock: { ms: number };
-  startRun: ReturnType<typeof vi.fn<(runId: string) => void>>;
+  startRun: ReturnType<typeof vi.fn<(runId: string) => StartRunResult>>;
   resumeRun: ReturnType<typeof vi.fn<(runId: string) => void>>;
+  /** The stand-in for the provider: scripted answers, consumed only when a proposal run is answered. */
+  model: { script: ProposalScript[]; calls: number };
+  /** Completes (or fails) a started proposal run from the next script entry, persisting its output as a stage. */
+  answerProposal(runId: string): void;
+  /** Creates a supervisor + executor pair on the same database, as after a process restart. */
+  restart(): { supervisor: GoalSupervisor; executor: FakeGoalExecutor };
   /** Files the next queued run commits in its worktree. */
   files: { current: Record<string, string | null> };
   tick(): Promise<TickAction>;
@@ -38,13 +47,23 @@ export interface Harness {
   until(stop: TickAction, max?: number): Promise<TickAction[]>;
   status(): { status: string; reason: string | null };
   cycle(): { id: string; status: string; kind: string; outcome: Record<string, unknown> | null } | undefined;
+  /** The execution/remediation runs (proposal runs are listed by `proposalRuns`). */
   runs(): Array<{ id: string; status: string; goal_cycle_id: string | null }>;
+  /** Number of `startRun` calls made for execution/remediation runs (proposal runs are counted separately). */
+  workStarts(): number;
+  proposalStarts(): number;
+  proposalRuns(): Array<{ id: string; status: string; goal_cycle_id: string | null }>;
   setRunStatus(runId: string, status: string): void;
   start(): Promise<void>;
 }
 
 export function harness(
-  options: { definition?: GoalDefinition; tune?: (definition: GoalDefinition) => void } = {},
+  options: {
+    definition?: GoalDefinition;
+    tune?: (definition: GoalDefinition) => void;
+    /** When true (default) a started proposal run is answered immediately; tests that drive crash points turn it off. */
+    autoAnswer?: boolean;
+  } = {},
 ): Harness {
   const definition =
     options.definition ??
@@ -58,8 +77,40 @@ export function harness(
   const tracker = new ActiveTimeTracker(db, { nowMs: () => clock.ms }, 15_000);
   const files = { current: { 'src/a.ts': 'export const a = 1;\n' } as Record<string, string | null> };
 
-  const makeRun = (request: ChildRunRequest): string => {
+  const machineId = () =>
+    (db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string })
+      .value;
+
+  const makeProposalRun = (request: FakeRunRequest, runId: string): string => {
+    db.prepare(
+      `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status,
+         created_at, goal_cycle_id, goal_run_purpose, goal_base_commit)
+       VALUES (?, ?, ?, (SELECT id FROM workflows LIMIT 1), '{}', 'propose', 'economy', 'normal', 'queued', ?, ?, 'proposal', ?)`,
+    ).run(runId, machineId(), fx.projectId, new Date().toISOString(), request.cycleId, request.baseCommit);
+    return runId;
+  };
+
+  const model = { script: [] as ProposalScript[], calls: 0 };
+  const answerProposal = (runId: string): void => {
+    model.calls += 1;
+    const answer = model.script.shift() ?? { ok: false as const, code: 'no_scripted_proposal' };
+    if ('ok' in answer && !answer.ok) {
+      db.prepare("UPDATE runs SET status = 'failed' WHERE id = ?").run(runId);
+      return;
+    }
+    if (!('noOutput' in answer)) {
+      const text = 'raw' in answer ? answer.raw : JSON.stringify(answer.proposal);
+      db.prepare(
+        `INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status, output_json)
+         VALUES (?, ?, 'proposal', 'agent', 'Proposal', 1, 'passed', ?)`,
+      ).run(randomUUID(), runId, JSON.stringify({ text }));
+    }
+    db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(runId);
+  };
+
+  const makeRun = (request: FakeRunRequest): string => {
     const runId = randomUUID();
+    if (request.purpose === 'proposal') return makeProposalRun(request, runId);
     const branch = `turing/${runId.slice(0, 8)}`;
     const worktree = join(dirname(fx.repo), `wt-${runId.slice(0, 8)}`);
     git(fx.repo, 'worktree', 'add', '-q', '-b', branch, worktree, request.baseCommit);
@@ -95,16 +146,38 @@ export function harness(
     return runId;
   };
 
-  const executor = new FakeGoalExecutor(makeRun);
-  const startRun = vi.fn<(runId: string) => void>((runId) => {
+  const executor = new FakeGoalExecutor(db, makeRun);
+  // Mirrors `startQueuedRun`: only a persisted queued run starts, and the structured result is returned.
+  const startRun = vi.fn<(runId: string) => StartRunResult>((runId) => {
+    const row = db.prepare('SELECT status, goal_run_purpose AS purpose FROM runs WHERE id = ?').get(runId) as
+      { status: string; purpose: string | null } | undefined;
+    if (!row) return { started: false, reason: 'not-found' };
+    if (row.status !== 'queued') return { started: false, reason: 'not-queued' };
     db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(runId);
+    if (row.purpose === 'proposal' && options.autoAnswer !== false) answerProposal(runId);
+    return { started: true };
   });
+  const countStarts = (proposal: boolean): number =>
+    startRun.mock.calls.filter(([runId]) => {
+      const row = db.prepare('SELECT goal_run_purpose AS purpose FROM runs WHERE id = ?').get(runId) as
+        { purpose: string | null } | undefined;
+      return (row?.purpose === 'proposal') === proposal;
+    }).length;
   const resumeRun = vi.fn<(runId: string) => void>();
   const supervisor = new GoalSupervisor({ db, executor, startRun, resumeRun, activeTime: tracker });
   const h: Harness = {
     fx,
     supervisor,
     executor,
+    model,
+    answerProposal,
+    restart() {
+      const fresh = new FakeGoalExecutor(db, makeRun);
+      return {
+        executor: fresh,
+        supervisor: new GoalSupervisor({ db, executor: fresh, startRun, resumeRun, activeTime: tracker }),
+      };
+    },
     tracker,
     clock,
     startRun,
@@ -142,12 +215,22 @@ export function harness(
       }))[0],
     runs: () =>
       db
-        .prepare('SELECT id, status, goal_cycle_id FROM runs WHERE goal_cycle_id IS NOT NULL ORDER BY rowid')
+        .prepare(
+          "SELECT id, status, goal_cycle_id FROM runs WHERE goal_cycle_id IS NOT NULL AND goal_run_purpose <> 'proposal' ORDER BY rowid",
+        )
         .all() as Array<{
         id: string;
         status: string;
         goal_cycle_id: string | null;
       }>,
+    workStarts: () => countStarts(false),
+    proposalStarts: () => countStarts(true),
+    proposalRuns: () =>
+      db
+        .prepare(
+          "SELECT id, status, goal_cycle_id FROM runs WHERE goal_run_purpose = 'proposal' ORDER BY rowid",
+        )
+        .all() as Array<{ id: string; status: string; goal_cycle_id: string | null }>,
     setRunStatus: (runId, status) => {
       db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, runId);
     },

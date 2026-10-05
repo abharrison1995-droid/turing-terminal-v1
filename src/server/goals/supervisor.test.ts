@@ -19,6 +19,8 @@ afterEach(() => {
 const HAPPY = [
   'cycle_created',
   'proposal_started',
+  'proposal_queued',
+  'proposal_run_started',
   'proposal_recorded',
   'launch_started',
   'run_queued',
@@ -28,7 +30,7 @@ const HAPPY = [
 
 /** Drives the Goal until the first run is in flight. */
 async function toRunning(h: Harness) {
-  h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+  h.model.script.push({ ok: true, proposal: GOOD_TASK });
   await h.start();
   const actions = await h.until('waiting_for_run');
   expect(actions).toEqual([...HAPPY]);
@@ -54,7 +56,7 @@ describe('fake loop', () => {
     expect(h.status().status).toBe('ready');
     await toRunning(h);
     expect(h.status()).toEqual({ status: 'running', reason: 'user_start' });
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.workStarts()).toBe(1);
     expect(h.cycle()).toMatchObject({ status: 'running', kind: 'execution' });
     expect(h.executor.queueCalls[0]).toMatchObject({ purpose: 'execution', baseCommit: baseHead });
 
@@ -74,7 +76,7 @@ describe('fake loop', () => {
     expect(memory.repo.integrationHead).toBe(head(h));
 
     // The next tick starts the next cycle (the milestone is not yet satisfied by evidence).
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     expect(await h.tick()).toBe('cycle_created');
     expect(listCycles(h.fx.db, h.fx.goalId)).toHaveLength(2);
     const events = listGoalEvents(h.fx.db, h.fx.goalId).map((event) => event.type);
@@ -84,7 +86,7 @@ describe('fake loop', () => {
 
   it('performs at most one persisted step per tick', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     const rank = [
       'planned',
@@ -113,14 +115,15 @@ describe('fake loop', () => {
 
   it('returns only values of the finite action enum and takes a single tick per call (no loop)', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     const seen: TickAction[] = [];
-    for (let index = 0; index < 6; index++) seen.push(await h.tick());
+    for (let index = 0; index < 9; index++) seen.push(await h.tick());
     for (const action of seen) expect(TICK_ACTIONS).toContain(action);
-    expect(h.executor.proposeCalls).toHaveLength(1);
+    expect(h.model.calls).toBe(1);
+    expect(h.executor.proposalQueueCalls).toHaveLength(1);
     expect(h.executor.queueCalls).toHaveLength(1);
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.startRun).toHaveBeenCalledTimes(2); // the proposal run and the execution run, once each
   });
 
   it('is safe under duplicate and concurrent ticks', async () => {
@@ -146,7 +149,7 @@ describe('fake loop', () => {
 describe('proposals', () => {
   it('records a rejected proposal as an explainable outcome and never executes it', async () => {
     const h = harness();
-    h.executor.proposals.push({
+    h.model.script.push({
       ok: true,
       proposal: { ...GOOD_TASK, expectedPaths: ['/etc/passwd'], provider: 'x' },
     });
@@ -155,18 +158,19 @@ describe('proposals', () => {
     expect(h.cycle()).toMatchObject({ status: 'rejected', outcome: { code: 'proposal_invalid' } });
     expect(JSON.stringify(h.cycle()!.outcome)).toContain('forbidden_field');
     expect(h.executor.queueCalls).toHaveLength(0);
-    expect(h.startRun).not.toHaveBeenCalled();
-    expect(runtime(h)).toMatchObject({ cycles_executed: 0, consecutive_failed_cycles: 1 });
+    expect(h.workStarts()).toBe(0);
+    // A rejected proposal is an autonomous attempt: it consumes the cycle bound and extends the failure run.
+    expect(runtime(h)).toMatchObject({ cycles_executed: 1, consecutive_failed_cycles: 1 });
   });
 
   it('rejects an out-of-scope path and a secret without storing the secret', async () => {
     const h = harness();
     const secret = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJ';
-    h.executor.proposals.push({ ok: true, proposal: { ...GOOD_TASK, expectedPaths: ['docs/x.md'] } });
+    h.model.script.push({ ok: true, proposal: { ...GOOD_TASK, expectedPaths: ['docs/x.md'] } });
     await h.start();
     await h.until('proposal_rejected');
     expect(JSON.stringify(h.cycle()!.outcome)).toContain('path_out_of_scope');
-    h.executor.proposals.push({ ok: true, proposal: { ...GOOD_TASK, instructions: `use ${secret}` } });
+    h.model.script.push({ ok: true, proposal: { ...GOOD_TASK, instructions: `use ${secret}` } });
     await h.until('proposal_rejected');
     const stored = h.fx.db
       .prepare('SELECT outcome_json FROM goal_cycles ORDER BY sequence DESC LIMIT 1')
@@ -175,29 +179,33 @@ describe('proposals', () => {
     expect(stored.outcome_json).not.toContain(secret);
   });
 
-  it('turns an executor that refuses or throws into a recorded outcome', async () => {
+  it('rejects a proposal run that finished without output, and fails the cycle when the proposal run failed', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: false, code: 'model_unavailable' });
+    h.model.script.push({ noOutput: true });
     await h.start();
     await h.until('proposal_rejected');
     expect(h.cycle()).toMatchObject({
       status: 'rejected',
-      outcome: { code: 'proposal_unavailable', reason: 'model_unavailable' },
+      outcome: { code: 'proposal_unavailable', reason: 'proposal_output_missing' },
     });
-    h.executor.proposals.push(() => {
-      throw new Error('boom');
-    });
+    h.model.script.push({ raw: 'not json' });
+    await h.until('proposal_rejected');
+    expect(h.cycle()).toMatchObject({ outcome: { reason: 'proposal_output_unparsable' } });
+    h.model.script.push({ ok: false, code: 'model_failed' });
     await h.until('cycle_failed');
-    expect(h.cycle()).toMatchObject({ status: 'failed', outcome: { code: 'proposal_error' } });
+    expect(h.cycle()).toMatchObject({ status: 'failed', outcome: { code: 'proposal_run_failed' } });
+    expect(h.executor.queueCalls).toHaveLength(0);
   });
 
   it('never proposes twice for the same cycle', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK }, { ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK }, { ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('waiting_for_run');
     for (let index = 0; index < 3; index++) await h.tick();
-    expect(h.executor.proposeCalls).toHaveLength(1);
+    expect(h.model.calls).toBe(1);
+    expect(h.executor.proposalQueueCalls).toHaveLength(1);
+    expect(h.executor.readCalls).toHaveLength(1);
   });
 });
 
@@ -229,7 +237,7 @@ describe('run outcomes', () => {
     expect(h.cycle()).toMatchObject({ status: 'failed', outcome: { code: 'no_change' } });
 
     h.files.current = { 'docs/x.md': 'outside\n' };
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.until('waiting_for_run');
     completeRun(h);
     await h.until('cycle_failed');
@@ -281,12 +289,12 @@ describe('bounds through the tick', () => {
     });
     await h.start();
     const failOnce = async () => {
-      h.executor.proposals.push({ ok: false, code: 'x' });
+      h.model.script.push({ noOutput: true });
       await h.until('proposal_rejected');
     };
     await failOnce();
     expect(runtime(h)).toMatchObject({ consecutive_failed_cycles: 1 });
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.until('waiting_for_run');
     completeRun(h);
     await h.until('cycle_succeeded');
@@ -307,7 +315,7 @@ describe('bounds through the tick', () => {
     await h.start();
     h.clock.ms += 59_000;
     expect(await h.tick()).toBe('cycle_created');
-    h.executor.proposals.push({ ok: false, code: 'x' });
+    h.model.script.push({ noOutput: true });
     await h.until('proposal_rejected');
     h.clock.ms += 1_000;
     expect(await h.tick()).toBe('bound_blocked');
@@ -343,7 +351,7 @@ describe('bounds through the tick', () => {
   it('blocks on canonical metered spend and never allows it on a subscriptions-only Goal', async () => {
     const h = harness();
     await h.start();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.until('waiting_for_run');
     const run = h.runs()[0]!;
     h.fx.db
@@ -377,7 +385,8 @@ describe('start, preflight and scheduling', () => {
       activeTime: h.tracker,
     });
     expect(await production.startGoal(h.fx.goalId)).toEqual({ ok: false, code: 'route_unavailable' });
-    expect(await new DisabledGoalExecutor().propose()).toEqual({ ok: false, code: 'executor_disabled' });
+    expect(await new DisabledGoalExecutor().readProposal()).toEqual({ ok: false, code: 'executor_disabled' });
+    await expect(new DisabledGoalExecutor().queueProposalRun()).rejects.toThrow(/not enabled/);
     await expect(new DisabledGoalExecutor().queueChildRun()).rejects.toThrow(/not enabled/);
     expect(h.status().status).toBe('ready');
   });
@@ -511,7 +520,7 @@ describe('human gates', () => {
 
   it('asks once per cycle, waits, and resumes through preflight after the user approves', async () => {
     const h = gated();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('gate_requested');
     expect(h.status()).toEqual({ status: 'needs_user', reason: 'gate_pending' });
@@ -533,12 +542,12 @@ describe('human gates', () => {
     expect(await h.tick()).toBe('launch_started'); // no second question for the same cycle
     expect(pendingGoalApprovals(h.fx.db, h.fx.goalId)).toHaveLength(0);
     await h.until('waiting_for_run');
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.workStarts()).toBe(1);
   });
 
   it('does not continue after a denial: the cycle is cancelled, no run starts and the Goal waits for the user', async () => {
     const h = gated();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('gate_requested');
     const [approval] = pendingGoalApprovals(h.fx.db, h.fx.goalId);
@@ -553,13 +562,13 @@ describe('human gates', () => {
     for (let index = 0; index < 3; index++) expect(await h.tick()).toBe('idle');
     expect(h.status()).toEqual({ status: 'needs_user', reason: 'gate_pending' });
     expect(h.executor.queueCalls).toHaveLength(0);
-    expect(h.startRun).not.toHaveBeenCalled();
+    expect(h.workStarts()).toBe(0);
     expect(runtime(h)).toMatchObject({ cycles_executed: 0, consecutive_failed_cycles: 0 });
   });
 
   it('never requests the pool-route gate and leaves gates off by default', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('waiting_for_run');
     expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals').get()).toEqual({ n: 1 }); // the definition approval only
@@ -648,7 +657,7 @@ describe('completion authority', () => {
 describe('startup reconciliation', () => {
   it('starts a launching cycle’s queued run exactly once, however often reconcile runs', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('run_queued');
     expect(h.cycle()!.status).toBe('launching');
@@ -656,14 +665,14 @@ describe('startup reconciliation', () => {
     await h.supervisor.reconcile();
     await h.supervisor.reconcile();
     await h.supervisor.reconcile();
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.workStarts()).toBe(1);
     expect(h.cycle()!.status).toBe('running');
     expect(h.runs()).toHaveLength(1);
   });
 
   it('recovers a launching cycle that has no run, without a duplicate (cycle, purpose)', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('launch_started');
     expect(h.runs()).toHaveLength(0);
@@ -673,8 +682,16 @@ describe('startup reconciliation', () => {
     expect(h.runs()).toHaveLength(1);
     expect(h.executor.queueCalls.length).toBeGreaterThanOrEqual(1);
     expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM runs WHERE goal_cycle_id IS NOT NULL').get()).toEqual({
-      n: 1,
+      n: 2, // one proposal run and one execution run
     });
+    expect(
+      h.fx.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM (SELECT 1 FROM runs WHERE goal_cycle_id IS NOT NULL
+             GROUP BY goal_cycle_id, goal_run_purpose HAVING COUNT(*) > 1)`,
+        )
+        .get(),
+    ).toEqual({ n: 0 });
   });
 
   it('turns a paused run into needs_user(run_interrupted) and never resumes it automatically', async () => {
@@ -686,7 +703,7 @@ describe('startup reconciliation', () => {
     expect(h.status()).toEqual({ status: 'needs_user', reason: 'run_interrupted' });
     await h.supervisor.reconcile();
     expect(h.resumeRun).not.toHaveBeenCalled();
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.workStarts()).toBe(1);
     expect(h.cycle()!.status).toBe('running');
     // The user's explicit resume goes through preflight and resumes the run.
     expect(await h.supervisor.resumeGoal(h.fx.goalId, { actor: 'user', reasonCode: 'run_resumed' })).toEqual({
@@ -709,12 +726,13 @@ describe('startup reconciliation', () => {
 
   it('observes an existing proposal and never creates a second one', async () => {
     const h = harness();
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('proposal_recorded');
     await h.supervisor.reconcile();
     await h.supervisor.reconcile();
-    expect(h.executor.proposeCalls).toHaveLength(1);
+    expect(h.model.calls).toBe(1);
+    expect(h.executor.proposalQueueCalls).toHaveLength(1);
     expect(h.cycle()!.status).toBe('launching');
   });
 
@@ -785,7 +803,7 @@ describe('startup reconciliation', () => {
         d.limits.humanGates.eachCycle = true;
       },
     });
-    h.executor.proposals.push({ ok: true, proposal: GOOD_TASK });
+    h.model.script.push({ ok: true, proposal: GOOD_TASK });
     await h.start();
     await h.until('gate_requested');
     const snapshot = () =>
@@ -861,7 +879,7 @@ describe('clean shutdown', () => {
     const before = h.executor.queueCalls.length;
     expect((await h.supervisor.tickGoal(h.fx.goalId)).action).toBe('shutting_down');
     expect(h.executor.queueCalls.length).toBe(before);
-    expect(h.startRun).toHaveBeenCalledTimes(1);
+    expect(h.workStarts()).toBe(1);
   });
 });
 

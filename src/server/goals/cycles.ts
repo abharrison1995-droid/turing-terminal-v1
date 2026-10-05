@@ -240,8 +240,9 @@ export interface RuntimeCounters {
 
 /**
  * Recomputes every runtime counter from cycle history alone. Execution and remediation cycles that finished
- * succeeded or failed count as executed (a rejected proposal never ran; a cancelled cycle is not an attempt). A
- * success resets the consecutive-failure run; failed and rejected extend it; cancelled changes nothing.
+ * succeeded, failed or rejected count as executed (a proposal request is autonomous work and may itself spend
+ * allowance); remediation attempts count the same way per milestone. A cancelled cycle is an explicit interruption,
+ * not an attempt, and changes nothing. A success resets the consecutive-failure run; failed and rejected extend it.
  */
 export function computeCounters(db: Db, goalId: string): RuntimeCounters {
   const rows = db
@@ -259,14 +260,13 @@ export function computeCounters(db: Db, goalId: string): RuntimeCounters {
     remediationAttempts: {},
   };
   for (const row of rows) {
-    if (row.status === 'succeeded' || row.status === 'failed') counters.cyclesExecuted += 1;
+    // Every autonomous attempt consumes its bound, including a rejected proposal (it may itself have spent allowance).
+    // Cancelled is an explicit interruption, not an attempt, so it counts for nothing.
+    const attempted = row.status === 'succeeded' || row.status === 'failed' || row.status === 'rejected';
+    if (attempted) counters.cyclesExecuted += 1;
     if (row.status === 'succeeded') counters.consecutiveFailedCycles = 0;
     else if (row.status === 'failed' || row.status === 'rejected') counters.consecutiveFailedCycles += 1;
-    if (
-      row.kind === 'remediation' &&
-      row.milestone_key &&
-      (row.status === 'succeeded' || row.status === 'failed')
-    )
+    if (row.kind === 'remediation' && row.milestone_key && attempted)
       counters.remediationAttempts[row.milestone_key] =
         (counters.remediationAttempts[row.milestone_key] ?? 0) + 1;
   }

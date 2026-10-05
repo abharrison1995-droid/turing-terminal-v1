@@ -115,6 +115,39 @@ describe('bounds', () => {
     expect(goalStatus(fx)).toEqual({ status: 'blocked', reason: 'bound_cycles' });
   });
 
+  it('rejected proposals consume maxExecutionCycles even when the failure bound is far away', async () => {
+    const fx = running((d) => {
+      d.limits.maxExecutionCycles = 2;
+      d.limits.maxConsecutiveFailedCycles = 10;
+    });
+    await finishCycle(fx, 'rejected');
+    expect(check(fx)).toBeNull();
+    await finishCycle(fx, 'rejected');
+    expect(check(fx)).toMatchObject({ reason: 'bound_cycles', limit: 2, observed: 2 });
+    expect(enforceBounds(fx.db, fx.goalId, { now: NOW() })).toMatchObject({ reason: 'bound_cycles' });
+    expect(goalStatus(fx)).toEqual({ status: 'blocked', reason: 'bound_cycles' });
+  });
+
+  it('rejected remediation attempts consume maxRemediationAttempts; cancelled ones do not', async () => {
+    const fx = running((d) => {
+      d.limits.maxRemediationAttempts = 2;
+    });
+    const next = () => check(fx, { next: { kind: 'remediation', milestoneKey: 'm1' } });
+    await finishCycle(fx, 'rejected', 'remediation', 'm1');
+    expect(next()).toBeNull();
+    const created = createCycle(fx.db, {
+      goalId: fx.goalId,
+      kind: 'remediation',
+      triggerCode: 't',
+      milestoneKey: 'm1',
+    });
+    if (!created.created) throw new Error('active cycle');
+    finalizeCycle(fx.db, { cycleId: created.cycle.id, to: 'cancelled', outcomeCode: 'run_cancelled' });
+    expect(next()).toBeNull();
+    await finishCycle(fx, 'rejected', 'remediation', 'm1');
+    expect(next()).toMatchObject({ reason: 'bound_remediation', limit: 2, observed: 2 });
+  });
+
   it('counts consecutive failures (failed and rejected) and resets on a success', async () => {
     const fx = running((d) => {
       d.limits.maxConsecutiveFailedCycles = 3;

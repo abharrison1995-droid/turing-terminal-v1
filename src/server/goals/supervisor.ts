@@ -24,7 +24,7 @@ import {
   type CycleRow,
 } from './cycles.js';
 import { loadDefinitionVersion } from './definitions.js';
-import type { GoalExecutor } from './executor.js';
+import type { GoalExecutor, GoalRunPurpose } from './executor.js';
 import { evaluateCriteria } from './freshness.js';
 import { rebuildGoalMemory } from './memory.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
@@ -54,6 +54,9 @@ export const TICK_ACTIONS = [
   'ref_blocked',
   'cycle_created',
   'proposal_started',
+  'proposal_queued',
+  'proposal_run_started',
+  'waiting_for_proposal',
   'proposal_recorded',
   'proposal_rejected',
   'launch_started',
@@ -79,13 +82,17 @@ export interface TickResult {
   code?: string;
 }
 
+/** The structured result of starting a persisted queued run; production returns `startQueuedRun`'s result as is. */
+export type StartRunResult =
+  { started: true } | { started: false; reason: 'not-found' | 'not-queued' | 'already-active' };
+
 export interface GoalSupervisorDeps {
   db: Db;
   executor: GoalExecutor;
-  /** Starts a persisted queued run (production: `startQueuedRun(db, engine, runId)`). */
-  startRun: (runId: string) => void;
-  /** Resumes a paused run (production: `engine.start(runId, true)`). */
-  resumeRun: (runId: string) => void;
+  /** Starts a persisted queued run (production: `startQueuedRun(db, engine, runId)`); the result is never discarded. */
+  startRun: (runId: string) => StartRunResult;
+  /** Resumes a paused run (production: `engine.start(runId, true)`). Called only after the Goal owns `running`. */
+  resumeRun: (runId: string) => void | Promise<void>;
   activeTime?: ActiveTimeTracker;
   now?: () => string;
 }
@@ -99,6 +106,7 @@ const ACTIVE_RUN = new Set([
   'cancelling',
 ]);
 const PAUSED_RUN = new Set(['paused', 'paused_limit_reached']);
+const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled']);
 const FAILED_RUN = new Set(['failed']);
 const CANCELLED_RUN = new Set(['cancelled']);
 
@@ -192,16 +200,23 @@ export class GoalSupervisor {
       >;
     },
   ): Promise<
-    { ok: true } | { ok: false; code: PreflightFailureCode | 'scheduler_full' | 'transition_refused' }
+    | { ok: true }
+    | {
+        ok: false;
+        code:
+          PreflightFailureCode | 'scheduler_full' | 'transition_refused' | 'no_paused_run' | 'resume_failed';
+      }
   > {
     const goal = this.db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as
       { status: string } | undefined;
     if (!goal) return { ok: false, code: 'goal_not_found' };
     if (this.runningGoals().filter((candidate) => candidate.id !== goalId).length >= this.maxRunning())
       return { ok: false, code: 'scheduler_full' };
+    // Identify the interrupted run first, without touching it. With no paused Goal run there is nothing to resume.
+    const paused = options.reasonCode === 'run_resumed' ? this.interruptedRun(goalId) : undefined;
+    if (options.reasonCode === 'run_resumed' && !paused) return { ok: false, code: 'no_paused_run' };
     const preflight = await runPreflight(this.db, goalId, { executor: this.executor, now: this.now() });
     if (!preflight.ok) return { ok: false, code: preflight.code };
-    if (options.reasonCode === 'run_resumed') this.resumeInterruptedRun(goalId);
     try {
       transitionGoal(this.db, {
         goalId,
@@ -215,6 +230,16 @@ export class GoalSupervisor {
       return { ok: false, code: 'transition_refused' };
     }
     this.tracker.sync(goalId);
+    // Provider work resumes only after the Goal owns `running`, and only that exact run is resumed.
+    const run = paused ? this.runById(paused.id) : undefined;
+    if (run && PAUSED_RUN.has(run.status)) {
+      try {
+        await this.deps.resumeRun(run.id);
+      } catch (error) {
+        this.restoreInterrupted(goalId, run.id, error);
+        return { ok: false, code: 'resume_failed' };
+      }
+    }
     return { ok: true };
   }
 
@@ -222,10 +247,29 @@ export class GoalSupervisor {
     return this.resumeGoal(goalId, { actor: 'user', reasonCode: 'user_start' });
   }
 
-  private resumeInterruptedRun(goalId: string): void {
+  /** The paused run of the active cycle's current phase (proposal before launch, execution/remediation after). */
+  private interruptedRun(goalId: string): RunRow | undefined {
     const cycle = activeCycle(this.db, goalId);
-    const run = cycle ? this.runFor(cycle) : undefined;
-    if (cycle && run && PAUSED_RUN.has(run.status)) this.deps.resumeRun(run.id);
+    const run = cycle ? this.runForPurpose(cycle.id, this.currentPurpose(cycle)) : undefined;
+    return run && PAUSED_RUN.has(run.status) ? run : undefined;
+  }
+
+  /** A resume that failed after the Goal transitioned: hand the Goal back to the user with bounded detail. */
+  private restoreInterrupted(goalId: string, runId: string, error: unknown): void {
+    const message = (error instanceof Error ? error.message : String(error)).slice(0, 200);
+    try {
+      transitionGoal(this.db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'run_interrupted',
+        actor: 'supervisor',
+        detail: { runId, resumeError: message },
+        now: this.now(),
+      });
+    } catch {
+      // The Goal already left `running` (for example a bound or a user action); there is nothing to restore.
+    }
+    this.tracker.sync(goalId);
   }
 
   // --- Tick ------------------------------------------------------------------------------------------------------
@@ -351,6 +395,24 @@ export class GoalSupervisor {
     return { action: 'ref_blocked', goalId, code };
   }
 
+  /** Verifies the Goal ref against the runtime head; a problem blocks the Goal and returns the result, else null. */
+  private async verifyRef(goalId: string): Promise<TickResult | null> {
+    let verification;
+    try {
+      verification = await verifyGoalRef(this.db, goalId);
+    } catch (error) {
+      if (error instanceof GoalGitError) return this.blockForRef(goalId, 'git_state_invalid');
+      throw error;
+    }
+    if (verification.ok) return null;
+    return this.blockForRef(
+      goalId,
+      verification.code === 'goal_ref_missing' || verification.code === 'goal_ref_changed'
+        ? verification.code
+        : 'git_state_invalid',
+    );
+  }
+
   /** Re-derives milestone runtime state from fresh evidence. A derived cache refresh, not a Goal action. */
   private async refreshMilestones(goalId: string): Promise<MilestoneEvaluation[] | null> {
     const goal = this.db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as {
@@ -392,20 +454,8 @@ export class GoalSupervisor {
       this.tracker.sync(goalId);
       return { action: 'bound_blocked', goalId, code: breach.reason };
     }
-    let verification;
-    try {
-      verification = await verifyGoalRef(this.db, goalId);
-    } catch (error) {
-      if (error instanceof GoalGitError) return this.blockForRef(goalId, 'git_state_invalid');
-      throw error;
-    }
-    if (!verification.ok)
-      return this.blockForRef(
-        goalId,
-        verification.code === 'goal_ref_missing' || verification.code === 'goal_ref_changed'
-          ? verification.code
-          : 'git_state_invalid',
-      );
+    const blockedByRef = await this.verifyRef(goalId);
+    if (blockedByRef) return blockedByRef;
 
     const evaluations = await this.refreshMilestones(goalId);
     const goal = this.db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as {
@@ -492,12 +542,54 @@ export class GoalSupervisor {
 
   // --- Active cycle ---------------------------------------------------------------------------------------------
 
-  private runFor(cycle: CycleRow): RunRow | undefined {
+  private runForPurpose(cycleId: string, purpose: GoalRunPurpose): RunRow | undefined {
     return this.db
       .prepare(
         `SELECT id, status, branch, summary FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?`,
       )
-      .get(cycle.id, cycle.kind === 'remediation' ? 'remediation' : 'execution') as RunRow | undefined;
+      .get(cycleId, purpose) as RunRow | undefined;
+  }
+
+  private runById(runId: string): RunRow | undefined {
+    return this.db.prepare('SELECT id, status, branch, summary FROM runs WHERE id = ?').get(runId) as
+      RunRow | undefined;
+  }
+
+  /** The purpose of the run that does the cycle's repository work. */
+  private workPurpose(cycle: CycleRow): 'execution' | 'remediation' {
+    return cycle.kind === 'remediation' ? 'remediation' : 'execution';
+  }
+
+  /** The purpose of the run a cycle owns in its current status. */
+  private currentPurpose(cycle: CycleRow): GoalRunPurpose {
+    return ['planned', 'proposing', 'proposed'].includes(cycle.status) ? 'proposal' : this.workPurpose(cycle);
+  }
+
+  /**
+   * Starts a persisted queued run and never assumes it started: the structured result and, when the run was not
+   * queued, the re-read persisted state decide what happens next.
+   */
+  private startQueued(
+    goalId: string,
+    cycle: CycleRow,
+    run: RunRow,
+  ): { kind: 'in_flight' } | { kind: 'finished' } | { kind: 'result'; result: TickResult } {
+    const result = this.deps.startRun(run.id);
+    if (result.started || result.reason === 'already-active') return { kind: 'in_flight' };
+    const missing = () => ({
+      kind: 'result' as const,
+      result: this.fail(cycle, 'run_not_found', { runId: run.id }),
+    });
+    if (result.reason === 'not-found') return missing();
+    const current = this.runById(run.id);
+    if (!current) return missing();
+    if (ACTIVE_RUN.has(current.status)) return { kind: 'in_flight' };
+    if (PAUSED_RUN.has(current.status)) return { kind: 'result', result: this.interrupt(goalId, cycle) };
+    if (TERMINAL_RUN.has(current.status)) return { kind: 'finished' };
+    return {
+      kind: 'result',
+      result: this.fail(cycle, 'run_state_invalid', { runId: run.id, runStatus: current.status }),
+    };
   }
 
   private milestoneSpec(goalId: string, cycle: CycleRow): GoalMilestoneSpec | undefined {
@@ -537,6 +629,79 @@ export class GoalSupervisor {
     return { action: 'run_interrupted', goalId, cycleId: cycle.id };
   }
 
+  /**
+   * The proposing sub-lifecycle lives in the persisted proposal run, never in memory: queue it (idempotent), start it
+   * once, wait while it is in flight, and only when it has completed read its stored output. No model is called here.
+   */
+  private async tickProposing(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    const milestone = this.milestoneSpec(goalId, cycle);
+    if (!milestone || cycle.definitionVersion === null) return this.fail(cycle, 'milestone_unavailable');
+    const run = this.runForPurpose(cycle.id, 'proposal');
+    if (!run) {
+      try {
+        await this.executor.queueProposalRun({
+          goalId,
+          cycleId: cycle.id,
+          definitionVersion: cycle.definitionVersion,
+          milestone,
+          baseCommit: cycle.baseIntegrationCommit!,
+          memory: rebuildGoalMemory(this.db, goalId, { now: this.now() }),
+        });
+      } catch {
+        return this.fail(cycle, 'proposal_queue_error');
+      }
+      return { action: 'proposal_queued', goalId, cycleId: cycle.id };
+    }
+    if (run.status === 'queued') {
+      const outcome = this.startQueued(goalId, cycle, run);
+      if (outcome.kind === 'result') return outcome.result;
+      return outcome.kind === 'in_flight'
+        ? { action: 'proposal_run_started', goalId, cycleId: cycle.id }
+        : { action: 'waiting_for_proposal', goalId, cycleId: cycle.id, code: 'run_already_finished' };
+    }
+    if (PAUSED_RUN.has(run.status)) return this.interrupt(goalId, cycle);
+    if (ACTIVE_RUN.has(run.status)) return { action: 'waiting_for_proposal', goalId, cycleId: cycle.id };
+    if (FAILED_RUN.has(run.status))
+      return this.fail(cycle, 'proposal_run_failed', { runId: run.id, runStatus: run.status });
+    if (CANCELLED_RUN.has(run.status)) {
+      finalizeCycle(this.db, {
+        cycleId: cycle.id,
+        to: 'cancelled',
+        outcomeCode: 'run_cancelled',
+        detail: { runId: run.id, purpose: 'proposal' },
+        now: this.now(),
+      });
+      this.afterCycle(goalId);
+      return { action: 'cycle_failed', goalId, cycleId: cycle.id, code: 'run_cancelled' };
+    }
+    if (run.status !== 'completed')
+      return this.fail(cycle, 'run_state_invalid', { runId: run.id, runStatus: run.status });
+
+    let result;
+    try {
+      result = await this.executor.readProposal(run.id);
+    } catch {
+      return this.fail(cycle, 'proposal_read_error', { runId: run.id });
+    }
+    if (!result.ok) return this.reject(cycle, 'proposal_unavailable', { reason: result.code, runId: run.id });
+    const definition = loadDefinitionVersion(this.db, goalId, cycle.definitionVersion)!.definition;
+    const validation = validateNextTask(result.proposal, {
+      definition,
+      activeMilestone: milestone,
+      cycleKind: this.workPurpose(cycle),
+    });
+    // A rejected proposal is recorded with its reasons and is never executed.
+    if (!validation.ok)
+      return this.reject(cycle, 'proposal_invalid', { issues: validation.issues, runId: run.id });
+    transitionCycle(this.db, {
+      cycleId: cycle.id,
+      to: 'proposed',
+      validatedTask: validation.task,
+      now: this.now(),
+    });
+    return { action: 'proposal_recorded', goalId, cycleId: cycle.id };
+  }
+
   private async tickCycle(goalId: string, cycle: CycleRow): Promise<TickResult> {
     const next = (
       to: Parameters<typeof transitionCycle>[1]['to'],
@@ -547,33 +712,8 @@ export class GoalSupervisor {
         next('proposing');
         return { action: 'proposal_started', goalId, cycleId: cycle.id };
 
-      case 'proposing': {
-        const milestone = this.milestoneSpec(goalId, cycle);
-        if (!milestone || cycle.definitionVersion === null) return this.fail(cycle, 'milestone_unavailable');
-        let result;
-        try {
-          result = await this.executor.propose({
-            goalId,
-            cycleId: cycle.id,
-            definitionVersion: cycle.definitionVersion,
-            milestone,
-            memory: rebuildGoalMemory(this.db, goalId, { now: this.now() }),
-          });
-        } catch {
-          return this.fail(cycle, 'proposal_error');
-        }
-        if (!result.ok) return this.reject(cycle, 'proposal_unavailable', { reason: result.code });
-        const definition = loadDefinitionVersion(this.db, goalId, cycle.definitionVersion)!.definition;
-        const validation = validateNextTask(result.proposal, {
-          definition,
-          activeMilestone: milestone,
-          cycleKind: cycle.kind === 'remediation' ? 'remediation' : 'execution',
-        });
-        // A rejected proposal is recorded with its reasons and is never executed.
-        if (!validation.ok) return this.reject(cycle, 'proposal_invalid', { issues: validation.issues });
-        next('proposed', { validatedTask: validation.task });
-        return { action: 'proposal_recorded', goalId, cycleId: cycle.id };
-      }
+      case 'proposing':
+        return this.tickProposing(goalId, cycle);
 
       case 'proposed': {
         const version = loadDefinitionVersion(this.db, goalId, cycle.definitionVersion!)!;
@@ -609,13 +749,14 @@ export class GoalSupervisor {
       }
 
       case 'launching': {
-        const run = this.runFor(cycle);
+        const purpose = this.workPurpose(cycle);
+        const run = this.runForPurpose(cycle.id, purpose);
         if (!run) {
           try {
             await this.executor.queueChildRun({
               goalId,
               cycleId: cycle.id,
-              purpose: cycle.kind === 'remediation' ? 'remediation' : 'execution',
+              purpose,
               task: cycle.validatedTask!,
               baseCommit: cycle.baseIntegrationCommit!,
             });
@@ -625,14 +766,21 @@ export class GoalSupervisor {
           return { action: 'run_queued', goalId, cycleId: cycle.id };
         }
         if (PAUSED_RUN.has(run.status)) return this.interrupt(goalId, cycle);
-        // A queued run is started exactly once: this is the only place a Goal run is started on the tick path.
-        if (run.status === 'queued') this.deps.startRun(run.id);
+        // A queued run is started exactly once: this is the only place a work run is started on the tick path.
+        let started = true;
+        if (run.status === 'queued') {
+          const outcome = this.startQueued(goalId, cycle, run);
+          if (outcome.kind === 'result') return outcome.result;
+          started = outcome.kind === 'in_flight';
+        }
         next('running');
-        return { action: 'run_started', goalId, cycleId: cycle.id };
+        return started
+          ? { action: 'run_started', goalId, cycleId: cycle.id }
+          : { action: 'waiting_for_run', goalId, cycleId: cycle.id, code: 'run_already_finished' };
       }
 
       case 'running': {
-        const run = this.runFor(cycle);
+        const run = this.runForPurpose(cycle.id, this.workPurpose(cycle));
         if (!run) return this.fail(cycle, 'run_missing');
         if (PAUSED_RUN.has(run.status)) return this.interrupt(goalId, cycle);
         if (run.status === 'queued' || ACTIVE_RUN.has(run.status))
@@ -642,7 +790,7 @@ export class GoalSupervisor {
       }
 
       case 'collecting': {
-        const run = this.runFor(cycle);
+        const run = this.runForPurpose(cycle.id, this.workPurpose(cycle));
         if (!run) return this.fail(cycle, 'run_missing');
         if (FAILED_RUN.has(run.status))
           return this.fail(cycle, 'run_failed', { runId: run.id, runStatus: run.status });
@@ -695,7 +843,7 @@ export class GoalSupervisor {
   }
 
   private async integrate(goalId: string, cycle: CycleRow): Promise<TickResult> {
-    const run = this.runFor(cycle);
+    const run = this.runForPurpose(cycle.id, this.workPurpose(cycle));
     const spec = this.milestoneSpec(goalId, cycle);
     if (!run || !spec) return this.fail(cycle, 'integration_inputs_missing');
     try {
@@ -727,8 +875,7 @@ export class GoalSupervisor {
         return { action: 'cycle_succeeded', goalId, cycleId: cycle.id };
       }
       const violations = await this.scopeViolations(goalId, cycle, run, spec);
-      if (violations.length > 0)
-        return this.fail(cycle, 'scope_violation', { paths: violations.slice(0, 20) });
+      if (violations.length > 0) return this.scopeViolation(goalId, cycle, run, violations);
       const context = loadContext(this.db, goalId);
       const allowedPaths = scopePrefixes(spec.allowedScope).map((prefix) =>
         [context.scope, prefix].filter(Boolean).join('/'),
@@ -757,14 +904,14 @@ export class GoalSupervisor {
         case 'no_change':
           return this.fail(cycle, 'no_change', { runId: run.id });
         case 'rejected':
-          return this.fail(
-            cycle,
-            result.code === 'milestone_scope_violation' ? 'scope_violation' : 'integration_rejected',
-            {
-              runId: run.id,
-              rejection: result.code,
-            },
-          );
+          if (result.code === 'milestone_scope_violation')
+            return this.scopeViolation(
+              goalId,
+              cycle,
+              run,
+              await this.scopeViolations(goalId, cycle, run, spec),
+            );
+          return this.fail(cycle, 'integration_rejected', { runId: run.id, rejection: result.code });
         case 'conflict':
           return this.blockForIntegration(goalId, cycle, 'goal_ref_changed');
       }
@@ -772,6 +919,33 @@ export class GoalSupervisor {
       if (error instanceof GoalGitError) return this.blockForIntegration(goalId, cycle, 'git_state_invalid');
       throw error;
     }
+  }
+
+  /**
+   * Real work outside the milestone scope is never integrated and never retried automatically: the cycle fails and,
+   * in the same transaction, the Goal goes to the user. (A later scope-change review is Stage 6.)
+   */
+  private scopeViolation(goalId: string, cycle: CycleRow, run: RunRow, paths: string[]): TickResult {
+    const safe = paths.slice(0, 20).map((path) => path.slice(0, 200));
+    this.db.transaction(() => {
+      finalizeCycle(this.db, {
+        cycleId: cycle.id,
+        to: 'failed',
+        outcomeCode: 'scope_violation',
+        detail: { runId: run.id, paths: safe },
+        now: this.now(),
+      });
+      transitionGoal(this.db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'scope_violation',
+        actor: 'supervisor',
+        detail: { cycleId: cycle.id, paths: safe.slice(0, 10) },
+        now: this.now(),
+      });
+    })();
+    this.afterCycle(goalId);
+    return { action: 'cycle_failed', goalId, cycleId: cycle.id, code: 'scope_violation' };
   }
 
   private blockForIntegration(
@@ -826,7 +1000,16 @@ export class GoalSupervisor {
       }
       reconcileCounters(this.db, goal.id, this.now());
       this.tracker.sync(goal.id);
-      if (goal.status === 'running') results.push(await this.tickGoal(goal.id));
+      if (goal.status === 'running') {
+        // After planned-op recovery (which may legitimately move the head) and before any tick that could queue or
+        // start provider work: a missing or moved Goal ref must stop everything.
+        const blocked = await this.verifyRef(goal.id);
+        if (blocked) {
+          results.push(blocked);
+          continue;
+        }
+        results.push(await this.tickGoal(goal.id));
+      }
     }
     return results;
   }
