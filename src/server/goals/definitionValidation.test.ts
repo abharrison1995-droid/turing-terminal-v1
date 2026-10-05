@@ -515,6 +515,16 @@ describe('validateGoalDefinitionContext', () => {
     expect(validateGoalDefinitionContext(definition, permissive).valid).toBe(true);
   });
 
+  it('never accepts ENIGMA permission mode for a Goal workflow, and checks it only when supplied', () => {
+    const withEnigma = ['wf-plan', 'wf-exec', 'wf-review', 'wf-verify'].map((id) =>
+      workflow(id, id === 'wf-exec' ? { permissionMode: 'enigma' } : { permissionMode: 'yolo' }),
+    );
+    const result = validateGoalDefinitionContext(validDefinition(), withEnigma);
+    expect(result.errors.map((e) => [e.code, e.path])).toEqual([
+      ['context.workflow_enigma', 'routing.workflows.execution'],
+    ]);
+  });
+
   it('warns when workflow parallelism will be clamped, and merges with the pure result', () => {
     const wide = ['wf-plan', 'wf-exec', 'wf-review', 'wf-verify'].map((id) =>
       workflow(id, { maxParallelAgents: 6 }),

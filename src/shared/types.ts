@@ -383,6 +383,8 @@ export interface WorkflowStage {
   skipStageIds?: string[];
   notificationMessage?: string;
   commitMessage?: string;
+  /** gitCommit only: a clean worktree completes the stage without creating a commit instead of failing. */
+  allowNoChanges?: boolean;
   pushRemote?: string;
   pushBranch?: string;
   rollbackTarget?: 'runStart' | 'latestCheckpoint';

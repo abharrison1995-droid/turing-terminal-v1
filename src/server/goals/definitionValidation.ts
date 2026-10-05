@@ -805,6 +805,8 @@ export interface WorkflowContext {
   billingMode: BillingMode;
   isolatedWorktree: boolean;
   maxParallelAgents: number;
+  /** When supplied it is checked: `enigma` is never accepted for a Goal workflow. */
+  permissionMode?: string;
   stages: Array<{ kind: StageKind }>;
 }
 
@@ -847,6 +849,13 @@ export function validateGoalDefinitionContext(
         code: 'context.workflow_git_stage',
         path: at,
         message: 'Goal workflows cannot merge, push or roll back.',
+      });
+    if (workflow.permissionMode === 'enigma')
+      issues.push({
+        severity: 'error',
+        code: 'context.workflow_enigma',
+        path: at,
+        message: 'Goal workflows cannot use ENIGMA permission mode.',
       });
     if (MODE_RANK[definition.limits.billingMode] > MODE_RANK[workflow.billingMode])
       issues.push({

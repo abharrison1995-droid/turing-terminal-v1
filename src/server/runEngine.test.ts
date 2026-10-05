@@ -594,4 +594,80 @@ describe('brokered workflow commands', () => {
         .get(),
     ).toMatchObject({ status: 'passed' });
   });
+  describe('allowNoChanges', () => {
+    const head = (fixture: Awaited<ReturnType<typeof createGitStageFixture>>) =>
+      execFileSync('git', ['-C', fixture.workingCopy.worktreePath!, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+
+    it('keeps the ordinary behaviour: a clean worktree fails the commit stage by default and when false', async () => {
+      const fixture = await createGitStageFixture('yolo');
+      await expect(invokeGitStage(fixture, { id: 'c1', label: 'Commit', kind: 'gitCommit' })).rejects.toThrow(
+        'There are no changes',
+      );
+      await expect(
+        invokeGitStage(fixture, { id: 'c2', label: 'Commit', kind: 'gitCommit', allowNoChanges: false }),
+      ).rejects.toThrow('There are no changes');
+      expect(head(fixture)).toBe(fixture.startingCommit);
+    });
+
+    it('completes deterministically without an empty commit when explicitly allowed', async () => {
+      const fixture = await createGitStageFixture('yolo');
+      const result = await invokeGitStage(fixture, {
+        id: 'c3',
+        label: 'Commit',
+        kind: 'gitCommit',
+        allowNoChanges: true,
+      });
+      expect(result).toMatchObject({ noChanges: true, commit: fixture.startingCommit, files: [] });
+      expect(head(fixture)).toBe(fixture.startingCommit);
+      expect(fixture.database.prepare('SELECT status, after_commit FROM git_operations').all()).toEqual([
+        { status: 'completed', after_commit: fixture.startingCommit },
+      ]);
+    });
+
+    it('still commits real changes and keeps the secret, scope and index checks when allowed', async () => {
+      const fixture = await createGitStageFixture('yolo');
+      writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'changed\n');
+      const committed = await invokeGitStage(fixture, {
+        id: 'c4',
+        label: 'Commit',
+        kind: 'gitCommit',
+        allowNoChanges: true,
+      });
+      expect(committed.commit).not.toBe(fixture.startingCommit);
+      expect(committed.noChanges).toBeUndefined();
+
+      writeFileSync(
+        join(fixture.workingCopy.path, 'settings.txt'),
+        'api_key=hidden-credential-material-123456\n',
+      );
+      await expect(
+        invokeGitStage(fixture, { id: 'c5', label: 'Commit', kind: 'gitCommit', allowNoChanges: true }),
+      ).rejects.toThrow('known credential pattern');
+      rmSync(join(fixture.workingCopy.path, 'settings.txt'));
+      writeFileSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'), 'outside\n');
+      writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'again\n');
+      await expect(
+        invokeGitStage(fixture, { id: 'c6', label: 'Commit', kind: 'gitCommit', allowNoChanges: true }),
+      ).rejects.toThrow('out-of-project path');
+    });
+
+    it('is rejected on any other stage kind by workflow validation', async () => {
+      const { validateWorkflow } = await import('./workflowValidation.js');
+      const base = { maxParallelAgents: 1, maxRemediationRounds: 0, isolatedWorktree: true };
+      expect(
+        validateWorkflow({
+          ...base,
+          stages: [{ id: 'b', label: 'Build', kind: 'build', allowNoChanges: true }],
+        }),
+      ).toEqual([expect.stringContaining('only as a Git commit stage')]);
+      expect(
+        validateWorkflow({
+          ...base,
+          stages: [{ id: 'c', label: 'C', kind: 'gitCommit', allowNoChanges: true }],
+        }),
+      ).toEqual([]);
+    });
+  });
 });

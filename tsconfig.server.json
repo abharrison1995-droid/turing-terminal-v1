@@ -22,6 +22,8 @@
     "src/server/goals/testKit.ts",
     "src/server/goals/repoKit.ts",
     "src/server/goals/fakeExecutor.ts",
-    "src/server/goals/supervisorKit.ts"
+    "src/server/goals/supervisorKit.ts",
+    "src/server/goals/testPlanProvider.ts",
+    "src/server/goals/turingRunKit.ts"
   ]
 }

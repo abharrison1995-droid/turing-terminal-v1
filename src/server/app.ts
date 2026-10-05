@@ -15,6 +15,7 @@ import {
 import { decisionEngineInfo, validateDecisionGate } from '../shared/decisions.js';
 import { isValidTimeZone, resolveRange, systemTimeZone, type RangePreset } from '../shared/timezone.js';
 import { allProviders, openRouterTelemetry } from './modelCatalog.js';
+import { isReservedGoalWorkflowId } from '../shared/goalWorkflows.js';
 import { SecretStore, secretRef } from './secretStore.js';
 import { budgetStatus, getBudgetSettings, saveBudgetSettings } from './meteredBudget.js';
 import {
@@ -257,6 +258,7 @@ const stageSchema = z.object({
   skipStageIds: z.array(z.string().min(1).max(80)).max(50).optional(),
   notificationMessage: z.string().max(1_000).optional(),
   commitMessage: z.string().trim().min(1).max(120).optional(),
+  allowNoChanges: z.boolean().optional(),
   pushRemote: z.string().trim().min(1).max(61).optional(),
   pushBranch: z.string().trim().min(1).max(100).optional(),
   rollbackTarget: z.enum(['runStart', 'latestCheckpoint']).optional(),
@@ -1571,6 +1573,10 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const existing = db.prepare('SELECT * FROM workflows WHERE id = ?').get(id) as
       Record<string, unknown> | undefined;
     if (!existing) return reply.code(404).send({ error: 'Workflow was not found.' });
+    if (isReservedGoalWorkflowId(id))
+      return reply
+        .code(403)
+        .send({ error: 'This workflow is reserved for the Goal Engine. Duplicate it to customise.' });
     const parsed = workflowSchema.safeParse(request.body);
     if (!parsed.success)
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid workflow.' });
@@ -2248,6 +2254,9 @@ function usageFilterFromQuery(
     range = { from: quota.effective_at, to: quota.reset_at };
   } else range = resolveRange({ preset, timeZone, fromDay: query.from, toDay: query.to });
   const pick = (key: string) => (query[key] && query[key]!.length <= 200 ? query[key] : undefined);
+  // A Goal filter that cannot be honoured must never widen to all usage.
+  if (query.goalId !== undefined && (!query.goalId || query.goalId.length > 200))
+    return { error: 'The Goal filter must be a Goal id of at most 200 characters.' };
   return {
     ...range,
     timeZone,
@@ -2262,6 +2271,7 @@ function usageFilterFromQuery(
     workloadType: pick('workloadType'),
     reasoning: pick('reasoning'),
     runId: pick('runId'),
+    goalId: pick('goalId'),
   };
 }
 

@@ -1166,3 +1166,31 @@ Deliberate differences from the design above:
   opportunistically, and a cleanup failure never changes the Goal outcome. No directory sweep, no `git worktree prune`;
   historical runs without the marker stay in place.
 - No migration was added (`goal_events.type` has no CHECK). Production remains wired to `DisabledGoalExecutor`.
+
+## Stage 4A implementation notes (run-backed executor, built-in workflows)
+
+- **Built-in workflows** (`src/shared/goalWorkflows.ts`): reserved ids `goal-planning-v1`, `goal-execution-v1`,
+  `goal-review-v1`, `goal-verification-v1`, `goal-authoring-v1`; all isolated, subscriptions-only, no merge/push/rollback.
+  Planning is one read-only `goal-propose` planner stage. Execution is `goal-implement` → `goal-build` → `goal-test` →
+  `goal-commit` (`allowNoChanges`). Review (parallelReview/consolidate/finalGate), verification (build/test only, no AI)
+  and authoring are seeded but not yet driven. `openDatabase` seeds each absent built-in (not only into an empty table);
+  a differing row is never overwritten: it is listed under the `goal_builtin_conflicts` setting, warned, refused by the
+  executor (`reserved_workflow_conflict`), and `PUT /api/workflows/:id` returns 403 for reserved ids.
+- **Permission mode**: only the execution workflow uses `yolo`, as a static, visible property (the `gitCommit` stage is
+  otherwise approval-gated). `enigma` is refused by `validateGoalDefinitionContext` and by plan verification. The
+  supervisor never changes a mode and `classifyBrokerOperation` has no Goal branch.
+- **`allowNoChanges`** is valid only on a `gitCommit` stage; a clean worktree completes without an empty commit.
+  Scope/secret/index checks still run when changes exist. Integration then reports `no_change` and the existing bounded
+  failure applies.
+- **Seam**: `GoalRunPlanProvider` (`runPlan.ts`) returns a concrete workflow or `ready:false`; Stage 5 will supply route
+  logic. `TuringGoalExecutor` receives the database and a plan provider, never the engine, and never starts a run. A plan
+  must equal the registered workflow apart from route fields, be isolated, free of forbidden stages, keep the registered
+  permission mode and not exceed the Goal's billing mode; parallelism is clamped. No billing field is passed to
+  `buildPreview`, so the preview billing evaluator decides. Test-only plan providers are excluded from the build.
+- **`readProposal`** reads only a completed proposal run's persisted `goal-propose` stage text (size-bounded before
+  parsing); it makes no provider call and no transition.
+- **Prompts and scope**: bounded deterministic prompts with a fixed precedence statement; context policies are narrowed to
+  the milestone `allowedScope`; `expectedPaths` is advisory.
+- **Usage**: `UsageFilter.goalId` filters through the `goal_runs` view for events and decisions; an unusable `goalId`
+  query returns 400 rather than widening. Verification-command materialisation (`verificationCommands.ts`) is available
+  for Stage 4B. No evidence is recorded, execution worktrees stay retained, and production remains `DisabledGoalExecutor`.

@@ -2278,7 +2278,10 @@ export class RunEngine {
   ): Promise<Record<string, unknown>> {
     const scope = gitScope(context);
     const changedPaths = await this.assertGitScope(context);
-    if (!changedPaths.length) throw new Error('There are no changes in the registered project to commit.');
+    if (!changedPaths.length) {
+      if (stage.allowNoChanges) return await this.noChangesCommit(context);
+      throw new Error('There are no changes in the registered project to commit.');
+    }
     const stagedBefore = splitGitPaths(
       await git(['diff', '--cached', '--name-only', '-z', '--', scope], context.worktreeRoot, { raw: true }),
     );
@@ -2326,7 +2329,10 @@ export class RunEngine {
       );
       if (hasSuspectedSecret(stagedDiff))
         throw new Error('Git commit refused file content matching a known credential pattern.');
-      if (!indexed.length) throw new Error('No project changes were staged for this commit.');
+      if (!indexed.length) {
+        if (stage.allowNoChanges) return await this.noChangesCommit(context);
+        throw new Error('No project changes were staged for this commit.');
+      }
       await git(['diff', '--cached', '--check'], context.worktreeRoot);
       await gitWithHooksDisabled(
         ['-c', 'commit.gpgsign=false', 'commit', '-m', message],
@@ -2341,6 +2347,12 @@ export class RunEngine {
     } finally {
       await git(['reset', 'HEAD', '--', scope], context.worktreeRoot).catch(() => undefined);
     }
+  }
+
+  /** `allowNoChanges` outcome: nothing to commit, so no commit (and never an empty one) is created. */
+  private async noChangesCommit(context: GitRunContext): Promise<Record<string, unknown>> {
+    const commit = await git(['rev-parse', 'HEAD'], context.worktreeRoot);
+    return { branch: context.branch, commit, files: [], noChanges: true, approvalId: null };
   }
 
   private async pushGitBranch(
