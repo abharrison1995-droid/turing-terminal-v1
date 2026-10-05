@@ -466,6 +466,35 @@ const definedRoles = (stored: GoalDefinitionVersion, roles?: readonly GoalRole[]
   GOAL_ROLES.filter((role) => stored.definition.routing.roles[role] && (!roles || roles.includes(role)));
 
 /**
+ * The ONE reader of a live cycle's persisted route authority, shared by the write path and the read-only preview: the
+ * cycle must exist, belong to the Goal, be non-terminal and be on the currently approved definition. A malformed
+ * stored entry is reported (never repaired) so the resolver fails that role closed.
+ */
+function loadCurrentCycleResolutions(
+  db: Db,
+  goalId: string,
+  cycleId: string,
+  stored: GoalDefinitionVersion,
+): ReturnType<typeof readCycleResolutions> {
+  const cycle = db
+    .prepare(
+      'SELECT id, goal_id, definition_version, status, route_resolution_json FROM goal_cycles WHERE id = ?',
+    )
+    .get(cycleId) as CycleLookup | undefined;
+  if (!cycle) throw new RouteResolutionError('cycle_not_found', 'The cycle does not exist.');
+  if (cycle.goal_id !== goalId)
+    throw new RouteResolutionError('cycle_goal_mismatch', 'The cycle belongs to another Goal.');
+  if (isCycleTerminal(cycle.status))
+    throw new RouteResolutionError('cycle_terminal', 'A finished cycle cannot take a route resolution.');
+  if (cycle.definition_version !== stored.version)
+    throw new RouteResolutionError(
+      'definition_mismatch',
+      "The cycle is not on the Goal's current definition.",
+    );
+  return readCycleResolutions(cycle.route_resolution_json);
+}
+
+/**
  * Read-only: resolves every role the approved definition routes (or the requested subset) against the supplied
  * environment. Writes nothing, requests no approval, refreshes nothing, validates nothing, queues nothing.
  */
@@ -473,6 +502,13 @@ export function previewGoalRoutes(
   db: Db,
   input: {
     goalId: string;
+    /**
+     * A live cycle whose already-persisted role resolutions are authoritative: those roles are re-proven and returned
+     * as `persisted` (never recomputed, never re-judged for freshness, catalog or provider state); roles it does not
+     * carry resolve freshly; a malformed stored entry fails closed. Still writes nothing. Distinct from the
+     * environment's `excludeCycleId`, which only keeps the cycle out of prior round-robin history.
+     */
+    cycleId?: string;
     environment: RoutingEnvironment;
     roles?: readonly GoalRole[];
     billing?: RoutingBillingTerms;
@@ -480,8 +516,10 @@ export function previewGoalRoutes(
 ): { definitionVersion: number; definitionHash: string; result: RoutingResult } {
   const stored = loadApproved(db, input.goalId);
   const policy = stored.definition.routing.independence;
+  const current = input.cycleId ? loadCurrentCycleResolutions(db, input.goalId, input.cycleId, stored) : null;
   const result = resolveRoutes(
     requestFor(stored, definedRoles(stored, input.roles), input.environment, {
+      ...(current ? { persistedResolutions: current.valid, invalidPersistedRoles: current.malformed } : {}),
       independenceContext: { authority: loadAuthoritySet(db, input.goalId, policy.against) },
       ...(input.billing ?? {}),
     }),
@@ -504,23 +542,8 @@ export function resolveRolesForCycle(
   },
 ): RoutingResult {
   const stored = loadApproved(db, input.goalId);
-  const cycle = db
-    .prepare(
-      'SELECT id, goal_id, definition_version, status, route_resolution_json FROM goal_cycles WHERE id = ?',
-    )
-    .get(input.cycleId) as CycleLookup | undefined;
-  if (!cycle) throw new RouteResolutionError('cycle_not_found', 'The cycle does not exist.');
-  if (cycle.goal_id !== input.goalId)
-    throw new RouteResolutionError('cycle_goal_mismatch', 'The cycle belongs to another Goal.');
-  if (isCycleTerminal(cycle.status))
-    throw new RouteResolutionError('cycle_terminal', 'A finished cycle cannot take a route resolution.');
-  if (cycle.definition_version !== stored.version)
-    throw new RouteResolutionError(
-      'definition_mismatch',
-      "The cycle is not on the Goal's current definition.",
-    );
+  const current = loadCurrentCycleResolutions(db, input.goalId, input.cycleId, stored);
   const policy = stored.definition.routing.independence;
-  const current = readCycleResolutions(cycle.route_resolution_json);
   const result = resolveRoutes(
     requestFor(stored, input.roles, input.environment, {
       persistedResolutions: current.valid,

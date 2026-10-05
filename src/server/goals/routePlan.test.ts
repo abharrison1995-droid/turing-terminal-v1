@@ -4,9 +4,9 @@ import type { GoalDefinition, GoalRole } from '../../shared/goals.js';
 import { isModelBackedStage } from '../../shared/workflowKinds.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
-import { approveDefinition, createGoalDraft } from './definitions.js';
+import { approveDefinition, beginAmendment, createGoalDraft } from './definitions.js';
 import { loadDefinitionVersion } from './definitions.js';
-import { readStoredResolutions } from './routeResolution.js';
+import { loadStoredEnvironment, previewGoalRoutes, readStoredResolutions } from './routeResolution.js';
 import type { RouteSnapshot } from './routeIdentity.js';
 import { identityOf, model, NOW, passRecords, provider } from './routingKit.js';
 import { mapRefusal, ResolvedGoalRunPlanProvider } from './routePlan.js';
@@ -57,6 +57,8 @@ interface Fx {
   snapshot: { providers: ReturnType<typeof catalog> };
   provider: ResolvedGoalRunPlanProvider;
   setProviders(next: ReturnType<typeof catalog>): void;
+  /** The same Goal judged at another time (and optionally another provider observation). */
+  providerAt(now: string, providers?: ReturnType<typeof catalog>): ResolvedGoalRunPlanProvider;
 }
 
 /** A running Goal whose orchestrator is a three-member pool (`pooled`) or pinned, with one proposing cycle. */
@@ -121,6 +123,11 @@ function fx(
     setProviders(next) {
       current = next;
     },
+    providerAt: (now, providers) =>
+      new ResolvedGoalRunPlanProvider(db, {
+        observe: async () => ({ providers: providers ?? current, profiles: [] }),
+        now: () => now,
+      }),
   };
   if (options.validate !== false) validate(instance);
   return instance;
@@ -592,5 +599,180 @@ describe('Stage 5B.3: an active round-robin cycle is not its own history', () =>
     expect(await f.provider.planRun({ ...request(f), cycleId: c })).toMatchObject({
       code: 'approval_required',
     });
+  });
+});
+
+describe('Stage 5B.4: a persisted current-cycle route is frozen during resume preflight', () => {
+  const LATER = '2026-12-01T12:00:00.000Z'; // beyond every validation lifetime
+  const rawJson = (f: Fx) =>
+    (
+      f.db.prepare('SELECT route_resolution_json AS j FROM goal_cycles WHERE id = ?').get(f.cycleId) as {
+        j: string | null;
+      }
+    ).j;
+  const approvals = (f: Fx) =>
+    (f.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals').get() as { n: number }).n;
+  const finish = (f: Fx, cycleId: string) =>
+    f.db
+      .prepare("UPDATE goal_cycles SET status = 'succeeded', finished_at = ? WHERE id = ?")
+      .run(NOW, cycleId);
+  const addCycle = (f: Fx, sequence: number) => {
+    const id = randomUUID();
+    f.db
+      .prepare(
+        `INSERT INTO goal_cycles (id, goal_id, definition_version, sequence, kind, trigger_code, status, base_integration_commit, created_at)
+         VALUES (?, ?, 1, ?, 'execution', 't', 'proposing', ?, ?)`,
+      )
+      .run(id, f.goalId, sequence, f.base, NOW);
+    return id;
+  };
+  const preview = (f: Fx, cycleId: string | undefined, roles: GoalRole[]) => {
+    const stored = loadDefinitionVersion(f.db, f.goalId, 1)!;
+    const environment = loadStoredEnvironment(f.db, {
+      goalId: f.goalId,
+      definition: stored.definition,
+      now: NOW,
+      providers: catalog(),
+      profiles: [],
+      ...(cycleId ? { excludeCycleId: cycleId } : {}),
+    });
+    return previewGoalRoutes(f.db, { goalId: f.goalId, environment, roles, ...(cycleId ? { cycleId } : {}) })
+      .result;
+  };
+
+  it('keeps the persisted route ready after its validation expired (no refresh, no probe, no rewrite)', async () => {
+    const f = fx();
+    expect((await f.provider.planRun(request(f))).ready).toBe(true);
+    expect((await f.provider.planRun(request(f, 'execution'))).ready).toBe(true);
+    const stored = rawJson(f);
+    const before = approvals(f);
+    const later = f.providerAt(LATER);
+    expect(await later.checkRoutes(f.goalId)).toEqual({ ready: true });
+    expect(rawJson(f)).toBe(stored);
+    expect(approvals(f)).toBe(before);
+    expect((f.db.prepare('SELECT COUNT(*) AS n FROM route_validation_probes').get() as { n: number }).n).toBe(
+      0,
+    );
+    // The next cycle has no persisted route, so the stale validation applies normally.
+    finish(f, f.cycleId);
+    const next = addCycle(f, 2);
+    expect(await later.checkRoutes(f.goalId)).toMatchObject({ ready: false });
+    expect(await later.planRun({ ...request(f), cycleId: next })).toMatchObject({ ready: false });
+    expect(storedRole({ ...f, cycleId: next }, 'orchestrator')).toBeUndefined();
+  });
+
+  it('keeps the persisted member when provider or catalog state changes, never substituting the next member', async () => {
+    const f = fx({ pooled: 'round_robin' });
+    poolApproval(f, 'orch', { decision: 'approved' });
+    poolApproval(f, 'orch-b', { decision: 'approved' });
+    expect((await f.provider.planRun(request(f))).ready).toBe(true);
+    finish(f, f.cycleId);
+    const b = addCycle(f, 2);
+    const planned = await f.provider.planRun({ ...request(f), cycleId: b });
+    expect(planned.ready && modelOf(planned.workflowOverride)[0]).toBe('orch-b');
+    expect((await f.provider.planRun({ ...request(f, 'execution'), cycleId: b })).ready).toBe(true);
+    const stored = (
+      f.db.prepare('SELECT route_resolution_json AS j FROM goal_cycles WHERE id = ?').get(b) as { j: string }
+    ).j;
+    const before = approvals(f);
+    // B is no longer available and C was never approved: a fresh selection would ask about C.
+    const changed = f.providerAt(NOW, catalog(['orch-b']));
+    expect(await changed.checkRoutes(f.goalId)).toEqual({ ready: true });
+    const gone = f.providerAt(NOW, []);
+    expect(await gone.checkRoutes(f.goalId)).toEqual({ ready: true });
+    expect(approvals(f)).toBe(before);
+    expect(
+      (
+        f.db.prepare('SELECT route_resolution_json AS j FROM goal_cycles WHERE id = ?').get(b) as {
+          j: string;
+        }
+      ).j,
+    ).toBe(stored);
+    // Control: a brand-new cycle judged on the same observation does not get B.
+    finish(f, b);
+    addCycle(f, 3);
+    expect(await changed.checkRoutes(f.goalId)).toMatchObject({
+      approval: { memberIdentityHash: idHash('orch-c') },
+    });
+  });
+
+  it('re-proves only persisted roles: a role the cycle does not carry still resolves freshly', async () => {
+    const f = fx();
+    expect((await f.provider.planRun(request(f))).ready).toBe(true);
+    const frozen = preview(f, f.cycleId, ['orchestrator', 'implementer']);
+    expect(frozen.roles.orchestrator).toMatchObject({ status: 'resolved', source: 'persisted' });
+    expect(frozen.roles.implementer).toMatchObject({ status: 'resolved', source: 'computed' });
+    // With every model unavailable, the persisted orchestrator stays resolved while the fresh implementer is refused.
+    const stored = loadDefinitionVersion(f.db, f.goalId, 1)!;
+    const environment = loadStoredEnvironment(f.db, {
+      goalId: f.goalId,
+      definition: stored.definition,
+      now: NOW,
+      providers: catalog(['orch', 'impl']),
+      profiles: [],
+      excludeCycleId: f.cycleId,
+    });
+    const down = previewGoalRoutes(f.db, {
+      goalId: f.goalId,
+      cycleId: f.cycleId,
+      environment,
+      roles: ['orchestrator', 'implementer'],
+    }).result;
+    expect(down.roles.orchestrator).toMatchObject({ status: 'resolved', source: 'persisted' });
+    expect(down.roles.implementer?.status).not.toBe('resolved');
+    // Without a cycle the preview is the plain dry evaluation: nothing is frozen.
+    expect(preview(f, undefined, ['orchestrator']).roles.orchestrator).toMatchObject({ source: 'computed' });
+    expect(rawJson(f)).not.toContain('"implementer"');
+  });
+
+  it('checks the cycle: it must exist, belong to the Goal, be non-terminal and be on the current definition', () => {
+    const f = fx();
+    const code = (cycleId: string) => {
+      try {
+        preview(f, cycleId, ['orchestrator']);
+      } catch (error) {
+        return (error as { code?: string }).code;
+      }
+      return 'no error';
+    };
+    expect(code('nope')).toBe('cycle_not_found');
+    // A cycle of another Goal.
+    const projectId = (
+      f.db.prepare('SELECT project_id AS p FROM goals WHERE id = ?').get(f.goalId) as { p: string }
+    ).p;
+    const other = createGoalDraft(f.db, { projectId, title: 'Other', definition: validDefinition() }).goalId;
+    const foreign = randomUUID();
+    f.db
+      .prepare(
+        `INSERT INTO goal_cycles (id, goal_id, definition_version, sequence, kind, trigger_code, status, base_integration_commit, milestone_id, created_at)
+         VALUES (?, ?, 1, 1, 'execution', 't', 'proposing', ?, (SELECT id FROM goal_milestones WHERE goal_id = ? LIMIT 1), ?)`,
+      )
+      .run(foreign, other, f.base, other, NOW);
+    expect(code(foreign)).toBe('cycle_goal_mismatch');
+    // A cycle on another definition version.
+    // The Goal moves to a later (identical-content) approved version: the old-version cycle is no longer current.
+    const amended = beginAmendment(f.db, { goalId: f.goalId, actor: 'user' });
+    approveDefinition(f.db, { goalId: f.goalId, version: amended.version, actor: 'user' });
+    expect(code(f.cycleId)).toBe('definition_mismatch');
+    finish(f, f.cycleId);
+    expect(code(f.cycleId)).toBe('cycle_terminal');
+  });
+
+  it('fails closed on a malformed persisted entry: no recomputation, no approval, stored JSON unchanged', async () => {
+    const f = fx({ pooled: 'ordered' });
+    poolApproval(f, 'orch', { decision: 'approved' });
+    f.db
+      .prepare('UPDATE goal_cycles SET route_resolution_json = ? WHERE id = ?')
+      .run('{"schema":1,"roles":{"orchestrator":{"bogus":true}}}', f.cycleId);
+    const before = approvals(f);
+    const raw = rawJson(f);
+    const check = await f.provider.checkRoutes(f.goalId);
+    expect(check).toMatchObject({ ready: false, code: 'route_unavailable' });
+    expect(preview(f, f.cycleId, ['orchestrator']).roles.orchestrator).toMatchObject({
+      status: 'refused',
+      code: 'persisted_resolution_invalid',
+    });
+    expect(approvals(f)).toBe(before);
+    expect(rawJson(f)).toBe(raw);
   });
 });

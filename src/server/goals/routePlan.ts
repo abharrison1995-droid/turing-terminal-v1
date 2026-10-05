@@ -246,6 +246,8 @@ export class ResolvedGoalRunPlanProvider implements GoalRunPlanProvider {
           environment,
           roles: [role],
           billing,
+          // Distinct from `excludeCycleId` above: the active cycle's persisted routes are authoritative on resume.
+          ...(active ? { cycleId: active.id } : {}),
         }).result;
       } catch (error) {
         if (error instanceof RouteResolutionError || error instanceof TuringExecutorError)

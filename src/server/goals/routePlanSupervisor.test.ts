@@ -122,7 +122,7 @@ afterEach(async () => {
 });
 
 /** Seeds the canonical validation records the routing authority requires, for the identities observed right now. */
-async function seedValidations(models: readonly string[]) {
+async function seedValidations(models: readonly string[], orchestratorHours = 100) {
   const snapshot = await observeRouteSnapshot(h.fx.db);
   const insert = h.fx.db.prepare(
     `INSERT INTO route_validations (id, identity_hash, identity_json, profile, status, checks_json, provenance, adapter_version, capability_fingerprint, tested_at, expires_at)
@@ -143,7 +143,7 @@ async function seedValidations(models: readonly string[]) {
         record.adapterVersion,
         record.capabilityFingerprint,
         stamp(-1),
-        stamp(100),
+        stamp(role === 'orchestrator' ? orchestratorHours : 100),
       );
 }
 
@@ -353,6 +353,62 @@ describe('first-use gate for a running Goal', () => {
       h.fx.db.prepare('SELECT status FROM goal_cycles ORDER BY sequence DESC LIMIT 1').get(),
     ).not.toMatchObject({ status: 'cancelled' });
     expect(count('runs')).toBe(0);
+  });
+});
+
+describe('resume preflight keeps a persisted current-cycle route (Stage 5B.4)', () => {
+  it('does not recompute or rotate the persisted orchestrator when its evidence later expires, and resumes the exact paused run', async () => {
+    let clock = () => new Date().toISOString();
+    h = await realRunHarness({
+      definition: definition(),
+      planProvider: (db) => new ResolvedGoalRunPlanProvider(db, { now: () => clock() }),
+      requireResolvedRoutes: true,
+    });
+    // The orchestrator's validation lasts 10 hours; the implementer's far longer.
+    await seedValidations(POOL, 10);
+    const gated = await h.supervisor.startGoal(h.fx.goalId);
+    user((gated as { approvalId: string }).approvalId, 'approved');
+    // The first provider call hangs until the run is paused; the resumed call completes.
+    vi.mocked(executeProvider).mockReset();
+    vi.mocked(executeProvider).mockImplementation(async (request) => {
+      calls.push(request);
+      if (calls.length === 1) {
+        await new Promise<void>((resolve) => request.signal.addEventListener('abort', () => resolve()));
+        throw new Error('interrupted');
+      }
+      return done(JSON.stringify(GOOD_TASK));
+    });
+    expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
+    await h.until('proposal_run_started');
+    await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 15_000 });
+    const runId = (
+      h.fx.db.prepare("SELECT id FROM runs WHERE goal_run_purpose = 'proposal'").get() as { id: string }
+    ).id;
+    expect(h.engine.intervene(runId, 'pause')).toBe(true);
+    await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('paused'), {
+      timeout: 15_000,
+    });
+    await h.until('run_interrupted');
+
+    const stored = JSON.stringify(cycleResolutions());
+    expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-sonnet-5-5');
+    const approvalsBefore = firstUse().length;
+    // Time passes: the orchestrator's evidence is now stale (a fresh selection would refuse every member).
+    clock = () => new Date(Date.now() + 30 * 3_600_000).toISOString();
+    const fresh = new ResolvedGoalRunPlanProvider(h.fx.db, { now: () => clock() });
+    expect(await fresh.checkRoutes(h.fx.goalId)).toEqual({ ready: true });
+
+    const resumed = await h.supervisor.resumeGoal(h.fx.goalId, { actor: 'user', reasonCode: 'run_resumed' });
+    expect(resumed).toEqual({ ok: true });
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2), { timeout: 15_000 });
+    await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('completed'), {
+      timeout: 20_000,
+    });
+    // The same run was resumed; the route was neither rewritten nor re-asked.
+    expect(count('runs')).toBe(1);
+    expect(JSON.stringify(cycleResolutions())).toBe(stored);
+    expect(firstUse()).toHaveLength(approvalsBefore);
+    expect(calls[1]).toMatchObject({ modelId: 'claude-sonnet-5-5', backendId: 'claude-code' });
   });
 });
 

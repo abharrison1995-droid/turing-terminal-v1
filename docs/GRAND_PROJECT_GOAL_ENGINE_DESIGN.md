@@ -1336,3 +1336,8 @@ Stage 5A.1 changes no routing architecture (identity, fingerprint, live-catalog 
 - `checkRoutes` excludes the non-terminal active cycle from round-robin history, as `planRun` does, so resuming a cycle derives the member it already holds. Each readiness role is resolved under its own workflow's billing authority (orchestrator: `routing.workflows.planning`, implementer: `.execution`), loaded through `registeredGoalWorkflow` like the plan path (`workflowBillingTerms`).
 - The probe request body parses `member` with the definition validator's own `routeMemberSchema`; the HTTP body limit remains the outer bound and server-computed fields are still rejected.
 - `vitest.config.ts` caps `maxWorkers` at 6 so plain `npm test` is reliable on the development machine; no timeout or assertion changed.
+
+## Stage 5B.4 implementation notes (frozen current-cycle readiness)
+
+- `previewGoalRoutes` takes an optional `cycleId`. Without it the preview is the plain dry evaluation. With it, the cycle is loaded by the same helper `resolveRolesForCycle` uses (exists, same Goal, non-terminal, on the current definition version) and its persisted resolutions are passed to the resolver as `persistedResolutions` / `invalidPersistedRoles`: a persisted role is re-proven and returned as `persisted` (never re-judged for validation freshness, catalog or provider state), a malformed entry fails closed (`persisted_resolution_invalid`), and a role the cycle does not carry resolves freshly. Nothing is written and no approval is created.
+- `checkRoutes` passes both: `excludeCycleId` (the active cycle is not prior round-robin history) and `cycleId` (its persisted routes are authoritative). A new cycle has no persisted route and is judged freshly.
