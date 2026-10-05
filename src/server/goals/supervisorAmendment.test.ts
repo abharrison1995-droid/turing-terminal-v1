@@ -201,6 +201,7 @@ describe('a superseded cycle never executes under the new definition', () => {
     expect(await resume(h, 'amendment_approved')).toEqual({ ok: true });
     expect(h.status().status).toBe('running');
     h.model.script.push({ ok: true, proposal: { ...GOOD_TASK } });
+    expect(await h.tick()).toBe('evidence_collected');
     expect(await h.tick()).toBe('cycle_created');
     expect(h.cycle()).toMatchObject({ status: 'planned' });
     const versions = h.fx.db

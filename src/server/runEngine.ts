@@ -387,6 +387,8 @@ export class RunEngine {
               stageController.abort();
             }, stageTimeoutMinutes * 60_000)
           : undefined;
+        // Exact command and subject of a deterministic command stage, kept so a failure is still repository-bound.
+        let commandContext: Record<string, unknown> | undefined;
         try {
           let output: Record<string, unknown>;
           if (stage.kind === 'conditionalBranch') {
@@ -406,6 +408,7 @@ export class RunEngine {
           } else if (stage.kind === 'shellCommand') {
             if (!stage.command) throw new Error('Shell command stage has no configured command.');
             const subject = await this.captureSubject(row, working.path);
+            commandContext = { command: stage.command, ...subject };
             output = {
               ...(await this.executeCommand(runId, stageId, stage, stage.command, working.path, stageSignal)),
               ...subject,
@@ -416,6 +419,7 @@ export class RunEngine {
                 ? parseJson<string[] | null>(project.build_command_json, null)
                 : parseJson<string[] | null>(project.test_command_json, null);
             const subject = command ? await this.captureSubject(row, working.path) : {};
+            if (command) commandContext = { command, ...subject };
             output = command
               ? {
                   ...(await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)),
@@ -641,7 +645,20 @@ export class RunEngine {
           this.setStage(
             stageId,
             controller.signal.aborted && !stageTimedOut ? 'cancelled' : 'failed',
-            { error: message },
+            {
+              error: message,
+              ...(commandContext
+                ? {
+                    ...commandContext,
+                    // Only a real non-zero exit is a semantic failure; timeouts, cancellation and runner errors are not.
+                    failureKind:
+                      error instanceof CommandExitError && !stageTimedOut && !controller.signal.aborted
+                        ? 'command_exit'
+                        : 'infrastructure',
+                    ...(error instanceof CommandExitError ? { exitCode: error.exitCode } : {}),
+                  }
+                : {}),
+            },
             startedAt,
             message,
           );
@@ -3271,6 +3288,17 @@ async function gitDiff(cwd: string, baseCommit?: string | null): Promise<string>
   }
 }
 
+/** A project command that ran and exited non-zero (or by signal): distinct from cancellation and runner errors. */
+class CommandExitError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode: number | null,
+  ) {
+    super(message);
+    this.name = 'CommandExitError';
+  }
+}
+
 async function runLocalCommand(
   command: string,
   args: string[],
@@ -3316,8 +3344,9 @@ async function runLocalCommand(
       if (signal.aborted) return rejectPromise(new Error('Stage cancelled by the user.'));
       if (code !== 0)
         return rejectPromise(
-          new Error(
+          new CommandExitError(
             `${command} run ${args.at(-1)} exited with ${killedBy ? `signal ${killedBy}` : `code ${code}`}. ${output.slice(-1_200)}`,
+            killedBy ? null : code,
           ),
         );
       resolvePromise({ exitCode: code ?? 0, output });

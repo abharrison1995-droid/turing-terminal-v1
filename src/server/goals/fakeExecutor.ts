@@ -31,6 +31,8 @@ export class FakeGoalExecutor implements GoalExecutor {
   readonly proposalQueueCalls: ProposalRequest[] = [];
   readonly queueCalls: ChildRunRequest[] = [];
   readonly readCalls: string[] = [];
+  /** Opt-in: tests that need verification cycles assign it; without it none is ever scheduled. */
+  queueVerificationRun?: GoalExecutor['queueVerificationRun'];
 
   constructor(
     private readonly db: Db,

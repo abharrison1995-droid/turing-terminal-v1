@@ -506,6 +506,10 @@ describe('actual milestone scope violation', () => {
   it('creates no further autonomous cycle on repeated scheduler passes or reconcile', async () => {
     const h = await violate();
     const count = listCycles(h.fx.db, h.fx.goalId).length;
+    // The failed cycle's run is extracted once (without resuming the Goal); afterwards every pass is a no-op.
+    expect((await h.supervisor.maintainEvidence()).map((result) => result.action)).toEqual([
+      'evidence_collected',
+    ]);
     for (let index = 0; index < 4; index++) {
       expect(await h.supervisor.runOnce()).toEqual([]);
       await h.supervisor.reconcile();

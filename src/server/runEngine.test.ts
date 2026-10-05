@@ -583,6 +583,23 @@ describe('brokered workflow commands', () => {
         .prepare("SELECT status FROM stages WHERE run_id = 'failed-build' AND stage_key = 'build'")
         .get(),
     ).toMatchObject({ status: 'failed' });
+    // Ordinary (non-Goal) run: the failed stage stays failed, now carrying the command and the failure kind, but no
+    // repository subject is captured because the run has no Goal base commit.
+    const failedOutput = JSON.parse(
+      (
+        database
+          .prepare("SELECT output_json FROM stages WHERE run_id = 'failed-build' AND stage_key = 'build'")
+          .get() as { output_json: string }
+      ).output_json,
+    ) as Record<string, unknown>;
+    expect(failedOutput).toMatchObject({
+      command: ['npm', 'run', 'build'],
+      failureKind: 'command_exit',
+      exitCode: 1,
+    });
+    expect(failedOutput.error).toEqual(expect.any(String));
+    expect(failedOutput).not.toHaveProperty('subjectTree');
+    expect(failedOutput).not.toHaveProperty('subjectCommit');
     expect(
       database
         .prepare("SELECT status FROM stages WHERE run_id = 'failed-build' AND stage_key = 'marker'")

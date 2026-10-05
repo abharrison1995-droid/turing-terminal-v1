@@ -43,7 +43,18 @@ export interface ChildRunRequest {
 }
 
 /** The runs a cycle can own. One run per (cycle, purpose) is enforced by a unique index. */
-export type GoalRunPurpose = 'proposal' | 'execution' | 'remediation';
+export type GoalRunPurpose = 'proposal' | 'execution' | 'remediation' | 'verification';
+
+/**
+ * A deterministic verification run: only the listed build/test/lint verifiers (by digest) of the cycle's milestone,
+ * run against the exact Goal head the cycle captured. No model, no route.
+ */
+export interface VerificationRunRequest {
+  goalId: string;
+  cycleId: string;
+  baseCommit: string;
+  verifierDigests: string[];
+}
 
 export interface GoalExecutor {
   /** Identifies the implementation in logs and tests. */
@@ -66,6 +77,12 @@ export interface GoalExecutor {
    * (cycle, purpose) returns the same run. It must not start the run; the supervisor starts it exactly once.
    */
   queueChildRun(request: ChildRunRequest): Promise<{ runId: string }>;
+  /**
+   * Optional: persists a `queued` deterministic verification run for (cycle, 'verification'), idempotently, without
+   * starting it. An executor that omits it simply never gets verification cycles scheduled (the disabled production
+   * executor omits it).
+   */
+  queueVerificationRun?(request: VerificationRunRequest): Promise<{ runId: string }>;
 }
 
 /** Production executor for Stage 3/3.1: never ready, never queues a proposal or child run. No provider work can start. */

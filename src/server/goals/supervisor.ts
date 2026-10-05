@@ -1,4 +1,4 @@
-import type { GoalMilestoneSpec, MilestoneEvaluation } from '../../shared/goals.js';
+import type { CriterionEvaluation, GoalMilestoneSpec, MilestoneEvaluation } from '../../shared/goals.js';
 import type { Db } from '../db.js';
 import {
   advanceGoalRef,
@@ -27,7 +27,9 @@ import { loadDefinitionVersion } from './definitions.js';
 import type { GoalExecutor, GoalRunPurpose } from './executor.js';
 import { evaluateCriteria } from './freshness.js';
 import { verifyAmendmentResolution } from './amendmentAuthority.js';
+import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
 import { pruneRunWorktree } from './retention.js';
+import { materializeVerification, milestoneDeterministicVerifiers } from './verification.js';
 import { rebuildGoalMemory } from './memory.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
 import { validateNextTask } from './nextTask.js';
@@ -75,6 +77,8 @@ export const TICK_ACTIONS = [
   'integration_blocked',
   'completed',
   'completion_pending',
+  'evidence_collected',
+  'verification_unavailable',
 ] as const;
 export type TickAction = (typeof TICK_ACTIONS)[number];
 
@@ -84,6 +88,9 @@ export interface TickResult {
   cycleId?: string;
   /** Machine-readable code for refusals and failures (a reason or outcome code). */
   code?: string;
+  /** Present on `evidence_collected`: the run whose evidence was extracted, its cycle and the stored row count. */
+  runId?: string;
+  evidenceCount?: number;
   /** Bounded result of opportunistic worktree retention; a cleanup problem never changes the Goal outcome. */
   cleanup?: { runId: string; status: string; reasons: string[] };
 }
@@ -166,6 +173,7 @@ export class GoalSupervisor {
     const results: TickResult[] = [];
     for (const { id } of this.runningGoals().slice(0, this.maxRunning()))
       results.push(await this.tickGoal(id));
+    results.push(...(await this.maintainEvidence()));
     return results;
   }
 
@@ -375,6 +383,12 @@ export class GoalSupervisor {
     if (!goal) return { action: 'not_found', goalId };
     this.tracker.sync(goalId);
     this.tracker.maybeFlush(goalId);
+    // Evidence maintenance never resumes a Goal or changes its status: a needs_user, blocked or paused Goal still has
+    // its finished runs extracted (one run per action) so retention and freshness do not wait for the user.
+    if (goal.status === 'needs_user' || goal.status === 'blocked' || goal.status === 'paused') {
+      const collected = await this.collectOne(goalId);
+      if (collected) return collected;
+    }
     if (goal.status === 'needs_user') return this.tickNeedsUser(goalId, goal);
     if (goal.status !== 'running') return { action: 'idle', goalId };
     const cycle = activeCycle(this.db, goalId);
@@ -496,7 +510,9 @@ export class GoalSupervisor {
   }
 
   /** Re-derives milestone runtime state from fresh evidence. A derived cache refresh, not a Goal action. */
-  private async refreshMilestones(goalId: string): Promise<MilestoneEvaluation[] | null> {
+  private async refreshMilestones(
+    goalId: string,
+  ): Promise<{ milestones: MilestoneEvaluation[]; criteria: CriterionEvaluation[] } | null> {
     const goal = this.db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as {
       current_definition_version: number;
     };
@@ -524,7 +540,101 @@ export class GoalSupervisor {
       milestones,
       now: this.now(),
     });
-    return milestones;
+    return { milestones, criteria };
+  }
+
+  // --- Evidence maintenance --------------------------------------------------------------------------------------
+
+  private readonly evidenceFailures = new Map<string, number>();
+
+  /**
+   * One bounded maintenance action: extract the evidence of at most one terminal repository run (owning cycle
+   * terminal) that lacks the marker, then opportunistically prune its worktree. Retention is best effort and never
+   * changes evidence, cycle or Goal status. A run that keeps failing to collect is skipped after three attempts (the
+   * missing marker keeps retention refusing, so this fails closed).
+   */
+  private async collectOne(goalId: string): Promise<TickResult | null> {
+    for (const runId of listUncollectedRunIds(this.db, goalId)) {
+      if ((this.evidenceFailures.get(runId) ?? 0) >= 3) continue;
+      let result;
+      try {
+        result = await collectRunEvidence(this.db, runId, { now: this.now() });
+      } catch {
+        this.evidenceFailures.set(runId, (this.evidenceFailures.get(runId) ?? 0) + 1);
+        return { action: 'idle', goalId, runId, code: 'evidence_collection_error' };
+      }
+      if (result.status !== 'collected') continue;
+      const cleanup = await this.tryPrune(runId);
+      return {
+        action: 'evidence_collected',
+        goalId,
+        cycleId: result.cycleId,
+        runId,
+        evidenceCount: result.evidenceCount,
+        ...(cleanup ? { cleanup } : {}),
+      };
+    }
+    return null;
+  }
+
+  /** Non-running Goals get one maintenance action each per pass; a running Goal does it as part of its own tick. */
+  async maintainEvidence(): Promise<TickResult[]> {
+    const goals = this.db
+      .prepare(
+        "SELECT id FROM goals WHERE status IN ('needs_user','blocked','paused') ORDER BY created_at, id",
+      )
+      .all() as Array<{ id: string }>;
+    const results: TickResult[] = [];
+    for (const { id } of goals) {
+      if (this.shuttingDown || this.ticking.has(id)) continue;
+      this.ticking.add(id);
+      try {
+        const result = await this.collectOne(id);
+        if (result) results.push(result);
+      } finally {
+        this.ticking.delete(id);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * The deterministic verifiers (build, test, lint) of the active milestone that need fresh evidence at the current
+   * head: missing, stale or inconclusive. A fresh `contradicted` verifier is never re-verified (that would loop), and
+   * `missing` only counts once the Goal has integrated something (the untouched initial head is not worth a cycle).
+   * A head that already had a verification cycle is not verified again, whatever the outcome.
+   */
+  private verifiersNeedingEvidence(
+    goalId: string,
+    version: NonNullable<ReturnType<typeof loadDefinitionVersion>>,
+    milestoneKey: string,
+    criteria: CriterionEvaluation[],
+  ) {
+    const runtime = this.db
+      .prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?')
+      .get(goalId) as { integration_head: string | null } | undefined;
+    if (!runtime?.integration_head) return [];
+    const triedHere = this.db
+      .prepare(
+        `SELECT 1 FROM goal_cycles WHERE goal_id = ? AND kind = 'verification' AND base_integration_commit = ?
+           AND status IN ('succeeded','failed','cancelled','rejected') LIMIT 1`,
+      )
+      .get(goalId, runtime.integration_head);
+    if (triedHere) return [];
+    const integrated = this.db
+      .prepare(
+        "SELECT 1 FROM goal_cycles WHERE goal_id = ? AND kind IN ('execution','remediation') AND status = 'succeeded' LIMIT 1",
+      )
+      .get(goalId);
+    const state = new Map<string, string>();
+    for (const criterion of criteria)
+      for (const verifier of criterion.verifiers)
+        state.set(`${criterion.key}:${verifier.verifierDigest}`, verifier.state);
+    return milestoneDeterministicVerifiers(version.definition, milestoneKey).filter((verifier) => {
+      const current = state.get(`${verifier.criterionKey}:${verifier.digest}`) ?? 'missing';
+      if (current === 'stale' || current === 'inconclusive') return true;
+      return current === 'missing' && !!integrated;
+    });
   }
 
   private async tickNoCycle(goalId: string): Promise<TickResult> {
@@ -539,7 +649,12 @@ export class GoalSupervisor {
     const blockedByRef = await this.verifyRef(goalId);
     if (blockedByRef) return blockedByRef;
 
-    const evaluations = await this.refreshMilestones(goalId);
+    // Ordering: cycle N terminal -> evidence N collected -> milestone state refreshed -> decision about N+1.
+    const collected = await this.collectOne(goalId);
+    if (collected) return collected;
+
+    const refreshed = await this.refreshMilestones(goalId);
+    const evaluations = refreshed?.milestones;
     const goal = this.db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as {
       current_definition_version: number;
     };
@@ -585,6 +700,10 @@ export class GoalSupervisor {
     }
 
     this.markActiveMilestone(goalId, active.key);
+    if (refreshed && this.executor.queueVerificationRun) {
+      const needed = this.verifiersNeedingEvidence(goalId, version, active.key, refreshed.criteria);
+      if (needed.length > 0) return this.startVerification(goalId, version, active.key, needed);
+    }
     try {
       const created = createCycle(this.db, {
         goalId,
@@ -594,6 +713,70 @@ export class GoalSupervisor {
         now: this.now(),
         liveActiveMs: this.tracker.pendingMs(goalId),
       });
+      return { action: created.created ? 'cycle_created' : 'busy', goalId, cycleId: created.cycle.id };
+    } catch (error) {
+      if (error instanceof CycleError && error.code === 'bound_exceeded' && error.breach) {
+        transitionGoal(this.db, {
+          goalId,
+          to: 'blocked',
+          reasonCode: error.breach.reason,
+          actor: 'supervisor',
+          now: this.now(),
+        });
+        return { action: 'bound_blocked', goalId, code: error.breach.reason };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Creates the verification cycle for the stale/missing verifiers, or - when a verifier cannot be materialised
+   * (missing, unsafe or unsupported command) - launches nothing and hands the Goal to the user with bounded detail
+   * naming the verifier. The cycle carries the exact verifiers to run; the run itself is queued on the next ticks.
+   */
+  private startVerification(
+    goalId: string,
+    version: NonNullable<ReturnType<typeof loadDefinitionVersion>>,
+    milestoneKey: string,
+    needed: ReturnType<typeof milestoneDeterministicVerifiers>,
+  ): TickResult {
+    const projectId = (
+      this.db.prepare('SELECT project_id FROM goals WHERE id = ?').get(goalId) as { project_id: string }
+    ).project_id;
+    const materialized = materializeVerification(this.db, projectId, needed);
+    if (!materialized.ok) {
+      transitionGoal(this.db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'verification_failed',
+        actor: 'supervisor',
+        detail: {
+          code: materialized.code,
+          kind: materialized.verifier.kind,
+          criterionKey: materialized.verifier.criterionKey,
+          verifierDigest: materialized.verifier.digest,
+          definitionVersion: version.version,
+        },
+        now: this.now(),
+      });
+      return { action: 'verification_unavailable', goalId, code: materialized.code };
+    }
+    try {
+      const created = createCycle(this.db, {
+        goalId,
+        kind: 'verification',
+        triggerCode: 'evidence_refresh',
+        milestoneKey,
+        now: this.now(),
+        liveActiveMs: this.tracker.pendingMs(goalId),
+      });
+      if (created.created)
+        transitionCycle(this.db, {
+          cycleId: created.cycle.id,
+          to: 'launching',
+          outcome: { verifierDigests: needed.map((verifier) => verifier.digest) },
+          now: this.now(),
+        });
       return { action: created.created ? 'cycle_created' : 'busy', goalId, cycleId: created.cycle.id };
     } catch (error) {
       if (error instanceof CycleError && error.code === 'bound_exceeded' && error.breach) {
@@ -638,13 +821,19 @@ export class GoalSupervisor {
   }
 
   /** The purpose of the run that does the cycle's repository work. */
-  private workPurpose(cycle: CycleRow): 'execution' | 'remediation' {
-    return cycle.kind === 'remediation' ? 'remediation' : 'execution';
+  private workPurpose(cycle: CycleRow): 'execution' | 'remediation' | 'verification' {
+    return cycle.kind === 'verification'
+      ? 'verification'
+      : cycle.kind === 'remediation'
+        ? 'remediation'
+        : 'execution';
   }
 
   /** The purpose of the run a cycle owns in its current status. */
   private currentPurpose(cycle: CycleRow): GoalRunPurpose {
-    return ['planned', 'proposing', 'proposed'].includes(cycle.status) ? 'proposal' : this.workPurpose(cycle);
+    return cycle.kind !== 'verification' && ['planned', 'proposing', 'proposed'].includes(cycle.status)
+      ? 'proposal'
+      : this.workPurpose(cycle);
   }
 
   /**
@@ -795,7 +984,7 @@ export class GoalSupervisor {
     const validation = validateNextTask(result.proposal, {
       definition,
       activeMilestone: milestone,
-      cycleKind: this.workPurpose(cycle),
+      cycleKind: cycle.kind === 'remediation' ? 'remediation' : 'execution',
     });
     // A rejected proposal is recorded with its reasons and is never executed.
     if (!validation.ok)
@@ -817,6 +1006,11 @@ export class GoalSupervisor {
     ) => transitionCycle(this.db, { cycleId: cycle.id, to, now: this.now(), ...extra });
     switch (cycle.status) {
       case 'planned':
+        // Cycle kind decides the path: verification has no proposal and goes straight to launching.
+        if (cycle.kind === 'verification') {
+          next('launching');
+          return { action: 'launch_started', goalId, cycleId: cycle.id };
+        }
         next('proposing');
         return { action: 'proposal_started', goalId, cycleId: cycle.id };
 
@@ -863,6 +1057,23 @@ export class GoalSupervisor {
           const blocked = await this.verifyRef(goalId);
           if (blocked) return blocked;
           try {
+            if (purpose === 'verification') {
+              const digests = (cycle.outcome as { verifierDigests?: unknown } | null)?.verifierDigests;
+              if (
+                !this.executor.queueVerificationRun ||
+                !Array.isArray(digests) ||
+                !digests.every((digest) => typeof digest === 'string')
+              )
+                return this.fail(cycle, 'verification_inputs_missing');
+              await this.executor.queueVerificationRun({
+                goalId,
+                cycleId: cycle.id,
+                baseCommit: cycle.baseIntegrationCommit!,
+                verifierDigests: digests as string[],
+              });
+              return { action: 'run_queued', goalId, cycleId: cycle.id };
+            }
+            if (purpose !== 'execution' && purpose !== 'remediation') return this.fail(cycle, 'launch_error');
             await this.executor.queueChildRun({
               goalId,
               cycleId: cycle.id,
@@ -918,6 +1129,21 @@ export class GoalSupervisor {
           return { action: 'cycle_failed', goalId, cycleId: cycle.id, code: 'run_cancelled' };
         }
         if (run.status !== 'completed') return { action: 'waiting_for_run', goalId, cycleId: cycle.id };
+        if (cycle.kind === 'verification') {
+          // A verification run integrates nothing: the cycle ends and evidence maintenance records the results.
+          finalizeCycle(this.db, {
+            cycleId: cycle.id,
+            to: 'succeeded',
+            outcomeCode: 'verified',
+            detail: {
+              runId: run.id,
+              verifierDigests: (cycle.outcome as { verifierDigests?: unknown } | null)?.verifierDigests,
+            },
+            now: this.now(),
+          });
+          this.afterCycle(goalId);
+          return { action: 'cycle_succeeded', goalId, cycleId: cycle.id };
+        }
         next('integrating', { outcome: { runId: run.id, summary: (run.summary ?? '').slice(0, 800) } });
         return { action: 'integration_started', goalId, cycleId: cycle.id };
       }
@@ -1123,6 +1349,7 @@ export class GoalSupervisor {
         results.push(await this.tickGoal(goal.id));
       }
     }
+    results.push(...(await this.maintainEvidence()));
     return results;
   }
 

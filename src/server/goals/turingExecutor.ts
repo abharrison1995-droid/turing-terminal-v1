@@ -2,6 +2,7 @@ import type { NextTask } from '../../shared/goals.js';
 import {
   goalBuiltinById,
   GOAL_PROPOSE_STAGE_KEY,
+  GOAL_WORKFLOW_IDS,
   isReservedGoalWorkflowId,
 } from '../../shared/goalWorkflows.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
@@ -18,10 +19,16 @@ import type {
   ProposalRequest,
   ProposalResult,
   RouteReadiness,
+  VerificationRunRequest,
 } from './executor.js';
 import { applyGoalScope, formatExecutionTask, formatPlanningTask } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
+import {
+  materializeVerification,
+  milestoneDeterministicVerifiers,
+  verificationWorkflow,
+} from './verification.js';
 
 /** Stable, bounded failure codes. The supervisor records a queue failure as a bounded failed cycle. */
 export type TuringExecutorErrorCode =
@@ -42,7 +49,9 @@ export type TuringExecutorErrorCode =
   | 'plan_permission_mode'
   | 'plan_billing_exceeds_goal'
   | 'preview_unavailable'
-  | 'preview_not_startable';
+  | 'preview_not_startable'
+  | 'verification_invalid'
+  | 'verification_unmaterializable';
 
 export class TuringExecutorError extends Error {
   constructor(
@@ -387,6 +396,66 @@ export class TuringGoalExecutor implements GoalExecutor {
       purpose: request.purpose,
     });
     return this.queue(loaded, request.purpose, workflowId, request.baseCommit, text, request.task);
+  }
+
+  /**
+   * Queues the deterministic verification run of a verification cycle. The workflow is the registered, verified
+   * `goal-verification-v1` with its stages replaced by `materializeVerifierStage` output for the requested verifiers
+   * (each a required build/test/lint verifier of the cycle's milestone). No plan provider, route, model or provider is
+   * involved, and every command is re-checked as a safe project command here.
+   */
+  async queueVerificationRun(request: VerificationRunRequest): Promise<{ runId: string }> {
+    const already = this.existing(request.goalId, request.cycleId, 'verification', request.baseCommit);
+    if (already) return { runId: already };
+    const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
+    if (loaded.cycle.kind !== 'verification' || !loaded.cycle.milestoneKey)
+      throw new TuringExecutorError('verification_invalid', 'The cycle is not a verification cycle.');
+    const allowed = milestoneDeterministicVerifiers(loaded.definition, loaded.cycle.milestoneKey);
+    const requested = [...new Set(request.verifierDigests)].map((digest) =>
+      allowed.find((verifier) => verifier.digest === digest),
+    );
+    if (requested.length === 0 || requested.some((verifier) => !verifier))
+      throw new TuringExecutorError(
+        'verification_invalid',
+        'A requested verifier is not a required deterministic verifier of the cycle milestone.',
+      );
+    const registered = this.registeredWorkflow(GOAL_WORKFLOW_IDS.verification);
+    if (registered.stages.some((stage) => isModelBackedStage(stage.kind)) || !registered.isolatedWorktree)
+      throw new TuringExecutorError(
+        'plan_workflow_mismatch',
+        'The verification workflow must be deterministic and isolated.',
+      );
+    const materialized = materializeVerification(
+      this.db,
+      loaded.projectId,
+      requested as NonNullable<(typeof requested)[number]>[],
+    );
+    if (!materialized.ok)
+      throw new TuringExecutorError(
+        'verification_unmaterializable',
+        `${materialized.code}: ${materialized.verifier.kind} verifier of ${materialized.verifier.criterionKey}`.slice(
+          0,
+          300,
+        ),
+      );
+    const preview = await buildPreview(
+      this.db,
+      {
+        task: `Verify the Goal head with ${materialized.stages.length} deterministic verifier(s).`,
+        projectId: loaded.projectId,
+        workflowId: registered.id,
+      },
+      verificationWorkflow(registered, materialized.stages),
+      { origin: createRunOrigin(loaded.cycle.id, 'verification', request.baseCommit) },
+    );
+    if (!preview)
+      throw new TuringExecutorError('preview_unavailable', 'The project or workflow is not registered.');
+    if (!preview.canStart)
+      throw new TuringExecutorError(
+        'preview_not_startable',
+        `The run preview refused to start: ${preview.warnings.slice(0, 3).join(' | ')}`.slice(0, 400),
+      );
+    return { runId: queueRun(this.db, preview).runId };
   }
 
   async readProposal(runId: string): Promise<ProposalResult> {

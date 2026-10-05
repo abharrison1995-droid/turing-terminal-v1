@@ -76,7 +76,9 @@ describe('fake loop', () => {
     expect(memory).toMatchObject({ schemaVersion: 1, lastCycle: { sequence: 1, outcome: 'integrated' } });
     expect(memory.repo.integrationHead).toBe(head(h));
 
-    // The next tick starts the next cycle (the milestone is not yet satisfied by evidence).
+    // Evidence of the finished cycle is collected first (zero rows is a valid marker), then the next cycle starts
+    // because the milestone is not yet satisfied by evidence.
+    expect(await h.tick()).toBe('evidence_collected');
     h.model.script.push({ ok: true, proposal: GOOD_TASK });
     expect(await h.tick()).toBe('cycle_created');
     expect(listCycles(h.fx.db, h.fx.goalId)).toHaveLength(2);
@@ -279,6 +281,9 @@ describe('bounds through the tick', () => {
     expect(await h.tick()).toBe('bound_blocked');
     expect(h.status()).toEqual({ status: 'blocked', reason: 'bound_cycles' });
     expect(listCycles(h.fx.db, h.fx.goalId)).toHaveLength(1);
+    // A blocked Goal still has its finished run extracted, without being resumed.
+    expect(await h.tick()).toBe('evidence_collected');
+    expect(h.status()).toEqual({ status: 'blocked', reason: 'bound_cycles' });
     expect(await h.tick()).toBe('idle');
   });
 

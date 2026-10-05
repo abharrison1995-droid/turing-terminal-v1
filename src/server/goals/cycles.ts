@@ -367,7 +367,7 @@ export type CreateCycleResult =
 
 export interface CreateCycleInput {
   goalId: string;
-  kind: Extract<GoalCycleKind, 'execution' | 'remediation'>;
+  kind: Extract<GoalCycleKind, 'execution' | 'remediation' | 'verification'>;
   triggerCode: string;
   /** Must be a milestone of the current approved definition. */
   milestoneKey: string;
@@ -417,7 +417,10 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
     const breach = evaluateBounds(db, input.goalId, {
       now,
       liveActiveMs: input.liveActiveMs,
-      next: { kind: input.kind, milestoneKey: input.milestoneKey },
+      // A verification cycle is outside the execution and remediation bounds; it still counts toward active time and
+      // wall clock (checked above for every creation) and spends nothing.
+      next:
+        input.kind === 'verification' ? undefined : { kind: input.kind, milestoneKey: input.milestoneKey },
     });
     if (breach) throw new CycleError('bound_exceeded', breach.message, breach);
 
