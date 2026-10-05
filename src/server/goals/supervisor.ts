@@ -29,7 +29,11 @@ import { evaluateCriteria } from './freshness.js';
 import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
 import { pruneRunWorktree, recordRunEvidenceCollected } from './retention.js';
-import { closeReview, createReview, GoalReviewError, reviewForCycle } from './reviews.js';
+import { applyReviewFindings, GoalFindingError } from './findings.js';
+import { closeReview, completeReview, createReview, GoalReviewError, reviewForCycle } from './reviews.js';
+import { deriveReviewIndependence } from './reviewIndependence.js';
+import { isReviewCurrent, recordReviewEvidence } from './reviewConsume.js';
+import { linkRunFindings, readGoalReviewReport } from './reviewReport.js';
 import { readReviewPlan, type ReviewPlan } from './reviewPlan.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import { materializeVerification, milestoneDeterministicVerifiers } from './verification.js';
@@ -90,6 +94,7 @@ export const TICK_ACTIONS = [
   'review_run_started',
   'review_waiting',
   'review_decision_needed',
+  'review_consumed',
 ] as const;
 export type TickAction = (typeof TICK_ACTIONS)[number];
 
@@ -1707,7 +1712,123 @@ export class GoalSupervisor {
     if (CANCELLED_RUN.has(run.status))
       return this.reviewInfraFailure(goalId, cycle, 'run_cancelled', { cancelled: true });
     if (run.status !== 'completed') return { action: 'review_waiting', goalId, cycleId: cycle.id };
-    return { action: 'review_waiting', goalId, cycleId: cycle.id, code: 'consumption_not_available' };
+    return this.consumeReview(goalId, cycle, run);
+  }
+
+  /**
+   * Consumes a completed review run, restart-safely: every step re-derives its position from persisted rows, so a crash
+   * between any two resumes without repeating or skipping work.
+   *   report read strictly -> server-derived independence -> completeReview -> applyReviewFindings (once per review)
+   *   -> review_verdict evidence (reused, never duplicated) -> run_evidence_collected marker + cycle `succeeded` +
+   *   the Goal's `review_passed` / `review_blocked`, in ONE transaction -> best-effort worktree prune.
+   * A semantic `block` is a successful review cycle; only infrastructure problems fail it (no report is fabricated).
+   */
+  private async consumeReview(goalId: string, cycle: CycleRow, run: RunRow): Promise<TickResult> {
+    let review = reviewForCycle(this.db, cycle.id);
+    if (!review || review.runId !== run.id)
+      return this.reviewInfraFailure(goalId, cycle, 'review_binding_invalid');
+    if (review.status === 'failed' || review.status === 'cancelled')
+      return this.reviewInfraFailure(goalId, cycle, 'review_state_invalid');
+
+    if (review.status === 'pending') {
+      const read = readGoalReviewReport(this.db, run.id);
+      if (!read.ok)
+        return this.reviewInfraFailure(goalId, cycle, 'review_report_invalid', {
+          detail: { reason: read.code, ...(read.issues ? { issues: read.issues } : {}) },
+        });
+      const derived = deriveReviewIndependence(this.db, review);
+      if (!derived.ok)
+        return this.reviewInfraFailure(goalId, cycle, 'review_independence_unproven', {
+          detail: { reason: derived.code },
+        });
+      try {
+        review = completeReview(this.db, {
+          reviewId: review.id,
+          report: read.report,
+          ...(derived.independence ? { independence: derived.independence } : {}),
+          now: this.now(),
+        });
+      } catch (error) {
+        if (!(error instanceof GoalReviewError)) throw error;
+        // `review_not_pending` means a concurrent consumer completed it: re-read and carry on.
+        const current = reviewForCycle(this.db, cycle.id);
+        if (error.code !== 'review_not_pending' || current?.status !== 'completed')
+          return this.reviewInfraFailure(goalId, cycle, 'review_report_invalid', {
+            detail: { reason: error.code },
+          });
+        review = current;
+      }
+    }
+    const report = review.report;
+    if (!report) return this.reviewInfraFailure(goalId, cycle, 'review_state_invalid');
+
+    // The links are a pure function of this run's persisted rows, so a restart derives exactly the ones used before.
+    const links = linkRunFindings(this.db, run.id, report);
+    if (!links.ok)
+      return this.reviewInfraFailure(goalId, cycle, 'review_report_invalid', {
+        detail: { reason: links.code },
+      });
+    let stale = !isReviewCurrent(this.db, review);
+    const applied = this.db
+      .prepare(
+        "SELECT 1 FROM goal_events WHERE goal_id = ? AND type = 'review_findings_applied' AND json_extract(payload_json, '$.reviewId') = ?",
+      )
+      .get(goalId, review.id);
+    if (!stale && !applied) {
+      try {
+        await applyReviewFindings(this.db, {
+          reviewId: review.id,
+          runFindingIds: { new: links.ids },
+          now: this.now(),
+        });
+      } catch (error) {
+        if (!(error instanceof GoalFindingError)) throw error;
+        if (error.code === 'review_not_current') stale = true;
+        else if (error.code !== 'review_findings_already_applied')
+          return this.reviewInfraFailure(goalId, cycle, 'review_apply_failed', {
+            detail: { reason: error.code },
+          });
+      }
+    }
+
+    if (!stale) {
+      await recordReviewEvidence(this.db, { review, cycle, runId: run.id, now: this.now() });
+    }
+    const blocking = !stale && review.blocking === true;
+    this.db.transaction(() => {
+      const stored = (
+        this.db
+          .prepare('SELECT COUNT(*) AS n FROM goal_evidence WHERE goal_id = ? AND run_id = ?')
+          .get(goalId, run.id) as { n: number }
+      ).n;
+      recordRunEvidenceCollected(this.db, { goalId, runId: run.id, evidenceCount: stored, now: this.now() });
+      finalizeCycle(this.db, {
+        cycleId: cycle.id,
+        to: 'succeeded',
+        outcomeCode: stale ? 'review_stale' : 'review_consumed',
+        detail: { reviewId: review.id, verdict: review.verdict, blocking, stale },
+        now: this.now(),
+      });
+      transitionGoal(this.db, {
+        goalId,
+        to: blocking ? 'blocked' : 'running',
+        reasonCode: blocking ? 'review_blocked' : 'review_passed',
+        actor: 'supervisor',
+        detail: { cycleId: cycle.id, reviewId: review.id, verdict: review.verdict, stale },
+        now: this.now(),
+      });
+    })();
+    this.tracker.sync(goalId);
+    this.afterCycle(goalId);
+    const cleanup = await this.tryPrune(run.id);
+    return {
+      action: 'review_consumed',
+      goalId,
+      cycleId: cycle.id,
+      code: stale ? 'review_stale' : blocking ? 'review_blocked' : 'review_passed',
+      runId: run.id,
+      ...(cleanup ? { cleanup } : {}),
+    };
   }
 
   // --- Recovery and shutdown ------------------------------------------------------------------------------------

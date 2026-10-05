@@ -332,10 +332,23 @@ export async function recordEvidence(db: Db, input: RecordEvidenceInput): Promis
           'review_mismatch',
           'The review was made under another definition version.',
         );
+      // One logical verdict per (review, verifier): a restart reuses the stored row rather than adding or rewriting one.
+      const existing = db
+        .prepare(
+          "SELECT id FROM goal_evidence WHERE review_id = ? AND verifier_digest = ? AND kind = 'review_verdict'",
+        )
+        .get(review.id, input.verifierDigest) as { id: string } | undefined;
+      if (existing) return { id: existing.id };
       return {
         id: insertEvidence(db, input, {
-          // The verdict is derived from the stored review, never supplied by the caller.
-          verdict: review.verdict === 'block' || review.blocking === 1 ? 'contradicts' : 'satisfies',
+          // The verdict is derived from the stored review, never supplied by the caller. A final review satisfies its
+          // verifier only with the exact `pass` that completion requires; `pass_with_findings` is inconclusive there.
+          verdict:
+            review.verdict === 'block' || review.blocking === 1
+              ? 'contradicts'
+              : review.review_kind === 'final' && review.verdict !== 'pass'
+                ? 'inconclusive'
+                : 'satisfies',
           reviewId: review.id,
           milestoneId: input.milestoneId ?? review.milestone_id,
           reviewedFrom: review.reviewed_from_commit,

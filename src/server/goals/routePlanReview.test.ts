@@ -10,6 +10,8 @@ import { readStoredResolutions } from './routeResolution.js';
 import type { RouteSnapshot } from './routeIdentity.js';
 import { identityOf, model, NOW, passRecords, provider } from './routingKit.js';
 import { READINESS_ROLES, ResolvedGoalRunPlanProvider } from './routePlan.js';
+import { deriveReviewIndependence } from './reviewIndependence.js';
+import type { GoalReviewRow } from './reviews.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import type { GoalRunPlanRequest } from './runPlan.js';
 import { cleanupTestDatabases, freshDatabase, seedProject, validDefinition } from './testKit.js';
@@ -411,6 +413,69 @@ describe('final review independence comes from the persisted resolution', () => 
     expect(f.stored(cycleId, 'final_reviewer')?.independence).toMatchObject({
       established: false,
       reasonCode: 'candidate_identity_unproven',
+    });
+  });
+});
+
+describe('deriveReviewIndependence (server-derived, never model-supplied)', () => {
+  const rowOf = (f: ReturnType<typeof fx>, cycleId: string, reviewKind: GoalReviewKind) =>
+    ({ goalId: f.goalId, cycleId, definitionVersion: 1, reviewKind }) as unknown as GoalReviewRow;
+
+  it('returns the persisted established claim for a final review', async () => {
+    const f = fx({ finalModel: 'gpt-5' });
+    await f.withImplementerAuthority();
+    const cycleId = f.review('final');
+    await f.planner.planRun(f.request(cycleId, 'final'));
+    const result = deriveReviewIndependence(f.db, rowOf(f, cycleId, 'final'));
+    expect(result).toMatchObject({
+      ok: true,
+      independence: { established: true, detail: { reasonCode: 'established', required: true } },
+    });
+  });
+
+  it('records none for a non-final review', async () => {
+    const f = fx();
+    const cycleId = f.review('milestone');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, 'milestone'))).toEqual({
+      ok: true,
+      independence: undefined,
+    });
+  });
+
+  it('fails closed when no final_reviewer resolution is stored', async () => {
+    const f = fx();
+    const cycleId = f.review('final');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, 'final'))).toEqual({
+      ok: false,
+      code: 'independence_resolution_missing',
+    });
+  });
+
+  it('fails closed when the stored resolution was tampered with', async () => {
+    const f = fx({ finalModel: 'gpt-5' });
+    await f.withImplementerAuthority();
+    const cycleId = f.review('final');
+    await f.planner.planRun(f.request(cycleId, 'final'));
+    const json = (
+      f.db.prepare('SELECT route_resolution_json AS j FROM goal_cycles WHERE id = ?').get(cycleId) as {
+        j: string;
+      }
+    ).j;
+    f.db
+      .prepare('UPDATE goal_cycles SET route_resolution_json = ? WHERE id = ?')
+      .run(json.replace('"definitionHash":"', '"definitionHash":"x'), cycleId);
+    const result = deriveReviewIndependence(f.db, rowOf(f, cycleId, 'final'));
+    expect(result.ok).toBe(false);
+  });
+
+  it('carries established=false for an allowed floating final reviewer', async () => {
+    const f = fx({ finalModel: 'gpt-5', finalKind: 'floating', allowFloating: true });
+    await f.withImplementerAuthority();
+    const cycleId = f.review('final');
+    await f.planner.planRun(f.request(cycleId, 'final'));
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, 'final'))).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
     });
   });
 });

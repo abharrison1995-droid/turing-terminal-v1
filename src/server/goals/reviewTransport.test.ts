@@ -64,6 +64,10 @@ const REPORT = {
   verdict: 'block',
   criterionProgress: [],
   existingFindings: [],
+  regressions: [],
+  scopeDrift: false,
+  architectureDrift: false,
+  furtherWorkJustified: false,
   newFindings: [
     {
       severity: 'high',
@@ -149,5 +153,68 @@ describe('Goal review run on the real RunEngine', () => {
     expect(calls.some((call) => /Review kind: final/.test(call.prompt))).toBe(true);
     expect(h.fx.git('status', '--porcelain')).toBe('');
     expect(h.fx.head()).toBe(head);
+  });
+
+  it('is consumed end to end: report accepted, findings applied once, cycle finalised, worktree pruned, branch kept', async () => {
+    h = await realRunHarness();
+    expect((await h.supervisor.startGoal(h.fx.goalId)).ok).toBe(true);
+    await h.until('cycle_created');
+    h.fx.db
+      .prepare("UPDATE goal_cycles SET status = 'cancelled', finished_at = ? WHERE goal_id = ?")
+      .run(new Date().toISOString(), h.fx.goalId);
+    h.fx.db.prepare("UPDATE runs SET status = 'cancelled' WHERE status = 'queued'").run();
+    const head = h.fx.head();
+    const created = createReviewCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      reviewKind: 'periodic',
+      triggerCode: 'test_trigger',
+    });
+    if (!created.created) throw new Error('expected a review cycle');
+    const cycleId = created.cycle.id;
+
+    await h.until('review_run_started');
+    const run = h.fx.db
+      .prepare("SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = 'review'")
+      .get(cycleId) as { id: string };
+    await vi.waitFor(() => expect(h.runRow(run.id).status).toBe('completed'), { timeout: 20_000 });
+    await h.until('review_consumed');
+
+    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+      status: 'completed',
+      verdict: 'block',
+      blocking: false,
+    });
+    const findings = h.fx.db
+      .prepare('SELECT status FROM goal_findings WHERE goal_id = ?')
+      .all(h.fx.goalId) as Array<{ status: string }>;
+    expect(findings).toEqual([{ status: 'open' }]);
+    const events = (
+      h.fx.db
+        .prepare(
+          "SELECT type FROM goal_events WHERE goal_id = ? AND type IN ('review_findings_applied','run_evidence_collected')",
+        )
+        .all(h.fx.goalId) as Array<{ type: string }>
+    ).map((event) => event.type);
+    expect(events.sort()).toEqual(['review_findings_applied', 'run_evidence_collected']);
+    expect(h.fx.db.prepare('SELECT status FROM goal_cycles WHERE id = ?').get(cycleId)).toMatchObject({
+      status: 'succeeded',
+    });
+    // A non-blocking periodic block returns the Goal to running; the source checkout is untouched.
+    expect(h.fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(h.fx.goalId)).toMatchObject({
+      status: 'running',
+    });
+    expect(h.fx.git('status', '--porcelain')).toBe('');
+    expect(h.fx.head()).toBe(head);
+    // The disposable run worktree is gone; the run branch is retained.
+    expect(h.fx.git('branch', '--list', 'turing/*')).not.toBe('');
+    // Further ticks change nothing.
+    await h.supervisor.tick?.(h.fx.goalId);
+    expect(
+      (
+        h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_findings WHERE goal_id = ?').get(h.fx.goalId) as {
+          n: number;
+        }
+      ).n,
+    ).toBe(1);
   });
 });
