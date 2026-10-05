@@ -63,6 +63,8 @@ export function harness(
     tune?: (definition: GoalDefinition) => void;
     /** When true (default) a started proposal run is answered immediately; tests that drive crash points turn it off. */
     autoAnswer?: boolean;
+    /** Give proposal runs a real worktree and run branch (retention tests). */
+    proposalWorktrees?: boolean;
   } = {},
 ): Harness {
   const definition =
@@ -82,11 +84,28 @@ export function harness(
       .value;
 
   const makeProposalRun = (request: FakeRunRequest, runId: string): string => {
+    // With `proposalWorktrees` the run owns a real (clean) worktree on its run branch, like an isolated engine run.
+    let branch: string | null = null;
+    let worktree: string | null = null;
+    if (options.proposalWorktrees) {
+      branch = `turing/${runId.slice(0, 8)}`;
+      worktree = join(dirname(fx.repo), `wt-${runId.slice(0, 8)}`);
+      git(fx.repo, 'worktree', 'add', '-q', '-b', branch, worktree, request.baseCommit);
+    }
     db.prepare(
       `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status,
-         created_at, goal_cycle_id, goal_run_purpose, goal_base_commit)
-       VALUES (?, ?, ?, (SELECT id FROM workflows LIMIT 1), '{}', 'propose', 'economy', 'normal', 'queued', ?, ?, 'proposal', ?)`,
-    ).run(runId, machineId(), fx.projectId, new Date().toISOString(), request.cycleId, request.baseCommit);
+         created_at, branch, worktree_path, goal_cycle_id, goal_run_purpose, goal_base_commit)
+       VALUES (?, ?, ?, (SELECT id FROM workflows LIMIT 1), '{}', 'propose', 'economy', 'normal', 'queued', ?, ?, ?, ?, 'proposal', ?)`,
+    ).run(
+      runId,
+      machineId(),
+      fx.projectId,
+      new Date().toISOString(),
+      branch,
+      worktree,
+      request.cycleId,
+      request.baseCommit,
+    );
     return runId;
   };
 

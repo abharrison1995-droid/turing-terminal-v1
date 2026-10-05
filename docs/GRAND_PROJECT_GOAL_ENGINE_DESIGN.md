@@ -1139,3 +1139,30 @@ Deliberate differences from the design above:
   autonomous cycle starts. The exits are the existing amendment reasons. An invalid proposal naming an out-of-scope path
   is still just a rejected proposal.
 - No migration was added. Production remains wired to `DisabledGoalExecutor`.
+
+## Stage 3.2 implementation notes (amendment authority, superseded cycles, retention)
+
+- **Amendment from `needs_user(scope_violation)`.** `beginAmendment` is permitted for that one reason only. The Goal
+  status and reason are not changed; the proposal needs the normal exact-hash user approval; `amendment_started` is
+  written. The reason is cleared only by a later resume.
+- **Factual amendment resume.** `resumeGoal` with `amendment_approved` / `amendment_discarded` verifies persisted
+  `goal_events` order (`amendmentAuthority.ts`): approved needs a `definition_approved` event after the quiescent episode
+  began, a current definition with a parent version, and a valid user amendment approval; discarded needs a later
+  `definition_rejected` for a proposal based on the current version. Otherwise `amendment_not_resolved`; nothing starts.
+- **Superseded cycles.** A cycle whose `definition_version` differs from the Goal's current version never executes.
+  In-flight child work gives `superseded_cycle_in_flight` (no auto-cancel); terminal or absent child work retires the
+  cycle `cancelled(definition_superseded)` with no integration and no ref movement (`superseded_cycle_retired`), and a
+  following resume proceeds. A discarded amendment keeps the versions equal, so the cycle continues. The same guard
+  runs first in every tick.
+- **Normal-tick ref guard.** `verifyGoalRef` runs immediately before queueing and starting proposal runs and before
+  queueing and starting work runs. A missing/moved/invalid ref blocks with `goal_ref_missing` / `goal_ref_changed` /
+  `git_state_invalid`; nothing is queued or started and the ref is never repaired.
+- **Retention (`retention.ts`).** `inspectRunRetention` is read-only; `pruneRunWorktree` runs
+  `git worktree remove <path>` (never `--force`), verifies the worktree is gone, then sets `runs.worktree_path = NULL`.
+  Branches, `starting_commit`, `goal_base_commit` and all history are retained; repeating a prune is a no-op. Execution,
+  remediation, verification and review runs need the persisted `run_evidence_collected` marker, written only by
+  `recordRunEvidenceCollected` (validated against stored evidence; never by retention). Proposal runs are eligible once
+  the validated task is persisted or the cycle terminally recorded the outcome; the supervisor prunes only those,
+  opportunistically, and a cleanup failure never changes the Goal outcome. No directory sweep, no `git worktree prune`;
+  historical runs without the marker stay in place.
+- No migration was added (`goal_events.type` has no CHECK). Production remains wired to `DisabledGoalExecutor`.

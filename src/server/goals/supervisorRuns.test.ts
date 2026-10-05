@@ -515,16 +515,6 @@ describe('actual milestone scope violation', () => {
     expect(h.status()).toEqual({ status: 'needs_user', reason: 'scope_violation' });
   });
 
-  it('resumes only through the normal preflight, on an explicit user decision about the amended scope', async () => {
-    const h = await violate();
-    const result = await h.supervisor.resumeGoal(h.fx.goalId, {
-      actor: 'user',
-      reasonCode: 'amendment_approved',
-    });
-    expect(result).toEqual({ ok: true });
-    expect(h.status().status).toBe('running');
-  });
-
   it('an invalid proposal with an out-of-scope path stays a rejected proposal and the Goal keeps running', async () => {
     const h = harness();
     h.model.script.push({ ok: true, proposal: { ...GOOD_TASK, expectedPaths: ['docs/x.md'] } });

@@ -105,6 +105,13 @@ export interface GoalEventPayloads {
     remediationAttempts: Record<string, number>;
     corrected: boolean;
   };
+  /** Written by an evidence collector only after every evidence row for the run is durably recorded (even zero). */
+  run_evidence_collected: {
+    runId: string;
+    cycleId: string;
+    definitionVersion: number;
+    evidenceCount: number;
+  };
 }
 
 const MAX_PAYLOAD_CHARS = 16_384;

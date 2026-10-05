@@ -26,6 +26,8 @@ import {
 import { loadDefinitionVersion } from './definitions.js';
 import type { GoalExecutor, GoalRunPurpose } from './executor.js';
 import { evaluateCriteria } from './freshness.js';
+import { verifyAmendmentResolution } from './amendmentAuthority.js';
+import { pruneRunWorktree } from './retention.js';
 import { rebuildGoalMemory } from './memory.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
 import { validateNextTask } from './nextTask.js';
@@ -57,6 +59,8 @@ export const TICK_ACTIONS = [
   'proposal_queued',
   'proposal_run_started',
   'waiting_for_proposal',
+  'superseded_cycle_in_flight',
+  'superseded_cycle_retired',
   'proposal_recorded',
   'proposal_rejected',
   'launch_started',
@@ -80,6 +84,8 @@ export interface TickResult {
   cycleId?: string;
   /** Machine-readable code for refusals and failures (a reason or outcome code). */
   code?: string;
+  /** Bounded result of opportunistic worktree retention; a cleanup problem never changes the Goal outcome. */
+  cleanup?: { runId: string; status: string; reasons: string[] };
 }
 
 /** The structured result of starting a persisted queued run; production returns `startQueuedRun`'s result as is. */
@@ -204,12 +210,33 @@ export class GoalSupervisor {
     | {
         ok: false;
         code:
-          PreflightFailureCode | 'scheduler_full' | 'transition_refused' | 'no_paused_run' | 'resume_failed';
+          | PreflightFailureCode
+          | 'scheduler_full'
+          | 'transition_refused'
+          | 'no_paused_run'
+          | 'resume_failed'
+          | 'amendment_not_resolved'
+          | 'superseded_cycle_in_flight'
+          | 'superseded_cycle_retired';
       }
   > {
     const goal = this.db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as
       { status: string } | undefined;
     if (!goal) return { ok: false, code: 'goal_not_found' };
+    // The amendment reasons are facts: they need the matching persisted amendment action in this quiescent episode.
+    if (
+      (options.reasonCode === 'amendment_approved' || options.reasonCode === 'amendment_discarded') &&
+      !verifyAmendmentResolution(this.db, goalId, options.reasonCode).ok
+    )
+      return { ok: false, code: 'amendment_not_resolved' };
+    // A cycle created under a superseded definition can never return to autonomous execution.
+    const stale = activeCycle(this.db, goalId);
+    if (stale && this.isSuperseded(goalId, stale)) {
+      const outcome = await this.retireSuperseded(goalId, stale);
+      if (outcome === 'in_flight') return { ok: false, code: 'superseded_cycle_in_flight' };
+      if (outcome === 'retired') return { ok: false, code: 'superseded_cycle_retired' };
+      return { ok: false, code: outcome };
+    }
     if (this.runningGoals().filter((candidate) => candidate.id !== goalId).length >= this.maxRunning())
       return { ok: false, code: 'scheduler_full' };
     // Identify the interrupted run first, without touching it. With no paused Goal run there is nothing to resume.
@@ -245,6 +272,61 @@ export class GoalSupervisor {
 
   startGoal(goalId: string) {
     return this.resumeGoal(goalId, { actor: 'user', reasonCode: 'user_start' });
+  }
+
+  private isSuperseded(goalId: string, cycle: CycleRow): boolean {
+    if (cycle.definitionVersion === null) return false;
+    const goal = this.db
+      .prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?')
+      .get(goalId) as { v: number | null } | undefined;
+    return goal?.v != null && goal.v !== cycle.definitionVersion;
+  }
+
+  /**
+   * A superseded cycle with genuinely active child work is left alone (a provider run is never cancelled just to
+   * simplify state). With no active child work it is retired as one explicit persisted action: cancelled with
+   * `definition_superseded`, no integration, no Goal-ref movement.
+   */
+  private async retireSuperseded(
+    goalId: string,
+    cycle: CycleRow,
+  ): Promise<'in_flight' | 'retired' | 'goal_ref_changed' | 'git_state_invalid'> {
+    const runs = this.db
+      .prepare('SELECT id, status FROM runs WHERE goal_cycle_id = ?')
+      .all(cycle.id) as Array<{
+      id: string;
+      status: string;
+    }>;
+    if (runs.some((run) => !TERMINAL_RUN.has(run.status))) return 'in_flight';
+    try {
+      // A planned integration operation must be resolved before the cycle's history is closed.
+      const recovered = await recoverIntegrationOps(this.db, goalId);
+      if (recovered.some((entry) => entry.outcome === 'goal_ref_changed')) return 'goal_ref_changed';
+    } catch (error) {
+      if (error instanceof GoalGitError) return 'git_state_invalid';
+      throw error;
+    }
+    const current = (
+      this.db.prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?').get(goalId) as {
+        v: number;
+      }
+    ).v;
+    finalizeCycle(this.db, {
+      cycleId: cycle.id,
+      to: 'cancelled',
+      outcomeCode: 'definition_superseded',
+      detail: { fromVersion: cycle.definitionVersion, toVersion: current, runIds: runs.map((run) => run.id) },
+      now: this.now(),
+    });
+    this.afterCycle(goalId);
+    return 'retired';
+  }
+
+  private async tickSuperseded(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    const outcome = await this.retireSuperseded(goalId, cycle);
+    if (outcome === 'in_flight') return { action: 'superseded_cycle_in_flight', goalId, cycleId: cycle.id };
+    if (outcome === 'retired') return { action: 'superseded_cycle_retired', goalId, cycleId: cycle.id };
+    return this.blockForRef(goalId, outcome);
   }
 
   /** The paused run of the active cycle's current phase (proposal before launch, execution/remediation after). */
@@ -634,10 +716,33 @@ export class GoalSupervisor {
    * once, wait while it is in flight, and only when it has completed read its stored output. No model is called here.
    */
   private async tickProposing(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    const result = await this.tickProposingStep(goalId, cycle);
+    // Once the proposal result is durably consumed into cycle history the read-only proposal worktree is disposable.
+    if (!['proposal_recorded', 'proposal_rejected', 'cycle_failed'].includes(result.action)) return result;
+    const run = this.runForPurpose(cycle.id, 'proposal');
+    if (!run) return result;
+    const cleanup = await this.tryPrune(run.id);
+    return cleanup ? { ...result, cleanup } : result;
+  }
+
+  /** Retention is best effort: a failure here is reported in bounded form and never changes the Goal outcome. */
+  private async tryPrune(runId: string): Promise<TickResult['cleanup'] | undefined> {
+    try {
+      const result = await pruneRunWorktree(this.db, runId);
+      if (result.status === 'already_pruned') return undefined;
+      return { runId, status: result.status, reasons: [...result.reasons].slice(0, 5) };
+    } catch {
+      return { runId, status: 'error', reasons: ['prune_error'] };
+    }
+  }
+
+  private async tickProposingStep(goalId: string, cycle: CycleRow): Promise<TickResult> {
     const milestone = this.milestoneSpec(goalId, cycle);
     if (!milestone || cycle.definitionVersion === null) return this.fail(cycle, 'milestone_unavailable');
     const run = this.runForPurpose(cycle.id, 'proposal');
     if (!run) {
+      const blocked = await this.verifyRef(goalId);
+      if (blocked) return blocked;
       try {
         await this.executor.queueProposalRun({
           goalId,
@@ -653,6 +758,8 @@ export class GoalSupervisor {
       return { action: 'proposal_queued', goalId, cycleId: cycle.id };
     }
     if (run.status === 'queued') {
+      const blocked = await this.verifyRef(goalId);
+      if (blocked) return blocked;
       const outcome = this.startQueued(goalId, cycle, run);
       if (outcome.kind === 'result') return outcome.result;
       return outcome.kind === 'in_flight'
@@ -703,6 +810,7 @@ export class GoalSupervisor {
   }
 
   private async tickCycle(goalId: string, cycle: CycleRow): Promise<TickResult> {
+    if (this.isSuperseded(goalId, cycle)) return this.tickSuperseded(goalId, cycle);
     const next = (
       to: Parameters<typeof transitionCycle>[1]['to'],
       extra: Partial<Parameters<typeof transitionCycle>[1]> = {},
@@ -752,6 +860,8 @@ export class GoalSupervisor {
         const purpose = this.workPurpose(cycle);
         const run = this.runForPurpose(cycle.id, purpose);
         if (!run) {
+          const blocked = await this.verifyRef(goalId);
+          if (blocked) return blocked;
           try {
             await this.executor.queueChildRun({
               goalId,
@@ -769,6 +879,8 @@ export class GoalSupervisor {
         // A queued run is started exactly once: this is the only place a work run is started on the tick path.
         let started = true;
         if (run.status === 'queued') {
+          const blocked = await this.verifyRef(goalId);
+          if (blocked) return blocked;
           const outcome = this.startQueued(goalId, cycle, run);
           if (outcome.kind === 'result') return outcome.result;
           started = outcome.kind === 'in_flight';

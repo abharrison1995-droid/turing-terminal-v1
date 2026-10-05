@@ -311,6 +311,9 @@ export function beginAmendment(
       });
     else if (goal.status === 'needs_user' && goal.status_reason_code === 'amendment_in_progress') {
       // A previous proposal was discarded; the Goal is still quiesced for amendment.
+    } else if (goal.status === 'needs_user' && goal.status_reason_code === 'scope_violation') {
+      // Already quiesced by the supervisor. The reason is deliberately kept: it is cleared only by a resume that
+      // follows an approved (or discarded) amendment, never merely because a proposal exists.
     } else throw new GoalDefinitionError('goal_not_amendable', `A ${goal.status} Goal cannot be amended.`);
     const base = loadDefinitionVersion(db, input.goalId, current)!;
     const next =

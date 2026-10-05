@@ -9,6 +9,7 @@ import { cleanupRepoFixtures, milestone, passDeterministic, simpleDefinition } f
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 import { GoalSupervisor, TICK_ACTIONS, type TickAction } from './supervisor.js';
 import { listCycles } from './cycles.js';
+import { approveDefinition, beginAmendment } from './definitions.js';
 import { ActiveTimeTracker } from './activeTime.js';
 
 afterEach(() => {
@@ -846,11 +847,9 @@ describe('startup reconciliation', () => {
   it('re-runs preflight for an approved amendment: a moved ref keeps the Goal in needs_user, a valid one resumes it', async () => {
     const h = harness();
     await h.start();
-    h.fx.db
-      .prepare(
-        "UPDATE goals SET status = 'needs_user', status_reason_code = 'amendment_in_progress' WHERE id = ?",
-      )
-      .run(h.fx.goalId);
+    // A real amendment: begin, approve the exact proposed version, then the resume reason is a persisted fact.
+    const amendment = beginAmendment(h.fx.db, { goalId: h.fx.goalId, actor: 'user' });
+    approveDefinition(h.fx.db, { goalId: h.fx.goalId, version: amendment.version, actor: 'user' });
     const ref = `refs/heads/turing/goal/${h.fx.goalId}`;
     const good = h.fx.git('rev-parse', ref);
     h.fx.git('update-ref', ref, h.fx.orphanCommit());

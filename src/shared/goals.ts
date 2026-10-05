@@ -448,6 +448,7 @@ export const GOAL_EVENT_TYPES = [
   'cycle_created',
   'cycle_finished',
   'counters_reconciled',
+  'run_evidence_collected',
 ] as const;
 export type GoalEventType = (typeof GOAL_EVENT_TYPES)[number];
 
