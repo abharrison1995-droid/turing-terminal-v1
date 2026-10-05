@@ -115,6 +115,29 @@ export function listReviews(db: Db, goalId: string): GoalReviewRow[] {
 }
 
 /**
+ * A new review starts only under the current approved authority: the version must be the Goal's current definition
+ * version and be `approved`. An in-flight review is not invalidated by a later amendment (it may still complete as
+ * history), but it can no longer change current findings (see findings.ts). Synchronous, so it can run again inside
+ * the insert transaction after the asynchronous Git reads.
+ */
+function assertCurrentApprovedDefinition(db: Db, goalId: string, definitionVersion: number): void {
+  if (!loadDefinitionVersion(db, goalId, definitionVersion))
+    throw new GoalReviewError('definition_not_found', 'No such definition version for this Goal.');
+  const row = db
+    .prepare(
+      `SELECT g.current_definition_version AS current, d.status AS status
+       FROM goals g LEFT JOIN goal_definition_versions d ON d.goal_id = g.id AND d.version = ?
+       WHERE g.id = ?`,
+    )
+    .get(definitionVersion, goalId) as { current: number | null; status: string | null } | undefined;
+  if (!row || row.current !== definitionVersion || row.status !== 'approved')
+    throw new GoalReviewError(
+      'definition_not_current',
+      'A review can only start against the current approved definition version.',
+    );
+}
+
+/**
  * Creates a pending review bound to the Goal's integration state: reviewed_to_commit and reviewed_to_tree are read
  * from Git at the verified Goal ref, never supplied by the caller. The binding is immutable (migration 017). An
  * optional `reviewedFromCommit` (the start of the reviewed range) must be an ancestor of the head.
@@ -134,21 +157,7 @@ export async function createReview(
 ): Promise<{ id: string; reviewedToCommit: string; reviewedToTree: string }> {
   if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId))
     throw new GoalReviewError('goal_not_found', 'The Goal does not exist.');
-  const version = loadDefinitionVersion(db, input.goalId, input.definitionVersion);
-  if (!version)
-    throw new GoalReviewError('definition_not_found', 'No such definition version for this Goal.');
-  // A new review starts only under the current approved authority. An in-flight review is not invalidated by a later
-  // amendment (it may still complete as history), but it can no longer change current findings (see findings.ts).
-  const current = db
-    .prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?')
-    .get(input.goalId) as {
-    v: number | null;
-  };
-  if (current.v !== input.definitionVersion || version.status !== 'approved')
-    throw new GoalReviewError(
-      'definition_not_current',
-      'A review can only start against the current approved definition version.',
-    );
+  assertCurrentApprovedDefinition(db, input.goalId, input.definitionVersion);
   if (input.reviewKind === 'milestone' && !input.milestoneId)
     throw new GoalReviewError('milestone_required', 'A milestone review names its milestone.');
   if (
@@ -180,6 +189,9 @@ export async function createReview(
   const now = input.now ?? new Date().toISOString();
   const id = randomUUID();
   db.transaction(() => {
+    // The asynchronous Git reads above can interleave with an amendment: re-check the definition authority and the
+    // head here, in the same transaction as the insert. Nothing is written if either moved.
+    assertCurrentApprovedDefinition(db, input.goalId, input.definitionVersion);
     const head = (
       db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(input.goalId) as
         { integration_head: string | null } | undefined

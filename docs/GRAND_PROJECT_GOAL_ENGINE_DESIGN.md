@@ -1068,6 +1068,10 @@ Differences from the design text, chosen deliberately:
 - **Reviews start only under current approved authority.** `createReview` requires the definition version to be the
   Goal's `current_definition_version` with status `approved`; otherwise `definition_not_current` (a nonexistent version
   stays `definition_not_found`). A review already in flight when an amendment lands may still complete as history.
+  **Stage 2B.2:** the same synchronous assertion runs again inside the insert transaction (with the head re-check), so
+  an amendment approved while the asynchronous Git reads were in flight yields `definition_not_current` and no row is
+  written. `reviewsRace.test.ts` forces that interleaving deterministically (a mocked repository-read boundary runs the
+  amendment after the real read resolves; no timers).
 - **Migration 019 — finding decision authority.** `goal_findings.decision_approval_id` (nullable FK to `goal_approvals`).
   `open -> accepted_by_user | dismissed_by_user` requires that pointer to name an approval of the same Goal, gate
   `finding_decision`, `approved` by the `user`, whose detail has `findingId == finding.id`, `decision == new status`, and
