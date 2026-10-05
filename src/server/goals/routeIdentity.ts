@@ -175,10 +175,11 @@ export function computeRouteIdentity(member: RouteMember, snapshot: RouteSnapsho
 // --- Structural validation of a stored identity ----------------------------------------------------------------------
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
-const short = z.string().min(1).max(200);
+// Bounded by the persisted-audit cap, not a smaller undocumented limit (see routeAudit.ts).
+const short = z.string().min(1).max(64_000);
 const settings = z.record(
-  z.string().max(100),
-  z.union([z.string().max(200), z.number(), z.boolean(), z.null()]),
+  z.string().max(64_000),
+  z.union([z.string().max(64_000), z.number(), z.boolean(), z.null()]),
 );
 
 /** Schema 1 of `computeRouteIdentity().identity`, with exactly its nullable shapes. Strict: no extra keys. */

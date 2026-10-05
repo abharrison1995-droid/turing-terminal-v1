@@ -164,11 +164,20 @@ export interface RoutingResult {
 // Persisted audit is route authority, so every part has a bounded schema of finite codes, ids, hashes and short
 // declared values. Nothing here can carry provider output, credentials or free text.
 
+/**
+ * Total persisted audit size for one cycle. If a resolution cannot fit it is refused, never trimmed. This single cap is
+ * the effective bound on everything below: the Goal-definition validator imposes no smaller limit on route strings,
+ * `nativeSettings`, pool size or the authority set, so no per-field schema bound may be tighter than the cap itself
+ * (a definition the validator accepted must never be rejected by this strict schema for an undocumented smaller limit).
+ */
+export const MAX_ROUTE_RESOLUTION_JSON = 64_000;
+const AUDIT_BOUND = MAX_ROUTE_RESOLUTION_JSON;
+
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
-const idText = z.string().min(1).max(200);
+const idText = z.string().min(1).max(AUDIT_BOUND);
 const iso = z.string().min(1).max(40);
 const kind = z.enum(['pinned', 'floating', 'unknown']);
-const settingsValue = z.union([z.string().max(200), z.number(), z.boolean(), z.null()]);
+const settingsValue = z.union([z.string().max(AUDIT_BOUND), z.number(), z.boolean(), z.null()]);
 const configuration = z
   .object({
     backendId: idText.optional(),
@@ -178,10 +187,9 @@ const configuration = z
     connectionProfileId: idText.optional(),
     variantId: idText.optional(),
     reasoning: idText.optional(),
-    nativeSettings: z.record(z.string().max(100), settingsValue).optional(),
+    nativeSettings: z.record(z.string().max(AUDIT_BOUND), settingsValue).optional(),
   })
-  .strict()
-  .refine((value) => Object.keys(value.nativeSettings ?? {}).length <= 32);
+  .strict();
 const catalogSource = z.enum(['live', 'cache', 'adapter', 'none']);
 const modelStatus = z.enum(['current', 'last-known', 'unavailable', 'deprecated']);
 const firstUseState = z.enum(['not_required', 'required', 'pending', 'approved', 'denied']);
@@ -219,7 +227,7 @@ const independenceResult = z
     candidate: subject,
     comparedAgainst: z
       .array(subject.extend({ role: z.enum(['orchestrator', 'implementer', 'remediation']) }).strict())
-      .max(32),
+      .max(AUDIT_BOUND),
     reasonCode: z.enum(INDEPENDENCE_REASONS),
     conflict: z.boolean(),
   })
@@ -227,7 +235,7 @@ const independenceResult = z
 
 const memberEvaluation = z
   .object({
-    memberIndex: z.number().int().min(0).max(511),
+    memberIndex: z.number().int().min(0).max(AUDIT_BOUND),
     identityHash: hex64.nullable(),
     memberConfigHash: hex64,
     configuration,
@@ -267,15 +275,15 @@ const storedResolution = z
     routeKind: z.enum(['pinned', 'pool']),
     poolId: idText.nullable(),
     selection: z.enum(['pinned', 'ordered', 'round_robin']),
-    selectedIndex: z.number().int().min(0).max(511),
+    selectedIndex: z.number().int().min(0).max(AUDIT_BOUND),
     selected: z
       .object({ configuration, identityHash: hex64, memberConfigHash: hex64, identityKind: kind })
       .strict(),
-    evaluatedMembers: z.array(memberEvaluation).min(1).max(512),
+    evaluatedMembers: z.array(memberEvaluation).min(1).max(AUDIT_BOUND),
     validationRecordIds: z.array(idText).max(8),
     catalog: z
       .object({
-        backendId: z.string().max(200),
+        backendId: z.string().max(AUDIT_BOUND),
         source: catalogSource.nullable(),
         refreshedAt: iso.nullable(),
         modelStatus: modelStatus.nullable(),

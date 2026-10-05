@@ -15,7 +15,7 @@ describe('local database', () => {
     const root = mkdtempSync(join(tmpdir(), 'turing-db-'));
     folders.push(root);
     let db = openDatabase(root);
-    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(20);
+    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(21);
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '009_stage_attempts.sql'").get(),
     ).toBeTruthy();
@@ -39,17 +39,17 @@ describe('local database', () => {
       ).toBeTruthy();
     const countWhere = (where: string) =>
       (db.prepare(`SELECT COUNT(*) AS count FROM workflows WHERE ${where}`).get() as { count: number }).count;
-    // Five ordinary seeded workflows plus the five reserved Goal built-ins, seeded idempotently.
+    // Five ordinary seeded workflows plus the six reserved Goal built-ins, seeded idempotently.
     expect(countWhere("id NOT LIKE 'goal-%'")).toBe(5);
-    expect(countWhere("id LIKE 'goal-%-v1'")).toBe(5);
+    expect(countWhere("id LIKE 'goal-%-v1'")).toBe(6);
     expect((db.prepare('SELECT COUNT(*) AS count FROM machines').get() as { count: number }).count).toBe(1);
     db.close();
     db = openDatabase(root);
     const countWorkflows = (where: string) =>
       (db.prepare(`SELECT COUNT(*) AS count FROM workflows WHERE ${where}`).get() as { count: number }).count;
-    // Five ordinary seeded workflows plus the five reserved Goal built-ins, seeded idempotently.
+    // Five ordinary seeded workflows plus the six reserved Goal built-ins, seeded idempotently.
     expect(countWorkflows("id NOT LIKE 'goal-%'")).toBe(5);
-    expect(countWorkflows("id LIKE 'goal-%-v1'")).toBe(5);
+    expect(countWorkflows("id LIKE 'goal-%-v1'")).toBe(6);
     db.close();
   });
 

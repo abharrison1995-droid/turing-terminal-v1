@@ -47,7 +47,7 @@ export class FixedGoalRunPlanProvider implements GoalRunPlanProvider {
     this.requests.push(request);
     const builtin = this.custom.get(request.workflowId) ?? goalBuiltinById(request.workflowId);
     if (!builtin) return { ready: false, code: 'route_unavailable', message: 'No built-in workflow.' };
-    const workflow = structuredClone(builtin);
+    const workflow = structuredClone(builtin) as WorkflowDefinition;
     workflow.stages = workflow.stages.map((stage): WorkflowStage =>
       AI.has(stage.kind) ? { ...stage, ...this.route } : stage,
     );

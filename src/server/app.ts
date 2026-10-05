@@ -56,6 +56,13 @@ import {
   startGoalAuthoring,
 } from './goals/authoring.js';
 import { TuringExecutorError } from './goals/turingExecutor.js';
+import {
+  createRouteProbe,
+  getRouteProbeStatus,
+  RouteProbeError,
+  routeProbeRequestSchema,
+} from './goals/routeProbe.js';
+import { PROBE_FIXTURE } from '../shared/routeProbe.js';
 import { readGitDiff } from './git.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
 import { listRules } from './rules.js';
@@ -883,9 +890,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       lastSeenAt: now,
     };
     const projects = (
-      db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all() as Array<
-        Record<string, unknown>
-      >
+      db
+        .prepare('SELECT * FROM projects WHERE id <> ? ORDER BY name COLLATE NOCASE')
+        .all(PROBE_FIXTURE.projectId) as Array<Record<string, unknown>>
     ).map(toProject);
     const workflows = (
       db.prepare('SELECT * FROM workflows ORDER BY is_default DESC, name COLLATE NOCASE').all() as Array<
@@ -1210,9 +1217,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
   });
   app.get('/api/projects', async () => ({
     projects: (
-      db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all() as Array<
-        Record<string, unknown>
-      >
+      db
+        .prepare('SELECT * FROM projects WHERE id <> ? ORDER BY name COLLATE NOCASE')
+        .all(PROBE_FIXTURE.projectId) as Array<Record<string, unknown>>
     ).map(toProject),
   }));
   app.post('/api/projects', async (request, reply) => {
@@ -1744,6 +1751,38 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const status = getAuthoringStatus(db, (request.params as { goalId: string }).goalId);
     if (!status) return reply.code(404).send({ error: 'The Goal has no authoring attempt.' });
     return { authoring: status };
+  });
+
+  // Stage 5B.1: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
+  // the route identity itself and answers as soon as the run is queued. There is no revalidation endpoint: a probe only
+  // ever exists because a user posted this request.
+  app.post('/api/route-validations', async (request, reply) => {
+    const parsed = routeProbeRequestSchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid route validation request.' });
+    try {
+      const started = await createRouteProbe(db, parsed.data, (runId) => startQueuedRun(db, engine, runId));
+      return reply.code(202).send(started);
+    } catch (error) {
+      if (error instanceof RouteProbeError) {
+        const status =
+          error.code === 'route_incomplete' || error.code === 'identity_unresolved'
+            ? 400
+            : error.code === 'fixture_unavailable' || error.code === 'workflow_invalid'
+              ? 503
+              : 409;
+        return reply.code(status).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
+  });
+
+  app.get('/api/route-validations/:probeId', async (request, reply) => {
+    const status = getRouteProbeStatus(db, (request.params as { probeId: string }).probeId);
+    if (!status) return reply.code(404).send({ error: 'The route validation probe was not found.' });
+    return { probe: status };
   });
 
   app.post('/api/runs/:id/replay', async (request, reply) => {

@@ -310,7 +310,7 @@ describe('persisted role resolution re-proof', () => {
     expect(bad((d) => ((d.catalog as unknown as Record<string, unknown>).raw = { models: [] }))).toBeNull();
     expect(bad((d) => ((d.approval as unknown as Record<string, unknown>).secret = 'k'))).toBeNull();
     expect(bad((d) => (d.catalog.source = 'free text' as never))).toBeNull();
-    expect(bad((d) => (d.selected.configuration.modelId = 'x'.repeat(201)))).toBeNull();
+    expect(bad((d) => (d.selected.configuration.modelId = 'x'.repeat(64_001)))).toBeNull();
     expect(bad((d) => (d.evaluatedMembers = 'nope' as never))).toBeNull();
     expect(
       parseRoleResolution({ ...ok, independence: { arbitrary: 'json' } } as unknown as RoleResolution),

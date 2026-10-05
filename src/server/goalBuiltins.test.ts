@@ -77,6 +77,7 @@ describe('built-in Goal workflows', () => {
       'goal-review-v1': 'normal',
       'goal-verification-v1': 'normal',
       'goal-authoring-v1': 'normal',
+      'goal-probe-v1': 'yolo',
     });
     const execution = GOAL_BUILTIN_WORKFLOWS.find((w) => w.id === GOAL_WORKFLOW_IDS.execution)!;
     expect(execution.stages.find((s) => s.kind === 'gitCommit')?.allowNoChanges).toBe(true);

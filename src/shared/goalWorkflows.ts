@@ -1,5 +1,13 @@
 import type { WorkflowDefinition, WorkflowStage } from './types.js';
 import { DEFAULT_BILLING } from './workflows.js';
+import {
+  PROBE_COMMIT_MESSAGE,
+  PROBE_COMMIT_STAGE_KEY,
+  PROBE_INSTRUCTIONS,
+  PROBE_PROFILE_ORDER,
+  PROBE_STAGE_KEYS,
+  PROBE_WORKFLOW_ID,
+} from './routeProbe.js';
 
 /**
  * Turing-reserved Goal workflow templates (Goal Engine Stage 4A). They are deterministic, versioned in their id, run in
@@ -17,6 +25,7 @@ export const GOAL_WORKFLOW_IDS = {
   review: 'goal-review-v1',
   verification: 'goal-verification-v1',
   authoring: 'goal-authoring-v1',
+  probe: PROBE_WORKFLOW_ID,
 } as const;
 
 /** The stage key whose persisted output is the proposal a Goal planning run returns. */
@@ -130,6 +139,50 @@ export const GOAL_BUILTIN_WORKFLOWS: readonly BuiltIn[] = [
     'Reserved for the Goal Engine. Read-only: drafts a Goal definition as strict JSON.',
     'normal',
     [stage(GOAL_AUTHOR_STAGE_KEY, 'Draft Goal definition', 'planner', 'planner', { timeoutMinutes: 30 })],
+  ),
+  base(
+    GOAL_WORKFLOW_IDS.probe,
+    'Turing Goal · Route validation probe',
+    'Reserved for the Goal Engine. Runs the Turing-owned route-validation tasks against a fixed fixture repository. Only a user-initiated probe applies a route to it. Permission mode is yolo so the single fixture edit can be committed; the read-only roles stay read-only.',
+    'yolo',
+    [
+      ...PROBE_PROFILE_ORDER.flatMap((profile) => {
+        const editing = profile === 'broker-edit';
+        const role = {
+          'structured-readonly': 'planner',
+          'orchestrator-json': 'orchestrator',
+          'review-json': 'reviewer',
+          'broker-read': 'planner',
+          'broker-edit': 'implementer',
+        }[profile];
+        const probeStage = stage(
+          PROBE_STAGE_KEYS[profile],
+          `Probe ${profile}`,
+          editing ? 'implementer' : 'planner',
+          role,
+          { timeoutMinutes: 15, customInstructions: PROBE_INSTRUCTIONS[profile] },
+        );
+        return editing
+          ? [
+              probeStage,
+              stage(PROBE_COMMIT_STAGE_KEY, 'Commit probe edit', 'gitCommit', undefined, {
+                commitMessage: PROBE_COMMIT_MESSAGE,
+                allowNoChanges: true,
+              }),
+            ]
+          : [probeStage];
+      }),
+    ],
+    {
+      retryPolicy: { maxRetries: 0, initialDelayMs: 1_000, maxDelayMs: 30_000 },
+      contextPolicy: {
+        ...contextPolicy,
+        includeCurrentDiff: false,
+        includeTestOutput: false,
+        includeBuildOutput: false,
+        includePreviousArtifact: false,
+      },
+    },
   ),
 ];
 

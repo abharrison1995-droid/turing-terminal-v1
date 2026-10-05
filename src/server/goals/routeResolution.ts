@@ -9,7 +9,12 @@ import {
 import { canonicalJson } from './definitionHash.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import type { AuthorityModel } from './independence.js';
-import { parseRoleResolution, type RoleResolution, type RoutingResult } from './routeAudit.js';
+import {
+  MAX_ROUTE_RESOLUTION_JSON,
+  parseRoleResolution,
+  type RoleResolution,
+  type RoutingResult,
+} from './routeAudit.js';
 import { computeRouteIdentity, type ProfileObservation } from './routeIdentity.js';
 import {
   ROLE_VALIDATION_PROFILES,
@@ -33,8 +38,7 @@ import { isCycleTerminal, type CycleStatus } from './cycles.js';
  * read-only preview. The decision itself stays in the pure `resolveRoutes`.
  */
 
-/** Total persisted audit size for one cycle. If a resolution cannot fit it is refused, never trimmed. */
-export const MAX_ROUTE_RESOLUTION_JSON = 64_000;
+export { MAX_ROUTE_RESOLUTION_JSON };
 
 export type RouteResolutionErrorCode =
   | 'goal_not_found'
