@@ -3,6 +3,9 @@ import { createApp } from './app.js';
 import { RunEngine } from './runEngine.js';
 import { assertLoopbackHost } from './networkPolicy.js';
 import { deliverPushNotice } from './webPush.js';
+import { startQueuedRun } from './runLauncher.js';
+import { createGoalSupervisor } from './goals/supervisor.js';
+import { DisabledGoalExecutor } from './goals/executor.js';
 
 const host = process.env.TT_HOST ?? '127.0.0.1';
 assertLoopbackHost(host);
@@ -14,6 +17,17 @@ const engine = new RunEngine(database, (event, payload) => {
   void deliverPushNotice(database, event, payload).catch(() => undefined);
 });
 engine.reconcileInterruptedRuns();
+// Stage 3: the Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
+// route is ever reported ready and no child run or provider call can be started from a Goal.
+const goalSupervisor = createGoalSupervisor({
+  db: database,
+  executor: new DisabledGoalExecutor(),
+  startRun: (runId) => {
+    startQueuedRun(database, engine, runId);
+  },
+  resumeRun: (runId) => engine.start(runId, true),
+});
+await goalSupervisor.reconcile();
 const app = createApp({ database, engine });
 
 app.get('/api/events', async (request, reply) => {
@@ -50,8 +64,10 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535)
   throw new Error('TT_PORT must be a valid TCP port.');
 await app.listen({ host, port });
 app.log.info({ host, port }, 'Turing Terminal local master is ready');
+goalSupervisor.start();
 
 const shutdown = async () => {
+  goalSupervisor.shutdown();
   await app.close();
   process.exit(0);
 };

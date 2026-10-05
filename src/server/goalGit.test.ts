@@ -115,6 +115,10 @@ async function setup(
     newCycle: () => {
       const id = randomUUID();
       sequence += 1;
+      // Migration 020 allows one unfinished cycle per Goal; a fixture that opens another closes the previous one.
+      db.prepare(
+        "UPDATE goal_cycles SET status = 'cancelled', finished_at = ? WHERE goal_id = ? AND status NOT IN ('succeeded','failed','cancelled','rejected')",
+      ).run(NOW, goalId);
       const head = (
         db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(goalId) as
           { integration_head: string } | undefined

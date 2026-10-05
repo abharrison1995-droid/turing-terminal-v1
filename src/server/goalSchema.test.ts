@@ -149,9 +149,11 @@ function cycle(
   definitionVersion: number | null,
   milestoneId: string | null = null,
 ) {
+  // These tests exercise the schema's columns, not the cycle lifecycle, so fixtures insert finished cycles: migration 020
+  // allows only one unfinished cycle per Goal.
   db.prepare(
     `INSERT INTO goal_cycles (id, goal_id, definition_version, milestone_id, sequence, kind, trigger_code, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'test', 'planned', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'test', 'cancelled', ?)`,
   ).run(id, goalId, definitionVersion, milestoneId, sequence, kind, NOW);
 }
 
@@ -226,7 +228,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -251,7 +253,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     db.close();
   });
 });
@@ -655,7 +657,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(
       db.prepare('SELECT id, status, recovery_json FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -875,7 +877,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -883,7 +885,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -909,7 +911,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1353,7 +1355,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1361,11 +1363,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     again.close();
   });
 
@@ -1651,7 +1653,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1660,11 +1662,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 19 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 20 });
       again.close();
     }
   });

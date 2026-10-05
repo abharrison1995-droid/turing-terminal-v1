@@ -65,6 +65,7 @@ import {
   summarizeBrokerAction,
   type BrokerPolicyResult,
 } from './executionBroker.js';
+import { estimateTokens } from './tokenEstimate.js';
 
 const execFile = promisify(callbackExecFile);
 const AI_KINDS = new Set<WorkflowStage['kind']>([
@@ -3484,10 +3485,6 @@ function defaultContextPolicy(): ContextPolicy {
     includePreviousTranscript: false,
     onLimitExceeded: 'compact',
   };
-}
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
 }
 
 function compactOptionalContextBlock(block: string): string {

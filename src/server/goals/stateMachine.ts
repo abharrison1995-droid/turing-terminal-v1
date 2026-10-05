@@ -63,6 +63,25 @@ export interface TransitionRequest {
   now?: string;
 }
 
+export interface GoalTransitionEvent {
+  db: Db;
+  goalId: string;
+  from: GoalStatus;
+  to: GoalStatus;
+}
+type GoalTransitionListener = (event: GoalTransitionEvent) => void;
+const listeners = new Set<GoalTransitionListener>();
+
+/**
+ * Observes committed status changes (for example to account active time when a user pauses a Goal). Listeners run
+ * after the transaction commits, cannot veto or alter the transition, and a throwing listener is ignored.
+ * Returns the unsubscribe function.
+ */
+export function onGoalTransition(listener: GoalTransitionListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 const ALL_REASONS: ReadonlySet<string> = new Set<string>([
   ...NEEDS_USER_REASONS,
   ...BLOCKED_REASONS,
@@ -190,5 +209,12 @@ export function transitionGoal(db: Db, request: TransitionRequest): { from: Goal
     );
     return { from, to: request.to };
   });
-  return run();
+  const result = run();
+  for (const listener of listeners)
+    try {
+      listener({ db, goalId: request.goalId, from: result.from, to: result.to });
+    } catch {
+      /* Observers are advisory. */
+    }
+  return result;
 }

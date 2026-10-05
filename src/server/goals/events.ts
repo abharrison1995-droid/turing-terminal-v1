@@ -83,6 +83,28 @@ export interface GoalEventPayloads {
     integrationTree: string;
     failureCodes: string[];
   };
+  cycle_created: {
+    cycleId: string;
+    sequence: number;
+    kind: string;
+    triggerCode: string;
+    milestoneKey: string | null;
+    definitionVersion: number;
+    baseIntegrationCommit: string;
+  };
+  cycle_finished: {
+    cycleId: string;
+    sequence: number;
+    kind: string;
+    status: string;
+    outcomeCode: string;
+  };
+  counters_reconciled: {
+    cyclesExecuted: number;
+    consecutiveFailedCycles: number;
+    remediationAttempts: Record<string, number>;
+    corrected: boolean;
+  };
 }
 
 const MAX_PAYLOAD_CHARS = 16_384;

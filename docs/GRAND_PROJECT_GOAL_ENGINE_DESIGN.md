@@ -1085,3 +1085,27 @@ Differences from the design text, chosen deliberately:
   `turing-subject-`, `turing-goal-origin-` (plus the older `turing-db-`, `turing-git-`, `turing-api-`, etc.); an
   interrupted run can leave these behind and they are safe to delete by prefix. `turing-goal-git-no-hooks` is a single
   reused production directory, not a leak. `npm ci` is part of the mandatory gate.
+
+## Stage 3 implementation notes (Goal supervisor core)
+
+Implemented in `src/server/goals/`: `cycles.ts` (sole cycle-status writer, idempotent creation, counter reconcile), `nextTask.ts`
+(strict NextTask validation), `scope.ts`, `preflight.ts`, `bounds.ts`, `activeTime.ts`, `memory.ts`, `executor.ts`
+(injected boundary plus the non-launching `DisabledGoalExecutor`), `supervisor.ts` (persistent ticks, reconcile, shutdown)
+and migration `020_goal_supervisor_invariants.sql`. `fakeExecutor.ts` and `supervisorKit.ts` are test-only and excluded
+from the server build; a static test proves no production file imports them.
+
+Deliberate differences from the design above:
+
+- Clean shutdown persists active-time deltas and launches nothing, but leaves a running Goal `running` (not
+  `paused(master_shutdown)`), so the next start continues without a user action. Child runs are never cancelled.
+- The production executor is disabled: preflight fails with `route_unavailable` until Stage 5 supplies routing.
+- `scope_violation` counts as a failed cycle (consecutive-failure bound) without an immediate `needs_user` escalation.
+- A denied `eachCycle` gate cancels that cycle; the Goal stays `needs_user(gate_pending)` until the user resumes it.
+- `reconcile()` performs at most one tick per running Goal.
+- Milestone refresh is a derived-cache update performed inside a tick.
+- Migration 020 has no delete trigger on `goal_cycles` (an existing Stage 1 test deletes a cycle row).
+- A cycle counts toward `cycles` bounds when it ends `succeeded` or `failed`; rejected and cancelled cycles do not.
+- Spend is read from the canonical `metered_reservations` ledger; `maxMeteredUsd` is only an extra ceiling and a
+  subscriptions-only Goal has a ceiling of zero.
+- Authoring, review and verification matrices exist but are not orchestrated; remediation cycles are not created by the
+  supervisor yet (Stage 6).
