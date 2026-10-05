@@ -486,9 +486,9 @@ export class TuringGoalExecutor implements GoalExecutor {
         'verification_invalid',
         'A requested verifier is not a required deterministic verifier of the cycle milestone.',
       );
-    // When the cycle carries its trusted verifier set, the request must be exactly that set.
+    // The cycle's persisted verifier set is the authorisation: it must exist and the request must be exactly it.
     const persisted = normalizeVerifierDigests(loaded.cycle.outcome?.verifierDigests);
-    if (persisted && JSON.stringify(persisted) !== JSON.stringify(digests))
+    if (!persisted || JSON.stringify(persisted) !== JSON.stringify(digests))
       throw new TuringExecutorError(
         'verification_inputs_mismatch',
         "The requested verifiers are not the cycle's verifier set.",

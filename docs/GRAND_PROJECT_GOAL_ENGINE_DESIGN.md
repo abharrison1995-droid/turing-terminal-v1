@@ -1280,3 +1280,8 @@ connectionProfileId, modelDisplayName, variantId, nativeSettings` on stages in t
 - **Authoring retry** re-reads the Goal inside the final transaction and re-proves draft, no current definition or
   version, no active cycle and a failed/cancelled latest authoring cycle; a preview built for a different project or title
   is refused as `authoring_state_changed`. The preview is never rebuilt in the transaction. No migration.
+
+## Stage 4B.4 implementation notes (verification identity)
+
+- A verification cycle's `outcome_json.verifierDigests` is write-once. `transitionCycle` keeps the first valid normalised set persisted on the cycle; a later supplied set (valid, different, reordered or malformed) is stripped and never replaces or merges with it.
+- `queueVerificationRun` requires a valid persisted set equal to the request on the new-run path as well as the existing-run path; otherwise `verification_inputs_mismatch` and no run is queued. No migration.

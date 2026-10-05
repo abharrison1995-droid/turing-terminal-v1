@@ -209,9 +209,10 @@ export function transitionCycle(db: Db, request: CycleTransition): CycleRow {
     // is carried into every later outcome of that cycle, whatever ends it, and always in normal form.
     let outcome = request.outcome;
     if (outcome && current.kind === 'verification') {
+      // Write-once: the first valid set persisted on the cycle is authority; a later (even valid) set never replaces it.
       const kept =
-        normalizeVerifierDigests(outcome.verifierDigests) ??
-        normalizeVerifierDigests(current.outcome?.verifierDigests);
+        normalizeVerifierDigests(current.outcome?.verifierDigests) ??
+        normalizeVerifierDigests(outcome.verifierDigests);
       const { verifierDigests: _discard, ...rest } = outcome;
       void _discard;
       outcome = kept ? { ...rest, verifierDigests: kept } : rest;

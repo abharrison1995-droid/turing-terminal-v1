@@ -567,7 +567,12 @@ describe('verification run queueing authority', () => {
   });
 
   it('launches nothing when a verifier cannot be materialised', async () => {
-    const { h, executor, request } = await queued();
+    const { h, executor, cycle, request } = await queued();
+    transitionCycle(h.fx.db, {
+      cycleId: cycle.id,
+      to: 'launching',
+      outcome: { verifierDigests: [h.fx.digest('lint')] },
+    });
     await expect(executor.queueVerificationRun(request([h.fx.digest('lint')]))).rejects.toMatchObject({
       code: 'verification_unmaterializable',
     });
@@ -777,6 +782,56 @@ describe('verification loop guard is per definition, milestone, head and verifie
     },
   );
 
+  it.each(['succeeded', 'failed', 'cancelled'] as const)(
+    'keeps the persisted set when the cycle ends %s and the terminal write supplies a valid different set',
+    async (to) => {
+      const { h } = await ready();
+      expect(await h.tick()).toBe('cycle_created');
+      const cycle = verifications(h)[0]!;
+      const expected = [h.fx.digest('build'), h.fx.digest('tests')].sort();
+      if (to === 'succeeded') {
+        transitionCycle(h.fx.db, { cycleId: cycle.id, to: 'running' });
+        transitionCycle(h.fx.db, { cycleId: cycle.id, to: 'collecting' });
+      }
+      finalizeCycle(h.fx.db, {
+        cycleId: cycle.id,
+        to,
+        outcomeCode: 'whatever',
+        detail: { verifierDigests: ['c'.repeat(64)] },
+      });
+      expect(digestsOf(h, cycle.id)).toEqual(expected);
+    },
+  );
+
+  it('freezes the verifier set at its first valid write across non-terminal transitions', async () => {
+    const h = harness({ definition: definitionWith(LINT) });
+    await h.start();
+    const created = createCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      kind: 'verification',
+      triggerCode: 'evidence_refresh',
+      milestoneKey: 'm1',
+    });
+    if (!created.created) throw new Error('not created');
+    const id = created.cycle.id;
+    const A = 'a'.repeat(64);
+    const B = 'b'.repeat(64);
+    const C = 'c'.repeat(64);
+    transitionCycle(h.fx.db, { cycleId: id, to: 'launching', outcome: { verifierDigests: [B, A, A] } });
+    expect(digestsOf(h, id)).toEqual([A, B]);
+    transitionCycle(h.fx.db, { cycleId: id, to: 'running', outcome: { verifierDigests: [C] } });
+    expect(digestsOf(h, id)).toEqual([A, B]);
+    transitionCycle(h.fx.db, { cycleId: id, to: 'collecting', outcome: { verifierDigests: ['bad'] } });
+    expect(digestsOf(h, id)).toEqual([A, B]);
+    finalizeCycle(h.fx.db, {
+      cycleId: id,
+      to: 'failed',
+      outcomeCode: 'x',
+      detail: { verifierDigests: [B, A, A, C] },
+    });
+    expect(digestsOf(h, id)).toEqual([A, B]);
+  });
+
   it('does not let a historical verification row without a trustworthy digest list suppress anything', async () => {
     const { h } = await ready();
     const head = h.fx.head();
@@ -906,6 +961,55 @@ async function queuedVerification() {
   });
   return { h, executor, cycle: created.cycle, request };
 }
+
+describe("a verification run needs the cycle's persisted verifier set", () => {
+  it('refuses to queue without, with a corrupt, or with a different persisted set; queues with the exact set', async () => {
+    const { h, executor, cycle, request } = await queuedVerification();
+    const A = h.fx.digest('build');
+    const B = h.fx.digest('tests');
+    const runs = () => countOf(h, 'SELECT COUNT(*) AS n FROM runs');
+    const setOutcome = (outcome: unknown) =>
+      h.fx.db
+        .prepare('UPDATE goal_cycles SET outcome_json = ? WHERE id = ?')
+        .run(outcome === null ? null : JSON.stringify(outcome), cycle.id);
+    // none
+    await expect(executor.queueVerificationRun(request([A, B]))).rejects.toMatchObject({
+      code: 'verification_inputs_mismatch',
+    });
+    // corrupt
+    for (const bad of [
+      { verifierDigests: ['nothex'] },
+      { verifierDigests: [] },
+      { code: 'x' },
+      { verifierDigests: 'ab' },
+    ]) {
+      setOutcome(bad);
+      await expect(executor.queueVerificationRun(request([A, B]))).rejects.toMatchObject({
+        code: 'verification_inputs_mismatch',
+      });
+    }
+    // different
+    setOutcome({ verifierDigests: [A] });
+    await expect(executor.queueVerificationRun(request([A, B]))).rejects.toMatchObject({
+      code: 'verification_inputs_mismatch',
+    });
+    expect(runs()).toBe(0);
+    // exact
+    setOutcome({ verifierDigests: [A, B].sort() });
+    const { runId } = await executor.queueVerificationRun(request([B, A]));
+    expect(runs()).toBe(1);
+    // the existing run is refused once the set is removed or corrupted, and no second run appears
+    for (const bad of [null, { code: 'x' }, { verifierDigests: ['nothex'] }, { verifierDigests: [] }]) {
+      setOutcome(bad);
+      await expect(executor.queueVerificationRun(request([A, B]))).rejects.toMatchObject({
+        code: 'verification_inputs_mismatch',
+      });
+    }
+    expect(runs()).toBe(1);
+    setOutcome({ verifierDigests: [A, B].sort() });
+    expect((await executor.queueVerificationRun(request([A, B]))).runId).toBe(runId);
+  });
+});
 
 describe('verification run fast path re-proves its inputs', () => {
   async function ctx() {
