@@ -521,7 +521,9 @@ checks (all must hold; each result recorded in goal_integration_ops.checks_json)
   C1 goal status is 'running' (not paused, amending, or blocked)
   C2 runs.goal_base_commit == H0 == goal_runtime.integration_head == current value of the Goal ref
   C3 T is a strict descendant of H0 (`git merge-base --is-ancestor H0 T`, T != H0); T == H0 is outcome 'no_change'
-  C4 the run completed and every enabled required stage passed
+  C4 the run is 'completed' AND no persisted stage is failed or cancelled or otherwise non-concluded: every stage is 'passed' or 'skipped'.
+     A stage that failed under continueOnFailure can still leave the run 'completed'; that is not integration-safe
+     (rejection codes run_stage_failed / run_stage_incomplete, with bounded stage detail)
   C5 the run worktree is clean (porcelain, untracked included) and its HEAD == T
   C6 every changed path in H0..T: inside the registered project subfolder; none sensitive (isSensitivePath);
      the diff passes secret detection (hasSuspectedSecret)
@@ -533,11 +535,13 @@ action:
   3. in one SQLite transaction: op -> 'applied'; goal_runtime.integration_head = T;
      cycle.result_integration_commit = T; cycle.status = 'succeeded'
 failure handling:
-  any check false -> op 'aborted' with error_code, nothing moves, cycle 'failed' (or 'rejected'), counters updated
+  any check false BEFORE the planned op exists -> advanceGoalRef returns 'rejected' with the check results; no op row is written and nothing
+     moves. The supervisor records the higher-level rejected cycle outcome as a goal_event and updates counters.
+  once the planned op row exists, the attempt has an immutable op record (applied, aborted or failed)
   update-ref reports the ref != H0 -> op 'failed', Goal -> blocked(goal_ref_changed). Never merge, never retry blindly.
 ```
 
-`update-ref <ref> <new> <old>` fails atomically if the ref's current value is not `<old>`; this is the expected-old-ref compare-and-swap. No hooks run for `update-ref`. This is internal integration of a Turing-owned ref and does not modify the user's branch.
+`update-ref <ref> <new> <old>` fails atomically if the ref's current value is not `<old>`; this is the expected-old-ref compare-and-swap. `update-ref` is run with an empty `core.hooksPath` because `reference-transaction` hooks could otherwise observe or interfere with the ref change. This is internal integration of a Turing-owned ref and does not modify the user's branch.
 
 **Crash recovery between steps 1 and 3.** On reconcile, any op in `planned` is resolved by reading the ref: equal to `new_commit` → complete step 3 (apply); equal to `expected_old` → mark `aborted` and let the cycle be re-integrated by re-running checks; anything else → `blocked(goal_ref_changed)`.
 
@@ -582,7 +586,7 @@ createRun(db, engine, preview, options) = queueRun(...) then startQueuedRun(...)
 
 ### 8.2 `queueRun` transaction (Goal-origin)
 
-Within one transaction: if `origin` is present, first `SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?` and return the existing run (`existed: true`) if found; otherwise insert the run row **including** `goal_cycle_id`, `goal_run_purpose`, `goal_base_commit`, its stages, its `run_queued` event, and update `goal_cycles.status = 'launching'`. The partial unique index `(goal_cycle_id, goal_run_purpose)` makes a duplicate impossible even under a race. Commit. **Only then** `startQueuedRun`. A crash can leave a committed, goal-linked run in `queued`; a started Goal child run whose Goal/cycle cannot be discovered cannot exist because the link is part of the same transaction as the run row.
+Within one transaction: if `origin` is present, first `SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?` and return the existing run (`existed: true`) if found; otherwise insert the run row **including** `goal_cycle_id`, `goal_run_purpose`, `goal_base_commit`, its stages, its `run_queued` event, (`goal_cycles.status` is not changed here; cycle state belongs to the supervisor/state machine). The partial unique index `(goal_cycle_id, goal_run_purpose)` makes a duplicate impossible even under a race. Commit. **Only then** `startQueuedRun`. A crash can leave a committed, goal-linked run in `queued`; a started Goal child run whose Goal/cycle cannot be discovered cannot exist because the link is part of the same transaction as the run row.
 
 ### 8.3 Recovery matrix
 
@@ -988,3 +992,8 @@ Deterministic Goal integration Git mechanics only; no supervisor, AI, routing, e
 - **Secret scan** streams the complete `-U0 --text --no-renames` diff and fails closed on a byte cap or any git error; the display preview is separate and bounded.
 - **Recovery** only reads the ref. An `advance` op with ref == new_commit completes; ref == expected_old aborts; any other value leaves the op `planned` and returns `goal_ref_changed`.
 - **Final apply** is preflight only (`preflightFinalApply`); no function here moves the user's branch. A safe-looking checkout whose Goal diff fails the path/secret scan reports `unsafe_changes`, an addition to the specified result codes.
+
+### Stage 1.1 integration boundary hardening
+
+- C4 now inspects persisted stages: any `failed`/`cancelled` stage gives `run_stage_failed`; any other non-`passed`, non-`skipped` stage (`pending`, `running`, `waiting_*`, unknown) gives `run_stage_incomplete`. `continueOnFailure` is never authority to integrate a failed stage.
+- `completeOp` asserts that the `goal_runtime` update and (for an advance with a cycle) the `goal_cycles` update each change exactly one row. Otherwise it throws `bookkeeping_invariant`, the transaction rolls back and the op stays `planned`; nothing is reconstructed silently.
