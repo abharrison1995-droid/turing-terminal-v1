@@ -2,7 +2,7 @@ import type { GoalRole } from '../../shared/goals.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
 import { isModelBackedStage } from '../../shared/workflowKinds.js';
 import type { Db } from '../db.js';
-import { getCycle } from './cycles.js';
+import { activeCycle, getCycle } from './cycles.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import type { FirstUseRequest, RouteReadiness } from './executor.js';
 import type { RoleOutcome, RoleRefusal, RoleResolution } from './routeAudit.js';
@@ -18,7 +18,7 @@ import {
 import { observeRouteSnapshot } from './routingSnapshot.js';
 import type { RoutingEnvironment } from './routing.js';
 import type { GoalRunPlan, GoalRunPlanProvider, GoalRunPlanRequest } from './runPlan.js';
-import { PLAN_ROUTE_FIELDS, registeredGoalWorkflow } from './turingExecutor.js';
+import { PLAN_ROUTE_FIELDS, TuringExecutorError, registeredGoalWorkflow } from './turingExecutor.js';
 
 /**
  * The roles a Goal's run purposes draw their route from. Verification is deterministic and route-free, and Stage 6
@@ -166,6 +166,19 @@ export function stagesCarryRoute(
  * Every call builds a FRESH environment: current provider snapshot, canonical validations, first-use approvals, the
  * Goal's resolution history, the current time and the approved definition.
  */
+/** The billing authority of one registered workflow: its mode and (custom mode) its allowed lanes. */
+export function workflowBillingTerms(
+  registered: ReturnType<typeof registeredGoalWorkflow>,
+): RoutingBillingTerms {
+  return {
+    workflowBilling: {
+      mode:
+        registered.billingMode ?? (registered.subscriptionOnly === false ? 'custom' : 'subscriptions-only'),
+      ...(registered.customAllowedLanes ? { customAllowedLanes: registered.customAllowedLanes } : {}),
+    },
+  };
+}
+
 export class ResolvedGoalRunPlanProvider implements GoalRunPlanProvider {
   constructor(
     private readonly db: Db,
@@ -194,30 +207,63 @@ export class ResolvedGoalRunPlanProvider implements GoalRunPlanProvider {
   }
 
   async checkRoutes(goalId: string): Promise<RouteReadiness> {
-    const environment = await this.environment(goalId);
+    const goalRow = this.db
+      .prepare('SELECT current_definition_version AS version FROM goals WHERE id = ?')
+      .get(goalId) as { version: number | null } | undefined;
+    const stored =
+      goalRow?.version == null ? undefined : loadDefinitionVersion(this.db, goalId, goalRow.version);
+    if (!stored || stored.status !== 'approved' || !verifyDefinitionHash(stored))
+      return {
+        ready: false,
+        code: 'route_unavailable',
+        message: 'The Goal has no verified approved definition.',
+      };
+    // A non-terminal active cycle is the history being resumed. Its own persisted resolution is never counted as prior
+    // round-robin history (as `planRun` excludes it), so preflight derives the very member the cycle already holds.
+    const active = activeCycle(this.db, goalId);
+    const environment = await this.environment(goalId, active?.id);
     if (!environment)
       return {
         ready: false,
         code: 'route_unavailable',
         message: 'The Goal has no verified approved definition.',
       };
-    let result;
-    try {
-      result = previewGoalRoutes(this.db, { goalId, environment, roles: READINESS_ROLES }).result;
-    } catch (error) {
-      if (error instanceof RouteResolutionError)
-        return {
-          ready: false,
-          code: 'route_unavailable',
-          message: `Route resolution refused: ${error.code}.`,
-        };
-      throw error;
+    // Each role is judged under ITS OWN workflow's billing authority, exactly as the plan path resolves it.
+    const workflows = stored.definition.routing.workflows;
+    const workflowFor: Partial<Record<GoalRole, string>> = {
+      orchestrator: workflows.planning,
+      implementer: workflows.execution,
+    };
+    const refusals: RoleRefusal[] = [];
+    for (const role of READINESS_ROLES) {
+      let result;
+      try {
+        const billing = workflowBillingTerms(
+          registeredGoalWorkflow(this.db, workflowFor[role] ?? workflows.execution),
+        );
+        result = previewGoalRoutes(this.db, {
+          goalId,
+          environment,
+          roles: [role],
+          billing,
+        }).result;
+      } catch (error) {
+        if (error instanceof RouteResolutionError || error instanceof TuringExecutorError)
+          return {
+            ready: false,
+            code: 'route_unavailable',
+            message:
+              error instanceof RouteResolutionError
+                ? `Route resolution refused: ${error.code}.`
+                : `${role}: the registered workflow is unavailable.`,
+          };
+        throw error;
+      }
+      const refusal = refusalOf(result.roles[role], role);
+      if (refusal) refusals.push(refusal);
     }
-    // Approval requests are reported before other refusals so a ready Goal can be asked about its pool member.
-    const refusals = READINESS_ROLES.map((role) => refusalOf(result.roles[role], role)).filter(
-      (item): item is RoleRefusal => item !== null,
-    );
     if (refusals.length === 0) return { ready: true };
+    // Approval requests are reported after other refusals so a ready Goal can be asked about its pool member.
     const blocking = refusals.find((item) => !['approval_required', 'approval_pending'].includes(item.code));
     return mapRefusal(blocking ?? refusals[0]!);
   }
@@ -246,13 +292,7 @@ export class ResolvedGoalRunPlanProvider implements GoalRunPlanProvider {
         message: 'The cycle is not the current definition and base.',
       };
     const registered = registeredGoalWorkflow(this.db, request.workflowId);
-    const billing: RoutingBillingTerms = {
-      workflowBilling: {
-        mode:
-          registered.billingMode ?? (registered.subscriptionOnly === false ? 'custom' : 'subscriptions-only'),
-        ...(registered.customAllowedLanes ? { customAllowedLanes: registered.customAllowedLanes } : {}),
-      },
-    };
+    const billing = workflowBillingTerms(registered);
     const environment = await this.environment(request.goalId, request.cycleId);
     if (!environment)
       return {

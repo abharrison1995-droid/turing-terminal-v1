@@ -11,13 +11,13 @@ import {
   PROBE_TASK,
   PROBE_WORKFLOW_ID,
 } from '../../shared/routeProbe.js';
-import { ALL_BILLING_LANES } from '../../shared/billing.js';
 import type { ModelConfiguration, WorkflowDefinition } from '../../shared/types.js';
 import { isModelBackedStage } from '../../shared/workflowKinds.js';
 import type { Db } from '../db.js';
 import { gitTry } from '../goalGit.js';
 import { buildPreview, queueRun } from '../runLauncher.js';
 import { canonicalJson } from './definitionHash.js';
+import { routeMemberSchema } from './definitionValidation.js';
 import { computeRouteIdentity, sha256, type RouteIdentity } from './routeIdentity.js';
 import { judgeProfile, type ProfileVerdict } from './routeProbeChecks.js';
 import { dataDirectory, ensureFixture, ensureFixtureProject, verifyFixture } from './routeProbeFixture.js';
@@ -38,34 +38,15 @@ import { canonicalNonRouteWorkflow, PLAN_ROUTE_FIELDS, registeredGoalWorkflow } 
 
 // --- Request ----------------------------------------------------------------------------------------------------------
 
-const text = z.string().min(1).max(200);
-const configurationSchema = z
-  .object({
-    backendId: text,
-    providerId: text,
-    billingLane: z.enum(ALL_BILLING_LANES as unknown as [string, ...string[]]),
-    modelId: text,
-    connectionProfileId: text.optional(),
-    modelDisplayName: text.optional(),
-    variantId: text.optional(),
-    reasoning: text.optional(),
-    nativeSettings: z
-      .record(z.string().max(100), z.union([z.string().max(200), z.number(), z.boolean(), z.null()]))
-      .refine((value) => Object.keys(value).length <= 32)
-      .optional(),
-  })
-  .strict();
-
-/** The whole HTTP body. No identity hash, fingerprint, adapter version, model snapshot or readiness claim exists here. */
+/**
+ * The whole HTTP body. The member is parsed with the SAME schema the approved-definition validator uses, so any route a
+ * definition can accept can be submitted for validation; nothing here keeps a smaller private copy of its limits. The
+ * body itself stays bounded by the server's request limit. No identity hash, fingerprint, adapter version, model
+ * snapshot or readiness claim exists in the (strict) schema.
+ */
 export const routeProbeRequestSchema = z
   .object({
-    member: z
-      .object({
-        configuration: configurationSchema,
-        identityKind: z.enum(['pinned', 'floating', 'unknown']).optional(),
-        freshnessClass: z.enum(['stable-subscription', 'opportunity']),
-      })
-      .strict(),
+    member: routeMemberSchema,
     roles: z
       .array(z.enum(GOAL_ROLES as unknown as [GoalRole, ...GoalRole[]]))
       .min(1)
@@ -304,11 +285,10 @@ export async function createRouteProbe(
     );
     return queued;
   })();
-  try {
-    startRun(runId);
-  } catch {
-    /* The probe and its queued run are persisted; the reconciler starts the run. */
-  }
+  // The same pre-start proof as the reconciler: the persisted identity must still be the identity about to execute.
+  // A failed start leaves the persisted queued run for the reconciler.
+  const persisted = probeRow(db, probeId);
+  if (persisted) await startProbe(db, persisted, startRun, () => new Date().toISOString());
   return { probeId, runId, identityHash: identity.identityHash, profiles };
 }
 
@@ -439,27 +419,114 @@ function finishProbe(
 }
 
 /** A queued run whose probe cannot start (fixture unavailable) is cancelled, never started. */
-function cancelQueuedRun(db: Db, runId: string, now: string): void {
+function cancelQueuedRun(db: Db, runId: string, now: string, reason: string): void {
   db.transaction(() => {
     const changed = db
       .prepare(
         "UPDATE runs SET status = 'cancelled', completed_at = ?, summary = ? WHERE id = ? AND status = 'queued'",
       )
-      .run(now, 'The route-validation fixture was unavailable; the probe was not started.', runId).changes;
+      .run(
+        now,
+        reason === 'identity_changed'
+          ? 'The route identity changed before the probe started; no validation was performed.'
+          : 'The route-validation fixture was unavailable; the probe was not started.',
+        runId,
+      ).changes;
     if (!changed) return;
     db.prepare(
       "UPDATE stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status = 'pending'",
     ).run(now, runId);
     db.prepare(
       'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(
-      randomUUID(),
-      runId,
-      'run_cancelled',
-      JSON.stringify({ status: 'cancelled', reason: 'fixture_unavailable' }),
-      now,
-    );
+    ).run(randomUUID(), runId, 'run_cancelled', JSON.stringify({ status: 'cancelled', reason }), now);
   })();
+}
+
+/** The exact member a probe was created for, rebuilt only from its immutable identity and freshness class. */
+function memberFromIdentity(probe: ProbeRow, kind?: 'pinned' | 'floating' | 'unknown'): RouteMember {
+  const identity = JSON.parse(probe.identity_json) as {
+    backendId: string;
+    providerId: string;
+    billingLane: ModelConfiguration['billingLane'];
+    modelId: string;
+    connectionProfile: { id: string } | null;
+    variantId: string | null;
+    reasoning: string | null;
+    nativeSettings: Record<string, string | number | boolean | null>;
+  };
+  const configuration: ModelConfiguration = {
+    backendId: identity.backendId,
+    providerId: identity.providerId,
+    billingLane: identity.billingLane,
+    modelId: identity.modelId,
+    ...(identity.connectionProfile ? { connectionProfileId: identity.connectionProfile.id } : {}),
+    ...(identity.variantId ? { variantId: identity.variantId } : {}),
+    ...(identity.reasoning ? { reasoning: identity.reasoning } : {}),
+    ...(Object.keys(identity.nativeSettings ?? {}).length ? { nativeSettings: identity.nativeSettings } : {}),
+  };
+  return { configuration, freshnessClass: probe.freshness_class, ...(kind ? { identityKind: kind } : {}) };
+}
+
+/**
+ * Whether the persisted exact identity is still the identity that is about to execute: a FRESH provider/profile
+ * observation through the normal infrastructure must reproduce the stored identity byte for byte (adapter version and
+ * capability fingerprint included). The stored identity is never changed or upgraded. The identity kind is part of the
+ * fingerprint but not stored separately, so each kind is tried and only an exact canonical match counts.
+ */
+export async function persistedIdentityStillHolds(db: Db, probe: ProbeRow): Promise<boolean> {
+  if (sha256(probe.identity_json) !== probe.identity_hash) return false;
+  const snapshot = await observeRouteSnapshot(db);
+  for (const kind of [undefined, 'pinned', 'floating', 'unknown'] as const) {
+    const computed = computeRouteIdentity(memberFromIdentity(probe, kind), snapshot);
+    if (
+      computed.ok &&
+      computed.value.provider &&
+      computed.value.issues.length === 0 &&
+      computed.value.identityHash === probe.identity_hash &&
+      canonicalJson(computed.value.identity) === probe.identity_json
+    )
+      return true;
+  }
+  return false;
+}
+
+type StartOutcome = 'started' | 'start_failed' | 'fixture_unavailable' | 'identity_changed';
+
+/**
+ * The ONLY place a probe run is started (right after the request and from the reconciler). Before `startRun`: the
+ * fixture is the pinned one, and the persisted identity still holds. Either failing cancels the still-queued run,
+ * writes no validation record and finishes the probe terminally (`profiles_untested` for a changed identity: nothing was
+ * validated; the run event and summary carry `identity_changed`). A new probe must be requested explicitly.
+ */
+async function startProbe(
+  db: Db,
+  probe: ProbeRow,
+  startRun: StartRun,
+  now: () => string,
+): Promise<StartOutcome> {
+  const fixture = await verifyFixture();
+  if (!fixture.ok || fixture.commit !== probe.fixture_commit) {
+    cancelQueuedRun(db, probe.run_id, now(), 'fixture_unavailable');
+    finishProbe(db, probe.id, { status: 'failed', code: 'fixture_unavailable' }, now());
+    return 'fixture_unavailable';
+  }
+  let holds: boolean;
+  try {
+    holds = await persistedIdentityStillHolds(db, probe);
+  } catch {
+    return 'start_failed';
+  }
+  if (!holds) {
+    cancelQueuedRun(db, probe.run_id, now(), 'identity_changed');
+    finishProbe(db, probe.id, { status: 'failed', code: 'profiles_untested' }, now());
+    return 'identity_changed';
+  }
+  try {
+    startRun(probe.run_id);
+  } catch {
+    return 'start_failed';
+  }
+  return 'started';
 }
 
 /**
@@ -501,25 +568,26 @@ export async function reconcileRouteProbe(
   };
   if (!run) return fail('run_missing');
   if (run.status === 'queued') {
-    const fixture = await verifyFixture();
-    if (!fixture.ok || fixture.commit !== probe.fixture_commit) {
-      cancelQueuedRun(db, probe.run_id, now());
-      return fail('fixture_unavailable');
-    }
-    try {
-      startRun(probe.run_id);
-    } catch {
-      return view('queued', 'start_failed');
-    }
-    return view('started');
+    const outcome = await startProbe(db, probe, startRun, now);
+    if (outcome === 'start_failed') return view('queued', 'start_failed');
+    if (outcome === 'started') return view('started');
+    // The probe was finished by startProbe; report the persisted terminal state.
+    return view('failed', probeRow(db, probeId)?.failure_code ?? undefined);
   }
   if (ACTIVE_RUN.has(run.status)) return view('active');
   if (PAUSED_RUN.has(run.status)) return view('paused', 'run_paused');
   if (!TERMINAL_RUN.has(run.status)) return view('active');
 
-  // Terminal run: the worktree must have started from exactly the verified fixture commit, or nothing is trusted.
-  if (run.starting_commit !== null && run.starting_commit !== probe.fixture_commit)
-    return fail('fixture_unavailable');
+  // Terminal run: it must be PROVEN to have started from exactly the pinned fixture commit. A missing base (NULL) or any
+  // other commit proves nothing, so nothing is judged and no record is written.
+  if (run.starting_commit !== probe.fixture_commit)
+    return fail(
+      run.status === 'cancelled'
+        ? 'run_cancelled'
+        : run.status === 'failed'
+          ? 'run_failed'
+          : 'fixture_unavailable',
+    );
   for (const profile of profiles) {
     if (recordedProfiles(db, probe).includes(profile)) continue;
     const verdict = await judgeProfile(db, {

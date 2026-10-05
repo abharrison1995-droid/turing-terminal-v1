@@ -24,11 +24,17 @@ import type { Db } from '../db.js';
 afterEach(cleanupTestDatabases);
 
 const MODELS = ['orch', 'orch-b', 'orch-c', 'impl', 'final', 'rev-a', 'rev-b'];
+const METERED = {
+  backendId: 'opencode',
+  providerId: 'anthropic',
+  modelId: 'anthropic/claude-sonnet-5-5',
+  billingLane: 'anthropic-api' as const,
+};
 const catalog = (down: string[] = []) => [
-  provider(
-    {},
-    MODELS.map((id) => model(id, down.includes(id) ? { status: 'unavailable' } : {})),
-  ),
+  provider({}, [
+    ...MODELS.map((id) => model(id, down.includes(id) ? { status: 'unavailable' } : {})),
+    model(METERED.modelId, { providerId: METERED.providerId }),
+  ]),
 ];
 
 const memberOf = (modelId: string) => ({
@@ -55,7 +61,13 @@ interface Fx {
 
 /** A running Goal whose orchestrator is a three-member pool (`pooled`) or pinned, with one proposing cycle. */
 function fx(
-  options: { pooled?: 'ordered' | 'round_robin'; firstUse?: boolean; validate?: boolean } = {},
+  options: {
+    pooled?: 'ordered' | 'round_robin';
+    firstUse?: boolean;
+    validate?: boolean;
+    /** Runs before the definition is stored, to register extra workflows or change the definition. */
+    prepare?: (db: Db, definition: GoalDefinition) => void;
+  } = {},
 ): Fx {
   const db = freshDatabase();
   const projectId = seedProject(db);
@@ -81,6 +93,7 @@ function fx(
       autoRevalidate: false,
     });
   }
+  options.prepare?.(db, definition);
   const { goalId } = createGoalDraft(db, { projectId, title: 'G', definition });
   approveDefinition(db, { goalId, version: 1, actor: 'user' });
   db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(goalId);
@@ -459,5 +472,125 @@ describe('executor binding of the stored resolution to the workflow route', () =
       approval: { poolId: 'orchestrators', memberIdentityHash: idHash('orch') },
     });
     expect(runs(f)).toBe(0);
+  });
+});
+
+/** Registers a copy of a reserved Goal workflow under its own id with the given custom billing authority. */
+function cloneWorkflow(db: Db, from: string, id: string, lanes: string[]) {
+  const row = db.prepare('SELECT * FROM workflows WHERE id = ?').get(from) as Record<string, string>;
+  const config = JSON.parse(row.config_json) as Record<string, unknown>;
+  config.billingMode = 'custom';
+  config.customAllowedLanes = lanes;
+  delete config.subscriptionOnly;
+  db.prepare(
+    'INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)',
+  ).run(id, id, row.description, row.template, JSON.stringify(config), NOW, NOW);
+}
+
+describe("Stage 5B.3: readiness uses each role's own workflow billing", () => {
+  const billed = (planning: string[], execution: string[]) =>
+    fx({
+      prepare(db, definition) {
+        cloneWorkflow(db, 'goal-planning-v1', 'plan-custom', planning);
+        cloneWorkflow(db, 'goal-execution-v1', 'exec-custom', execution);
+        definition.routing.workflows.planning = 'plan-custom';
+        definition.routing.workflows.execution = 'exec-custom';
+        definition.limits.billingMode = 'custom';
+        definition.limits.maxMeteredUsd = 5;
+        for (const role of ['orchestrator', 'implementer'] as const) {
+          const current = definition.routing.roles[role];
+          if (current?.kind !== 'pinned') throw new Error('fixture');
+          definition.routing.roles[role] = {
+            ...current,
+            member: { ...current.member, configuration: { ...METERED } },
+          };
+        }
+      },
+    });
+  const plan = (f: Fx, purpose: 'proposal' | 'execution') => ({
+    ...request(f, purpose),
+    workflowId: purpose === 'proposal' ? 'plan-custom' : 'exec-custom',
+  });
+
+  it('is ready when both workflows allow the lane', async () => {
+    const f = billed(['anthropic-api'], ['anthropic-api']);
+    expect(await f.provider.checkRoutes(f.goalId)).toEqual({ ready: true });
+    expect((await f.provider.planRun(plan(f, 'proposal'))).ready).toBe(true);
+  });
+
+  it('refuses when the planning workflow does not allow the lane, as the plan path does', async () => {
+    const f = billed(['openrouter-metered'], ['anthropic-api']);
+    const check = await f.provider.checkRoutes(f.goalId);
+    expect(check.ready).toBe(false);
+    const planned = await f.provider.planRun(plan(f, 'proposal'));
+    expect(planned.ready).toBe(false);
+    expect(!check.ready && !planned.ready && check.code === planned.code).toBe(true);
+  });
+
+  it('refuses the implementer when only the execution workflow disallows the lane', async () => {
+    const f = billed(['anthropic-api'], ['openrouter-metered']);
+    const check = await f.provider.checkRoutes(f.goalId);
+    expect(check.ready).toBe(false);
+    expect((await f.provider.planRun(plan(f, 'proposal'))).ready).toBe(true);
+    const planned = await f.provider.planRun(plan(f, 'execution'));
+    expect(planned.ready).toBe(false);
+    expect(!check.ready && !planned.ready && check.code === planned.code).toBe(true);
+  });
+
+  it('keeps subscriptions-only behaviour unchanged', async () => {
+    const f = fx();
+    expect(await f.provider.checkRoutes(f.goalId)).toEqual({ ready: true });
+  });
+});
+
+describe('Stage 5B.3: an active round-robin cycle is not its own history', () => {
+  const nextCycle = (f: Fx, sequence: number) => {
+    const id = randomUUID();
+    f.db
+      .prepare(
+        `INSERT INTO goal_cycles (id, goal_id, definition_version, sequence, kind, trigger_code, status, base_integration_commit, created_at)
+         VALUES (?, ?, 1, ?, 'execution', 't', 'proposing', ?, ?)`,
+      )
+      .run(id, f.goalId, sequence, f.base, NOW);
+    return id;
+  };
+  const finish = (f: Fx, cycleId: string) =>
+    f.db
+      .prepare("UPDATE goal_cycles SET status = 'succeeded', finished_at = ? WHERE id = ?")
+      .run(NOW, cycleId);
+
+  async function resumeSetup() {
+    const f = fx({ pooled: 'round_robin' });
+    // Cycle A (the fixture cycle) used orch; cycle B is active and already holds orch-b. Orch-c is not approved.
+    poolApproval(f, 'orch', { decision: 'approved' });
+    poolApproval(f, 'orch-b', { decision: 'approved' });
+    expect((await f.provider.planRun(request(f))).ready).toBe(true);
+    finish(f, f.cycleId);
+    const b = nextCycle(f, 2);
+    const planned = await f.provider.planRun({ ...request(f), cycleId: b });
+    expect(planned.ready && modelOf(planned.workflowOverride)[0]).toBe('orch-b');
+    return { f, b };
+  }
+
+  it('keeps the persisted active candidate during resume and asks for no approval for the next member', async () => {
+    const { f } = await resumeSetup();
+    const approvals = (f.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals').get() as { n: number }).n;
+    expect(await f.provider.checkRoutes(f.goalId)).toEqual({ ready: true });
+    expect((f.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals').get() as { n: number }).n).toBe(
+      approvals,
+    );
+  });
+
+  it('still proceeds to the following member for a new later cycle', async () => {
+    const { f, b } = await resumeSetup();
+    finish(f, b);
+    const c = nextCycle(f, 3);
+    expect(await f.provider.checkRoutes(f.goalId)).toMatchObject({
+      code: 'approval_required',
+      approval: { memberIdentityHash: idHash('orch-c'), memberIndex: 2 },
+    });
+    expect(await f.provider.planRun({ ...request(f), cycleId: c })).toMatchObject({
+      code: 'approval_required',
+    });
   });
 });

@@ -84,7 +84,8 @@ const modelConfiguration = z.strictObject({
   nativeSettings: z.record(z.string(), z.union([text, count, flag, z.null()])).optional(),
 });
 
-const member = z.strictObject({
+/** The one RouteMember shape: Goal definitions and the route-validation request both parse with it. */
+export const routeMemberSchema = z.strictObject({
   configuration: modelConfiguration,
   identityKind: z.enum(['pinned', 'floating', 'unknown']).optional(),
   freshnessClass: z.enum(['stable-subscription', 'opportunity']),
@@ -95,7 +96,7 @@ const availability = z.enum(['live-catalog', 'fresh-validation', 'live-catalog-o
 const route = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('pinned'),
-    member,
+    member: routeMemberSchema,
     availability,
     requireRoleValidation: flag,
   }),
@@ -160,7 +161,7 @@ const goalDefinitionSchema = z.strictObject({
       z.strictObject({
         id: text,
         label: text,
-        members: z.array(member),
+        members: z.array(routeMemberSchema),
         admission: z.enum(['static', 'opportunity']),
         availability,
         requireRoleValidation: flag,

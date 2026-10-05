@@ -806,3 +806,118 @@ describe('worktree retention and database invariants', () => {
     expect((await h.app.inject({ method: 'GET', url: '/api/route-validations/nope' })).statusCode).toBe(404);
   });
 });
+
+describe('Stage 5B.3: pre-start identity reproof and the exact starting commit', () => {
+  const queuedProbe = async () =>
+    createRouteProbe(h.db, probeRequest(), () => {
+      throw new Error('crashed before start');
+    });
+
+  it('starts a queued probe whose identity is unchanged', async () => {
+    h = await probeHarness();
+    const queued = await queuedProbe();
+    const start = vi.fn((runId: string) => h.startRun(runId));
+    const observed = await reconcileRouteProbe(h.db, queued.probeId, start);
+    expect(start).toHaveBeenCalledWith(queued.runId);
+    expect(observed.state).toBe('started');
+    await h.waitRun(queued.runId, 'completed');
+  });
+
+  for (const [name, change] of [
+    ['adapter version', () => claude({ version: '2.2.0' })],
+    [
+      'capability fingerprint',
+      () =>
+        claude({
+          models: [{ id: ROUTE.modelId, name: 'm', providerId: ROUTE.providerId, supportsTools: true }],
+        }),
+    ],
+  ] as const) {
+    it(`cancels, writes no validation and makes no provider call when the ${name} changed before start`, async () => {
+      h = await probeHarness();
+      const queued = await queuedProbe();
+      const before = probeRow(queued.probeId).identity_json;
+      vi.mocked(discoverProviders).mockResolvedValue([change()]);
+      const start = vi.fn();
+      const observed = await reconcileRouteProbe(h.db, queued.probeId, start);
+      expect(start).not.toHaveBeenCalled();
+      expect(observed.state).toBe('failed');
+      expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(queued.runId)).toEqual({
+        status: 'cancelled',
+      });
+      expect(probeRow(queued.probeId)).toMatchObject({ status: 'failed', failure_code: 'profiles_untested' });
+      // The stored identity is never upgraded.
+      expect(probeRow(queued.probeId).identity_json).toBe(before);
+      expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBe(0);
+      expect(calls).toHaveLength(0);
+      const event = h.db
+        .prepare("SELECT payload_json AS p FROM run_events WHERE run_id = ? AND type LIKE '%cancel%'")
+        .all(queued.runId) as Array<{ p: string }>;
+      expect(event.map((row) => row.p).join()).toContain('identity_changed');
+    });
+  }
+
+  it('applies the same reproof to the post-request start path', async () => {
+    h = await probeHarness();
+    vi.mocked(discoverProviders).mockResolvedValue([claude()]);
+    const start = vi.fn();
+    let observeCount = 0;
+    vi.mocked(discoverProviders).mockImplementation(async () => {
+      observeCount += 1;
+      // The request observes version 2.1.300; the later pre-start observation sees a new adapter.
+      return [claude(observeCount > 3 ? { version: '9.9.9' } : {})];
+    });
+    const created = await createRouteProbe(h.db, probeRequest(), start);
+    expect(start).not.toHaveBeenCalled();
+    expect(probeRow(created.probeId)).toMatchObject({ status: 'failed', failure_code: 'profiles_untested' });
+    expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBe(0);
+  });
+
+  async function finishedWithCommit(commit: string | null) {
+    // Hold the provider so the run cannot finish (and be reconciled in-process) before its base is set.
+    let release!: () => void;
+    gate = new Promise<void>((resolve) => (release = resolve));
+    const response = await h.post(probeBody(['orchestrator']));
+    const { probeId, runId } = response.json as { probeId: string; runId: string };
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    h.db.prepare('UPDATE runs SET starting_commit = ? WHERE id = ?').run(commit, runId);
+    release();
+    await h.waitRun(runId, 'completed');
+    return { probeId, runId, observed: await reconcileRouteProbe(h.db, probeId, h.startRun) };
+  }
+
+  it('mints no record for a terminal run with a NULL starting_commit', async () => {
+    h = await probeHarness();
+    const { probeId, observed } = await finishedWithCommit(null);
+    expect(observed.state).toBe('failed');
+    expect(probeRow(probeId).status).toBe('failed');
+    expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBe(0);
+  });
+
+  it('mints no record for a terminal run that started from another valid commit', async () => {
+    h = await probeHarness();
+    const { probeId, observed } = await finishedWithCommit('c'.repeat(40));
+    expect(observed.state).toBe('failed');
+    expect(probeRow(probeId).status).toBe('failed');
+    expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBe(0);
+  });
+
+  it('judges normally when the run started from exactly the pinned fixture commit', async () => {
+    h = await probeHarness();
+    const { probeId, observed } = await finishedWithCommit(FIXTURE_COMMIT_SHA);
+    expect(observed.state).toBe('consumed');
+    expect(probeRow(probeId).status).toBe('consumed');
+    expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBeGreaterThan(0);
+  });
+
+  it('accepts a route member the approved-definition validator accepts (shared bounds)', () => {
+    const configuration = {
+      ...ROUTE,
+      nativeSettings: Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, 'v'.repeat(300)])),
+    };
+    expect(routeProbeRequestSchema.safeParse(probeBody(['orchestrator'], configuration)).success).toBe(true);
+    expect(
+      routeProbeRequestSchema.safeParse({ ...probeBody(['orchestrator']), identityHash: 'x' }).success,
+    ).toBe(false);
+  });
+});
