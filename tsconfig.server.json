@@ -16,5 +16,10 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src/server", "src/shared"],
-  "exclude": ["src/**/*.test.ts", "src/server/testUtils.ts", "src/server/goals/testKit.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/server/testUtils.ts",
+    "src/server/goals/testKit.ts",
+    "src/server/goals/repoKit.ts"
+  ]
 }

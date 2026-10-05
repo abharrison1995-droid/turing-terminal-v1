@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from 'vitest';
+import type { Db } from '../db.js';
 import {
   BLOCKED_REASONS,
   GOAL_LEASE_STATUSES,
@@ -12,6 +13,8 @@ import {
   type GoalReasonCode,
   type GoalStatus,
 } from '../../shared/goals.js';
+import type { CompletionEvaluation } from '../../shared/goals.js';
+import { issueCompletionProof } from './completionProof.js';
 import { listGoalEvents } from './events.js';
 import { GoalStateError, isLegalGoalTransition, transitionGoal } from './stateMachine.js';
 import { cleanupTestDatabases, freshDatabase, goalAt, seedProject } from './testKit.js';
@@ -27,10 +30,39 @@ const ALL_REASONS: GoalReasonCode[] = [
   ...PAUSED_REASONS,
   ...GOAL_TRANSITION_REASONS,
 ];
-const PASS = [
-  { code: 'preflight', ok: true },
-  { code: 'completion_evaluated', ok: true },
-];
+const PASS = [{ code: 'preflight', ok: true }];
+const HEAD = 'a'.repeat(40);
+
+/** An evaluation issued the way evaluateCompletion issues one, bound to the Goal's current state in the database. */
+function proofFor(db: Db, goalId: string, over: Partial<CompletionEvaluation> = {}): CompletionEvaluation {
+  db.prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?').run(HEAD, goalId);
+  const row = db
+    .prepare(
+      'SELECT g.current_definition_version AS v, d.definition_hash AS h FROM goals g JOIN goal_definition_versions d ON d.goal_id = g.id AND d.version = g.current_definition_version WHERE g.id = ?',
+    )
+    .get(goalId) as { v: number; h: string };
+  return issueCompletionProof({
+    ok: true,
+    goalId,
+    definitionVersion: row.v,
+    definitionHash: row.h,
+    integrationHead: HEAD,
+    integrationTree: 'b'.repeat(40),
+    evaluatedAt: '2026-01-01T00:00:00.000Z',
+    criteria: [],
+    milestones: [],
+    findings: {
+      open: { critical: 0, high: 0, medium: 0, low: 0 },
+      limits: { critical: 0, high: 0, medium: null },
+      ok: true,
+    },
+    finalReview: { required: false, ok: true, reviewId: null, reason: null },
+    finalAcceptance: { required: false, ok: true, approvalId: null, reason: null },
+    finalApply: { required: false, ok: true, basis: 'not_required', reason: null },
+    failures: [],
+    ...over,
+  });
+}
 
 function attempt(from: GoalStatus, to: GoalStatus, reasonCode: GoalReasonCode, actor: GoalActor = 'user') {
   const db = shared;
@@ -39,7 +71,14 @@ function attempt(from: GoalStatus, to: GoalStatus, reasonCode: GoalReasonCode, a
     try {
       return {
         ok: true as const,
-        ...transitionGoal(db, { goalId, to, reasonCode, actor, preconditions: PASS }),
+        ...transitionGoal(db, {
+          goalId,
+          to,
+          reasonCode,
+          actor,
+          preconditions: PASS,
+          completionProof: to === 'completed' ? proofFor(db, goalId) : undefined,
+        }),
       };
     } catch (error) {
       return { ok: false as const, code: (error as GoalStateError).code };
@@ -310,5 +349,104 @@ describe('transitionGoal', () => {
       status: 'running',
       status_reason_code: 'definition_approved',
     });
+  });
+});
+
+describe('the completed transition needs a completion proof', () => {
+  const run = (goalId: string, proof: unknown, preconditions: Array<{ code: string; ok: boolean }> = PASS) =>
+    transitionGoal(shared, {
+      goalId,
+      to: 'completed',
+      reasonCode: 'completion_verified',
+      actor: 'supervisor',
+      preconditions,
+      completionProof: proof as CompletionEvaluation,
+    });
+  const running = () => goalAt(shared, seedProject(shared), 'running');
+  const status = (goalId: string) =>
+    (shared.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: string }).status;
+
+  it('completes with a current proof and stamps completed_at', () => {
+    const goalId = running();
+    expect(run(goalId, proofFor(shared, goalId))).toEqual({ from: 'running', to: 'completed' });
+    expect(status(goalId)).toBe('completed');
+  });
+
+  it('no longer accepts a raw completion_evaluated precondition', () => {
+    const goalId = running();
+    for (const precondition of [
+      [],
+      [{ code: 'completion_evaluated', ok: true }],
+      [...PASS, { code: 'completion_evaluated', ok: true }],
+    ])
+      expect(() => run(goalId, undefined, precondition)).toThrow(
+        expect.objectContaining({ code: 'completion_proof_required' }),
+      );
+    expect(status(goalId)).toBe('running');
+  });
+
+  it('rejects forged, cloned and serialised proofs', () => {
+    const goalId = running();
+    const real = proofFor(shared, goalId);
+    for (const forged of [
+      { ...real },
+      structuredClone(real),
+      JSON.parse(JSON.stringify(real)),
+      { ok: true },
+      true,
+      'completion_evaluated',
+      null,
+    ])
+      expect(() => run(goalId, forged)).toThrow(
+        expect.objectContaining({ code: 'completion_proof_required' }),
+      );
+    expect(status(goalId)).toBe('running');
+  });
+
+  it('rejects a proof that did not pass or belongs to another Goal', () => {
+    const goalId = running();
+    const other = running();
+    expect(() => run(goalId, proofFor(shared, goalId, { ok: false }))).toThrow(
+      expect.objectContaining({ code: 'completion_proof_failed' }),
+    );
+    expect(() => run(goalId, proofFor(shared, other))).toThrow(
+      expect.objectContaining({ code: 'completion_proof_required' }),
+    );
+    expect(status(goalId)).toBe('running');
+  });
+
+  it('refuses a proof made stale by a moved head, a changed definition version or a changed stored hash', () => {
+    const moved = running();
+    const proofMoved = proofFor(shared, moved);
+    shared
+      .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
+      .run('c'.repeat(40), moved);
+    expect(() => run(moved, proofMoved)).toThrow(expect.objectContaining({ code: 'completion_proof_stale' }));
+
+    const versioned = running();
+    const proofVersion = proofFor(shared, versioned);
+    expect(() => run(versioned, issueCompletionProof({ ...proofVersion, definitionVersion: 2 }))).toThrow(
+      expect.objectContaining({ code: 'completion_proof_stale' }),
+    );
+
+    const hashed = running();
+    const proofHash = proofFor(shared, hashed);
+    expect(() => run(hashed, issueCompletionProof({ ...proofHash, definitionHash: 'f'.repeat(64) }))).toThrow(
+      expect.objectContaining({ code: 'completion_proof_stale' }),
+    );
+    for (const id of [moved, versioned, hashed]) expect(status(id)).toBe('running');
+  });
+
+  it('is only available to the supervisor', () => {
+    const goalId = running();
+    expect(() =>
+      transitionGoal(shared, {
+        goalId,
+        to: 'completed',
+        reasonCode: 'completion_verified',
+        actor: 'user',
+        completionProof: proofFor(shared, goalId),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'actor_not_allowed' }));
   });
 });

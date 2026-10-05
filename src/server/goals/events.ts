@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.js';
 import type {
+  EvidenceVerdict,
+  FindingSeverity,
+  GoalEvidenceKind,
+  GoalReviewKind,
+  ReviewVerdict,
   GoalApprovalGate,
   GoalApprovalRisk,
   GoalApprovalStatus,
@@ -37,6 +42,46 @@ export interface GoalEventPayloads {
     gate: GoalApprovalGate;
     status: Exclude<GoalApprovalStatus, 'pending'>;
     decidedBy: 'user' | 'system';
+  };
+  evidence_recorded: {
+    evidenceId: string;
+    criterionKey: string;
+    verifierDigest: string;
+    kind: GoalEvidenceKind;
+    verdict: EvidenceVerdict;
+    definitionVersion: number;
+  };
+  review_completed: {
+    reviewId: string;
+    reviewKind: GoalReviewKind;
+    verdict: ReviewVerdict;
+    blocking: boolean;
+    reviewedToTree: string;
+  };
+  review_findings_applied: {
+    reviewId: string;
+    opened: number;
+    observed: number;
+    resolved: number;
+    reopened: number;
+    resolutionsRefused: number;
+  };
+  finding_opened: { goalFindingId: string; severity: FindingSeverity; reviewId: string };
+  finding_resolved: { goalFindingId: string; reviewId: string };
+  finding_reopened: { goalFindingId: string; reviewId: string };
+  finding_decided: {
+    goalFindingId: string;
+    decision: 'accepted_by_user' | 'dismissed_by_user';
+    approvalId: string;
+  };
+  milestone_satisfied: { milestoneKey: string; definitionVersion: number };
+  completion_evaluated: {
+    ok: boolean;
+    definitionVersion: number;
+    definitionHash: string;
+    integrationHead: string;
+    integrationTree: string;
+    failureCodes: string[];
   };
 }
 

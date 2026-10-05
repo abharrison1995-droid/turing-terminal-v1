@@ -108,7 +108,7 @@ export interface FinalApplyPreflight {
   diffPreviewTruncated: boolean;
 }
 
-interface GoalContext {
+export interface GoalContext {
   goalId: string;
   status: string;
   projectId: string;
@@ -140,7 +140,10 @@ function disabledHooksPath(): string {
   return noHooksDirectory;
 }
 
-async function gitTry(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+export async function gitTry(
+  cwd: string,
+  args: string[],
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   try {
     const result = await execFile('git', args, {
       cwd,
@@ -212,7 +215,7 @@ function toPosix(path: string): string {
   return path.split(sep).join('/');
 }
 
-function loadContext(db: Db, goalId: string): GoalContext {
+export function loadContext(db: Db, goalId: string): GoalContext {
   const branch = goalBranchName(goalId);
   const row = db
     .prepare(

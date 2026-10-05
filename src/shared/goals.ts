@@ -436,6 +436,15 @@ export const GOAL_EVENT_TYPES = [
   'state_changed',
   'approval_requested',
   'approval_decided',
+  'evidence_recorded',
+  'review_completed',
+  'review_findings_applied',
+  'finding_opened',
+  'finding_resolved',
+  'finding_reopened',
+  'finding_decided',
+  'milestone_satisfied',
+  'completion_evaluated',
 ] as const;
 export type GoalEventType = (typeof GOAL_EVENT_TYPES)[number];
 
@@ -453,4 +462,124 @@ export interface RouteValidationRecord {
   capabilityFingerprint: string;
   testedAt: string;
   expiresAt: string;
+}
+
+// --- Evidence evaluation and completion (Stage 2B) --------------------------------------------------------------
+
+/** What a completed final review records about independence; established by the Stage 5 routing authority. */
+export interface ReviewIndependence {
+  established: boolean;
+  /** The policy it was established under; must equal the current definition's `routing.independence.finalReview`. */
+  policy: IndependencePolicy['finalReview'];
+  detail?: Record<string, unknown>;
+}
+
+export type VerifierState = 'satisfied' | 'contradicted' | 'missing' | 'stale' | 'inconclusive';
+
+export type EvidenceIneligibleReason = 'kind_mismatch' | 'verifier_changed';
+export type EvidenceStaleReason =
+  | 'tree_changed'
+  | 'no_subject_tree'
+  | 'path_missing'
+  | 'path_changed'
+  | 'path_present'
+  | 'path_outside_scope'
+  | 'not_ancestor'
+  | 'review_missing'
+  | 'review_not_completed'
+  | 'approval_missing';
+
+export interface EvidenceAssessment {
+  evidenceId: string;
+  kind: GoalEvidenceKind;
+  verdict: EvidenceVerdict;
+  recordedAt: string;
+  /** `current` evidence counts; `stale` evidence is ignored; `ineligible` evidence can never count. */
+  standing: 'current' | 'stale' | 'ineligible';
+  reason?: EvidenceStaleReason | EvidenceIneligibleReason;
+}
+
+export interface VerifierEvaluation {
+  verifierDigest: string;
+  kind: VerificationKind;
+  state: VerifierState;
+  /** The latest current evidence row that decided the state, when there is one. */
+  decidingEvidenceId: string | null;
+  decidingKind: GoalEvidenceKind | null;
+  evidence: EvidenceAssessment[];
+}
+
+export interface CriterionEvaluation {
+  key: string;
+  required: boolean;
+  state: VerifierState;
+  verifiers: VerifierEvaluation[];
+  /** Evidence ids that satisfy the criterion (empty unless satisfied). */
+  satisfiedBy: string[];
+}
+
+export type MilestoneState = 'satisfied' | 'skipped_by_user' | 'unsatisfied';
+export type MilestoneBlocker =
+  | 'criteria_unsatisfied'
+  | 'required_evidence_missing'
+  | 'milestone_review_missing'
+  | 'milestone_review_stale'
+  | 'milestone_review_not_passing'
+  | 'human_gate_missing';
+
+export interface MilestoneEvaluation {
+  key: string;
+  milestoneId: string | null;
+  state: MilestoneState;
+  blockers: MilestoneBlocker[];
+  /** The approval that explicitly skipped it, for `skipped_by_user`. */
+  skipApprovalId: string | null;
+  criteria: Array<{ key: string; state: VerifierState }>;
+}
+
+export type CompletionFailureCode =
+  | 'goal_not_found'
+  | 'definition_not_approved'
+  | 'goal_ref_unavailable'
+  | 'criterion_unsatisfied'
+  | 'milestone_unsatisfied'
+  | 'findings_over_threshold'
+  | 'final_review_missing'
+  | 'final_review_stale'
+  | 'final_review_not_passing'
+  | 'final_review_independence'
+  | 'final_acceptance_missing'
+  | 'final_apply_required';
+
+export interface CompletionFailure {
+  code: CompletionFailureCode;
+  /** Criterion key, milestone key, severity or other subject, when there is one. */
+  subject?: string;
+  detail: string;
+}
+
+export interface CompletionEvaluation {
+  ok: boolean;
+  goalId: string;
+  definitionVersion: number;
+  definitionHash: string;
+  integrationHead: string;
+  integrationTree: string;
+  evaluatedAt: string;
+  criteria: CriterionEvaluation[];
+  milestones: MilestoneEvaluation[];
+  findings: {
+    open: Record<FindingSeverity, number>;
+    limits: { critical: number; high: number; medium: number | null };
+    ok: boolean;
+  };
+  finalReview: { required: boolean; ok: boolean; reviewId: string | null; reason: string | null };
+  finalAcceptance: { required: boolean; ok: boolean; approvalId: string | null; reason: string | null };
+  finalApply: {
+    required: boolean;
+    ok: boolean;
+    basis: 'not_required' | 'applied_by_turing' | 'applied_externally' | null;
+    reason: string | null;
+  };
+  failures: CompletionFailure[];
 }

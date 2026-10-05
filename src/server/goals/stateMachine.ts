@@ -11,7 +11,9 @@ import {
   type GoalStatus,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
+import { checkCompletionProof } from './completionProof.js';
 import { writeGoalEvent } from './events.js';
+import type { CompletionEvaluation } from '../../shared/goals.js';
 
 export type GoalStateErrorCode =
   | 'goal_not_found'
@@ -22,7 +24,10 @@ export type GoalStateErrorCode =
   | 'actor_not_allowed'
   | 'precondition_failed'
   | 'definition_not_approved'
-  | 'project_lease_conflict';
+  | 'project_lease_conflict'
+  | 'completion_proof_required'
+  | 'completion_proof_failed'
+  | 'completion_proof_stale';
 
 export class GoalStateError extends Error {
   constructor(
@@ -49,6 +54,12 @@ export interface TransitionRequest {
   detail?: Record<string, unknown>;
   /** Deterministic checks the caller already ran. Required codes per edge are listed below. */
   preconditions?: readonly TransitionPrecondition[];
+  /**
+   * Required for an edge into `completed`: the structured proof returned by `evaluateCompletion`. A raw boolean or
+   * string precondition no longer substitutes for it. Re-checked here against the current definition, its stored hash
+   * and the integration head.
+   */
+  completionProof?: CompletionEvaluation;
   now?: string;
 }
 
@@ -63,7 +74,6 @@ const MAX_DETAIL_CHARS = 8_000;
 
 /** Preconditions the caller must have evaluated (and passed) for an edge into the named status. */
 function requiredPreconditions(from: GoalStatus, to: GoalStatus): string[] {
-  if (to === 'completed') return ['completion_evaluated'];
   if (to === 'running' && from !== 'reviewing') return ['preflight'];
   return [];
 }
@@ -115,6 +125,10 @@ export function transitionGoal(db: Db, request: TransitionRequest): { from: Goal
       const found = request.preconditions?.find((precondition) => precondition.code === code);
       if (!found?.ok)
         throw new GoalStateError('precondition_failed', `Required precondition "${code}" did not pass.`);
+    }
+    if (request.to === 'completed') {
+      const proof = checkCompletionProof(db, request.goalId, request.completionProof);
+      if (!proof.ok) throw new GoalStateError(proof.code, proof.message);
     }
     const failed = request.preconditions?.find((precondition) => !precondition.ok);
     if (failed)

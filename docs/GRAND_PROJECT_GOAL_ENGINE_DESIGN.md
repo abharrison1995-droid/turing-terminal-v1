@@ -1017,3 +1017,37 @@ Stage 2A is deterministic and has no supervisor, model, route-discovery or evide
 - **A definition approval means "this exact content".** A Goal approval for a definition or amendment carries `detail = {version, definitionHash}`. `approveDefinition` refuses a supplied approval unless the Goal, the gate (`definition` for a first version, `amendment` otherwise), `detail.version` and `detail.definitionHash` all match the proposal (`approval_mismatch`, or `approval_definition_changed` when only the hash differs). Because a proposal stays editable, an approval requested before an edit is stale and is never reinterpreted.
 - **Migration 018 enforces the same binding in SQL**, on `INSERT` of an approved definition and on `proposed -> approved`: the referenced approval must exist, belong to the same Goal, be `approved` with `decided_by = 'user'`, use the gate implied by `parent_version`, and match version and hash. Rows that predate 018 are not re-validated.
 - **Run-finding ownership:** `goal_finding_observations.run_finding_id` must belong to the same run as the observation's Goal review (`goal_reviews.run_id = review_findings.run_id`), and a review with no run cannot cite a run finding. Since a review's run is already checked against its Goal, the chain observation -> Goal review -> review run -> run finding is single-owner.
+
+## Stage 2B implementation notes (evidence, reviews, findings, completion evaluation)
+
+Modules under `src/server/goals/`: `verifierDigest`, `repository`, `freshness`, `evidence`, `reviews`, `findings`,
+`milestones`, `completionProof`, `completion`. Nothing here schedules work or calls a provider.
+
+- **Verifier digest.** SHA-256 over canonical JSON of `{criterionKey, verifier}` (sorted keys, array order significant).
+  Evidence carries the digest of the verifier it was recorded for; an amendment keeps old evidence only for verifiers
+  whose digest is unchanged. Evidence rows are never mutated.
+- **Repository state** is read from Git objects at the verified Goal ref (`integration_head`, `head^{tree}`), never the
+  user's checkout. Freshness: build/test/lint need `subject_tree` equal to the current tree; review verdicts need
+  `reviewed_to_tree` equal to it; artifacts persist path, blob and sha256 and go stale if the path is missing, the blob
+  changes or the path leaves scope; commits must be ancestors of head; user confirmation is current when `any`, and tied
+  to the tree when `head-bound`.
+- **Criterion evaluation.** Per verifier the latest non-stale evidence (by `recorded_at`, then insertion order) decides:
+  satisfied, contradicted, inconclusive, stale or missing. A criterion needs all of its verifiers satisfied; the worst
+  state is reported with the evidence ids.
+- **Completion** is `evaluateCompletion` (pure, structured, deep-frozen, registered in a WeakSet). The `completed`
+  transition accepts only such an object and re-reads the definition version, its hash and the integration head; `completeGoal`
+  also re-verifies the ref. There is no boolean precondition.
+
+Differences from the design text, chosen deliberately:
+
+1. Only **required** criteria gate milestones and completion; `requiredEvidence` kinds are all-of.
+2. Reviews and proofs are strict on **definition version**: a review made under an older version does not count.
+3. Final acceptance is required when `requireUserAcceptance` **or** `humanGates.finalAcceptance`.
+4. Criteria owned only by user-skipped milestones are exempt from completion; automatic skips from removal are not user skips.
+5. Final apply is satisfied by a Turing `apply_to_base` op at head or a user `final_apply` attestation bound to head.
+6. Independence `none` needs no recorded payload; otherwise `independence_json` must say `established` with the same policy.
+7. High/critical resolution under the default policy requires fresh build/test evidence; with no build/test verifier a
+   high finding cannot be resolved by review (`no_deterministic_verifier`).
+8. `run_result` evidence is refused at record time and ignored if present; it never backs a verifier.
+9. User accept/dismiss of findings is enforced in the service (approved user `finding_decision` approval), not by a SQL trigger.
+10. Added `completeGoal` and `syncMilestoneRuntime` (runtime status is a cache, never consulted for completion).
