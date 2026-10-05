@@ -974,3 +974,17 @@ Only after stage 7 and a prove-it review does the Model Opportunity Layer begin:
 
 - `createRunOrigin` returns a frozen object, so a verified origin cannot be mutated between preview and queueing.
 - Migration `015_goal_core.sql` is never edited once applied. `016_goal_integration_op_audit.sql` is additive: it adds `recovery_json`, makes the op identity (`id`, `goal_id`, `cycle_id`, `run_id`, `op`, `expected_old`, `new_commit`, `created_at`) and `checks_json` immutable, allows only `planned -> applied | aborted | failed` (all three terminal and fully immutable), requires inserts to be `planned`, forbids deletes, and allows at most one `planned` op per Goal. Recovery observations are written to `recovery_json`, never over the authorised checks. The planned evidence/review migration is therefore `017_goal_evidence_reviews.sql`.
+
+## Stage 1 implementation notes (`src/server/goalGit.ts`)
+
+Deterministic Goal integration Git mechanics only; no supervisor, AI, routing, evidence or review logic.
+
+- **Hooks.** `update-ref` runs with `-c core.hooksPath=<empty dir>`, because Git's `reference-transaction` hook can fire on ref updates. This corrects §7.3's claim that no hooks run.
+- **Rejected attempts are not recorded as ops.** A check failure returns `{outcome:'rejected', code, checks}` and writes nothing; only an attempt that reaches the planned op is audited (applied, failed or aborted). §7.3's "record an aborted op" is deferred to the supervisor, which owns cycle outcomes.
+- **Concurrent ref move.** A lost CAS records the op as `failed` with `goal_ref_conflict` and the observed ref in `recovery_json`.
+- **Cycle status** is never touched here; only `cycle.result_integration_commit` and `goal_runtime.integration_head` are written, with the op, in one transaction.
+- **Goal status check (C1)** is a caller policy (`allowedGoalStatuses`, default `running`).
+- **Path scope** uses `git diff --raw -z -M -C --find-copies-harder`, checking old and new paths. Symlink and gitlink destinations are rejected. Milestone scope is an explicit `allowedPaths` policy input.
+- **Secret scan** streams the complete `-U0 --text --no-renames` diff and fails closed on a byte cap or any git error; the display preview is separate and bounded.
+- **Recovery** only reads the ref. An `advance` op with ref == new_commit completes; ref == expected_old aborts; any other value leaves the op `planned` and returns `goal_ref_changed`.
+- **Final apply** is preflight only (`preflightFinalApply`); no function here moves the user's branch. A safe-looking checkout whose Goal diff fails the path/secret scan reports `unsafe_changes`, an addition to the specified result codes.
