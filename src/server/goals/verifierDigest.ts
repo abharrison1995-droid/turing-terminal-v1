@@ -57,3 +57,16 @@ export function findVerifier(
     (verifier) => verifier.criterionKey === criterionKey && verifier.digest === digest,
   );
 }
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * The normal form of a verification cycle's requested verifier set: unique, sorted, every member a full lowercase
+ * SHA-256. Anything else (not an array, empty, or any malformed member) is untrusted and yields null, so a corrupt or
+ * historical row never stands in for a verifier attempt.
+ */
+export function normalizeVerifierDigests(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  if (!value.every((digest) => typeof digest === 'string' && SHA256_HEX.test(digest))) return null;
+  return [...new Set(value as string[])].sort();
+}

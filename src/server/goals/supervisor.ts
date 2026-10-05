@@ -30,6 +30,7 @@ import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
 import { pruneRunWorktree } from './retention.js';
 import { materializeVerification, milestoneDeterministicVerifiers } from './verification.js';
+import { normalizeVerifierDigests } from './verifierDigest.js';
 import { rebuildGoalMemory } from './memory.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
 import { validateNextTask } from './nextTask.js';
@@ -78,6 +79,7 @@ export const TICK_ACTIONS = [
   'completed',
   'completion_pending',
   'evidence_collected',
+  'evidence_collection_error',
   'verification_unavailable',
 ] as const;
 export type TickAction = (typeof TICK_ACTIONS)[number];
@@ -545,36 +547,33 @@ export class GoalSupervisor {
 
   // --- Evidence maintenance --------------------------------------------------------------------------------------
 
-  private readonly evidenceFailures = new Map<string, number>();
-
   /**
-   * One bounded maintenance action: extract the evidence of at most one terminal repository run (owning cycle
-   * terminal) that lacks the marker, then opportunistically prune its worktree. Retention is best effort and never
-   * changes evidence, cycle or Goal status. A run that keeps failing to collect is skipped after three attempts (the
-   * missing marker keeps retention refusing, so this fails closed).
+   * One bounded maintenance action: extract the evidence of the OLDEST terminal repository run (owning cycle terminal)
+   * that lacks the `run_evidence_collected` marker, then opportunistically prune its worktree. Fail closed: if that run
+   * cannot be collected (a thrown error or an ineligible result) the action is `evidence_collection_error` and callers
+   * that would make progress stop there. The missing marker, which is persisted state, is the only authority; nothing
+   * in memory (no retry counter) can ever make an unmarked run count as collected or absent.
    */
   private async collectOne(goalId: string): Promise<TickResult | null> {
-    for (const runId of listUncollectedRunIds(this.db, goalId)) {
-      if ((this.evidenceFailures.get(runId) ?? 0) >= 3) continue;
-      let result;
-      try {
-        result = await collectRunEvidence(this.db, runId, { now: this.now() });
-      } catch {
-        this.evidenceFailures.set(runId, (this.evidenceFailures.get(runId) ?? 0) + 1);
-        return { action: 'idle', goalId, runId, code: 'evidence_collection_error' };
-      }
-      if (result.status !== 'collected') continue;
-      const cleanup = await this.tryPrune(runId);
-      return {
-        action: 'evidence_collected',
-        goalId,
-        cycleId: result.cycleId,
-        runId,
-        evidenceCount: result.evidenceCount,
-        ...(cleanup ? { cleanup } : {}),
-      };
+    const [runId] = listUncollectedRunIds(this.db, goalId, 1);
+    if (!runId) return null;
+    let result;
+    try {
+      result = await collectRunEvidence(this.db, runId, { now: this.now() });
+    } catch {
+      return { action: 'evidence_collection_error', goalId, runId, code: 'collection_failed' };
     }
-    return null;
+    if (result.status !== 'collected')
+      return { action: 'evidence_collection_error', goalId, runId, code: `ineligible:${result.code}` };
+    const cleanup = await this.tryPrune(runId);
+    return {
+      action: 'evidence_collected',
+      goalId,
+      cycleId: result.cycleId,
+      runId,
+      evidenceCount: result.evidenceCount,
+      ...(cleanup ? { cleanup } : {}),
+    };
   }
 
   /** Non-running Goals get one maintenance action each per pass; a running Goal does it as part of its own tick. */
@@ -602,7 +601,7 @@ export class GoalSupervisor {
    * The deterministic verifiers (build, test, lint) of the active milestone that need fresh evidence at the current
    * head: missing, stale or inconclusive. A fresh `contradicted` verifier is never re-verified (that would loop), and
    * `missing` only counts once the Goal has integrated something (the untouched initial head is not worth a cycle).
-   * A head that already had a verification cycle is not verified again, whatever the outcome.
+   * A verifier already attempted at this head (same definition, milestone and digest) is not verified again.
    */
   private verifiersNeedingEvidence(
     goalId: string,
@@ -614,13 +613,37 @@ export class GoalSupervisor {
       .prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?')
       .get(goalId) as { integration_head: string | null } | undefined;
     if (!runtime?.integration_head) return [];
-    const triedHere = this.db
-      .prepare(
-        `SELECT 1 FROM goal_cycles WHERE goal_id = ? AND kind = 'verification' AND base_integration_commit = ?
-           AND status IN ('succeeded','failed','cancelled','rejected') LIMIT 1`,
-      )
-      .get(goalId, runtime.integration_head);
-    if (triedHere) return [];
+    // A verifier counts as already attempted only under the same definition version, milestone, integration head and full
+    // digest. A terminal verification row without a trustworthy digest list establishes no attempt for any verifier.
+    const attempted = new Set<string>();
+    const milestoneId = (
+      this.db
+        .prepare('SELECT id FROM goal_milestones WHERE goal_id = ? AND milestone_key = ?')
+        .get(goalId, milestoneKey) as { id: string } | undefined
+    )?.id;
+    if (milestoneId) {
+      const priors = this.db
+        .prepare(
+          `SELECT outcome_json FROM goal_cycles WHERE goal_id = ? AND kind = 'verification' AND definition_version = ?
+             AND milestone_id = ? AND base_integration_commit = ?
+             AND status IN ('succeeded','failed','cancelled','rejected')`,
+        )
+        .all(goalId, version.version, milestoneId, runtime.integration_head) as Array<{
+        outcome_json: string | null;
+      }>;
+      for (const prior of priors) {
+        let digests: string[] | null = null;
+        try {
+          digests = normalizeVerifierDigests(
+            (JSON.parse(prior.outcome_json ?? 'null') as { verifierDigests?: unknown } | null)
+              ?.verifierDigests,
+          );
+        } catch {
+          digests = null;
+        }
+        for (const digest of digests ?? []) attempted.add(digest);
+      }
+    }
     const integrated = this.db
       .prepare(
         "SELECT 1 FROM goal_cycles WHERE goal_id = ? AND kind IN ('execution','remediation') AND status = 'succeeded' LIMIT 1",
@@ -631,6 +654,7 @@ export class GoalSupervisor {
       for (const verifier of criterion.verifiers)
         state.set(`${criterion.key}:${verifier.verifierDigest}`, verifier.state);
     return milestoneDeterministicVerifiers(version.definition, milestoneKey).filter((verifier) => {
+      if (attempted.has(verifier.digest)) return false;
       const current = state.get(`${verifier.criterionKey}:${verifier.digest}`) ?? 'missing';
       if (current === 'stale' || current === 'inconclusive') return true;
       return current === 'missing' && !!integrated;
@@ -761,22 +785,28 @@ export class GoalSupervisor {
       });
       return { action: 'verification_unavailable', goalId, code: materialized.code };
     }
+    const digests = normalizeVerifierDigests(needed.map((verifier) => verifier.digest));
+    if (!digests) return { action: 'idle', goalId, code: 'verification_inputs_invalid' };
     try {
-      const created = createCycle(this.db, {
-        goalId,
-        kind: 'verification',
-        triggerCode: 'evidence_refresh',
-        milestoneKey,
-        now: this.now(),
-        liveActiveMs: this.tracker.pendingMs(goalId),
-      });
-      if (created.created)
-        transitionCycle(this.db, {
-          cycleId: created.cycle.id,
-          to: 'launching',
-          outcome: { verifierDigests: needed.map((verifier) => verifier.digest) },
+      // One transaction: a verification cycle never exists without the verifier set it was created for.
+      const created = this.db.transaction(() => {
+        const result = createCycle(this.db, {
+          goalId,
+          kind: 'verification',
+          triggerCode: 'evidence_refresh',
+          milestoneKey,
           now: this.now(),
+          liveActiveMs: this.tracker.pendingMs(goalId),
         });
+        if (result.created)
+          transitionCycle(this.db, {
+            cycleId: result.cycle.id,
+            to: 'launching',
+            outcome: { verifierDigests: digests },
+            now: this.now(),
+          });
+        return result;
+      })();
       return { action: created.created ? 'cycle_created' : 'busy', goalId, cycleId: created.cycle.id };
     } catch (error) {
       if (error instanceof CycleError && error.code === 'bound_exceeded' && error.breach) {
@@ -1058,18 +1088,14 @@ export class GoalSupervisor {
           if (blocked) return blocked;
           try {
             if (purpose === 'verification') {
-              const digests = (cycle.outcome as { verifierDigests?: unknown } | null)?.verifierDigests;
-              if (
-                !this.executor.queueVerificationRun ||
-                !Array.isArray(digests) ||
-                !digests.every((digest) => typeof digest === 'string')
-              )
+              const digests = normalizeVerifierDigests(cycle.outcome?.verifierDigests);
+              if (!this.executor.queueVerificationRun || !digests)
                 return this.fail(cycle, 'verification_inputs_missing');
               await this.executor.queueVerificationRun({
                 goalId,
                 cycleId: cycle.id,
                 baseCommit: cycle.baseIntegrationCommit!,
-                verifierDigests: digests as string[],
+                verifierDigests: digests,
               });
               return { action: 'run_queued', goalId, cycleId: cycle.id };
             }
@@ -1135,10 +1161,7 @@ export class GoalSupervisor {
             cycleId: cycle.id,
             to: 'succeeded',
             outcomeCode: 'verified',
-            detail: {
-              runId: run.id,
-              verifierDigests: (cycle.outcome as { verifierDigests?: unknown } | null)?.verifierDigests,
-            },
+            detail: { runId: run.id },
             now: this.now(),
           });
           this.afterCycle(goalId);

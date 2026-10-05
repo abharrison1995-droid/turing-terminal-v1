@@ -4,6 +4,7 @@ import type { Db } from '../db.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { writeGoalEvent } from './events.js';
 import { evaluateBounds, type BoundBreach } from './bounds.js';
+import { normalizeVerifierDigests } from './verifierDigest.js';
 
 /**
  * The single authority over goal_cycles.status. Every status write in the application goes through
@@ -204,7 +205,18 @@ export function transitionCycle(db: Db, request: CycleTransition): CycleRow {
         'illegal_cycle_transition',
         `A ${current.kind} cycle cannot move from ${current.status} to ${request.to}.`,
       );
-    const outcomeJson = request.outcome ? JSON.stringify(request.outcome) : null;
+    // The verifier set a verification cycle was launched with is its attempt identity (the loop guard reads it), so it
+    // is carried into every later outcome of that cycle, whatever ends it, and always in normal form.
+    let outcome = request.outcome;
+    if (outcome && current.kind === 'verification') {
+      const kept =
+        normalizeVerifierDigests(outcome.verifierDigests) ??
+        normalizeVerifierDigests(current.outcome?.verifierDigests);
+      const { verifierDigests: _discard, ...rest } = outcome;
+      void _discard;
+      outcome = kept ? { ...rest, verifierDigests: kept } : rest;
+    }
+    const outcomeJson = outcome ? JSON.stringify(outcome) : null;
     if (outcomeJson && outcomeJson.length > MAX_OUTCOME_CHARS)
       throw new CycleError('illegal_cycle_transition', 'The cycle outcome is too large.');
     db.prepare(

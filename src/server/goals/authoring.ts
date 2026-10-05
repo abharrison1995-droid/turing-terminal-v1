@@ -39,6 +39,7 @@ export type GoalAuthoringErrorCode =
   | 'authoring_in_progress'
   | 'definition_exists'
   | 'not_retryable'
+  | 'authoring_state_changed'
   | 'prompt_invalid';
 
 export class GoalAuthoringError extends Error {
@@ -351,11 +352,17 @@ export async function retryGoalAuthoring(
   startRun: StartRun,
 ): Promise<AuthoringStarted> {
   checkText(input);
-  const goal = db.prepare('SELECT project_id, title, status FROM goals WHERE id = ?').get(input.goalId) as
-    { project_id: string; title: string; status: string } | undefined;
-  if (!goal) throw new GoalAuthoringError('goal_not_found', 'The Goal does not exist.');
-  const refuse = () => {
-    if (db.prepare('SELECT 1 FROM goal_definition_versions WHERE goal_id = ? LIMIT 1').get(input.goalId))
+  type Row = { project_id: string; title: string; status: string; current_definition_version: number | null };
+  // Always reads the Goal as it is NOW; the same checks run before the preview and again inside the final transaction.
+  const refuse = (): Row => {
+    const goal = db
+      .prepare('SELECT project_id, title, status, current_definition_version FROM goals WHERE id = ?')
+      .get(input.goalId) as Row | undefined;
+    if (!goal) throw new GoalAuthoringError('goal_not_found', 'The Goal does not exist.');
+    if (
+      goal.current_definition_version !== null ||
+      db.prepare('SELECT 1 FROM goal_definition_versions WHERE goal_id = ? LIMIT 1').get(input.goalId)
+    )
       throw new GoalAuthoringError('definition_exists', 'The Goal already has a definition.');
     if (goal.status !== 'draft')
       throw new GoalAuthoringError('not_retryable', 'Only a draft Goal can be authored again.');
@@ -368,17 +375,24 @@ export async function retryGoalAuthoring(
       .get(input.goalId) as { status: string } | undefined;
     if (!last || (last.status !== 'failed' && last.status !== 'cancelled'))
       throw new GoalAuthoringError('not_retryable', 'There is no failed authoring attempt to retry.');
+    return goal;
   };
-  refuse();
+  const goal = refuse();
   const cycleId = randomUUID();
   const preview = await previewFor(
     db,
     { projectId: goal.project_id, title: goal.title, prompt: input.prompt, route: input.route },
     cycleId,
   );
-  // State may have moved while the preview was built; the transaction re-proves it.
+  // State may have moved while the preview was built. The transaction re-reads the Goal, re-proves every retry
+  // condition and refuses a preview that was built for a different project or title; it never rebuilds the preview.
   const started = db.transaction(() => {
-    refuse();
+    const now = refuse();
+    if (now.project_id !== goal.project_id || now.title !== goal.title)
+      throw new GoalAuthoringError(
+        'authoring_state_changed',
+        'The Goal changed while the preview was built.',
+      );
     return persistAuthoring(
       db,
       { goalId: input.goalId, projectId: goal.project_id, title: goal.title },

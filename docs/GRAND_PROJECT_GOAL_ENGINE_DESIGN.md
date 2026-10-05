@@ -1257,3 +1257,26 @@ connectionProfileId, modelDisplayName, variantId, nativeSettings` on stages in t
   event). Otherwise `authoring_not_consumed`. The branch is retained; no `run_evidence_collected` is needed.
 - **Usage**: the existing `goalId` filter already reaches authoring runs through `goal_runs` (run → cycle → Goal); a
   regression covers it. No migration. Production autonomous Goals still use `DisabledGoalExecutor`.
+
+## Stage 4B.3 implementation notes (hardening)
+
+- **Evidence is fail-closed** (`GoalSupervisor.collectOne`): only the persisted `run_evidence_collected` marker is
+  authority. The oldest terminal repository run of a terminal cycle without a marker is collected; a thrown collector or
+  an ineligible result is the action `evidence_collection_error`, and `tick` / `tickNoCycle` return it before any
+  milestone refresh, verification cycle, execution cycle or provider work. The in-memory retry counter is removed, so no
+  number of failures, passes or restarts can treat an unmarked run as collected or absent. Non-running Goals keep retrying
+  in bounded one-action passes and never change status.
+- **Verification attempt identity**: a verifier counts as attempted at a head only for a terminal verification cycle with
+  the same Goal, definition version, milestone id, base integration commit and the full verifier digest (read from the
+  cycle's normalised `outcome_json.verifierDigests`). Only those digests are removed from the needed set. A row without a
+  trustworthy list (missing, empty or malformed) establishes no attempt.
+- **Digests survive every terminal outcome**: `transitionCycle` (the sole status writer) carries a verification cycle's
+  normalised digest set (`normalizeVerifierDigests`: unique, sorted, full lowercase SHA-256) into any later outcome and
+  ignores a restated or malformed set. The set is written atomically with cycle creation.
+- **`queueVerificationRun` fast path** (`existingVerification`): before an existing run is returned it re-proves Goal
+  ownership, verification kind, current definition and milestone, base, that the normalised request equals the set
+  persisted on the cycle (`verification_inputs_mismatch` otherwise), that each digest is a required deterministic verifier
+  of the milestone, and that the run's stages are exactly `gv-<digest>` for that set (`verification_run_inconsistent`).
+- **Authoring retry** re-reads the Goal inside the final transaction and re-proves draft, no current definition or
+  version, no active cycle and a failed/cancelled latest authoring cycle; a preview built for a different project or title
+  is refused as `authoring_state_changed`. The preview is never rebuilt in the transaction. No migration.

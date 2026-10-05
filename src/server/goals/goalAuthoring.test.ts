@@ -24,6 +24,7 @@ import {
 } from './authoring.js';
 import { simpleDefinition, cleanupRepoFixtures } from './repoKit.js';
 import { inspectRunRetention } from './retention.js';
+import { transitionGoal } from './stateMachine.js';
 import { METERED_TEST_ROUTE, SUBSCRIPTION_TEST_ROUTE } from './testPlanProvider.js';
 import { realRunHarness, type RealRunHarness } from './turingRunKit.js';
 
@@ -459,6 +460,96 @@ describe('Goal authoring: retry', () => {
     await expect(
       retryGoalAuthoring(db(), { goalId: h.fx.goalId, prompt: 'x', route: { ...ROUTE } }, startRun),
     ).rejects.toMatchObject({ code: 'definition_exists' });
+  });
+});
+
+describe('Goal authoring: retry is re-proven in the final transaction', () => {
+  /** Fails a first attempt, then holds a retry inside its preview until `release()` while `mutate` changes the Goal. */
+  async function raced(mutate: (goalId: string) => void) {
+    answer = async () => done('not json');
+    const first = await begin();
+    await waitRun(first.runId, 'completed');
+    await reconciler().reconcile();
+    const before = { ...counts(), calls: calls.length };
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let reached!: () => void;
+    const blocked = new Promise<void>((resolve) => (reached = resolve));
+    vi.mocked(discoverProviders).mockImplementationOnce(async () => {
+      reached();
+      await gate;
+      return [claude()];
+    });
+    const retry = retryGoalAuthoring(
+      db(),
+      { goalId: first.goalId, prompt: 'again', route: { ...ROUTE } },
+      startRun,
+    );
+    const settled = retry.then(
+      () => 'started',
+      (error: GoalAuthoringError) => error.code,
+    );
+    await blocked;
+    mutate(first.goalId);
+    release();
+    return { outcome: await settled, before, first };
+  }
+
+  it('refuses a retry whose Goal was abandoned while the preview was being built', async () => {
+    h = await realRunHarness();
+    const { outcome, before } = await raced((goalId) =>
+      transitionGoal(db(), { goalId, to: 'abandoned', reasonCode: 'user_abandoned', actor: 'user' }),
+    );
+    expect(outcome).toBe('not_retryable');
+    expect({ ...counts(), calls: calls.length }).toEqual({ ...before, events: before.events + 1 });
+  });
+
+  it('refuses a stale preview when the title or project changed meanwhile, creating nothing', async () => {
+    h = await realRunHarness();
+    const title = await raced((goalId) =>
+      db().prepare("UPDATE goals SET title = 'Renamed' WHERE id = ?").run(goalId),
+    );
+    expect(title.outcome).toBe('authoring_state_changed');
+    expect({ ...counts(), calls: calls.length }).toEqual(title.before);
+  });
+
+  it('refuses when a definition appeared while previewing', async () => {
+    h = await realRunHarness();
+    const { outcome, before } = await raced((goalId) =>
+      db()
+        .prepare(
+          `INSERT INTO goal_definition_versions (goal_id, version, parent_version, status, contract_json, milestones_json, routing_json,
+             review_json, limits_json, definition_hash, change_summary, created_by, created_at)
+           VALUES (?, 1, NULL, 'proposed', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'user', '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(goalId),
+    );
+    expect(outcome).toBe('definition_exists');
+    expect(counts().runs).toBe(before.runs);
+    expect(counts().cycles).toBe(before.cycles);
+    expect(calls).toHaveLength(before.calls);
+  });
+
+  it('refuses when a competing authoring cycle became active', async () => {
+    h = await realRunHarness();
+    const { outcome, before } = await raced((goalId) =>
+      db()
+        .prepare(
+          `INSERT INTO goal_cycles (id, goal_id, definition_version, milestone_id, sequence, kind, trigger_code, status, base_integration_commit, created_at)
+           VALUES ('rival', ?, NULL, NULL, 5, 'authoring', 'goal_authoring_retry', 'proposing', NULL, '2026-01-01T00:00:00.000Z')`,
+        )
+        .run(goalId),
+    );
+    expect(outcome).toBe('authoring_in_progress');
+    expect(counts().runs).toBe(before.runs);
+    expect(calls).toHaveLength(before.calls);
+  });
+
+  it('still starts an unchanged retry', async () => {
+    h = await realRunHarness();
+    const { outcome } = await raced(() => undefined);
+    expect(outcome).toBe('started');
   });
 });
 

@@ -24,9 +24,11 @@ import type {
 import { applyGoalScope, formatExecutionTask, formatPlanningTask } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
+import { normalizeVerifierDigests } from './verifierDigest.js';
 import {
   materializeVerification,
   milestoneDeterministicVerifiers,
+  parseVerificationStageId,
   verificationWorkflow,
 } from './verification.js';
 
@@ -51,7 +53,9 @@ export type TuringExecutorErrorCode =
   | 'preview_unavailable'
   | 'preview_not_startable'
   | 'verification_invalid'
-  | 'verification_unmaterializable';
+  | 'verification_unmaterializable'
+  | 'verification_inputs_mismatch'
+  | 'verification_run_inconsistent';
 
 export class TuringExecutorError extends Error {
   constructor(
@@ -409,20 +413,85 @@ export class TuringGoalExecutor implements GoalExecutor {
    * (each a required build/test/lint verifier of the cycle's milestone). No plan provider, route, model or provider is
    * involved, and every command is re-checked as a safe project command here.
    */
-  async queueVerificationRun(request: VerificationRunRequest): Promise<{ runId: string }> {
+  /**
+   * The idempotent fast path of a verification run. Before an existing run is returned, everything the caller supplied
+   * is re-proven against persisted authority: the Goal owns the cycle, it is a verification cycle of the current
+   * definition and milestone at the requested base, the requested set (normalised) equals the set persisted on the
+   * cycle, every member is a required deterministic verifier of that milestone, and the run's `gv-<digest>` stages are
+   * exactly that set. Any inconsistency fails closed; nothing is created or changed.
+   */
+  private existingVerification(request: VerificationRunRequest): string | undefined {
     const already = this.existing(request.goalId, request.cycleId, 'verification', request.baseCommit);
-    if (already) return { runId: already };
+    if (!already) return undefined;
+    const cycle = getCycle(this.db, request.cycleId)!;
+    const goal = this.db
+      .prepare('SELECT current_definition_version AS version FROM goals WHERE id = ?')
+      .get(request.goalId) as { version: number | null };
+    const definition =
+      goal.version === null
+        ? undefined
+        : loadDefinitionVersion(this.db, request.goalId, goal.version)?.definition;
+    if (cycle.kind !== 'verification' || !cycle.milestoneKey || !cycle.milestoneId || !definition)
+      throw new TuringExecutorError('verification_invalid', 'The cycle is not a verification cycle.');
+    const owned = this.db
+      .prepare('SELECT 1 FROM goal_milestones WHERE goal_id = ? AND id = ? AND milestone_key = ?')
+      .get(request.goalId, cycle.milestoneId, cycle.milestoneKey);
+    if (!owned || !definition.milestones.some((milestone) => milestone.key === cycle.milestoneKey))
+      throw new TuringExecutorError('definition_mismatch', 'The cycle milestone is not current.');
+    const requested = normalizeVerifierDigests(request.verifierDigests);
+    const persisted = normalizeVerifierDigests(cycle.outcome?.verifierDigests);
+    if (!requested || !persisted || JSON.stringify(requested) !== JSON.stringify(persisted))
+      throw new TuringExecutorError(
+        'verification_inputs_mismatch',
+        "The requested verifiers are not the cycle's verifier set.",
+      );
+    const allowed = new Set(
+      milestoneDeterministicVerifiers(definition, cycle.milestoneKey).map((verifier) => verifier.digest),
+    );
+    if (requested.some((digest) => !allowed.has(digest)))
+      throw new TuringExecutorError(
+        'verification_invalid',
+        'A requested verifier is not a required deterministic verifier of the cycle milestone.',
+      );
+    const stages = (
+      this.db.prepare('SELECT stage_key FROM stages WHERE run_id = ?').all(already) as Array<{
+        stage_key: string;
+      }>
+    )
+      .map((row) => parseVerificationStageId(row.stage_key))
+      .sort();
+    const expected = requested.map((digest) => digest);
+    const stageCount = (
+      this.db.prepare('SELECT COUNT(*) AS n FROM stages WHERE run_id = ?').get(already) as { n: number }
+    ).n;
+    if (stages.length !== stageCount || JSON.stringify(stages) !== JSON.stringify(expected))
+      throw new TuringExecutorError(
+        'verification_run_inconsistent',
+        "The existing run does not match the cycle's verifier set.",
+      );
+    return already;
+  }
+
+  async queueVerificationRun(request: VerificationRunRequest): Promise<{ runId: string }> {
+    const existing = this.existingVerification(request);
+    if (existing) return { runId: existing };
     const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
     if (loaded.cycle.kind !== 'verification' || !loaded.cycle.milestoneKey)
       throw new TuringExecutorError('verification_invalid', 'The cycle is not a verification cycle.');
     const allowed = milestoneDeterministicVerifiers(loaded.definition, loaded.cycle.milestoneKey);
-    const requested = [...new Set(request.verifierDigests)].map((digest) =>
-      allowed.find((verifier) => verifier.digest === digest),
-    );
-    if (requested.length === 0 || requested.some((verifier) => !verifier))
+    const digests = normalizeVerifierDigests(request.verifierDigests);
+    const requested = (digests ?? []).map((digest) => allowed.find((verifier) => verifier.digest === digest));
+    if (!digests || requested.some((verifier) => !verifier))
       throw new TuringExecutorError(
         'verification_invalid',
         'A requested verifier is not a required deterministic verifier of the cycle milestone.',
+      );
+    // When the cycle carries its trusted verifier set, the request must be exactly that set.
+    const persisted = normalizeVerifierDigests(loaded.cycle.outcome?.verifierDigests);
+    if (persisted && JSON.stringify(persisted) !== JSON.stringify(digests))
+      throw new TuringExecutorError(
+        'verification_inputs_mismatch',
+        "The requested verifiers are not the cycle's verifier set.",
       );
     const registered = this.registeredWorkflow(GOAL_WORKFLOW_IDS.verification);
     if (registered.stages.some((stage) => isModelBackedStage(stage.kind)) || !registered.isolatedWorktree)
