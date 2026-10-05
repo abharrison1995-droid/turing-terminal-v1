@@ -11,8 +11,14 @@ import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import type { AuthorityModel } from './independence.js';
 import { parseRoleResolution, type RoleResolution, type RoutingResult } from './routeAudit.js';
 import { computeRouteIdentity, type ProfileObservation } from './routeIdentity.js';
-import { readRouteValidations } from './routeValidation.js';
 import {
+  ROLE_VALIDATION_PROFILES,
+  readRouteValidations,
+  recordFromRow,
+  type ValidationRow,
+} from './routeValidation.js';
+import {
+  reproveRoleResolution,
   resolveRoutes,
   type PriorRouteResolution,
   type RoutingEnvironment,
@@ -76,12 +82,85 @@ export function readStoredResolutions(raw: string | null): Partial<Record<GoalRo
   return result;
 }
 
+/** The current cycle's stored role entries: the proven-shape ones, and the roles whose entry is present but malformed. */
+export function readCycleResolutions(raw: string | null): {
+  valid: Partial<Record<GoalRole, RoleResolution>>;
+  malformed: GoalRole[];
+} {
+  const valid = readStoredResolutions(raw);
+  const malformed: GoalRole[] = [];
+  if (raw) {
+    try {
+      const roles = (JSON.parse(raw) as { roles?: Record<string, unknown> } | null)?.roles;
+      if (roles && typeof roles === 'object')
+        for (const role of GOAL_ROLES) if (roles[role] !== undefined && !valid[role]) malformed.push(role);
+    } catch {
+      // unreadable JSON is reported as route_resolution_corrupt when something new is written
+    }
+  }
+  return { valid, malformed };
+}
+
 interface CycleLookup {
   id: string;
   goal_id: string;
   definition_version: number | null;
   status: CycleStatus;
   route_resolution_json: string | null;
+}
+
+/**
+ * Proves, from canonical SQLite, the approval and validation records a resolution cites. Returns a finite failure
+ * code or null. Reads only: nothing is created, validated or refreshed.
+ */
+function proveDurableReferences(db: Db, goalId: string, resolution: RoleResolution): string | null {
+  const { approval, selected } = resolution;
+  if (approval.state === 'approved') {
+    const row = db
+      .prepare('SELECT goal_id, gate, status, decided_by, detail_json FROM goal_approvals WHERE id = ?')
+      .get(approval.approvalId) as
+      | { goal_id: string; gate: string; status: string; decided_by: string | null; detail_json: string }
+      | undefined;
+    if (
+      !row ||
+      row.goal_id !== goalId ||
+      row.gate !== 'pool_route_first_use' ||
+      row.status !== 'approved' ||
+      row.decided_by !== 'user'
+    )
+      return 'approval_reference';
+    let detail: { poolId?: unknown; memberIdentityHash?: unknown };
+    try {
+      detail = JSON.parse(row.detail_json) as typeof detail;
+    } catch {
+      return 'approval_reference';
+    }
+    if (
+      !detail ||
+      typeof detail !== 'object' ||
+      detail.poolId !== resolution.poolId ||
+      detail.memberIdentityHash !== selected.identityHash
+    )
+      return 'approval_reference';
+  } else if (approval.approvalId !== null || approval.memberIdentityHash !== null)
+    return 'approval_reference';
+
+  const entry = resolution.evaluatedMembers[resolution.selectedIndex];
+  for (const id of resolution.validationRecordIds) {
+    const row = db.prepare('SELECT * FROM route_validations WHERE id = ?').get(id) as
+      ValidationRow | undefined;
+    const record = row ? recordFromRow(row) : null;
+    const audited = entry?.validation.profiles.find((state) => state.recordId === id);
+    if (
+      !record ||
+      record.identityHash !== selected.identityHash ||
+      record.status !== 'pass' ||
+      !ROLE_VALIDATION_PROFILES[resolution.role].includes(record.profile) ||
+      audited?.profile !== record.profile
+    )
+      return 'validation_reference';
+  }
+  return null;
 }
 
 /**
@@ -126,6 +205,30 @@ export function persistRoleResolution(
       throw new RouteResolutionError(
         'definition_mismatch',
         'The resolution is not bound to the approved definition.',
+      );
+
+    // Write authority = read authority: the same semantic proof against the approved definition, then proof that every
+    // approval and validation reference exists in canonical SQLite. In-memory environments are never durable evidence.
+    const failure = reproveRoleResolution(
+      {
+        definitionVersion: stored.version,
+        definitionHash: stored.definitionHash,
+        routingPolicy: stored.definition.routing,
+        limits: stored.definition.limits,
+      },
+      resolution.role,
+      resolution,
+    );
+    if (failure)
+      throw new RouteResolutionError(
+        'resolution_invalid',
+        `The resolution is not the approved route (${failure}).`,
+      );
+    const reference = proveDurableReferences(db, input.goalId, resolution);
+    if (reference)
+      throw new RouteResolutionError(
+        'resolution_invalid',
+        `The resolution cites evidence that does not exist (${reference}).`,
       );
 
     let roles: Partial<Record<GoalRole, unknown>> = {};
@@ -272,9 +375,20 @@ export function loadAuthoritySet(
   goalId: string,
   against: IndependencePolicy['against'],
 ): AuthorityModel[] {
+  // Only work that actually entered the Goal's integration history is authority: a succeeded cycle that integrated a
+  // result commit, proven by the applied `advance` op recorded for exactly that commit. Failed, cancelled, no-change,
+  // scope-violating and rejected cycles authored nothing the final review must be independent of.
   const cycles = db
     .prepare(
-      "SELECT id, kind, route_resolution_json FROM goal_cycles WHERE goal_id = ? AND kind IN ('execution','remediation') ORDER BY sequence",
+      `SELECT c.id, c.kind, c.route_resolution_json FROM goal_cycles c
+       WHERE c.goal_id = ? AND c.kind IN ('execution','remediation') AND c.status = 'succeeded'
+         AND c.result_integration_commit IS NOT NULL
+         AND CASE WHEN json_valid(c.outcome_json) THEN json_extract(c.outcome_json, '$.code') END = 'integrated'
+         AND EXISTS (
+           SELECT 1 FROM goal_integration_ops o
+           WHERE o.goal_id = c.goal_id AND o.cycle_id = c.id AND o.op = 'advance' AND o.status = 'applied'
+             AND o.new_commit = c.result_integration_commit)
+       ORDER BY c.sequence`,
     )
     .all(goalId) as Array<{
     id: string;
@@ -387,9 +501,11 @@ export function resolveRolesForCycle(
       "The cycle is not on the Goal's current definition.",
     );
   const policy = stored.definition.routing.independence;
+  const current = readCycleResolutions(cycle.route_resolution_json);
   const result = resolveRoutes(
     requestFor(stored, input.roles, input.environment, {
-      persistedResolutions: readStoredResolutions(cycle.route_resolution_json),
+      persistedResolutions: current.valid,
+      invalidPersistedRoles: current.malformed,
       independenceContext: { authority: loadAuthoritySet(db, input.goalId, policy.against) },
     }),
   );

@@ -1,10 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Db } from '../db.js';
 import type { GoalDefinition, GoalRole } from '../../shared/goals.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
 import { approveDefinition, createGoalDraft } from './definitions.js';
 import { cleanupTestDatabases, freshDatabase, seedProject, validDefinition } from './testKit.js';
+import { canonicalJson } from './definitionHash.js';
+import { memberConfigHashOf } from './routeIdentity.js';
+import { readRouteValidations } from './routeValidation.js';
 import { readStoredResolutions } from './routeResolution.js';
 import {
   MAX_ROUTE_RESOLUTION_JSON,
@@ -23,7 +26,19 @@ import type { RoutingEnvironment } from './routing.js';
 
 afterEach(cleanupTestDatabases);
 
-const MODELS = ['orch', 'impl', 'final', 'rev-a', 'rev-b', 'rev-c'];
+const XS = ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8'];
+const MODELS = [
+  'orch',
+  'impl',
+  'final',
+  'rev-a',
+  'rev-b',
+  'rev-c',
+  'claude-sonnet-4-5',
+  'glm-4.6',
+  'gpt-5',
+  ...XS,
+];
 const providers = (down: string[] = []) => [
   provider(
     {},
@@ -176,7 +191,8 @@ describe('read-only goal route preview', () => {
     const roles = preview.result.roles;
     expect(selected(roles.orchestrator)).toBe('orch');
     expect(selected(roles.implementer)).toBe('impl');
-    expect(selected(roles.final_reviewer)).toBe('final');
+    // No integrated work yet means there is nothing to be independent of, so independence is unestablished.
+    expect(roles.final_reviewer).toMatchObject({ status: 'refused', code: 'independence_unestablished' });
     // The fixture gates pool first use, so the reviewer pool asks for an approval it must not create.
     expect(roles.routine_reviewer).toMatchObject({ status: 'refused', code: 'approval_required' });
     expect(roles.milestone_reviewer).toMatchObject({ status: 'refused', code: 'approval_required' });
@@ -324,21 +340,21 @@ describe('role resolution persistence', () => {
   it('refuses a different second resolution for a role and never replaces the stored one', () => {
     const fx = fixture(roundRobin);
     const cycleId = insertCycle(fx);
-    const stored = (() => {
-      resolveRolesForCycle(fx.db, {
-        goalId: fx.goalId,
-        cycleId,
-        roles: ['routine_reviewer'],
-        environment: environmentFor(fx),
-      });
-      return readStoredResolutions(rawResolution(fx, cycleId)).routine_reviewer!;
-    })();
+    resolveRolesForCycle(fx.db, {
+      goalId: fx.goalId,
+      cycleId,
+      roles: ['routine_reviewer'],
+      environment: environmentFor(fx),
+    });
     const before = rawResolution(fx, cycleId);
-    const different: RoleResolution = {
-      ...stored,
-      selectedIndex: 1,
-      selected: { ...stored.selected, configuration: { ...stored.selected.configuration, modelId: 'rev-b' } },
-    };
+    // A semantically valid resolution for another member: what the rotation would pick after rev-a.
+    const preview = previewGoalRoutes(fx.db, {
+      goalId: fx.goalId,
+      environment: environmentFor(fx),
+      roles: ['routine_reviewer'],
+    }).result.roles.routine_reviewer as { resolution: RoleResolution };
+    const different = preview.resolution;
+    expect(different.selected.configuration.modelId).toBe('rev-b');
     expect(() => persistRoleResolution(fx.db, { goalId: fx.goalId, cycleId, resolution: different })).toThrow(
       expect.objectContaining({ code: 'route_resolution_conflict' }),
     );
@@ -398,15 +414,6 @@ describe('role resolution persistence', () => {
         }),
       ),
     ).toBe('resolution_invalid');
-    // Too large: a resolution carrying more audit than the cap is refused, not trimmed.
-    const huge: RoleResolution = {
-      ...other,
-      evaluatedMembers: Array.from({ length: 400 }, () => resolution.evaluatedMembers[0]!),
-    };
-    expect(JSON.stringify(huge).length).toBeGreaterThan(MAX_ROUTE_RESOLUTION_JSON);
-    expect(code(() => persistRoleResolution(fx.db, { goalId: fx.goalId, cycleId, resolution: huge }))).toBe(
-      'route_resolution_too_large',
-    );
     expect(Object.keys(readStoredResolutions(rawResolution(fx, cycleId)))).toEqual(['routine_reviewer']);
   });
 
@@ -528,26 +535,49 @@ describe('round robin derived from persisted resolutions', () => {
   });
 });
 
+const COMMIT = (n: number) => String(n).repeat(40).slice(0, 40);
+
+/** Ends a cycle the way the supervisor ends an integrated one: succeeded + result commit + an applied advance op. */
+function integrate(fx: Fixture, cycleId: string, commit = COMMIT(1), opCommit = commit) {
+  fx.db
+    .prepare(
+      "UPDATE goal_cycles SET status = 'succeeded', result_integration_commit = ?, outcome_json = ?, finished_at = ? WHERE id = ?",
+    )
+    .run(commit, JSON.stringify({ code: 'integrated' }), NOW, cycleId);
+  const opId = randomUUID();
+  fx.db
+    .prepare(
+      `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, run_id, op, expected_old, new_commit, status, checks_json, created_at)
+       VALUES (?, ?, ?, NULL, 'advance', NULL, ?, 'planned', '{}', ?)`,
+    )
+    .run(opId, fx.goalId, cycleId, opCommit, NOW);
+  fx.db
+    .prepare("UPDATE goal_integration_ops SET status = 'applied', finished_at = ? WHERE id = ?")
+    .run(NOW, opId);
+}
+/** Ends a cycle without integrating anything. */
+function endWithout(fx: Fixture, cycleId: string, status: string, code: string) {
+  fx.db
+    .prepare('UPDATE goal_cycles SET status = ?, outcome_json = ?, finished_at = ? WHERE id = ?')
+    .run(status, JSON.stringify({ code }), NOW, cycleId);
+}
+
 describe('authority set for independence', () => {
-  it('derives implementer, remediation and orchestrator models from persisted resolutions and resolved telemetry', () => {
+  const resolved = (fx: Fixture, kind: 'execution' | 'remediation', roles: GoalRole[]) => {
+    const id = insertCycle(fx, { kind });
+    resolveRolesForCycle(fx.db, { goalId: fx.goalId, cycleId: id, roles, environment: environmentFor(fx) });
+    return id;
+  };
+  const authority = (fx: Fixture) =>
+    loadAuthoritySet(fx.db, fx.goalId, ['implementer', 'remediation', 'orchestrator']);
+
+  it('derives implementer, remediation and orchestrator models from integrated cycles and resolved telemetry', () => {
     const fx = fixture();
     validateAll(fx);
-    const exec = insertCycle(fx, { kind: 'execution' });
-    resolveRolesForCycle(fx.db, {
-      goalId: fx.goalId,
-      cycleId: exec,
-      roles: ['orchestrator', 'implementer'],
-      environment: environmentFor(fx),
-    });
-    finish(fx, exec);
-    const fix = insertCycle(fx, { kind: 'remediation' });
-    resolveRolesForCycle(fx.db, {
-      goalId: fx.goalId,
-      cycleId: fix,
-      roles: ['implementer'],
-      environment: environmentFor(fx),
-    });
-    finish(fx, fix);
+    const exec = resolved(fx, 'execution', ['orchestrator', 'implementer']);
+    integrate(fx, exec, COMMIT(1));
+    const fix = resolved(fx, 'remediation', ['implementer']);
+    integrate(fx, fix, COMMIT(2));
     // Telemetry: the execution run reported a different underlying model than configured.
     fx.db.pragma('foreign_keys = OFF');
     fx.db
@@ -562,8 +592,7 @@ describe('authority set for independence', () => {
       )
       .run(NOW);
     fx.db.pragma('foreign_keys = ON');
-    const both = loadAuthoritySet(fx.db, fx.goalId, ['implementer', 'remediation', 'orchestrator']);
-    expect(both).toEqual([
+    expect(authority(fx)).toEqual([
       { role: 'orchestrator', configuredModelId: 'orch', resolvedModelId: null, identityKind: 'pinned' },
       {
         role: 'implementer',
@@ -577,20 +606,418 @@ describe('authority set for independence', () => {
     expect(
       loadAuthoritySet(fx.db, fx.goalId, ['implementer', 'remediation']).map((entry) => entry.role),
     ).toEqual(['implementer', 'remediation']);
-    // The preview resolves the final reviewer against this authority set.
+    // Authority whose telemetry contradicts its configured id leaves independence unproven: no final review route.
     const preview = previewGoalRoutes(fx.db, {
       goalId: fx.goalId,
       environment: environmentFor(fx),
       roles: ['final_reviewer'],
     });
-    const final = preview.result.roles.final_reviewer as { status: string; resolution: RoleResolution };
-    expect(final.status).toBe('resolved');
-    expect(final.resolution.independence).toMatchObject({
-      established: false,
-      reasonCode: 'identity_conflict',
-      comparedAgainst: expect.arrayContaining([expect.objectContaining({ resolvedKey: 'gpt-5' })]),
+    expect(preview.result.roles.final_reviewer).toMatchObject({
+      status: 'refused',
+      code: 'independence_unestablished',
     });
-    const roles: GoalRole[] = [];
-    void roles;
+  });
+
+  it('includes only work that entered the Goal: failed, cancelled, no-change, scope-violating and rejected cycles do not count', () => {
+    // Each cycle's implementer rotates to a distinct model so every excluded cycle would be visible if it leaked in.
+    const fx = fixture((definition) => {
+      definition.limits.humanGates.poolRouteFirstUse = false;
+      const template = definition.routing.pools[0]!.members[0]!;
+      definition.routing.pools.push({
+        id: 'impls',
+        label: 'Implementers',
+        members: XS.map((modelId) => ({
+          ...template,
+          configuration: { ...template.configuration, modelId },
+        })),
+        admission: 'static',
+        availability: 'live-catalog',
+        requireRoleValidation: false,
+        selection: 'round_robin',
+        laneClass: 'subscription',
+        autoRevalidate: false,
+      });
+      definition.routing.roles.implementer = { kind: 'pool', poolId: 'impls' };
+    });
+    validateAll(fx);
+    const attempt = (kind: 'execution' | 'remediation', finish: (cycleId: string) => void) => {
+      const id = insertCycle(fx, { kind });
+      const result = resolveRolesForCycle(fx.db, {
+        goalId: fx.goalId,
+        cycleId: id,
+        roles:
+          kind === 'execution' && countOf(fx.db, 'goal_cycles') === 1
+            ? ['orchestrator', 'implementer']
+            : ['implementer'],
+        environment: environmentFor(fx, [], id),
+      });
+      finish(id);
+      return selected(result.roles.implementer);
+    };
+    expect(attempt('execution', (id) => integrate(fx, id, COMMIT(1)))).toBe('x1');
+    expect(attempt('execution', (id) => endWithout(fx, id, 'failed', 'run_failed'))).toBe('x2');
+    expect(attempt('execution', (id) => endWithout(fx, id, 'cancelled', 'cancelled'))).toBe('x3');
+    expect(attempt('execution', (id) => endWithout(fx, id, 'failed', 'no_change'))).toBe('x4');
+    expect(attempt('execution', (id) => endWithout(fx, id, 'failed', 'scope_violation'))).toBe('x5');
+    expect(attempt('execution', (id) => endWithout(fx, id, 'failed', 'integration_rejected'))).toBe('x6');
+    // Succeeded with no applied advance op, or with an op for another commit, is not integrated work either.
+    expect(
+      attempt('execution', (id) =>
+        fx.db
+          .prepare(
+            "UPDATE goal_cycles SET status = 'succeeded', result_integration_commit = ?, outcome_json = ?, finished_at = ? WHERE id = ?",
+          )
+          .run(COMMIT(3), JSON.stringify({ code: 'integrated' }), NOW, id),
+      ),
+    ).toBe('x7');
+    expect(attempt('execution', (id) => integrate(fx, id, COMMIT(5), COMMIT(4)))).toBe('x8');
+    // A remediation that integrated counts, as the remediation role.
+    expect(attempt('remediation', (id) => integrate(fx, id, COMMIT(6)))).toBe('x1');
+    expect(authority(fx).map((entry) => `${entry.role}:${entry.configuredModelId}`)).toEqual([
+      'orchestrator:orch',
+      'implementer:x1',
+      'remediation:x1',
+    ]);
+  });
+
+  it('does not let a failed or no-change cycle poison final-review independence', () => {
+    // The implementer rotates glm -> claude. The glm attempt changed nothing; only claude's work entered the Goal.
+    const fx = fixture((definition) => {
+      definition.limits.humanGates.poolRouteFirstUse = false;
+      const template = definition.routing.pools[0]!.members[0]!;
+      const at = (modelId: string) => ({
+        ...template,
+        configuration: { ...template.configuration, modelId },
+      });
+      definition.routing.pools.push({
+        id: 'impls',
+        label: 'Implementers',
+        members: [at('glm-4.6'), at('claude-sonnet-4-5')],
+        admission: 'static',
+        availability: 'live-catalog',
+        requireRoleValidation: false,
+        selection: 'round_robin',
+        laneClass: 'subscription',
+        autoRevalidate: false,
+      });
+      definition.routing.roles.implementer = { kind: 'pool', poolId: 'impls' };
+      (
+        definition.routing.roles.final_reviewer as { member: { configuration: { modelId: string } } }
+      ).member.configuration.modelId = 'glm-4.6';
+    });
+    validateAll(fx);
+    const attempt = (finish: (cycleId: string) => void) => {
+      const id = insertCycle(fx, { kind: 'execution' });
+      const result = resolveRolesForCycle(fx.db, {
+        goalId: fx.goalId,
+        cycleId: id,
+        roles: ['implementer'],
+        environment: environmentFor(fx, [], id),
+      });
+      finish(id);
+      return selected(result.roles.implementer);
+    };
+    expect(attempt((id) => endWithout(fx, id, 'failed', 'no_change'))).toBe('glm-4.6');
+    expect(attempt((id) => integrate(fx, id))).toBe('claude-sonnet-4-5');
+    expect(authority(fx).map((entry) => entry.configuredModelId)).toEqual(['claude-sonnet-4-5']);
+    const final = previewGoalRoutes(fx.db, {
+      goalId: fx.goalId,
+      environment: environmentFor(fx),
+      roles: ['final_reviewer'],
+    }).result.roles.final_reviewer as { status: string; resolution: RoleResolution };
+    expect(final.status).toBe('resolved');
+    expect(final.resolution.independence).toMatchObject({ established: true, reasonCode: 'established' });
   });
 });
+
+describe('stored validation rows authenticate themselves', () => {
+  it('ignores forged, inconsistent and malformed rows and lets a valid pass control', () => {
+    const fx = fixture();
+    const snapshot = { providers: providers(), profiles: [] };
+    const route = fx.definition.routing.roles.implementer;
+    if (route?.kind !== 'pinned') throw new Error('pinned implementer expected');
+    const good = passRecords(route.member, 'implementer', snapshot);
+    seedValidations(fx, good);
+    const base = good[0]!;
+    const seal = (identity: unknown) => createHash('sha256').update(canonicalJson(identity)).digest('hex');
+    const forged: Array<ReturnType<typeof passRecords>[number]> = [
+      { ...base, id: 'f1', identityHash: 'f'.repeat(64) },
+      { ...base, id: 'f2', identity: { ...base.identity, modelId: 'other' } },
+      { ...base, id: 'f3', adapterVersion: '0.0.0' },
+      { ...base, id: 'f4', capabilityFingerprint: 'e'.repeat(64) },
+      (() => {
+        const rest = { ...base.identity };
+        delete rest.variantId;
+        return { ...base, id: 'f5', identity: rest, identityHash: seal(rest) };
+      })(),
+      {
+        ...base,
+        id: 'f6',
+        identity: { ...base.identity, schema: 2 },
+        identityHash: seal({ ...base.identity, schema: 2 }),
+      },
+    ].map((record) => ({ ...record, status: 'fail' as const, testedAt: hoursAgo(0.5) }));
+    seedValidations(fx, forged);
+    expect(countOf(fx.db, 'route_validations')).toBe(good.length + forged.length);
+    const identity = identityOf(route.member, snapshot);
+    const read = readRouteValidations(fx.db, [identity.identityHash], [route.member.configuration.modelId!]);
+    expect(read.map((record) => record.id).sort()).toEqual(good.map((record) => record.id).sort());
+    insertCycle(fx);
+    const preview = previewGoalRoutes(fx.db, { goalId: fx.goalId, environment: environmentFor(fx) });
+    expect(selected(preview.result.roles.implementer)).toBe('impl');
+  });
+});
+
+describe('persistence re-proves approvals, validations and membership against canonical SQLite', () => {
+  const code = (fn: () => unknown) => {
+    try {
+      fn();
+    } catch (error) {
+      return (error as RouteResolutionError).code;
+    }
+    return 'no error';
+  };
+  const approve = (
+    fx: Fixture,
+    poolId: string,
+    memberIdentityHash: string,
+    over: Record<string, unknown> = {},
+  ) => {
+    const id = randomUUID();
+    const row = {
+      goal_id: fx.goalId,
+      gate: 'pool_route_first_use',
+      status: 'approved',
+      decided_by: 'user',
+      ...over,
+    };
+    fx.db
+      .prepare(
+        `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, decided_by, decision_note, created_at, responded_at)
+         VALUES (?, ?, ?, 'low', 'first use', 'supervisor', ?, 'pending', NULL, NULL, ?, NULL)`,
+      )
+      .run(id, row.goal_id, row.gate, JSON.stringify({ poolId, memberIdentityHash }), hoursAgo(2));
+    if (row.status !== 'pending')
+      fx.db
+        .prepare('UPDATE goal_approvals SET status = ?, decided_by = ?, responded_at = ? WHERE id = ?')
+        .run(row.status, row.decided_by, hoursAgo(1), id);
+    return id;
+  };
+  const gatedFixture = () => {
+    const fx = fixture();
+    validateAll(fx);
+    const cycleId = insertCycle(fx);
+    const snapshot = { providers: providers(), profiles: [] };
+    const first = fx.definition.routing.pools[0]!.members[0]!;
+    const memberHash = identityOf(first, snapshot).identityHash;
+    return { fx, cycleId, snapshot, memberHash, first };
+  };
+  const computed = (fx: Fixture, role: GoalRole): RoleResolution => {
+    const outcome = previewGoalRoutes(fx.db, {
+      goalId: fx.goalId,
+      environment: environmentFor(fx),
+      roles: [role],
+    }).result.roles[role] as { status: string; resolution: RoleResolution; code?: string };
+    if (outcome.status !== 'resolved') throw new Error(`fixture must resolve ${role}: ${outcome.code}`);
+    return outcome.resolution;
+  };
+  const persist = (fx: Fixture, cycleId: string, resolution: RoleResolution) =>
+    persistRoleResolution(fx.db, { goalId: fx.goalId, cycleId, resolution });
+  const withApproval = (resolution: RoleResolution, approvalId: string): RoleResolution => {
+    const draft = structuredClone(resolution);
+    draft.approval.approvalId = approvalId;
+    draft.evaluatedMembers[draft.selectedIndex]!.firstUse.approvalId = approvalId;
+    return draft;
+  };
+
+  it('accepts a resolution whose approval is the real user approval for this pool member', () => {
+    const { fx, cycleId, memberHash } = gatedFixture();
+    const real = approve(fx, 'reviewers', memberHash);
+    const resolution = computed(fx, 'routine_reviewer');
+    expect(resolution.approval).toMatchObject({
+      state: 'approved',
+      approvalId: real,
+      memberIdentityHash: memberHash,
+    });
+    expect(persist(fx, cycleId, resolution)).toEqual({ written: true });
+    // Retry with the environment gone is served from the stored resolution.
+    const again = resolveRolesForCycle(fx.db, {
+      goalId: fx.goalId,
+      cycleId,
+      roles: ['routine_reviewer'],
+      environment: environmentFor(fx, ['rev-a', 'rev-b']),
+    });
+    expect(again.roles.routine_reviewer).toMatchObject({ status: 'resolved', source: 'persisted' });
+  });
+
+  it('never makes a fabricated or mis-bound approval id durable authority', () => {
+    const { fx, cycleId, memberHash } = gatedFixture();
+    approve(fx, 'reviewers', memberHash);
+    const resolution = computed(fx, 'routine_reviewer');
+    const before = rawResolution(fx, cycleId);
+    const other = createGoalOther(fx);
+    const bad: Record<string, string> = {
+      fabricated: 'no-such-approval',
+      'another member': approve(fx, 'reviewers', 'c'.repeat(64)),
+      'another pool': approve(fx, 'other-pool', memberHash),
+      'a system denial': approve(fx, 'reviewers', memberHash, { status: 'denied', decided_by: 'system' }),
+      denied: approve(fx, 'reviewers', memberHash, { status: 'denied' }),
+      pending: approve(fx, 'reviewers', memberHash, { status: 'pending', decided_by: null }),
+      'another gate': approve(fx, 'reviewers', memberHash, { gate: 'scope_change' }),
+      'another goal': approve(other, 'reviewers', memberHash),
+    };
+    for (const [name, id] of Object.entries(bad))
+      expect(
+        code(() => persist(fx, cycleId, withApproval(resolution, id))),
+        name,
+      ).toBe('resolution_invalid');
+    // not_required must carry no approval reference at all.
+    const orchestrator = computed(fx, 'orchestrator');
+    const forgedNotRequired = structuredClone(orchestrator);
+    forgedNotRequired.approval.approvalId = 'ghost';
+    expect(code(() => persist(fx, cycleId, forgedNotRequired))).toBe('resolution_invalid');
+    expect(rawResolution(fx, cycleId)).toBe(before);
+  });
+
+  const withValidationIds = (
+    resolution: RoleResolution,
+    replace: (id: string, profile: string) => string,
+  ) => {
+    const draft = structuredClone(resolution);
+    const entry = draft.evaluatedMembers[draft.selectedIndex]!;
+    for (const state of entry.validation.profiles)
+      if (state.recordId) state.recordId = replace(state.recordId, state.profile);
+    draft.validationRecordIds = entry.validation.profiles.map((state) => state.recordId!);
+    return draft;
+  };
+
+  it('never makes an invented or mismatched validation id durable authority', () => {
+    const { fx, cycleId, snapshot } = gatedFixture();
+    const resolution = computed(fx, 'implementer');
+    expect(resolution.validationRecordIds).toHaveLength(2);
+    const route = fx.definition.routing.roles.implementer;
+    if (route?.kind !== 'pinned') throw new Error('pinned expected');
+    // Rows that exist but must not satisfy this resolution.
+    const otherIdentity = passRecords(
+      fx.definition.routing.roles.orchestrator!.kind === 'pinned'
+        ? (fx.definition.routing.roles.orchestrator as { member: never }).member
+        : (undefined as never),
+      'implementer',
+      snapshot,
+    );
+    const wrongProfile = passRecords(route.member, 'routine_reviewer', snapshot).filter(
+      (r) => r.profile === 'review-json',
+    );
+    const failed = passRecords(route.member, 'implementer', snapshot, {
+      status: 'fail',
+      testedAt: hoursAgo(0.1),
+    }).slice(0, 1);
+    for (const [index, record] of [...wrongProfile, ...failed].entries()) record.id = `extra-${index}`;
+    seedValidations(fx, [
+      ...otherIdentity.map((r, i) => ({ ...r, id: `oi-${i}` })),
+      ...wrongProfile,
+      ...failed,
+    ]);
+    const swapFirst = (id: string) => (draft: RoleResolution) =>
+      withValidationIds(draft, (current, profile) =>
+        profile === resolution.evaluatedMembers[0]!.validation.profiles[0]!.profile ? id : current,
+      );
+    const cases: Record<string, RoleResolution> = {
+      'a fabricated id': swapFirst('rec-ghost')(resolution),
+      'an id of another identity': swapFirst('oi-0')(resolution),
+      'an id of a profile the role does not use': swapFirst('extra-0')(resolution),
+      'an id of a failing record': swapFirst(`extra-${wrongProfile.length}`)(resolution),
+    };
+    for (const [name, candidate] of Object.entries(cases))
+      expect(
+        code(() => persist(fx, cycleId, candidate)),
+        name,
+      ).toBe('resolution_invalid');
+    // Claiming ids the audit does not list, or listing none, is also refused.
+    const extraId = structuredClone(resolution);
+    extraId.validationRecordIds = [...extraId.validationRecordIds, 'oi-0'];
+    expect(code(() => persist(fx, cycleId, extraId))).toBe('resolution_invalid');
+    const noIds = structuredClone(resolution);
+    noIds.validationRecordIds = [];
+    expect(code(() => persist(fx, cycleId, noIds))).toBe('resolution_invalid');
+    expect(rawResolution(fx, cycleId)).toBeNull();
+    expect(persist(fx, cycleId, resolution)).toEqual({ written: true });
+  });
+
+  it('refuses a structurally valid resolution that is not the approved member', () => {
+    const { fx, cycleId } = gatedFixture();
+    const resolution = computed(fx, 'implementer');
+    const wrongRole = { ...resolution, role: 'orchestrator' as const };
+    const moved = structuredClone(resolution);
+    moved.selected.configuration.modelId = 'rev-a';
+    moved.selected.memberConfigHash = memberConfigHashOf(moved.selected.configuration);
+    const kind = structuredClone(resolution);
+    kind.selected.identityKind = 'floating';
+    const pooled = structuredClone(resolution);
+    pooled.routeKind = 'pool';
+    pooled.poolId = 'reviewers';
+    const sel = structuredClone(resolution);
+    sel.selection = 'ordered';
+    for (const candidate of [wrongRole, moved, kind, pooled, sel])
+      expect(code(() => persist(fx, cycleId, candidate))).toBe('resolution_invalid');
+    expect(rawResolution(fx, cycleId)).toBeNull();
+  });
+
+  it('refuses a stored malformed or corrupted current-cycle entry instead of recomputing over it', () => {
+    const { fx, memberHash, cycleId: open } = gatedFixture();
+    approve(fx, 'reviewers', memberHash);
+    const good = computed(fx, 'routine_reviewer');
+    endWithout(fx, open, 'cancelled', 'cancelled');
+    const store = (resolution: unknown) =>
+      JSON.stringify({ schema: 1, roles: { routine_reviewer: resolution } });
+    const malformed = structuredClone(good);
+    (malformed.evaluatedMembers[0]!.reasons as string[]) = ['arbitrary provider text'];
+    const corrupted = structuredClone(good);
+    corrupted.selected.configuration.modelId = 'rev-b';
+    for (const stored of [malformed, corrupted, 'junk']) {
+      const cycleId = insertCycle(fx, { resolution: store(stored) });
+      const outcome = resolveRolesForCycle(fx.db, {
+        goalId: fx.goalId,
+        cycleId,
+        roles: ['routine_reviewer'],
+        environment: environmentFor(fx),
+      });
+      expect(outcome.roles.routine_reviewer).toMatchObject({
+        status: 'refused',
+        code: 'persisted_resolution_invalid',
+      });
+      expect(rawResolution(fx, cycleId)).toBe(store(stored));
+      endWithout(fx, cycleId, 'cancelled', 'cancelled');
+    }
+  });
+
+  it('refuses an over-size audit instead of trimming it', () => {
+    const fx = fixture((definition) => {
+      definition.limits.humanGates.poolRouteFirstUse = false;
+      const reviewers = definition.routing.pools[0]!;
+      reviewers.availability = 'live-catalog';
+      reviewers.requireRoleValidation = false;
+      const template = reviewers.members[0]!;
+      for (let index = 0; index < 150; index += 1)
+        reviewers.members.push({
+          ...template,
+          configuration: { ...template.configuration, modelId: `extra-model-${index}` },
+        });
+    });
+    const cycleId = insertCycle(fx);
+    expect(() =>
+      resolveRolesForCycle(fx.db, {
+        goalId: fx.goalId,
+        cycleId,
+        roles: ['routine_reviewer'],
+        environment: environmentFor(fx),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'route_resolution_too_large' }));
+    expect(rawResolution(fx, cycleId)).toBeNull();
+    void MAX_ROUTE_RESOLUTION_JSON;
+  });
+});
+
+function createGoalOther(fx: Fixture): Fixture {
+  return seed(fx.db, undefined, 'Other goal');
+}

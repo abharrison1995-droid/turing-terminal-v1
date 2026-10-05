@@ -690,6 +690,27 @@ describe('pool first-use approval', () => {
     expect(() => run(environment)).not.toThrow();
   });
 
+  it('treats a system denial as fail-closed and never as consent; a later user approval supersedes it', () => {
+    const systemDenied = approval('pool', hashOf(A), {
+      status: 'denied',
+      decidedBy: 'system',
+      createdAt: hoursAgo(5),
+    });
+    // The denied member is unusable and nothing is approved for the next one: ask, never assume consent.
+    expect(run(env({ firstUseApprovals: [systemDenied] }))).toMatchObject({
+      code: 'approval_required',
+      candidate: { memberIndex: 1 },
+    });
+    // A system "approval" is never consent, even if such a row existed.
+    const systemApproved = approval('pool', hashOf(A), { decidedBy: 'system', createdAt: hoursAgo(1) });
+    expect(run(env({ firstUseApprovals: [systemDenied, systemApproved] }))).toMatchObject({
+      code: 'approval_required',
+      candidate: { memberIndex: 1 },
+    });
+    const userApproved = approval('pool', hashOf(A), { createdAt: hoursAgo(1) });
+    expect(selectedModel(run(env({ firstUseApprovals: [systemDenied, userApproved] })))).toBe(A);
+  });
+
   it('uses the latest decision for a member', () => {
     const denied = approval('pool', hashOf(A), {
       status: 'denied',
@@ -717,6 +738,7 @@ describe('role subsets and audit', () => {
         implementer: pinnedRoute(member(B)),
         final_reviewer: pinnedRoute(member(C)),
       },
+      independence: { finalReview: 'none', against: [], allowFloatingFinalReviewer: false },
     });
     const some = resolveRoutes(request({ routing, roles: ['final_reviewer', 'orchestrator'] }));
     expect(Object.keys(some.roles).sort()).toEqual(['final_reviewer', 'orchestrator']);
@@ -772,16 +794,24 @@ describe('final reviewer identity and independence in routing', () => {
     for (const identityKind of ['floating', 'unknown'] as const) {
       const outcome = go(member(A, { identityKind }), false);
       expect(outcome.status).toBe('refused');
-      expect(reasonsOf(outcome)).toEqual(['floating_independence']);
+      expect(reasonsOf(outcome)).toEqual(['floating_independence', 'independence_unestablished']);
+      expect(outcome).toMatchObject({ code: 'independence_unestablished' });
     }
   });
 
   it('may run an allowed floating reviewer but never claims independence for it', () => {
-    const outcome = go(member(A, { identityKind: 'floating' }), true);
+    const authority = [
+      {
+        role: 'implementer' as const,
+        configuredModelId: 'claude-sonnet-4-5',
+        identityKind: 'pinned' as const,
+      },
+    ];
+    const outcome = go(member(A, { identityKind: 'floating' }), true, { independenceContext: { authority } });
     expect(outcome.status).toBe('resolved');
     expect((outcome as { resolution: RoleResolution }).resolution.independence).toMatchObject({
       established: false,
-      reasonCode: 'no_authority',
+      reasonCode: 'candidate_identity_unproven',
     });
   });
 

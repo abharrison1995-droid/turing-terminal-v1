@@ -1,4 +1,5 @@
 import type { Db } from '../db.js';
+import { validationRecordConsistent } from './routeIdentity.js';
 import {
   VALIDATION_PROFILES,
   type FreshnessClass,
@@ -29,16 +30,36 @@ export const FRESHNESS_WINDOW_MS: Readonly<Record<FreshnessClass, number>> = {
 
 const time = (value: string): number => Date.parse(value);
 
-/** Latest record for `identityHash` + `profile`: `testedAt` descending, then the record id descending. */
+/**
+ * Records that can be evidence for `now`: self-authenticating (identity, hash and redundant columns agree) and not
+ * dated in the future. Anything else establishes nothing and can neither pass nor supersede.
+ */
+export function evidentiaryRecords(
+  records: readonly RouteValidationRecord[],
+  now: string,
+): RouteValidationRecord[] {
+  const at = time(now);
+  return records.filter((record) => {
+    const tested = time(record.testedAt);
+    return (
+      Number.isFinite(tested) && Number.isFinite(at) && tested <= at && validationRecordConsistent(record)
+    );
+  });
+}
+
+/**
+ * Latest evidentiary record for `identityHash` + `profile`: `testedAt` descending, then the record id descending.
+ * A record dated after `now` has not happened yet and never takes part in the ordering.
+ */
 export function latestValidationFor(
   records: readonly RouteValidationRecord[],
   identityHash: string,
   profile: ValidationProfile,
+  now: string,
 ): RouteValidationRecord | undefined {
   let latest: RouteValidationRecord | undefined;
-  for (const record of records) {
+  for (const record of evidentiaryRecords(records, now)) {
     if (record.identityHash !== identityHash || record.profile !== profile) continue;
-    if (!Number.isFinite(time(record.testedAt))) continue;
     if (
       !latest ||
       time(record.testedAt) > time(latest.testedAt) ||
@@ -76,9 +97,9 @@ export function validationState(input: {
   now: string;
 }): ProfileValidationState {
   const base = { profile: input.profile, recordId: null, testedAt: null, effectiveExpiresAt: null };
-  const latest = latestValidationFor(input.records, input.identityHash, input.profile);
+  const latest = latestValidationFor(input.records, input.identityHash, input.profile, input.now);
   if (!latest) {
-    const changed = input.records.some(
+    const changed = evidentiaryRecords(input.records, input.now).some(
       (record) =>
         record.profile === input.profile &&
         record.identityHash !== input.identityHash &&
@@ -97,8 +118,6 @@ export function validationState(input: {
   if (!Number.isFinite(expires) || !Number.isFinite(now))
     return { ...detail, state: 'validation_expired', effectiveExpiresAt: null };
   const effectiveExpiresAt = new Date(expires).toISOString();
-  // A record dated in the future is not evidence yet.
-  if (time(latest.testedAt) > now) return { ...detail, state: 'validation_missing', effectiveExpiresAt };
   return { ...detail, state: now >= expires ? 'validation_expired' : 'pass', effectiveExpiresAt };
 }
 
@@ -117,7 +136,7 @@ export function freshValidationSet(input: {
   return { available: profiles.every((entry) => entry.state === 'pass'), profiles };
 }
 
-interface ValidationRow {
+export interface ValidationRow {
   id: string;
   identity_hash: string;
   identity_json: string;
@@ -133,9 +152,35 @@ interface ValidationRow {
   expires_at: string;
 }
 
+/** A stored row as a record, or null when it is malformed or does not authenticate itself. Never repairs. */
+export function recordFromRow(row: ValidationRow): RouteValidationRecord | null {
+  if (!VALIDATION_PROFILES.includes(row.profile as ValidationProfile)) return null;
+  try {
+    const identity = JSON.parse(row.identity_json) as unknown;
+    const record: RouteValidationRecord = {
+      id: row.id,
+      identityHash: row.identity_hash,
+      identity: identity as Record<string, unknown>,
+      profile: row.profile as ValidationProfile,
+      status: row.status,
+      evidenceRunId: row.evidence_run_id,
+      resolvedModelReported: row.resolved_model_reported,
+      checks: JSON.parse(row.checks_json) as unknown,
+      provenance: row.provenance,
+      adapterVersion: row.adapter_version,
+      capabilityFingerprint: row.capability_fingerprint,
+      testedAt: row.tested_at,
+      expiresAt: row.expires_at,
+    };
+    return validationRecordConsistent(record) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Reads the stored records for some identities. A row that cannot be parsed or has an unknown profile is skipped: a
- * corrupt record establishes nothing (and, never being selected, cannot supersede a good one either).
+ * Reads the stored records for some identities. A row that cannot be parsed, has an unknown profile or does not
+ * authenticate itself is skipped: it establishes nothing (and, never being selected, cannot supersede a good one).
  */
 export function readRouteValidations(
   db: Db,
@@ -155,28 +200,8 @@ export function readRouteValidations(
     .all(...hashes, ...models) as ValidationRow[];
   const records: RouteValidationRecord[] = [];
   for (const row of rows) {
-    if (!VALIDATION_PROFILES.includes(row.profile as ValidationProfile)) continue;
-    try {
-      const identity = JSON.parse(row.identity_json) as unknown;
-      if (!identity || typeof identity !== 'object' || Array.isArray(identity)) continue;
-      records.push({
-        id: row.id,
-        identityHash: row.identity_hash,
-        identity: identity as Record<string, unknown>,
-        profile: row.profile as ValidationProfile,
-        status: row.status,
-        evidenceRunId: row.evidence_run_id,
-        resolvedModelReported: row.resolved_model_reported,
-        checks: JSON.parse(row.checks_json) as unknown,
-        provenance: row.provenance,
-        adapterVersion: row.adapter_version,
-        capabilityFingerprint: row.capability_fingerprint,
-        testedAt: row.tested_at,
-        expiresAt: row.expires_at,
-      });
-    } catch {
-      continue;
-    }
+    const record = recordFromRow(row);
+    if (record) records.push(record);
   }
   return records;
 }

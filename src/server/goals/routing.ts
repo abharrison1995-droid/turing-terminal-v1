@@ -11,7 +11,12 @@ import {
 } from '../../shared/goals.js';
 import { evaluateBillingLane, isSubscriptionLane, routeMatchesBillingLane } from '../../shared/billing.js';
 import type { BillingLane, BillingMode } from '../../shared/types.js';
-import { evaluateIndependence, type AuthorityModel, type IndependenceResult } from './independence.js';
+import {
+  authorityIdentitiesKnown,
+  evaluateIndependence,
+  type AuthorityModel,
+  type IndependenceResult,
+} from './independence.js';
 import type {
   FirstUseState,
   MemberEvaluation,
@@ -26,12 +31,14 @@ import type {
 } from './routeAudit.js';
 import {
   computeRouteIdentity,
+  effectiveIdentityKind,
   memberConfigHashOf,
   type ProfileObservation,
   type RouteIdentity,
 } from './routeIdentity.js';
-import { freshValidationSet } from './routeValidation.js';
+import { ROLE_VALIDATION_PROFILES, freshValidationSet } from './routeValidation.js';
 import type { ProviderStatus } from '../../shared/types.js';
+import { canonicalJson } from './definitionHash.js';
 
 /**
  * Deterministic routing authority (design sections 12 and 13). `resolveRoutes` is a pure function of its inputs:
@@ -72,6 +79,8 @@ export interface RoutingRequest {
   independenceContext?: { authority: readonly AuthorityModel[] };
   /** Resolutions already persisted for the current cycle: re-proven and returned, never recomputed. */
   persistedResolutions?: Partial<Record<GoalRole, RoleResolution>>;
+  /** Roles whose stored current-cycle entry exists but is malformed: refused, never recomputed over. */
+  invalidPersistedRoles?: readonly GoalRole[];
   /** Allowed lanes of a `custom` billing mode. */
   customAllowedLanes?: readonly BillingLane[];
   /** A stricter effective workflow billing restriction, applied in addition to the Goal's. */
@@ -250,24 +259,39 @@ function evaluateMember(
   reasons.unshift(...readiness, ...billing);
 
   // --- Final-review independence ---
+  // An independence-required final review needs established independence. The one exception is the user's explicit
+  // `allowFloatingFinalReviewer`: a floating/unknown candidate whose only uncertainty is its own identity may run, and
+  // is recorded as not established. A proven overlap, contradicting telemetry, unproven authority or an unknown family
+  // is never silently viable.
   let independence: MemberEvaluation['independence'] = null;
   const policy = request.routingPolicy.independence;
   if (role === 'final_reviewer' && policy.finalReview !== 'none') {
-    if (resolved.identityKind !== 'pinned' && !policy.allowFloatingFinalReviewer)
-      reasons.push('floating_independence');
-    if (request.independenceContext) {
-      const result = evaluateIndependence({
-        policy: policy.finalReview,
-        against: policy.against,
-        candidate: {
-          configuredModelId: configuration.modelId ?? '',
-          identityKind: resolved.identityKind,
-        },
-        authority: request.independenceContext.authority,
-      });
-      independence = { reasonCode: result.reasonCode, conflict: result.conflict };
-      if (result.conflict) reasons.push('independence_conflict');
-    }
+    const floating = resolved.identityKind !== 'pinned';
+    if (floating && !policy.allowFloatingFinalReviewer) reasons.push('floating_independence');
+    const result = evaluateIndependence({
+      policy: policy.finalReview,
+      against: policy.against,
+      candidate: {
+        configuredModelId: configuration.modelId ?? '',
+        identityKind: resolved.identityKind,
+      },
+      authority: request.independenceContext?.authority ?? [],
+    });
+    const uncertainAllowed =
+      floating &&
+      policy.allowFloatingFinalReviewer &&
+      !result.established &&
+      !result.conflict &&
+      result.reasonCode === 'candidate_identity_unproven' &&
+      authorityIdentitiesKnown(result);
+    independence = {
+      reasonCode: result.reasonCode,
+      conflict: result.conflict,
+      established: result.established,
+      uncertainAllowed,
+    };
+    if (result.conflict) reasons.push('independence_conflict');
+    else if (!result.established && !uncertainAllowed) reasons.push('independence_unestablished');
   }
 
   // --- First use (pool members only, bound to pool id + exact member identity) ---
@@ -296,18 +320,23 @@ function evaluateMember(
   };
 }
 
+/** Whether a member's eligibility relied on role validation records (rather than the live catalog alone). */
+export function reliesOnValidation(terms: RouteTerms, liveCatalogAvailable: boolean): boolean {
+  return (
+    terms.requireRoleValidation ||
+    terms.availability === 'fresh-validation' ||
+    (terms.availability === 'live-catalog-or-fresh-validation' && !liveCatalogAvailable)
+  );
+}
+
 /** Evidence for the selected member's resolution: which records it relied on and the catalog it saw. */
 function selectedDetail(
   evaluation: MemberEvaluation,
   resolved: RouteIdentity,
   terms: RouteTerms,
 ): Pick<RoleResolution, 'validationRecordIds' | 'catalog'> {
-  const usesValidation =
-    terms.requireRoleValidation ||
-    terms.availability === 'fresh-validation' ||
-    (terms.availability === 'live-catalog-or-fresh-validation' && !evaluation.liveCatalog.available);
   return {
-    validationRecordIds: usesValidation
+    validationRecordIds: reliesOnValidation(terms, evaluation.liveCatalog.available)
       ? evaluation.validation.profiles.flatMap((entry) => (entry.recordId ? [entry.recordId] : []))
       : [],
     catalog: {
@@ -338,7 +367,7 @@ function independenceFor(
 }
 
 function routeMembersOf(
-  request: RoutingRequest,
+  request: Pick<RoutingRequest, 'routingPolicy'>,
   role: GoalRole,
 ):
   | { kind: 'pinned'; members: MemberInput[] }
@@ -376,27 +405,157 @@ function routeMembersOf(
   };
 }
 
+type ReproofContext = Pick<
+  RoutingRequest,
+  'definitionVersion' | 'definitionHash' | 'routingPolicy' | 'limits'
+>;
+
+const sameJson = (a: unknown, b: unknown): boolean => canonicalJson(a) === canonicalJson(b);
+
+/**
+ * The one semantic proof that a role resolution is exactly the member the approved definition routes: used when a
+ * resolution is persisted and again when it is read back, so write- and read-time authority cannot drift. It proves
+ * definition binding, route shape, the selected slot and its configuration, the audit entries and the approval and
+ * independence claims. It does not re-evaluate provider availability: the route was frozen at selection.
+ * Returns a finite failure code, or null when the resolution is proven.
+ */
+export function reproveRoleResolution(
+  context: ReproofContext,
+  role: GoalRole,
+  resolution: RoleResolution,
+): string | null {
+  if (
+    resolution.definitionVersion !== context.definitionVersion ||
+    resolution.definitionHash !== context.definitionHash
+  )
+    return 'definition_binding';
+  if (resolution.role !== role) return 'role';
+  const route = routeMembersOf(context, role);
+  if (route.kind === 'undefined') return 'route_not_defined';
+  if (resolution.routeKind !== route.kind) return 'route_kind';
+  if (route.kind === 'pool' ? resolution.poolId !== route.pool.id : resolution.poolId !== null)
+    return 'pool_id';
+  const expectedSelection: RouteSelection = route.kind === 'pinned' ? 'pinned' : route.pool.selection;
+  if (resolution.selection !== expectedSelection) return 'selection';
+  const slot = route.members[resolution.selectedIndex];
+  if (!slot) return 'selected_index';
+
+  // The selected route must be exactly the approved member; the stored member hash is never trusted by itself.
+  const approved = slot.member;
+  const approvedHash = memberConfigHashOf(approved.configuration);
+  const { selected } = resolution;
+  if (!sameJson(selected.configuration, bounded(approved))) return 'selected_configuration';
+  if (memberConfigHashOf(selected.configuration) !== selected.memberConfigHash) return 'member_hash';
+  if (selected.memberConfigHash !== approvedHash) return 'member_hash';
+  if (selected.identityKind !== effectiveIdentityKind(approved)) return 'identity_kind';
+
+  // Every audit entry describes the declared slot it claims to; the selected one agrees with `selected`.
+  if (resolution.evaluatedMembers.length !== route.members.length) return 'audit_members';
+  for (const [index, entry] of resolution.evaluatedMembers.entries()) {
+    const declared = route.members[index]!.member;
+    if (
+      entry.memberIndex !== index ||
+      entry.memberConfigHash !== memberConfigHashOf(declared.configuration) ||
+      !sameJson(entry.configuration, bounded(declared))
+    )
+      return 'audit_members';
+  }
+  const entry = resolution.evaluatedMembers[resolution.selectedIndex]!;
+  if (
+    entry.identityHash !== selected.identityHash ||
+    entry.identityKind !== selected.identityKind ||
+    !entry.technicallyEligible ||
+    !entry.eligible ||
+    !entry.readiness.ok ||
+    !entry.billing.ok ||
+    entry.reasons.length > 0
+  )
+    return 'audit_selected';
+
+  // Eligibility terms hold, and the validation ids are exactly the passing profiles the role needs.
+  const terms = slot.terms;
+  const validationOk = entry.validation.available;
+  const liveOk = entry.liveCatalog.available;
+  const availabilityHolds =
+    terms.availability === 'live-catalog'
+      ? liveOk
+      : terms.availability === 'fresh-validation'
+        ? validationOk
+        : liveOk || validationOk;
+  if (!availabilityHolds || (terms.requireRoleValidation && !validationOk)) return 'audit_availability';
+  if (reliesOnValidation(terms, liveOk)) {
+    const needed = ROLE_VALIDATION_PROFILES[role];
+    const profiles = entry.validation.profiles;
+    if (
+      profiles.length !== needed.length ||
+      profiles.some(
+        (state, index) =>
+          state.profile !== needed[index] || state.state !== 'pass' || state.recordId === null,
+      )
+    )
+      return 'validation_profiles';
+    const ids = profiles.map((state) => state.recordId!);
+    if (
+      new Set(ids).size !== ids.length ||
+      resolution.validationRecordIds.length !== ids.length ||
+      !ids.every((id) => resolution.validationRecordIds.includes(id))
+    )
+      return 'validation_ids';
+  } else if (resolution.validationRecordIds.length > 0) return 'validation_ids';
+
+  // First-use approval: required exactly for pool members under the gate, and bound to this pool and member.
+  const gated = route.kind === 'pool' && context.limits.humanGates.poolRouteFirstUse;
+  const { approval } = resolution;
+  if (approval.poolId !== resolution.poolId) return 'approval';
+  if (gated) {
+    if (
+      approval.state !== 'approved' ||
+      !approval.approvalId ||
+      approval.memberIdentityHash !== selected.identityHash ||
+      entry.firstUse.state !== 'approved' ||
+      entry.firstUse.approvalId !== approval.approvalId
+    )
+      return 'approval';
+  } else if (
+    approval.state !== 'not_required' ||
+    approval.approvalId !== null ||
+    approval.memberIdentityHash !== null ||
+    entry.firstUse.state !== 'not_required'
+  )
+    return 'approval';
+
+  // Final-review independence: policy as approved; unestablished only for the explicitly authorised uncertain case.
+  const policy = context.routingPolicy.independence;
+  if (role !== 'final_reviewer') return resolution.independence === null ? null : 'independence';
+  const claim = resolution.independence;
+  if (!claim || claim.policy !== policy.finalReview || claim.required !== (policy.finalReview !== 'none'))
+    return 'independence';
+  if (policy.finalReview === 'none') return claim.reasonCode === 'policy_none' ? null : 'independence';
+  const member = entry.independence;
+  if (
+    !member ||
+    claim.conflict ||
+    member.reasonCode !== claim.reasonCode ||
+    member.established !== claim.established ||
+    member.conflict !== claim.conflict
+  )
+    return 'independence';
+  if (claim.established) return claim.reasonCode === 'established' ? null : 'independence';
+  const uncertainAllowed =
+    selected.identityKind !== 'pinned' &&
+    policy.allowFloatingFinalReviewer &&
+    claim.reasonCode === 'candidate_identity_unproven' &&
+    authorityIdentitiesKnown(claim);
+  return uncertainAllowed && member.uncertainAllowed ? null : 'independence';
+}
+
 /** Re-proves a persisted resolution against the approved definition; null when it no longer matches (corruption). */
 function reprovePersisted(
   request: RoutingRequest,
   role: GoalRole,
   persisted: RoleResolution,
 ): RoleResolution | null {
-  if (
-    persisted.definitionVersion !== request.definitionVersion ||
-    persisted.definitionHash !== request.definitionHash ||
-    persisted.role !== role
-  )
-    return null;
-  const route = routeMembersOf(request, role);
-  if (route.kind === 'undefined') return null;
-  if (persisted.routeKind !== route.kind) return null;
-  if (route.kind === 'pool' && persisted.poolId !== route.pool.id) return null;
-  if (route.kind === 'pinned' && persisted.poolId !== null) return null;
-  const slot = route.members[persisted.selectedIndex];
-  if (!slot || memberConfigHashOf(slot.member.configuration) !== persisted.selected.memberConfigHash)
-    return null;
-  return persisted;
+  return reproveRoleResolution(request, role, persisted) === null ? persisted : null;
 }
 
 function refusal(
@@ -419,6 +578,8 @@ function refusal(
 }
 
 function resolveRole(request: RoutingRequest, role: GoalRole): RoleOutcome {
+  if (request.invalidPersistedRoles?.includes(role))
+    return refusal(request, role, 'persisted_resolution_invalid');
   const persisted = request.persistedResolutions?.[role];
   if (persisted) {
     const proven = reprovePersisted(request, role, persisted);
@@ -458,20 +619,23 @@ function resolveRole(request: RoutingRequest, role: GoalRole): RoleOutcome {
     }
   }
 
-  let candidateIndex = -1;
-  for (const index of order) {
-    const evaluation = evaluations[index]!;
-    if (!evaluation.technicallyEligible) continue;
-    if (evaluation.reasons.includes('independence_conflict')) continue;
-    candidateIndex = index;
-    break;
-  }
+  // Prefer a candidate whose independence is established; only when none exists may the explicitly authorised
+  // uncertain candidate (see evaluateMember) be used. Eligible members never include a proven or unproven-by-default one.
+  const usable = order.filter((index) => evaluations[index]!.technicallyEligible);
+  const candidateIndex =
+    usable.find((index) => evaluations[index]!.independence?.established !== false) ?? usable[0] ?? -1;
   if (candidateIndex < 0) {
     // Nothing is usable. If the only thing excluding some member was proven non-independence, say so.
+    const independenceReasons: MemberReason[] = [
+      'independence_conflict',
+      'independence_unestablished',
+      'floating_independence',
+    ];
     const blockedByIndependence = evaluations.some(
       (evaluation) =>
-        evaluation.reasons.includes('independence_conflict') &&
-        evaluation.reasons.every((reason) => reason === 'independence_conflict'),
+        evaluation.reasons.some(
+          (reason) => reason !== 'floating_independence' && independenceReasons.includes(reason),
+        ) && evaluation.reasons.every((reason) => independenceReasons.includes(reason)),
     );
     return refusal(
       request,

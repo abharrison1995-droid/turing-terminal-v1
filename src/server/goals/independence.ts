@@ -25,16 +25,18 @@ export interface IndependenceCandidate {
   identityKind: EffectiveIdentityKind;
 }
 
-export type IndependenceReason =
-  | 'policy_none'
-  | 'no_authority'
-  | 'candidate_identity_unproven'
-  | 'authority_identity_unproven'
-  | 'identity_conflict'
-  | 'same_model'
-  | 'same_family'
-  | 'family_unknown'
-  | 'established';
+export const INDEPENDENCE_REASONS = [
+  'policy_none',
+  'no_authority',
+  'candidate_identity_unproven',
+  'authority_identity_unproven',
+  'identity_conflict',
+  'same_model',
+  'same_family',
+  'family_unknown',
+  'established',
+] as const;
+export type IndependenceReason = (typeof INDEPENDENCE_REASONS)[number];
 
 export interface IndependenceSubject {
   configuredKey: string | null;
@@ -132,4 +134,18 @@ export function evaluateIndependence(input: {
   }
   if (unproven) return result(false, unproven);
   return result(true, 'established');
+}
+
+/**
+ * True when every authority compared against has a proven model key (and, for `different-family`, a known family).
+ * The explicit floating-reviewer allowance excuses only the reviewer's own unproven identity, never uncertainty about
+ * the work it must be independent of.
+ */
+export function authorityIdentitiesKnown(result: IndependenceResult): boolean {
+  if (result.comparedAgainst.length === 0) return false;
+  return result.comparedAgainst.every((entry) => {
+    const key =
+      entry.identityKind === 'pinned' ? (entry.resolvedKey ?? entry.configuredKey) : entry.resolvedKey;
+    return key !== null && (result.policy !== 'different-family' || entry.familyKey !== null);
+  });
 }

@@ -1,7 +1,12 @@
 import { z } from 'zod';
-import { GOAL_ROLES, type GoalRole } from '../../shared/goals.js';
+import {
+  GOAL_ROLES,
+  VALIDATION_PROFILES,
+  type GoalRole,
+  type ValidationProfile,
+} from '../../shared/goals.js';
 import type { ModelConfiguration } from '../../shared/types.js';
-import type { IndependenceResult } from './independence.js';
+import { INDEPENDENCE_REASONS, type IndependenceReason, type IndependenceResult } from './independence.js';
 import type { ProfileValidationState } from './routeValidation.js';
 import type { EffectiveIdentityKind } from './routeIdentity.js';
 
@@ -11,31 +16,34 @@ import type { EffectiveIdentityKind } from './routeIdentity.js';
  * provider catalog, note or output.
  */
 
-export type MemberReason =
-  | 'route_incomplete'
-  | 'provider_missing'
-  | 'provider_not_detected'
-  | 'provider_execution_unsupported'
-  | 'provider_disconnected'
-  | 'subscription_auth_unverified'
-  | 'billing_lane_mismatch'
-  | 'profile_missing'
-  | 'profile_mismatch'
-  | 'profile_not_ready'
-  | 'billing_lane_blocked'
-  | 'pool_lane_blocked'
-  | 'catalog_not_authoritative'
-  | 'model_not_found'
-  | 'model_not_current'
-  | 'validation_missing'
-  | 'validation_failed'
-  | 'validation_expired'
-  | 'validation_identity_changed'
-  | 'first_use_required'
-  | 'first_use_pending'
-  | 'first_use_denied'
-  | 'floating_independence'
-  | 'independence_conflict';
+export const MEMBER_REASONS = [
+  'route_incomplete',
+  'provider_missing',
+  'provider_not_detected',
+  'provider_execution_unsupported',
+  'provider_disconnected',
+  'subscription_auth_unverified',
+  'billing_lane_mismatch',
+  'profile_missing',
+  'profile_mismatch',
+  'profile_not_ready',
+  'billing_lane_blocked',
+  'pool_lane_blocked',
+  'catalog_not_authoritative',
+  'model_not_found',
+  'model_not_current',
+  'validation_missing',
+  'validation_failed',
+  'validation_expired',
+  'validation_identity_changed',
+  'first_use_required',
+  'first_use_pending',
+  'first_use_denied',
+  'floating_independence',
+  'independence_conflict',
+  'independence_unestablished',
+] as const;
+export type MemberReason = (typeof MEMBER_REASONS)[number];
 
 export type FirstUseState = 'not_required' | 'required' | 'pending' | 'approved' | 'denied';
 
@@ -66,7 +74,16 @@ export interface MemberEvaluation {
   liveCatalog: { available: boolean; catalogSource: string | null; modelStatus: string | null };
   validation: { available: boolean; profiles: ProfileValidationState[] };
   firstUse: { state: FirstUseState; approvalId: string | null };
-  independence: { reasonCode: string; conflict: boolean } | null;
+  /**
+   * Final-review independence of this candidate. `uncertainAllowed` marks the one explicit exception: a floating or
+   * unknown candidate the definition authorised through `allowFloatingFinalReviewer`.
+   */
+  independence: {
+    reasonCode: IndependenceReason;
+    conflict: boolean;
+    established: boolean;
+    uncertainAllowed: boolean;
+  } | null;
   reasons: MemberReason[];
 }
 
@@ -143,19 +160,101 @@ export interface RoutingResult {
 }
 
 // --- Structural validation of stored audits ------------------------------------------------------------------------
+//
+// Persisted audit is route authority, so every part has a bounded schema of finite codes, ids, hashes and short
+// declared values. Nothing here can carry provider output, credentials or free text.
 
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+const idText = z.string().min(1).max(200);
+const iso = z.string().min(1).max(40);
 const kind = z.enum(['pinned', 'floating', 'unknown']);
+const settingsValue = z.union([z.string().max(200), z.number(), z.boolean(), z.null()]);
 const configuration = z
   .object({
-    backendId: z.string().optional(),
-    providerId: z.string().optional(),
-    billingLane: z.string().optional(),
-    modelId: z.string().optional(),
-    connectionProfileId: z.string().optional(),
-    variantId: z.string().optional(),
-    reasoning: z.string().optional(),
-    nativeSettings: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+    backendId: idText.optional(),
+    providerId: idText.optional(),
+    billingLane: idText.optional(),
+    modelId: idText.optional(),
+    connectionProfileId: idText.optional(),
+    variantId: idText.optional(),
+    reasoning: idText.optional(),
+    nativeSettings: z.record(z.string().max(100), settingsValue).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value.nativeSettings ?? {}).length <= 32);
+const catalogSource = z.enum(['live', 'cache', 'adapter', 'none']);
+const modelStatus = z.enum(['current', 'last-known', 'unavailable', 'deprecated']);
+const firstUseState = z.enum(['not_required', 'required', 'pending', 'approved', 'denied']);
+
+const profileState = z
+  .object({
+    profile: z.enum(VALIDATION_PROFILES as unknown as [ValidationProfile, ...ValidationProfile[]]),
+    state: z.enum([
+      'pass',
+      'validation_missing',
+      'validation_failed',
+      'validation_expired',
+      'validation_identity_changed',
+    ]),
+    recordId: idText.nullable(),
+    testedAt: iso.nullable(),
+    effectiveExpiresAt: iso.nullable(),
+  })
+  .strict();
+
+const subject = z
+  .object({
+    configuredKey: idText.nullable(),
+    resolvedKey: idText.nullable(),
+    familyKey: idText.nullable(),
+    identityKind: kind,
+  })
+  .strict();
+
+const independenceResult = z
+  .object({
+    established: z.boolean(),
+    required: z.boolean(),
+    policy: z.enum(['none', 'different-model', 'different-family']),
+    candidate: subject,
+    comparedAgainst: z
+      .array(subject.extend({ role: z.enum(['orchestrator', 'implementer', 'remediation']) }).strict())
+      .max(32),
+    reasonCode: z.enum(INDEPENDENCE_REASONS),
+    conflict: z.boolean(),
+  })
+  .strict();
+
+const memberEvaluation = z
+  .object({
+    memberIndex: z.number().int().min(0).max(511),
+    identityHash: hex64.nullable(),
+    memberConfigHash: hex64,
+    configuration,
+    identityKind: kind,
+    technicallyEligible: z.boolean(),
+    eligible: z.boolean(),
+    readiness: z.object({ ok: z.boolean() }).strict(),
+    billing: z.object({ ok: z.boolean() }).strict(),
+    liveCatalog: z
+      .object({
+        available: z.boolean(),
+        catalogSource: catalogSource.nullable(),
+        modelStatus: modelStatus.nullable(),
+      })
+      .strict(),
+    validation: z.object({ available: z.boolean(), profiles: z.array(profileState).max(8) }).strict(),
+    firstUse: z.object({ state: firstUseState, approvalId: idText.nullable() }).strict(),
+    independence: z
+      .object({
+        reasonCode: z.enum(INDEPENDENCE_REASONS),
+        conflict: z.boolean(),
+        established: z.boolean(),
+        uncertainAllowed: z.boolean(),
+      })
+      .strict()
+      .nullable(),
+    reasons: z.array(z.enum(MEMBER_REASONS)).max(32),
   })
   .strict();
 
@@ -166,17 +265,31 @@ const storedResolution = z
     definitionHash: hex64,
     role: z.enum(GOAL_ROLES as [GoalRole, ...GoalRole[]]),
     routeKind: z.enum(['pinned', 'pool']),
-    poolId: z.string().nullable(),
+    poolId: idText.nullable(),
     selection: z.enum(['pinned', 'ordered', 'round_robin']),
-    selectedIndex: z.number().int().min(0),
+    selectedIndex: z.number().int().min(0).max(511),
     selected: z
       .object({ configuration, identityHash: hex64, memberConfigHash: hex64, identityKind: kind })
       .strict(),
-    evaluatedMembers: z.array(z.unknown()),
-    validationRecordIds: z.array(z.string()),
-    catalog: z.object({}).passthrough(),
-    approval: z.object({}).passthrough(),
-    independence: z.object({}).passthrough().nullable(),
+    evaluatedMembers: z.array(memberEvaluation).min(1).max(512),
+    validationRecordIds: z.array(idText).max(8),
+    catalog: z
+      .object({
+        backendId: z.string().max(200),
+        source: catalogSource.nullable(),
+        refreshedAt: iso.nullable(),
+        modelStatus: modelStatus.nullable(),
+      })
+      .strict(),
+    approval: z
+      .object({
+        state: z.enum(['not_required', 'approved']),
+        approvalId: idText.nullable(),
+        poolId: idText.nullable(),
+        memberIdentityHash: hex64.nullable(),
+      })
+      .strict(),
+    independence: independenceResult.nullable(),
   })
   .strict();
 

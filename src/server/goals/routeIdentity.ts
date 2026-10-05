@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type { RouteMember } from '../../shared/goals.js';
 import { classifyModelIdentity } from '../../shared/modelSettings.js';
 import type {
@@ -169,4 +170,58 @@ export function computeRouteIdentity(member: RouteMember, snapshot: RouteSnapsho
       issues,
     },
   };
+}
+
+// --- Structural validation of a stored identity ----------------------------------------------------------------------
+
+const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
+const short = z.string().min(1).max(200);
+const settings = z.record(
+  z.string().max(100),
+  z.union([z.string().max(200), z.number(), z.boolean(), z.null()]),
+);
+
+/** Schema 1 of `computeRouteIdentity().identity`, with exactly its nullable shapes. Strict: no extra keys. */
+const storedIdentity = z
+  .object({
+    schema: z.literal(1),
+    backendId: short,
+    providerId: short,
+    billingLane: short,
+    modelId: short,
+    connectionProfile: z
+      .union([
+        z.object({ id: short, backendId: short, providerId: short, billingLane: short }).strict(),
+        z.object({ id: short, unresolved: z.literal(true) }).strict(),
+      ])
+      .nullable(),
+    variantId: short.nullable(),
+    reasoning: short.nullable(),
+    nativeSettings: settings,
+    adapterVersion: short,
+    capabilityFingerprint: hex64,
+  })
+  .strict();
+
+export function isStoredRouteIdentity(value: unknown): boolean {
+  return storedIdentity.safeParse(value).success;
+}
+
+/**
+ * Whether a stored validation record authenticates itself: its identity is structurally valid schema 1, its hash is
+ * the hash of that canonical identity, and the redundant columns agree with the identity. Never repairs anything.
+ */
+export function validationRecordConsistent(record: {
+  identityHash: string;
+  identity: unknown;
+  adapterVersion: string;
+  capabilityFingerprint: string;
+}): boolean {
+  if (!hex64.safeParse(record.identityHash).success || !isStoredRouteIdentity(record.identity)) return false;
+  const identity = record.identity as { adapterVersion: string; capabilityFingerprint: string };
+  return (
+    sha256(canonicalJson(record.identity)) === record.identityHash &&
+    identity.adapterVersion === record.adapterVersion &&
+    identity.capabilityFingerprint === record.capabilityFingerprint
+  );
 }
