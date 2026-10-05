@@ -228,20 +228,31 @@ describe('approveDefinition (first approval)', () => {
     expect(goalRow(db, goalId).status).toBe('draft');
   });
 
-  it('uses a pre-existing pending approval when it matches, and refuses a mismatched one', () => {
-    const { db, goalId } = setup();
+  it('uses a pre-existing pending approval only when it matches the exact version and hash', () => {
+    const { db, goalId, definitionHash } = setup();
     const wrongGate = requestGoalApproval(db, {
       goalId,
       gate: 'start',
       risk: 'low',
       reason: 'r',
       requestedBy: 'supervisor',
-      detail: { version: 1 },
+      detail: { version: 1, definitionHash },
     });
     expect(() =>
       approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: wrongGate.id }),
     ).toThrow(expect.objectContaining({ code: 'approval_mismatch' }));
-    const right = requestGoalApproval(db, {
+    const wrongVersion = requestGoalApproval(db, {
+      goalId,
+      gate: 'definition',
+      risk: 'low',
+      reason: 'r',
+      requestedBy: 'supervisor',
+      detail: { version: 2, definitionHash },
+    });
+    expect(() =>
+      approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: wrongVersion.id }),
+    ).toThrow(expect.objectContaining({ code: 'approval_mismatch' }));
+    const noHash = requestGoalApproval(db, {
       goalId,
       gate: 'definition',
       risk: 'low',
@@ -249,10 +260,65 @@ describe('approveDefinition (first approval)', () => {
       requestedBy: 'supervisor',
       detail: { version: 1 },
     });
+    expect(() => approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: noHash.id })).toThrow(
+      expect.objectContaining({ code: 'approval_definition_changed' }),
+    );
+    const right = requestGoalApproval(db, {
+      goalId,
+      gate: 'definition',
+      risk: 'low',
+      reason: 'r',
+      requestedBy: 'supervisor',
+      detail: { version: 1, definitionHash },
+    });
     expect(
       approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: right.id }).approvalId,
     ).toBe(right.id);
     expect(getGoalApproval(db, right.id)!.status).toBe('approved');
+  });
+
+  it('does not let an approval bound to an earlier hash approve edited content', () => {
+    const { db, goalId, definitionHash: h1 } = setup();
+    const stale = requestGoalApproval(db, {
+      goalId,
+      gate: 'definition',
+      risk: 'low',
+      reason: 'r',
+      requestedBy: 'supervisor',
+      detail: { version: 1, definitionHash: h1 },
+    });
+    const edited = validDefinition();
+    edited.limits.maxExecutionCycles = 25;
+    const { definitionHash: h2 } = editProposedDefinition(db, { goalId, version: 1, definition: edited });
+    expect(h2).not.toBe(h1);
+    const before = {
+      goal: goalRow(db, goalId),
+      versions: statuses(db, goalId),
+      events: eventTypes(db, goalId),
+    };
+    expect(() => approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: stale.id })).toThrow(
+      expect.objectContaining({ code: 'approval_definition_changed' }),
+    );
+    expect(getGoalApproval(db, stale.id)).toMatchObject({ status: 'pending', decidedBy: null });
+    expect(statuses(db, goalId)).toEqual(before.versions);
+    expect(goalRow(db, goalId)).toEqual(before.goal);
+    expect(eventTypes(db, goalId)).toEqual(before.events);
+    expect(loadDefinitionVersion(db, goalId, 1)).toMatchObject({ status: 'proposed', definitionHash: h2 });
+
+    const fresh = requestGoalApproval(db, {
+      goalId,
+      gate: 'definition',
+      risk: 'low',
+      reason: 'r',
+      requestedBy: 'supervisor',
+      detail: { version: 1, definitionHash: h2 },
+    });
+    expect(approveDefinition(db, { goalId, version: 1, actor: 'user', approvalId: fresh.id })).toMatchObject({
+      approvalId: fresh.id,
+      definitionHash: h2,
+    });
+    expect(getGoalApproval(db, stale.id)!.status).toBe('pending');
+    expect(loadDefinitionVersion(db, goalId, 1)).toMatchObject({ status: 'approved', approvalId: fresh.id });
   });
 
   it('keeps approved content immutable, in the service and in SQL', () => {
@@ -289,7 +355,7 @@ describe('rejectDefinition', () => {
           "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = 'x' WHERE goal_id = ?",
         )
         .run(goalId),
-    ).toThrow(/illegal/);
+    ).toThrow(/illegal|bound to this goal/);
   });
 });
 

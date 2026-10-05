@@ -108,11 +108,19 @@ describe('Goal-origin run launch', () => {
     db.prepare(
       `INSERT INTO goals (id, machine_id, project_id, title, status, created_at, updated_at) VALUES (?, ?, ?, 'G', ?, ?, ?)`,
     ).run(id, machineId(), forProject, status, NOW, NOW);
+    const approvalId = `${id}-approval`;
+    db.prepare(
+      `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at)
+       VALUES (?, ?, 'definition', 'low', 'seed', 'user', '{"version":1,"definitionHash":"h"}', 'pending', ?)`,
+    ).run(approvalId, id, NOW);
+    db.prepare(
+      "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = ?",
+    ).run(NOW, approvalId);
     db.prepare(
       `INSERT INTO goal_definition_versions (goal_id, version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
-         definition_hash, change_summary, created_by, approved_by, created_at, approved_at)
-       VALUES (?, 1, 'approved', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'user', 'user', ?, ?)`,
-    ).run(id, NOW, NOW);
+         definition_hash, change_summary, created_by, approved_by, approval_id, created_at, approved_at)
+       VALUES (?, 1, 'approved', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'user', 'user', ?, ?, ?)`,
+    ).run(id, approvalId, NOW, NOW);
     db.prepare(
       `INSERT INTO goal_cycles (id, goal_id, definition_version, sequence, kind, trigger_code, status, created_at)
        VALUES (?, ?, 1, 1, 'execution', 't', 'planned', ?)`,

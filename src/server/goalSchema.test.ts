@@ -93,17 +93,38 @@ function goal(db: Db, id: string, projectId: string, status = 'draft', extra: Re
   );
 }
 
+/** Seeds a decided user approval bound to (goal, version, hash) so an approved definition can be inserted legitimately. */
+function boundApproval(
+  db: Db,
+  goalId: string,
+  version: number,
+  hash = 'hash',
+  gate = 'definition',
+  id = `appr-${goalId}-${version}`,
+) {
+  db.prepare(
+    `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at)
+     VALUES (?, ?, ?, 'low', 'seed', 'user', ?, 'pending', ?)`,
+  ).run(id, goalId, gate, JSON.stringify({ version, definitionHash: hash }), NOW);
+  db.prepare(
+    "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = ?",
+  ).run(NOW, id);
+  return id;
+}
+
 function definition(db: Db, goalId: string, version: number, status = 'proposed') {
+  const approvalId = status === 'approved' ? boundApproval(db, goalId, version) : null;
   db.prepare(
     `INSERT INTO goal_definition_versions
      (goal_id, version, parent_version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
-      definition_hash, change_summary, created_by, approved_by, created_at, approved_at)
-     VALUES (?, ?, NULL, ?, '{}', '[]', '{}', '{}', '{}', 'hash', 'initial', 'user', ?, ?, ?)`,
+      definition_hash, change_summary, created_by, approved_by, approval_id, created_at, approved_at)
+     VALUES (?, ?, NULL, ?, '{}', '[]', '{}', '{}', '{}', 'hash', 'initial', 'user', ?, ?, ?, ?)`,
   ).run(
     goalId,
     version,
     status,
     status === 'approved' ? 'user' : null,
+    approvalId,
     NOW,
     status === 'approved' ? NOW : null,
   );
@@ -201,7 +222,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -226,7 +247,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     db.close();
   });
 });
@@ -298,12 +319,13 @@ describe('Goal definition invariants', () => {
     definition(db, 'g', 1, 'approved');
     expect(() => definition(db, 'g', 2, 'approved')).toThrow(/UNIQUE/);
     definition(db, 'g', 2, 'proposed');
+    const approval2 = boundApproval(db, 'g', 2, 'hash', 'definition', 'appr-g-2b');
     expect(() =>
       db
         .prepare(
-          "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ? WHERE goal_id = 'g' AND version = 2",
+          "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ?, approval_id = ? WHERE goal_id = 'g' AND version = 2",
         )
-        .run(NOW),
+        .run(NOW, approval2),
     ).toThrow(/UNIQUE/);
     db.close();
   });
@@ -313,13 +335,17 @@ describe('Goal definition invariants', () => {
     project(db, 'p');
     seedGoalWithDefinition(db, 'g', 'p');
     definition(db, 'g', 2, 'proposed');
+    db.prepare(
+      "UPDATE goal_definition_versions SET parent_version = 1 WHERE goal_id = 'g' AND version = 2",
+    ).run();
+    const approval2 = boundApproval(db, 'g', 2, 'hash', 'amendment');
     db.transaction(() => {
       db.prepare(
         "UPDATE goal_definition_versions SET status = 'superseded' WHERE goal_id = 'g' AND version = 1",
       ).run();
       db.prepare(
-        "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ? WHERE goal_id = 'g' AND version = 2",
-      ).run(NOW);
+        "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ?, approval_id = ? WHERE goal_id = 'g' AND version = 2",
+      ).run(NOW, approval2);
       db.prepare("UPDATE goals SET current_definition_version = 2 WHERE id = 'g'").run();
     })();
     expect(db.prepare('SELECT version, status FROM goal_definition_versions ORDER BY version').all()).toEqual(
@@ -401,12 +427,13 @@ describe('Goal definition invariants', () => {
     project(db, 'p');
     goal(db, 'g', 'p');
     definition(db, 'g', 1, 'proposed');
+    const bound = boundApproval(db, 'g', 1);
     expect(() =>
       db
         .prepare(
-          "UPDATE goal_definition_versions SET status = 'approved' WHERE goal_id = 'g' AND version = 1",
+          "UPDATE goal_definition_versions SET status = 'approved', approval_id = ? WHERE goal_id = 'g' AND version = 1",
         )
-        .run(),
+        .run(bound),
     ).toThrow(/approved by the user/);
     expect(() =>
       db
@@ -415,13 +442,14 @@ describe('Goal definition invariants', () => {
         )
         .run(),
     ).toThrow(/CHECK/);
+    const bound2 = boundApproval(db, 'g', 2, 'h');
     expect(() =>
       db
         .prepare(
           `INSERT INTO goal_definition_versions (goal_id, version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
-            definition_hash, change_summary, created_by, created_at) VALUES ('g', 2, 'approved', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'authoring_run', ?)`,
+            definition_hash, change_summary, created_by, approval_id, created_at) VALUES ('g', 2, 'approved', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'authoring_run', ?, ?)`,
         )
-        .run(NOW),
+        .run(bound2, NOW),
     ).toThrow(/approved by the user/);
     db.close();
   });
@@ -623,7 +651,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     expect(
       db.prepare('SELECT id, status, recovery_json FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -843,7 +871,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -851,7 +879,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -877,7 +905,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1250,6 +1278,283 @@ describe('migration 017_goal_evidence_reviews', () => {
         /cannot be deleted/,
       );
       expect(db.pragma('foreign_key_check')).toEqual([]);
+      db.close();
+    });
+  });
+});
+
+describe('migration 018_goal_stage2_integrity', () => {
+  const TREE = 'b'.repeat(40);
+
+  function twoGoals(): Db {
+    const db = fresh();
+    project(db, 'p1');
+    project(db, 'p2');
+    for (const [g, p] of [
+      ['g1', 'p1'],
+      ['g2', 'p2'],
+    ] as const) {
+      goal(db, g, p);
+      definition(db, g, 1, 'proposed');
+      milestone(db, `${g}-m1`, g);
+      cycle(db, `${g}-c`, g, 1, 'execution', 1, `${g}-m1`);
+      run(db, `${g}-r`, p, { cycle: `${g}-c`, purpose: 'execution', base: SHA });
+    }
+    return db;
+  }
+
+  /** Records a user-decided approval; `over` perturbs one property so each binding clause can fail alone. */
+  function approval(
+    db: Db,
+    id: string,
+    goalId: string,
+    over: { gate?: string; detail?: unknown; decide?: 'approved' | 'denied' | 'pending'; by?: string } = {},
+  ) {
+    db.prepare(
+      `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at)
+       VALUES (?, ?, ?, 'low', 'r', 'user', ?, 'pending', ?)`,
+    ).run(
+      id,
+      goalId,
+      over.gate ?? 'definition',
+      JSON.stringify(over.detail ?? { version: 1, definitionHash: 'hash' }),
+      NOW,
+    );
+    const decide = over.decide ?? 'approved';
+    if (decide !== 'pending')
+      db.prepare('UPDATE goal_approvals SET status = ?, decided_by = ?, responded_at = ? WHERE id = ?').run(
+        decide,
+        over.by ?? 'user',
+        NOW,
+        id,
+      );
+  }
+
+  const approveWith = (db: Db, goalId: string, approvalId: string | null) =>
+    db
+      .prepare(
+        "UPDATE goal_definition_versions SET status = 'approved', approved_by = 'user', approved_at = ?, approval_id = ? WHERE goal_id = ? AND version = 1",
+      )
+      .run(NOW, approvalId, goalId);
+
+  it('applies on a fresh database and keeps foreign keys clean', () => {
+    const db = fresh();
+    const triggers = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    for (const name of [
+      'trg_goal_definition_approval_binding',
+      'trg_goal_definition_insert_approval_binding',
+      'trg_goal_observation_run_finding',
+      'trg_goal_observation_run_finding_has_run',
+    ])
+      expect(triggers).toContain(name);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('upgrades an exact RC2 database through 018 and an existing 017 database', () => {
+    const root = rc2Directory('015');
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+    const again = openDatabase(root);
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 18 });
+    again.close();
+  });
+
+  describe('definition approval binding', () => {
+    it('accepts an approval bound to exactly this goal, version, hash and gate', () => {
+      const db = twoGoals();
+      approval(db, 'a', 'g1');
+      approveWith(db, 'g1', 'a');
+      expect(db.prepare("SELECT status FROM goal_definition_versions WHERE goal_id = 'g1'").get()).toEqual({
+        status: 'approved',
+      });
+      db.close();
+    });
+
+    it('requires the amendment gate for a version with a parent', () => {
+      const db = twoGoals();
+      db.prepare("UPDATE goal_definition_versions SET parent_version = 7 WHERE goal_id = 'g1'").run();
+      approval(db, 'wrong', 'g1');
+      expect(() => approveWith(db, 'g1', 'wrong')).toThrow(/bound to this goal, version and hash/);
+      approval(db, 'right', 'g1', { gate: 'amendment' });
+      approveWith(db, 'g1', 'right');
+      db.close();
+    });
+
+    const cases: Array<[string, (db: Db) => string | null]> = [
+      ['no approval at all', () => null],
+      ['an approval id that does not exist', () => 'ghost'],
+      [
+        "another Goal's approval",
+        (db) => {
+          approval(db, 'other', 'g2');
+          return 'other';
+        },
+      ],
+      [
+        'the wrong gate',
+        (db) => {
+          approval(db, 'gate', 'g1', { gate: 'start' });
+          return 'gate';
+        },
+      ],
+      [
+        'the wrong version',
+        (db) => {
+          approval(db, 'ver', 'g1', { detail: { version: 2, definitionHash: 'hash' } });
+          return 'ver';
+        },
+      ],
+      [
+        'the wrong hash',
+        (db) => {
+          approval(db, 'hash', 'g1', { detail: { version: 1, definitionHash: 'other' } });
+          return 'hash';
+        },
+      ],
+      [
+        'an approval with no hash',
+        (db) => {
+          approval(db, 'nohash', 'g1', { detail: { version: 1 } });
+          return 'nohash';
+        },
+      ],
+      [
+        'a denied approval',
+        (db) => {
+          approval(db, 'denied', 'g1', { decide: 'denied' });
+          return 'denied';
+        },
+      ],
+      [
+        'a pending approval',
+        (db) => {
+          approval(db, 'pending', 'g1', { decide: 'pending' });
+          return 'pending';
+        },
+      ],
+      [
+        'a system-decided approval',
+        (db) => {
+          approval(db, 'sys', 'g1', { decide: 'denied', by: 'system' });
+          return 'sys';
+        },
+      ],
+    ];
+    for (const [name, setup] of cases)
+      it(`refuses to approve with ${name}`, () => {
+        const db = twoGoals();
+        const id = setup(db);
+        expect(() => approveWith(db, 'g1', id)).toThrow(/bound to this goal, version and hash/);
+        expect(db.prepare("SELECT status FROM goal_definition_versions WHERE goal_id = 'g1'").get()).toEqual({
+          status: 'proposed',
+        });
+        db.close();
+      });
+
+    it('applies the same binding to an INSERT of an already-approved definition', () => {
+      const db = twoGoals();
+      const insert = (goalId: string, version: number, approvalId: string | null) =>
+        db
+          .prepare(
+            `INSERT INTO goal_definition_versions (goal_id, version, status, contract_json, milestones_json, routing_json, review_json, limits_json,
+              definition_hash, change_summary, created_by, approved_by, approval_id, created_at, approved_at)
+             VALUES (?, ?, 'approved', '{}', '[]', '{}', '{}', '{}', 'hash', 's', 'user', 'user', ?, ?, ?)`,
+          )
+          .run(goalId, version, approvalId, NOW, NOW);
+      expect(() => insert('g1', 2, null)).toThrow(/bound to this goal/);
+      approval(db, 'x', 'g2', { detail: { version: 2, definitionHash: 'hash' } });
+      expect(() => insert('g1', 2, 'x')).toThrow(/bound to this goal/);
+      approval(db, 'y', 'g1', { detail: { version: 3, definitionHash: 'hash' } });
+      expect(() => insert('g1', 2, 'y')).toThrow(/bound to this goal/);
+      approval(db, 'z', 'g1', { detail: { version: 2, definitionHash: 'hash' }, gate: 'amendment' });
+      // Version 2 with no parent needs the 'definition' gate, so an amendment-gate approval is refused.
+      expect(() => insert('g1', 2, 'z')).toThrow(/bound to this goal/);
+      approval(db, 'ok', 'g1', { detail: { version: 4, definitionHash: 'hash' } });
+      insert('g1', 4, 'ok');
+      db.close();
+    });
+  });
+
+  describe('run finding ownership', () => {
+    function seed(): Db {
+      const db = twoGoals();
+      db.prepare(
+        "INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at, goal_cycle_id, goal_run_purpose, goal_base_commit) SELECT 'g1-r2', machine_id, project_id, workflow_id, '{}', 'task', 'economy', 'normal', 'queued', ?, 'g1-c', 'review', ? FROM runs WHERE id = 'g1-r'",
+      ).run(NOW, SHA);
+      for (const run of ['g1-r', 'g1-r2', 'g2-r'])
+        db.prepare(
+          "INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status) VALUES (?, ?, 'k', 'review', 'R', 0, 'passed')",
+        ).run(`s-${run}`, run);
+      for (const run of ['g1-r', 'g1-r2', 'g2-r'])
+        db.prepare(
+          `INSERT INTO review_findings (id, run_id, stage_id, reviewer, severity, category, description, evidence, recommended_remediation, created_at)
+           VALUES (?, ?, ?, 'x', 'high', 'bug', 'd', 'e', 'r', ?)`,
+        ).run(`rf-${run}`, run, `s-${run}`, NOW);
+      const review = (id: string, goalId: string, runId: string | null) =>
+        db
+          .prepare(
+            `INSERT INTO goal_reviews (id, goal_id, cycle_id, milestone_id, definition_version, run_id, review_kind, status,
+               reviewed_to_commit, reviewed_to_tree, created_at)
+             VALUES (?, ?, ?, ?, 1, ?, 'milestone', 'pending', ?, ?, ?)`,
+          )
+          .run(id, goalId, `${goalId}-c`, `${goalId}-m1`, runId, SHA, TREE, NOW);
+      review('rev1', 'g1', 'g1-r');
+      review('rev-norun', 'g1', null);
+      db.prepare(
+        `INSERT INTO goal_findings (id, goal_id, fingerprint, severity, category, description, status,
+           first_seen_review_id, last_seen_review_id, created_at, updated_at)
+         VALUES ('f1', 'g1', 'fp', 'high', 'bug', 'd', 'open', 'rev1', 'rev1', ?, ?)`,
+      ).run(NOW, NOW);
+      return db;
+    }
+    const observe = (db: Db, id: string, reviewId: string, runFinding: string | null) =>
+      db
+        .prepare(
+          `INSERT INTO goal_finding_observations (id, goal_id, goal_finding_id, review_id, run_finding_id, observation, basis, created_at)
+           VALUES (?, 'g1', 'f1', ?, ?, 'new', 'b', ?)`,
+        )
+        .run(id, reviewId, runFinding, NOW);
+
+    it('accepts a run finding produced by the Goal review run', () => {
+      const db = seed();
+      observe(db, 'o1', 'rev1', 'rf-g1-r');
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+      db.close();
+    });
+
+    it('accepts an observation with no run finding, even without a review run', () => {
+      const db = seed();
+      observe(db, 'o1', 'rev-norun', null);
+      db.close();
+    });
+
+    it('rejects a run finding from another Goal', () => {
+      const db = seed();
+      expect(() => observe(db, 'o1', 'rev1', 'rf-g2-r')).toThrow(/belong to the Goal review/);
+      db.close();
+    });
+
+    it('rejects a run finding from a different review run of the same Goal', () => {
+      const db = seed();
+      expect(() => observe(db, 'o1', 'rev1', 'rf-g1-r2')).toThrow(/belong to the Goal review/);
+      db.close();
+    });
+
+    it('rejects a run finding when the Goal review has no run', () => {
+      const db = seed();
+      expect(() => observe(db, 'o1', 'rev-norun', 'rf-g1-r')).toThrow(/run finding/);
+      db.close();
+    });
+
+    it('rejects a run finding that does not exist', () => {
+      const db = seed();
+      expect(() => observe(db, 'o1', 'rev1', 'ghost')).toThrow();
       db.close();
     });
   });

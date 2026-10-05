@@ -31,6 +31,7 @@ export type GoalDefinitionErrorCode =
   | 'definition_stale'
   | 'user_approval_required'
   | 'goal_not_amendable'
+  | 'approval_definition_changed'
   | 'proposal_exists'
   | 'approval_mismatch';
 
@@ -484,6 +485,11 @@ export function approveDefinition(
         throw new GoalDefinitionError(
           'approval_mismatch',
           'The approval does not belong to this definition version.',
+        );
+      if (existing.detail.definitionHash !== proposed.definitionHash)
+        throw new GoalDefinitionError(
+          'approval_definition_changed',
+          'The approval was bound to different definition content; request a new approval.',
         );
     } else {
       approvalId = requestGoalApproval(db, {
