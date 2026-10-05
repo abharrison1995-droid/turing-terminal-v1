@@ -201,7 +201,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -226,7 +226,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
     db.close();
   });
 });
@@ -623,7 +623,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
     expect(
       db.prepare('SELECT id, status, recovery_json FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -764,5 +764,493 @@ describe('goal integration op audit protection', () => {
       recovery_json: '{"ref":"absent"}',
     });
     db.close();
+  });
+});
+
+describe('migration 017_goal_evidence_reviews', () => {
+  const TABLES_017 = [
+    'goal_evidence',
+    'goal_reviews',
+    'goal_findings',
+    'goal_finding_observations',
+    'goal_approvals',
+    'goal_events',
+    'route_validations',
+  ];
+  const TREE = 'b'.repeat(40);
+
+  /** Two Goals on two projects, each with an approved v1, a milestone and an execution cycle, plus one run each. */
+  function twoGoals(): Db {
+    const db = fresh();
+    project(db, 'p1');
+    project(db, 'p2');
+    for (const [g, p] of [
+      ['g1', 'p1'],
+      ['g2', 'p2'],
+    ] as const) {
+      seedGoalWithDefinition(db, g, p);
+      cycle(db, `${g}-c`, g, 1, 'execution', 1, `${g}-m1`);
+      run(db, `${g}-r`, p, { cycle: `${g}-c`, purpose: 'execution', base: SHA });
+    }
+    return db;
+  }
+
+  const evidence = (db: Db, id: string, goalId: string, over: Record<string, unknown> = {}) => {
+    const v = {
+      version: 1,
+      milestone: `${goalId}-m1`,
+      cycle: `${goalId}-c`,
+      run: `${goalId}-r`,
+      review: null,
+      ...over,
+    };
+    db.prepare(
+      `INSERT INTO goal_evidence (id, goal_id, definition_version, milestone_id, criterion_key, verifier_digest, kind, verdict,
+         cycle_id, run_id, review_id, subject_tree, ref_json, recorded_at)
+       VALUES (?, ?, ?, ?, 'k', 'd', 'test_result', 'satisfies', ?, ?, ?, ?, '{}', ?)`,
+    ).run(id, goalId, v.version, v.milestone, v.cycle, v.run, v.review, TREE, NOW);
+  };
+
+  const review = (db: Db, id: string, goalId: string, over: Record<string, unknown> = {}) => {
+    const v = { version: 1, milestone: `${goalId}-m1`, cycle: `${goalId}-c`, run: null, ...over };
+    db.prepare(
+      `INSERT INTO goal_reviews (id, goal_id, cycle_id, milestone_id, definition_version, run_id, review_kind, status,
+         reviewed_to_commit, reviewed_to_tree, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'milestone', 'pending', ?, ?, ?)`,
+    ).run(id, goalId, v.cycle, v.milestone, v.version, v.run, SHA, TREE, NOW);
+  };
+
+  const finding = (db: Db, id: string, goalId: string, reviewId: string, fingerprint = 'fp') =>
+    db
+      .prepare(
+        `INSERT INTO goal_findings (id, goal_id, fingerprint, severity, category, description, status,
+           first_seen_review_id, last_seen_review_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'high', 'bug', 'd', 'open', ?, ?, ?, ?)`,
+      )
+      .run(id, goalId, fingerprint, reviewId, reviewId, NOW, NOW);
+
+  const approval = (db: Db, id: string, goalId: string) =>
+    db
+      .prepare(
+        `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at)
+         VALUES (?, ?, 'final_acceptance', 'high', 'why', 'supervisor', '{"a":1}', 'pending', ?)`,
+      )
+      .run(id, goalId, NOW);
+
+  it('creates the structure on a fresh database', () => {
+    const db = fresh();
+    const names = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
+    ).map((row) => row.name);
+    for (const table of TABLES_017) expect(names).toContain(table);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
+    const root = rc2Directory('015');
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    for (const table of TABLES_017)
+      expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('upgrades an existing 015/016 database with Goal data, preserving it', () => {
+    const root = rc2Directory('017');
+    const raw = new Database(join(root, 'turing.sqlite'));
+    raw.pragma('foreign_keys = ON');
+    expect(raw.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 16 });
+    raw
+      .prepare(
+        "INSERT INTO goals (id, machine_id, project_id, title, status, created_at, updated_at) VALUES ('g','m1','p1','G','draft',?,?)",
+      )
+      .run(NOW, NOW);
+    raw
+      .prepare(
+        `INSERT INTO goal_integration_ops (id, goal_id, op, new_commit, status, checks_json, created_at)
+         VALUES ('op', 'g', 'init_ref', ?, 'planned', '[]', ?)`,
+      )
+      .run(SHA, NOW);
+    raw.close();
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 17 });
+    expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
+      status: 'planned',
+    });
+    expect(db.prepare("SELECT status FROM goals WHERE id = 'g'").get()).toEqual({ status: 'draft' });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    approval(db, 'a1', 'g');
+    db.close();
+  });
+
+  describe('same-owner foreign keys', () => {
+    it('accepts same-Goal references', () => {
+      const db = twoGoals();
+      review(db, 'rv', 'g1');
+      evidence(db, 'e', 'g1', { review: 'rv' });
+      finding(db, 'f', 'g1', 'rv');
+      db.prepare(
+        `INSERT INTO goal_finding_observations (id, goal_id, goal_finding_id, review_id, observation, basis, created_at)
+         VALUES ('o', 'g1', 'f', 'rv', 'new', 'b', ?)`,
+      ).run(NOW);
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+      db.close();
+    });
+
+    it('rejects evidence that points into another Goal', () => {
+      const db = twoGoals();
+      review(db, 'rv2', 'g2');
+      db.prepare(
+        "INSERT INTO goal_definition_versions (goal_id, version, parent_version, status, contract_json, milestones_json, routing_json, review_json, limits_json, definition_hash, change_summary, created_by, created_at) VALUES ('g2', 2, 1, 'proposed', '{}', '[]', '{}', '{}', '{}', 'h', 's', 'user', ?)",
+      ).run(NOW);
+      expect(() => evidence(db, 'e-milestone', 'g1', { milestone: 'g2-m1' })).toThrow(/FOREIGN KEY/);
+      expect(() => evidence(db, 'e-cycle', 'g1', { cycle: 'g2-c', run: null })).toThrow(/FOREIGN KEY/);
+      expect(() => evidence(db, 'e-version', 'g1', { version: 2 })).toThrow(/FOREIGN KEY/);
+      expect(() => evidence(db, 'e-review', 'g1', { review: 'rv2' })).toThrow(/FOREIGN KEY/);
+      expect(() => evidence(db, 'e-run', 'g1', { run: 'g2-r', cycle: null })).toThrow(/does not belong/);
+      expect(() => evidence(db, 'e-run-cycle', 'g1', { run: 'g2-r' })).toThrow(/does not belong/);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_evidence').get()).toEqual({ n: 0 });
+      db.close();
+    });
+
+    it('rejects an evidence stage that is not in the evidence run', () => {
+      const db = twoGoals();
+      db.prepare(
+        "INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status) VALUES ('s2', 'g2-r', 'k', 'build', 'B', 0, 'passed')",
+      ).run();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO goal_evidence (id, goal_id, definition_version, criterion_key, verifier_digest, kind, verdict, run_id, stage_id, ref_json, recorded_at)
+             VALUES ('e', 'g1', 1, 'k', 'd', 'build_result', 'satisfies', 'g1-r', 's2', '{}', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/does not belong/);
+      db.close();
+    });
+
+    it('rejects reviews, findings and observations that cross Goals', () => {
+      const db = twoGoals();
+      review(db, 'rv1', 'g1');
+      review(db, 'rv2', 'g2');
+      expect(() => review(db, 'x1', 'g1', { cycle: 'g2-c' })).toThrow(/FOREIGN KEY/);
+      expect(() => review(db, 'x2', 'g1', { milestone: 'g2-m1' })).toThrow(/FOREIGN KEY/);
+      expect(() => review(db, 'x3', 'g1', { run: 'g2-r' })).toThrow(/does not belong/);
+      expect(() => finding(db, 'f-x', 'g1', 'rv2')).toThrow(/FOREIGN KEY/);
+      finding(db, 'f1', 'g1', 'rv1');
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO goal_finding_observations (id, goal_id, goal_finding_id, review_id, observation, basis, created_at)
+             VALUES ('o', 'g1', 'f1', 'rv2', 'new', 'b', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/FOREIGN KEY/);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO goal_finding_observations (id, goal_id, goal_finding_id, review_id, observation, basis, created_at)
+             VALUES ('o2', 'g2', 'f1', 'rv2', 'new', 'b', ?)`,
+          )
+          .run(NOW),
+      ).toThrow(/FOREIGN KEY/);
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE goal_findings SET resolved_by_review_id = 'rv2', status = 'resolved' WHERE id = 'f1'",
+          )
+          .run(),
+      ).toThrow(/FOREIGN KEY/);
+      db.close();
+    });
+  });
+
+  describe('evidence', () => {
+    it('is immutable and cannot be deleted', () => {
+      const db = twoGoals();
+      evidence(db, 'e', 'g1');
+      expect(() =>
+        db.prepare("UPDATE goal_evidence SET verdict = 'contradicts' WHERE id = 'e'").run(),
+      ).toThrow(/immutable/);
+      expect(() => db.prepare("UPDATE goal_evidence SET criterion_key = 'x' WHERE id = 'e'").run()).toThrow(
+        /immutable/,
+      );
+      expect(() => db.prepare("DELETE FROM goal_evidence WHERE id = 'e'").run()).toThrow(/cannot be deleted/);
+      expect(db.prepare("SELECT verdict FROM goal_evidence WHERE id = 'e'").get()).toEqual({
+        verdict: 'satisfies',
+      });
+      db.close();
+    });
+
+    it('validates its enumerations and JSON', () => {
+      const db = twoGoals();
+      const insert = (kind: string, verdict: string, refJson: string) =>
+        db
+          .prepare(
+            `INSERT INTO goal_evidence (id, goal_id, definition_version, criterion_key, verifier_digest, kind, verdict, ref_json, recorded_at)
+             VALUES (?, 'g1', 1, 'k', 'd', ?, ?, ?, ?)`,
+          )
+          .run(`e-${kind}-${verdict}`, kind, verdict, refJson, NOW);
+      expect(() => insert('vibes', 'satisfies', '{}')).toThrow(/CHECK/);
+      expect(() => insert('commit', 'maybe', '{}')).toThrow(/CHECK/);
+      expect(() => insert('commit', 'satisfies', 'not json')).toThrow(/CHECK/);
+      insert('commit', 'inconclusive', '{}');
+      db.close();
+    });
+  });
+
+  describe('reviews', () => {
+    it('are created pending and complete exactly once with a full result', () => {
+      const db = twoGoals();
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO goal_reviews (id, goal_id, definition_version, review_kind, status, reviewed_to_commit, reviewed_to_tree, created_at)
+             VALUES ('bad', 'g1', 1, 'final', 'completed', ?, ?, ?)`,
+          )
+          .run(SHA, TREE, NOW),
+      ).toThrow(/created pending/);
+      review(db, 'rv', 'g1');
+      // Incomplete result: completed needs verdict, blocking, report and timestamp.
+      expect(() =>
+        db.prepare("UPDATE goal_reviews SET status = 'completed', verdict = 'pass' WHERE id = 'rv'").run(),
+      ).toThrow(/CHECK/);
+      db.prepare(
+        "UPDATE goal_reviews SET status = 'completed', verdict = 'pass', blocking = 0, report_json = '{}', independence_json = '{}', completed_at = ? WHERE id = 'rv'",
+      ).run(NOW);
+      expect(db.prepare("SELECT status, verdict FROM goal_reviews WHERE id = 'rv'").get()).toEqual({
+        status: 'completed',
+        verdict: 'pass',
+      });
+      db.close();
+    });
+
+    it('never rewrite a completed report or its repository binding', () => {
+      const db = twoGoals();
+      review(db, 'rv', 'g1');
+      db.prepare(
+        "UPDATE goal_reviews SET status = 'completed', verdict = 'block', blocking = 1, report_json = '{}', completed_at = ? WHERE id = 'rv'",
+      ).run(NOW);
+      for (const sql of [
+        "UPDATE goal_reviews SET verdict = 'pass' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET report_json = '{\"x\":1}' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET blocking = 0 WHERE id = 'rv'",
+        `UPDATE goal_reviews SET reviewed_to_tree = '${'c'.repeat(40)}' WHERE id = 'rv'`,
+        "UPDATE goal_reviews SET status = 'pending' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET status = 'failed', verdict = NULL, blocking = NULL, report_json = NULL WHERE id = 'rv'",
+        "DELETE FROM goal_reviews WHERE id = 'rv'",
+      ])
+        expect(() => db.prepare(sql).run(), sql).toThrow();
+      expect(db.prepare("SELECT verdict, blocking FROM goal_reviews WHERE id = 'rv'").get()).toEqual({
+        verdict: 'block',
+        blocking: 1,
+      });
+      db.close();
+    });
+
+    it('keep identity and binding fixed even while pending, and end terminally when failed or cancelled', () => {
+      const db = twoGoals();
+      review(db, 'rv', 'g1');
+      for (const sql of [
+        `UPDATE goal_reviews SET reviewed_to_commit = '${'d'.repeat(40)}' WHERE id = 'rv'`,
+        `UPDATE goal_reviews SET reviewed_to_tree = '${'d'.repeat(40)}' WHERE id = 'rv'`,
+        `UPDATE goal_reviews SET reviewed_from_commit = '${'d'.repeat(40)}' WHERE id = 'rv'`,
+        "UPDATE goal_reviews SET review_kind = 'final' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET goal_id = 'g2' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET cycle_id = 'g1-c2' WHERE id = 'rv'",
+        "UPDATE goal_reviews SET definition_version = 2 WHERE id = 'rv'",
+      ])
+        expect(() => db.prepare(sql).run(), sql).toThrow();
+      db.prepare("UPDATE goal_reviews SET status = 'failed' WHERE id = 'rv'").run();
+      expect(() => db.prepare("UPDATE goal_reviews SET status = 'cancelled' WHERE id = 'rv'").run()).toThrow(
+        /immutable/,
+      );
+      db.close();
+    });
+  });
+
+  describe('findings', () => {
+    it('allow one open finding per fingerprint, fixed identity, and append-only observations', () => {
+      const db = twoGoals();
+      review(db, 'rv', 'g1');
+      finding(db, 'f1', 'g1', 'rv');
+      expect(() => finding(db, 'f2', 'g1', 'rv')).toThrow(/UNIQUE/);
+      finding(db, 'f3', 'g1', 'rv', 'other');
+      expect(() => db.prepare("UPDATE goal_findings SET fingerprint = 'z' WHERE id = 'f1'").run()).toThrow(
+        /identity/,
+      );
+      expect(() => db.prepare("UPDATE goal_findings SET status = 'resolved' WHERE id = 'f1'").run()).toThrow(
+        /CHECK/,
+      );
+      db.prepare(
+        "UPDATE goal_findings SET status = 'resolved', resolved_by_review_id = 'rv' WHERE id = 'f1'",
+      ).run();
+      finding(db, 'f4', 'g1', 'rv'); // a resolved fingerprint can be reported again as a new finding
+      db.prepare(
+        `INSERT INTO goal_finding_observations (id, goal_id, goal_finding_id, review_id, observation, basis, created_at)
+         VALUES ('o', 'g1', 'f1', 'rv', 'resolved', 'b', ?)`,
+      ).run(NOW);
+      expect(() =>
+        db.prepare("UPDATE goal_finding_observations SET basis = 'x' WHERE id = 'o'").run(),
+      ).toThrow(/append-only/);
+      expect(() => db.prepare("DELETE FROM goal_finding_observations WHERE id = 'o'").run()).toThrow(
+        /append-only/,
+      );
+      expect(() => db.prepare("DELETE FROM goal_findings WHERE id = 'f1'").run()).toThrow(
+        /cannot be deleted/,
+      );
+      db.close();
+    });
+  });
+
+  describe('goal approvals', () => {
+    it('move pending -> approved by the user and are then immutable', () => {
+      const db = twoGoals();
+      approval(db, 'a', 'g1');
+      db.prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', decision_note = 'ok', responded_at = ? WHERE id = 'a'",
+      ).run(NOW);
+      for (const sql of [
+        "UPDATE goal_approvals SET status = 'denied' WHERE id = 'a'",
+        "UPDATE goal_approvals SET decision_note = 'changed' WHERE id = 'a'",
+        "UPDATE goal_approvals SET status = 'pending' WHERE id = 'a'",
+        "DELETE FROM goal_approvals WHERE id = 'a'",
+      ])
+        expect(() => db.prepare(sql).run(), sql).toThrow();
+      db.close();
+    });
+
+    it('can be denied by the user or the system, but approved only by the user', () => {
+      const db = twoGoals();
+      approval(db, 'a1', 'g1');
+      approval(db, 'a2', 'g1');
+      approval(db, 'a3', 'g1');
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE goal_approvals SET status = 'approved', decided_by = 'system', responded_at = ? WHERE id = 'a1'",
+          )
+          .run(NOW),
+      ).toThrow(/CHECK/);
+      expect(() => db.prepare("UPDATE goal_approvals SET status = 'approved' WHERE id = 'a1'").run()).toThrow(
+        /CHECK/,
+      );
+      expect(() =>
+        db
+          .prepare(
+            "UPDATE goal_approvals SET status = 'approved', decided_by = 'model', responded_at = ? WHERE id = 'a1'",
+          )
+          .run(NOW),
+      ).toThrow(/CHECK/);
+      db.prepare(
+        "UPDATE goal_approvals SET status = 'denied', decided_by = 'system', responded_at = ? WHERE id = 'a2'",
+      ).run(NOW);
+      db.prepare(
+        "UPDATE goal_approvals SET status = 'denied', decided_by = 'user', responded_at = ? WHERE id = 'a3'",
+      ).run(NOW);
+      expect(db.prepare("SELECT status FROM goal_approvals WHERE id = 'a1'").get()).toEqual({
+        status: 'pending',
+      });
+      db.close();
+    });
+
+    it('fix their identity, start pending and validate gate and risk', () => {
+      const db = twoGoals();
+      approval(db, 'a', 'g1');
+      for (const column of ['gate', 'risk', 'reason', 'requested_by', 'detail_json', 'goal_id', 'created_at'])
+        expect(
+          () =>
+            db
+              .prepare(`UPDATE goal_approvals SET ${column} = ? WHERE id = 'a'`)
+              .run(
+                column === 'gate'
+                  ? 'start'
+                  : column === 'risk'
+                    ? 'low'
+                    : column === 'requested_by'
+                      ? 'user'
+                      : column === 'detail_json'
+                        ? '{}'
+                        : 'g2',
+              ),
+          column,
+        ).toThrow();
+      const insert = (gate: string, risk: string, status: string) =>
+        db
+          .prepare(
+            `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, status, created_at) VALUES (?, 'g1', ?, ?, 'r', 'user', ?, ?)`,
+          )
+          .run(`x-${gate}-${risk}-${status}`, gate, risk, status, NOW);
+      expect(() => insert('teleport', 'low', 'pending')).toThrow(/CHECK/);
+      expect(() => insert('start', 'extreme', 'pending')).toThrow(/CHECK/);
+      expect(() => insert('start', 'low', 'approved')).toThrow();
+      insert('start', 'low', 'pending');
+      db.close();
+    });
+  });
+
+  describe('events and route validations', () => {
+    it('keeps events append-only with bounded valid JSON payloads', () => {
+      const db = twoGoals();
+      const insert = (id: string, payload: string) =>
+        db
+          .prepare(
+            "INSERT INTO goal_events (id, goal_id, type, payload_json, created_at) VALUES (?, 'g1', 't', ?, ?)",
+          )
+          .run(id, payload, NOW);
+      insert('e1', '{"a":1}');
+      expect(() => insert('e2', 'not json')).toThrow(/CHECK/);
+      expect(() => insert('e3', JSON.stringify({ big: 'x'.repeat(17_000) }))).toThrow(/CHECK/);
+      expect(() => db.prepare("UPDATE goal_events SET type = 'x' WHERE id = 'e1'").run()).toThrow(
+        /append-only/,
+      );
+      expect(() => db.prepare("DELETE FROM goal_events WHERE id = 'e1'").run()).toThrow(/append-only/);
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO goal_events (id, goal_id, type, payload_json, created_at) VALUES ('e4', 'missing', 't', '{}', ?)",
+          )
+          .run(NOW),
+      ).toThrow(/FOREIGN KEY/);
+      db.close();
+    });
+
+    it('stores exact-route validation records with integrity and immutability', () => {
+      const db = twoGoals();
+      const insert = (id: string, over: Record<string, string | null> = {}) => {
+        const v = {
+          profile: 'review-json',
+          status: 'pass',
+          run: 'g1-r',
+          tested: '2026-01-01T00:00:00.000Z',
+          expires: '2026-01-08T00:00:00.000Z',
+          checks: '[]',
+          ...over,
+        };
+        db.prepare(
+          `INSERT INTO route_validations (id, identity_hash, identity_json, profile, status, evidence_run_id, resolved_model_reported,
+             checks_json, provenance, adapter_version, capability_fingerprint, tested_at, expires_at)
+           VALUES (?, 'hash', '{"model":"m"}', ?, ?, ?, 'm-2026', ?, 'turing_probe_run', '1.0', 'fp', ?, ?)`,
+        ).run(id, v.profile, v.status, v.run, v.checks, v.tested, v.expires);
+      };
+      insert('v1');
+      expect(() => insert('v2', { run: 'missing-run' })).toThrow(/FOREIGN KEY/);
+      expect(() => insert('v3', { profile: 'vibes' })).toThrow(/CHECK/);
+      expect(() => insert('v4', { status: 'maybe' })).toThrow(/CHECK/);
+      expect(() => insert('v5', { expires: '2025-01-01T00:00:00.000Z' })).toThrow(/CHECK/);
+      expect(() => insert('v6', { checks: 'nope' })).toThrow(/CHECK/);
+      expect(() => db.prepare("UPDATE route_validations SET status = 'fail' WHERE id = 'v1'").run()).toThrow(
+        /immutable/,
+      );
+      expect(() => db.prepare("DELETE FROM route_validations WHERE id = 'v1'").run()).toThrow(
+        /cannot be deleted/,
+      );
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+      db.close();
+    });
   });
 });

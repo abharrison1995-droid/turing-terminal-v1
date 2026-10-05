@@ -15,7 +15,7 @@ describe('local database', () => {
     const root = mkdtempSync(join(tmpdir(), 'turing-db-'));
     folders.push(root);
     let db = openDatabase(root);
-    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(16);
+    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(17);
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '009_stage_attempts.sql'").get(),
     ).toBeTruthy();
