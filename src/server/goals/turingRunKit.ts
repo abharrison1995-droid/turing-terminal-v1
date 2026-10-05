@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { vi } from 'vitest';
 import type { GoalDefinition } from '../../shared/goals.js';
+import type { WorkflowDefinition } from '../../shared/types.js';
 import { createApp } from '../app.js';
 import { RunEngine } from '../runEngine.js';
 import { startQueuedRun } from '../runLauncher.js';
@@ -56,6 +57,8 @@ export async function realRunHarness(
     route?: FixedRoute;
     mutate?: ConstructorParameters<typeof FixedGoalRunPlanProvider>[1];
     definition?: GoalDefinition;
+    /** Non-built-in workflows registered and selected for a purpose (context-authority tests). */
+    custom?: Array<{ purpose: 'planning' | 'execution'; workflow: WorkflowDefinition }>;
   } = {},
 ): Promise<RealRunHarness> {
   const definition =
@@ -68,6 +71,8 @@ export async function realRunHarness(
   delete definition.review.periodic;
   delete definition.review.onRepeatedFailure;
   definition.routing.workflows = { ...BUILT_IN_WORKFLOWS };
+  for (const { purpose, workflow } of options.custom ?? [])
+    definition.routing.workflows = { ...definition.routing.workflows, [purpose]: workflow.id };
   const fx = goalRepoFixture({ definition });
   const { db } = fx;
   const root = dirname(fx.repo);
@@ -94,6 +99,21 @@ export async function realRunHarness(
   await app.ready();
   const tracker = new ActiveTimeTracker(db, { nowMs: () => 5_000_000_000 }, 15_000);
   const plans = new FixedGoalRunPlanProvider(options.route, options.mutate);
+  for (const { workflow } of options.custom ?? []) {
+    plans.custom.set(workflow.id, workflow);
+    db.prepare(
+      `INSERT INTO workflows (id, name, description, template, config_json, version, is_default, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+    ).run(
+      workflow.id,
+      workflow.name,
+      workflow.description,
+      workflow.template,
+      JSON.stringify(workflow),
+      workflow.createdAt,
+      workflow.updatedAt,
+    );
+  }
   const make = (runEngine: RunEngine) => {
     const executor = new TuringGoalExecutor(db, plans);
     return {

@@ -6,7 +6,7 @@ import {
   GOAL_PROMPT_LIMITS,
   formatExecutionTask,
   formatPlanningTask,
-  narrowWorkflowToMilestone,
+  applyGoalScope,
 } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
@@ -65,8 +65,8 @@ describe('Goal prompts', () => {
   });
 });
 
-describe('milestone context narrowing', () => {
-  it('replaces include globs with the milestone scope, adds its excludes, and ignores expectedPaths', () => {
+describe('Goal scope minting', () => {
+  it('leaves every registered context policy untouched and adds only the trusted scope', () => {
     const fx = goalRepoFixture({
       definition: simpleDefinition({
         milestones: [
@@ -76,18 +76,13 @@ describe('milestone context narrowing', () => {
         ],
       }),
     });
-    const { GOAL_BUILTIN_WORKFLOWS: builtins } = { GOAL_BUILTIN_WORKFLOWS };
     const workflow = structuredClone(
-      builtins.find((item) => item.id === 'goal-execution-v1')!,
+      GOAL_BUILTIN_WORKFLOWS.find((item) => item.id === 'goal-execution-v1')!,
     ) as never as import('../../shared/types.js').WorkflowDefinition;
-    const narrowed = narrowWorkflowToMilestone(workflow, fx.definition.milestones[0]!.allowedScope);
-    expect(narrowed.contextPolicy.includeGlobs).toEqual(['src/**']);
-    expect(narrowed.contextPolicy.excludeGlobs).toEqual(expect.arrayContaining(['src/generated/**']));
-    for (const stage of narrowed.stages)
-      if (stage.contextPolicy) expect(stage.contextPolicy.includeGlobs).toEqual(['src/**']);
-    // The original is not mutated and the stage layout is unchanged.
-    expect(narrowed.stages.map((stage) => stage.id)).toEqual(workflow.stages.map((stage) => stage.id));
-    expect(narrowWorkflowToMilestone(workflow, fx.definition.milestones[0]!.allowedScope)).toEqual(narrowed);
+    const scoped = applyGoalScope(workflow, fx.definition.milestones[0]!.allowedScope);
+    expect(scoped.goalScope).toEqual({ includeGlobs: ['src/**'], excludeGlobs: ['src/generated/**'] });
+    expect({ ...scoped, goalScope: undefined }).toEqual({ ...workflow, goalScope: undefined });
+    expect(workflow.goalScope).toBeUndefined();
   });
 });
 
@@ -221,6 +216,28 @@ describe('production enablement and reserved workflows', () => {
       },
     });
     expect(bad.statusCode).toBeGreaterThanOrEqual(400);
+    // No API accepts the trusted Goal scope: a forged one is dropped or the request is refused, never stored.
+    const forged = await app.inject({
+      method: 'POST',
+      url: '/api/workflows',
+      payload: {
+        name: 'Forged',
+        description: 'x',
+        template: 'test',
+        executionProfile: 'economy',
+        permissionMode: 'normal',
+        maxRemediationRounds: 0,
+        maxParallelAgents: 1,
+        isolatedWorktree: true,
+        goalScope: { includeGlobs: ['**'], excludeGlobs: [] },
+        stages: [{ id: 'b', label: 'Build', kind: 'build' }],
+      },
+    });
+    const stored = fx.db.prepare("SELECT config_json FROM workflows WHERE name = 'Forged'").get() as
+      { config_json: string } | undefined;
+    expect(forged.statusCode >= 400 || !stored || !('goalScope' in JSON.parse(stored.config_json))).toBe(
+      true,
+    );
     await app.close();
   });
 });

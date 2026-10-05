@@ -1,5 +1,5 @@
 import type { GoalDefinition, GoalMilestoneSpec, NextTask } from '../../shared/goals.js';
-import type { ContextPolicy, WorkflowDefinition, WorkflowStage } from '../../shared/types.js';
+import type { WorkflowDefinition } from '../../shared/types.js';
 import { NEXT_TASK_LIMITS } from './nextTask.js';
 import type { GoalMemory } from './memory.js';
 
@@ -125,39 +125,16 @@ export function formatExecutionTask({
 }
 
 /**
- * Narrows (never widens) a workflow context policy to the milestone scope. Include globs become exactly the
- * milestone's allowed scope; the milestone's exclusions are added to the workflow's. The model's `expectedPaths` take
- * no part: they are advisory text in the prompt.
+ * Mints the trusted Goal milestone scope on a verified workflow. The registered context policies (workflow and stage)
+ * are left exactly as they are; the scope is a second, conjunctive constraint the engine enforces on every read, so the
+ * result can never be wider than either the registered policy or the milestone. `expectedPaths` take no part.
  */
-export function narrowContextPolicy(
-  policy: ContextPolicy,
-  scope: GoalMilestoneSpec['allowedScope'],
-): ContextPolicy {
-  return {
-    ...policy,
-    includeGlobs: [...scope.includeGlobs],
-    excludeGlobs: [...new Set([...policy.excludeGlobs, ...scope.excludeGlobs])],
-  };
-}
-
-export function narrowWorkflowToMilestone(
+export function applyGoalScope(
   workflow: WorkflowDefinition,
   scope: GoalMilestoneSpec['allowedScope'],
 ): WorkflowDefinition {
-  const narrowStage = (stage: WorkflowStage): WorkflowStage =>
-    stage.contextPolicy
-      ? {
-          ...stage,
-          contextPolicy: {
-            ...stage.contextPolicy,
-            includeGlobs: [...scope.includeGlobs],
-            excludeGlobs: [...new Set([...(stage.contextPolicy.excludeGlobs ?? []), ...scope.excludeGlobs])],
-          },
-        }
-      : stage;
   return {
     ...workflow,
-    contextPolicy: narrowContextPolicy(workflow.contextPolicy, scope),
-    stages: workflow.stages.map(narrowStage),
+    goalScope: { includeGlobs: [...scope.includeGlobs], excludeGlobs: [...scope.excludeGlobs] },
   };
 }

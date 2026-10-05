@@ -4,7 +4,8 @@ import {
   GOAL_PROPOSE_STAGE_KEY,
   isReservedGoalWorkflowId,
 } from '../../shared/goalWorkflows.js';
-import type { WorkflowDefinition, WorkflowStage } from '../../shared/types.js';
+import type { WorkflowDefinition } from '../../shared/types.js';
+import { isModelBackedStage } from '../../shared/workflowKinds.js';
 import { canonicalGoalBuiltin, canonicalStoredWorkflow } from '../db.js';
 import type { Db } from '../db.js';
 import { buildPreview, createRunOrigin, queueRun } from '../runLauncher.js';
@@ -18,7 +19,7 @@ import type {
   ProposalResult,
   RouteReadiness,
 } from './executor.js';
-import { formatExecutionTask, formatPlanningTask, narrowWorkflowToMilestone } from './goalPrompts.js';
+import { applyGoalScope, formatExecutionTask, formatPlanningTask } from './goalPrompts.js';
 import { rebuildGoalMemory } from './memory.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
 
@@ -58,25 +59,55 @@ export const PROPOSAL_LIMITS = { outputJsonChars: 80_000, textChars: 40_000 } as
 
 const MODE_RANK = { 'subscriptions-only': 0, 'subscriptions-plus-decision-budget': 1, custom: 2 } as const;
 const FORBIDDEN_STAGES = new Set(['gitMerge', 'gitPush', 'gitRollback']);
-/** Fields a run plan may fill in: the concrete route. Everything else must equal the registered workflow. */
-const ROUTE_FIELDS = [
+/**
+ * The only stage properties a run plan may set or change, and only on model-backed stages: the concrete route.
+ * `modelSnapshot` is deliberately absent: it is observed metadata produced by the preview/catalog path, never plan
+ * authority, so a plan that carries or changes one is refused like any other non-route difference.
+ */
+export const PLAN_ROUTE_FIELDS = [
   'backendId',
   'providerId',
+  'billingLane',
   'modelId',
   'reasoning',
   'connectionProfileId',
   'modelDisplayName',
   'variantId',
   'nativeSettings',
-  'modelSnapshot',
-  'billingLane',
 ] as const;
 
-const withoutRoute = (stage: WorkflowStage): string => {
-  const copy: Record<string, unknown> = { ...stage };
-  for (const key of ROUTE_FIELDS) delete copy[key];
-  return JSON.stringify(Object.fromEntries(Object.entries(copy).sort(([a], [b]) => a.localeCompare(b))));
-};
+const stable = (value: unknown): unknown =>
+  Array.isArray(value)
+    ? value.map(stable)
+    : value && typeof value === 'object'
+      ? Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .filter(([, item]) => item !== undefined)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, item]) => [key, stable(item)]),
+        )
+      : value;
+
+/**
+ * The single comparison a run plan is held to: everything about a workflow except `createdAt`/`updatedAt` and the
+ * route fields of model-backed stages. Deterministic stages keep every property, so a route field added to one differs.
+ */
+export function canonicalNonRouteWorkflow(workflow: WorkflowDefinition): string {
+  const { createdAt: _created, updatedAt: _updated, ...rest } = workflow;
+  void _created;
+  void _updated;
+  return JSON.stringify(
+    stable({
+      ...rest,
+      stages: workflow.stages.map((stage) => {
+        if (!isModelBackedStage(stage.kind)) return stage;
+        const copy: Record<string, unknown> = { ...stage };
+        for (const key of PLAN_ROUTE_FIELDS) delete copy[key];
+        return copy;
+      }),
+    }),
+  );
+}
 
 interface Loaded {
   goalId: string;
@@ -105,11 +136,47 @@ export class TuringGoalExecutor implements GoalExecutor {
     return this.plans.checkRoutes(goalId);
   }
 
-  private existing(cycleId: string, purpose: string): string | undefined {
+  /**
+   * The idempotent fast path. A persisted `(cycle, purpose)` run is returned only after the cheap persisted authority
+   * is re-proven (Goal owns the cycle, the definition is current, the base is the cycle base, and for child runs the
+   * caller's task is still the cycle's validated task). It never asks the plan provider again.
+   */
+  private existing(
+    goalId: string,
+    cycleId: string,
+    purpose: string,
+    baseCommit: string,
+    task?: NextTask,
+    definitionVersion?: number,
+  ): string | undefined {
     const row = this.db
-      .prepare('SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?')
-      .get(cycleId, purpose) as { id: string } | undefined;
-    return row?.id;
+      .prepare(
+        'SELECT id, goal_cycle_id, goal_run_purpose FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = ?',
+      )
+      .get(cycleId, purpose) as { id: string; goal_cycle_id: string; goal_run_purpose: string } | undefined;
+    if (!row) return undefined;
+    const goal = this.db
+      .prepare('SELECT current_definition_version AS version FROM goals WHERE id = ?')
+      .get(goalId) as { version: number | null } | undefined;
+    if (!goal) throw new TuringExecutorError('goal_not_found', 'The Goal does not exist.');
+    const cycle = getCycle(this.db, cycleId);
+    if (!cycle || cycle.goalId !== goalId)
+      throw new TuringExecutorError('cycle_goal_mismatch', 'The cycle belongs to another Goal.');
+    if (cycle.definitionVersion === null || cycle.definitionVersion !== goal.version)
+      throw new TuringExecutorError('definition_superseded', 'The cycle belongs to an older definition.');
+    if (definitionVersion !== undefined && definitionVersion !== cycle.definitionVersion)
+      throw new TuringExecutorError(
+        'definition_mismatch',
+        'The requested definition is not the cycle definition.',
+      );
+    if (!cycle.baseIntegrationCommit || cycle.baseIntegrationCommit !== baseCommit)
+      throw new TuringExecutorError(
+        'base_commit_mismatch',
+        'The requested base is not the cycle base commit.',
+      );
+    if (task && (!cycle.validatedTask || JSON.stringify(cycle.validatedTask) !== JSON.stringify(task)))
+      throw new TuringExecutorError('task_mismatch', "The task is not the cycle's validated task.");
+    return row.id;
   }
 
   private load(goalId: string, cycleId: string, baseCommit: string): Loaded {
@@ -155,7 +222,11 @@ export class TuringGoalExecutor implements GoalExecutor {
     return toWorkflow(row);
   }
 
-  /** The plan must be the registered workflow plus routes, never a different or more permissive workflow. */
+  /**
+   * A plan is the registered workflow plus exact routes on model-backed stages, and nothing else. The specific refusals
+   * come first for stable codes; the canonical comparison then closes every remaining property. Goal parallelism is a
+   * Turing-side clamp applied only after the plan has been proven identical.
+   */
   private verifyPlan(
     plan: WorkflowDefinition,
     registered: WorkflowDefinition,
@@ -170,42 +241,36 @@ export class TuringGoalExecutor implements GoalExecutor {
         'plan_forbidden_stage',
         'Goal workflows cannot merge, push or roll back.',
       );
-    if (
-      plan.permissionMode === 'enigma' ||
-      plan.permissionMode !== registered.permissionMode ||
-      plan.executionProfile !== registered.executionProfile ||
-      plan.maxRemediationRounds !== registered.maxRemediationRounds ||
-      plan.promptRefinementDefault !== registered.promptRefinementDefault
-    )
+    if (plan.permissionMode === 'enigma' || plan.permissionMode !== registered.permissionMode)
       throw new TuringExecutorError(
         'plan_permission_mode',
-        'The run plan changes the registered workflow permission mode or behaviour.',
+        'The run plan changes the registered workflow permission mode.',
       );
-    const planMode = plan.billingMode ?? (plan.subscriptionOnly === false ? 'custom' : 'subscriptions-only');
-    if (MODE_RANK[planMode] > MODE_RANK[definition.limits.billingMode])
-      throw new TuringExecutorError(
-        'plan_billing_exceeds_goal',
-        'The run plan is more permissive in billing than the approved Goal.',
-      );
+    const modeOf = (workflow: WorkflowDefinition) =>
+      workflow.billingMode ?? (workflow.subscriptionOnly === false ? 'custom' : 'subscriptions-only');
     if (
-      plan.stages.length !== registered.stages.length ||
-      plan.stages.some((stage, index) => withoutRoute(stage) !== withoutRoute(registered.stages[index]!))
+      MODE_RANK[modeOf(plan)] > MODE_RANK[definition.limits.billingMode] ||
+      MODE_RANK[modeOf(registered)] > MODE_RANK[definition.limits.billingMode]
     )
       throw new TuringExecutorError(
-        'plan_workflow_mismatch',
-        'The run plan changes the registered workflow stages.',
+        'plan_billing_exceeds_goal',
+        'The workflow or run plan is more permissive in billing than the approved Goal.',
       );
-    // Deterministic parallelism clamp: the plan can never exceed the approved Goal.
-    const maxParallelAgents = Math.max(
+    if (canonicalNonRouteWorkflow(plan) !== canonicalNonRouteWorkflow(registered))
+      throw new TuringExecutorError(
+        'plan_workflow_mismatch',
+        'The run plan changes more than the route fields of model-backed stages.',
+      );
+    const effective = Math.max(
       1,
-      Math.min(plan.maxParallelAgents, definition.limits.maxParallelAgents),
+      Math.min(registered.maxParallelAgents, definition.limits.maxParallelAgents),
     );
     return {
       ...plan,
-      maxParallelAgents,
+      maxParallelAgents: effective,
       stages: plan.stages.map((stage) =>
         stage.kind === 'parallelReview'
-          ? { ...stage, parallelism: Math.min(stage.parallelism ?? 1, maxParallelAgents) }
+          ? { ...stage, parallelism: Math.min(stage.parallelism ?? 1, effective) }
           : stage,
       ),
     };
@@ -234,7 +299,7 @@ export class TuringGoalExecutor implements GoalExecutor {
     const milestone = loaded.definition.milestones.find((item) => item.key === loaded.cycle.milestoneKey);
     if (!milestone)
       throw new TuringExecutorError('definition_mismatch', 'The cycle milestone is not in the definition.');
-    const verified = narrowWorkflowToMilestone(
+    const verified = applyGoalScope(
       this.verifyPlan(plan.workflowOverride, registered, loaded.definition),
       milestone.allowedScope,
     );
@@ -257,7 +322,14 @@ export class TuringGoalExecutor implements GoalExecutor {
   }
 
   async queueProposalRun(request: ProposalRequest): Promise<{ runId: string }> {
-    const already = this.existing(request.cycleId, 'proposal');
+    const already = this.existing(
+      request.goalId,
+      request.cycleId,
+      'proposal',
+      request.baseCommit,
+      undefined,
+      request.definitionVersion,
+    );
     if (already) return { runId: already };
     const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
     if (loaded.cycle.definitionVersion !== request.definitionVersion)
@@ -284,7 +356,13 @@ export class TuringGoalExecutor implements GoalExecutor {
   }
 
   async queueChildRun(request: ChildRunRequest): Promise<{ runId: string }> {
-    const already = this.existing(request.cycleId, request.purpose);
+    const already = this.existing(
+      request.goalId,
+      request.cycleId,
+      request.purpose,
+      request.baseCommit,
+      request.task,
+    );
     if (already) return { runId: already };
     const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
     if (

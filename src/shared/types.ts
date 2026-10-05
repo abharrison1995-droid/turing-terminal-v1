@@ -422,6 +422,12 @@ export interface WorkflowDefinition {
   stageDefaults?: Partial<Record<StageKind, ModelConfiguration>>;
   globalInstructions?: string;
   contextPolicy: ContextPolicy;
+  /**
+   * Trusted Goal milestone scope, minted only by Turing's Goal executor after a run plan is verified. It is an
+   * independent conjunctive constraint: a path must be allowed by the context policy AND by this scope. No API schema
+   * accepts it and a run plan carrying it is refused.
+   */
+  goalScope?: { includeGlobs: string[]; excludeGlobs: string[] };
   stages: WorkflowStage[];
   version: number;
   isDefault: boolean;

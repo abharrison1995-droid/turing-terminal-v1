@@ -1194,3 +1194,19 @@ Deliberate differences from the design above:
 - **Usage**: `UsageFilter.goalId` filters through the `goal_runs` view for events and decisions; an unusable `goalId`
   query returns 400 rather than widening. Verification-command materialisation (`verificationCommands.ts`) is available
   for Stage 4B. No evidence is recorded, execution worktrees stay retained, and production remains `DisabledGoalExecutor`.
+
+## Stage 4A.1 implementation notes (run-plan authority)
+
+- A run plan is the registered workflow plus exact route fields on model-backed stages. `canonicalNonRouteWorkflow`
+  compares everything except `createdAt`/`updatedAt` and `backendId, providerId, billingLane, modelId, reasoning,
+connectionProfileId, modelDisplayName, variantId, nativeSettings` on stages in the shared `MODEL_BACKED_STAGE_KINDS`
+  set (also used by the launcher and engine). `modelSnapshot` is not plan authority. Deterministic stages are compared
+  whole. Specific codes (isolation, forbidden stage, permission mode, billing above the Goal) are checked first; any other
+  difference is `plan_workflow_mismatch`.
+- Parallelism: the plan must equal the registered value; Turing then clamps to `min(registered, Goal)` after verification.
+- Context: the registered workflow and stage policies are untouched. Turing mints `WorkflowDefinition.goalScope`
+  (milestone include/exclude) after verification and the engine enforces it conjunctively on every `read_file`; an empty
+  include list denies. No API schema accepts `goalScope`, and a plan carrying one is refused. `list_files` is unchanged
+  and is not read authority.
+- The idempotent `(cycle, purpose)` fast path re-proves Goal ownership, current definition, base commit and (child runs)
+  the validated task before returning the existing run, still without a plan request. No migration.

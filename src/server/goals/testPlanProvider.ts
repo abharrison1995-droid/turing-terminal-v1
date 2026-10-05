@@ -30,6 +30,8 @@ const AI = new Set(['planner', 'implementer', 'parallelReview', 'consolidate', '
 /** Applies one route to the AI stages of a built-in workflow and lets a test mutate the result. */
 export class FixedGoalRunPlanProvider implements GoalRunPlanProvider {
   readonly requests: GoalRunPlanRequest[] = [];
+  /** Registered non-built-in workflows a test planned against. */
+  readonly custom = new Map<string, WorkflowDefinition>();
   ready: RouteReadiness = { ready: true };
 
   constructor(
@@ -43,7 +45,7 @@ export class FixedGoalRunPlanProvider implements GoalRunPlanProvider {
 
   async planRun(request: GoalRunPlanRequest): Promise<GoalRunPlan> {
     this.requests.push(request);
-    const builtin = goalBuiltinById(request.workflowId);
+    const builtin = this.custom.get(request.workflowId) ?? goalBuiltinById(request.workflowId);
     if (!builtin) return { ready: false, code: 'route_unavailable', message: 'No built-in workflow.' };
     const workflow = structuredClone(builtin);
     workflow.stages = workflow.stages.map((stage): WorkflowStage =>

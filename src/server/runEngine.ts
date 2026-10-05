@@ -1,4 +1,5 @@
 import { execFile as callbackExecFile, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { MODEL_BACKED_STAGE_KINDS } from '../shared/workflowKinds.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   constants as fsConstants,
@@ -68,17 +69,7 @@ import {
 import { estimateTokens } from './tokenEstimate.js';
 
 const execFile = promisify(callbackExecFile);
-const AI_KINDS = new Set<WorkflowStage['kind']>([
-  'planner',
-  'promptRefinement',
-  'implementer',
-  'reviewer',
-  'parallelReview',
-  'consolidate',
-  'orchestrator',
-  'remediation',
-  'finalGate',
-]);
+const AI_KINDS = MODEL_BACKED_STAGE_KINDS;
 const MAX_CAPTURED_LOG_CHARS = 500_000;
 const READ_ONLY_ROLES = new Set([
   'planner',
@@ -124,6 +115,7 @@ interface ProviderToolSession {
   billingLane: import('../shared/types.js').BillingLane | null;
   variantId: string | null;
   contextPolicy: ContextPolicy;
+  goalScope?: { includeGlobs: string[]; excludeGlobs: string[] };
   changedFiles: Set<string>;
   contextFiles: Set<string>;
   contextCache: Map<string, string>;
@@ -949,6 +941,7 @@ export class RunEngine {
         billingLane,
         variantId: stage.variantId ?? null,
         contextPolicy,
+        ...(workflow.goalScope ? { goalScope: workflow.goalScope } : {}),
         changedFiles,
         contextFiles: new Set<string>(),
         contextCache: new Map<string, string>(),
@@ -3537,6 +3530,15 @@ function matchesAnyGlob(path: string, globs: string[]): boolean {
 }
 
 function contextPathAllowed(session: ProviderToolSession, path: string): boolean {
+  // A Goal milestone scope is a second, independent constraint: both it and the context policy must allow the path.
+  // An empty Goal include list denies everything rather than meaning "no restriction".
+  const scope = session.goalScope;
+  if (
+    scope &&
+    (scope.excludeGlobs.some((glob) => matchesAnyGlob(path, [glob])) ||
+      !matchesAnyGlob(path, scope.includeGlobs))
+  )
+    return false;
   const policy = session.contextPolicy;
   if (policy.excludeGlobs.some((glob) => matchesAnyGlob(path, [glob]))) return false;
   const included = !policy.includeGlobs.length || matchesAnyGlob(path, policy.includeGlobs);

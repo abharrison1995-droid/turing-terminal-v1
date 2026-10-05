@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { MODEL_BACKED_STAGE_KINDS } from '../shared/workflowKinds.js';
 import { hostname, platform } from 'node:os';
 import { execFile as callbackExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -113,17 +114,7 @@ export interface QueueRunOptions {
   eventDetails?: Record<string, unknown>;
 }
 
-const AI_KINDS = new Set<WorkflowStage['kind']>([
-  'planner',
-  'promptRefinement',
-  'implementer',
-  'reviewer',
-  'parallelReview',
-  'consolidate',
-  'orchestrator',
-  'remediation',
-  'finalGate',
-]);
+const AI_KINDS = MODEL_BACKED_STAGE_KINDS;
 
 /**
  * Persists a queued run, its stages, rules snapshot and queued event in one transaction and does not start it.

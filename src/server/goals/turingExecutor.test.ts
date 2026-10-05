@@ -138,20 +138,6 @@ describe('TuringGoalExecutor plan verification', () => {
     expect(await refusal(harness)).toBe('plan_unavailable');
   });
 
-  it('clamps the plan parallelism to the Goal limit', async () => {
-    const harness = await open();
-    harness.plans.planRun = (async (req: never) => {
-      const plan = await Object.getPrototypeOf(harness.plans).planRun.call(harness.plans, req);
-      if (plan.ready) plan.workflowOverride.maxParallelAgents = 9;
-      return plan;
-    }) as never;
-    const { runId } = await new TuringGoalExecutor(harness.fx.db, harness.plans).queueProposalRun(
-      request(harness),
-    );
-    const snapshot = JSON.parse(harness.runRow(runId).workflow_snapshot_json as string) as WorkflowDefinition;
-    expect(snapshot.maxParallelAgents).toBeLessThanOrEqual(harness.fx.definition.limits.maxParallelAgents);
-  });
-
   it('refuses a stale or mismatched base without a plan request or run', async () => {
     const harness = await open();
     const plans = harness.plans.requests.length;
