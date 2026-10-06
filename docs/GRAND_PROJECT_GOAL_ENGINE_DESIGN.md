@@ -1480,3 +1480,39 @@ no migration (tip stays 022) and the production executor is still `DisabledGoalE
 - **Production executor.** Still `DisabledGoalExecutor`, so a production Goal start is refused as `route_unavailable`.
 - **Follow-up.** `GET /api/events?goalId=` is not provided: there is no Goal event emitter. Goal events are read with
   `/api/goals/:id/events`.
+
+## Stage 7A.1 control-contract correction
+
+Five bounded defects found in the Stage 7A source review. No migration; no new endpoint; Preview, finding decisions,
+pause and final-apply preflight are unchanged.
+
+- **Final-acceptance gate lifecycle.** At the no-milestones completion point the supervisor still asks the real
+  `completeGoal`. When it does not complete, `finalAcceptance.required && !ok` and every remaining failure is in the
+  terminal user set (`final_acceptance_missing`, `final_apply_required`), it creates or reuses a normal
+  `final_acceptance` Goal approval (`requested_by = supervisor`, risk `medium`) in one transaction with
+  `running -> needs_user(gate_pending)` and status detail `{approvalId, gate: 'final_acceptance'}`, the same pattern as
+  `each_cycle` / `milestone_complete`. The approval detail is bound to `definitionVersion`, `definitionHash` and
+  `integrationTree` (`integrationHead` is stored for audit only). Reuse is keyed on exactly those three fields, so an
+  old-tree or old-definition approval never counts and a new tree gets a new request; a denied approval is terminal and
+  never rewritten. Any technical failure (criteria, milestones, findings, final review) suppresses the request. Final
+  apply is not performed: if only `final_apply_required` remains the Goal stays `completion_pending` and the read models
+  show `nextAction = final_apply`. `runPreflight` now treats a pending `final_acceptance` approval as a mandatory gate.
+- **Resume reasons are facts.** `resumeGoal` checks the persisted state before the state machine: `gate_resolved`
+  needs `needs_user(gate_pending)` whose status detail names an approval of this Goal that is no longer pending
+  (otherwise `gate_not_resolved`). A first-use pool approval counts once decided either way (the resolver then
+  considers the next member); every other gate must be approved, so a denied `each_cycle` / `milestone_complete` /
+  `final_acceptance` gate cannot be resumed past and keeps the existing `gate_denied` handling in `tickNeedsUser`
+  (one semantic authority for pending/approved/denied). `user_resume` needs `paused`, `blocker_resolved` needs
+  `blocked`, `run_resumed` needs `needs_user(run_interrupted)` or the accepted `needs_user(review_needs_decision)` with a
+  paused run (`reason_not_applicable` otherwise); amendment reasons keep `verifyAmendmentResolution`.
+- **Exact-gate nextAction.** For `needs_user(gate_pending)` the action comes from the approval named in the status
+  detail, never the first pending approval: pending -> `review_approval(id)`; approved (or any decided pool gate) ->
+  `resume`; denied -> `revise_goal`. There is no auto-resume on decision through the API.
+- **Terminal completion precedence.** For `running` / `reviewing`, when a fresh completion evaluation has only terminal
+  user failures, `final_acceptance` (with the matching pending approval id or null) or `final_apply` precedes
+  `wait_for_turing`. Technical failures keep the existing status logic. `GoalCompletionView` gains the definition
+  version/hash and integration tree used for the match.
+- **Dashboard.** `goalApprovals.approvals` is selected from `goal_approvals` (pending, newest first, limit 10) and mapped
+  by the same unified mapper, no longer by truncating the mixed inbox; `/api/approvals/unified` stays mixed.
+- **Amendment body.** `POST /api/goals/:id/definitions` again accepts the strict optional `definition`, passed straight
+  to `beginAmendment`; the copy-then-PUT flow still works.

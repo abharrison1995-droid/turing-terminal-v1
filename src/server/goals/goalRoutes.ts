@@ -138,7 +138,10 @@ const editBody = z.strictObject({
   definition: definitionBody,
   changeSummary: z.string().trim().min(1).max(500).optional(),
 });
-const amendBody = z.strictObject({ changeSummary: z.string().trim().min(1).max(500).optional() });
+const amendBody = z.strictObject({
+  changeSummary: z.string().trim().min(1).max(500).optional(),
+  definition: definitionBody.optional(),
+});
 const noteBody = z.strictObject({ note });
 const resumeBody = z.strictObject({ reason: z.enum(GOAL_RESUME_REASONS) });
 const findingDecisionBody = z.strictObject({
@@ -377,6 +380,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         actor: 'user',
         createdBy: 'user',
         ...(body.data.changeSummary ? { changeSummary: body.data.changeSummary } : {}),
+        ...(body.data.definition ? { definition: body.data.definition } : {}),
       });
       return reply.code(201).send({
         version: started.version,

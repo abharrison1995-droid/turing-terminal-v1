@@ -83,7 +83,10 @@ export async function runPreflight(
   // 4. Mandatory human gates must not be waiting.
   if (
     pendingGoalApprovals(db, goalId).some(
-      (approval) => approval.gate === 'each_cycle' || approval.gate === 'milestone_complete',
+      (approval) =>
+        approval.gate === 'each_cycle' ||
+        approval.gate === 'milestone_complete' ||
+        approval.gate === 'final_acceptance',
     )
   )
     return fail('gate_pending', 'A mandatory approval is still pending.');

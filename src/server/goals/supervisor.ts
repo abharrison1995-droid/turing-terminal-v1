@@ -156,6 +156,10 @@ const ACTIVE_RUN = new Set([
   'cancelling',
 ]);
 const PAUSED_RUN = new Set(['paused', 'paused_limit_reached']);
+const TERMINAL_USER_FAILURES: ReadonlySet<string> = new Set([
+  'final_acceptance_missing',
+  'final_apply_required',
+]);
 const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled']);
 const FAILED_RUN = new Set(['failed']);
 const CANCELLED_RUN = new Set(['cancelled']);
@@ -261,15 +265,34 @@ export class GoalSupervisor {
           | 'scheduler_full'
           | 'transition_refused'
           | 'no_paused_run'
+          | 'gate_not_resolved'
+          | 'reason_not_applicable'
           | 'resume_failed'
           | 'amendment_not_resolved'
           | 'superseded_cycle_in_flight'
           | 'superseded_cycle_retired';
       }
   > {
-    const goal = this.db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as
-      { status: string } | undefined;
+    const goal = this.db
+      .prepare('SELECT status, status_reason_code, status_detail_json FROM goals WHERE id = ?')
+      .get(goalId) as
+      { status: string; status_reason_code: string | null; status_detail_json: string | null } | undefined;
     if (!goal) return { ok: false, code: 'goal_not_found' };
+    // The reason is a persisted fact, not just a legal edge label: it must match the Goal's stored state.
+    if (options.reasonCode === 'gate_resolved' && !this.gateResolved(goalId, goal))
+      return { ok: false, code: 'gate_not_resolved' };
+    if (
+      (options.reasonCode === 'user_resume' && goal.status !== 'paused') ||
+      (options.reasonCode === 'blocker_resolved' && goal.status !== 'blocked') ||
+      (options.reasonCode === 'run_resumed' &&
+        // A paused review run is handed to the user as review_needs_decision (accepted Stage 6 behaviour).
+        !(
+          goal.status === 'needs_user' &&
+          (goal.status_reason_code === 'run_interrupted' ||
+            goal.status_reason_code === 'review_needs_decision')
+        ))
+    )
+      return { ok: false, code: 'reason_not_applicable' };
     // The amendment reasons are facts: they need the matching persisted amendment action in this quiescent episode.
     if (
       (options.reasonCode === 'amendment_approved' || options.reasonCode === 'amendment_discarded') &&
@@ -328,6 +351,22 @@ export class GoalSupervisor {
       }
     }
     return { ok: true };
+  }
+
+  /**
+   * The one authority for "is the gate this Goal waits on resolved": needs_user(gate_pending) naming an approval of this
+   * Goal that is no longer pending. A first-use pool approval counts once decided either way (a denial makes the
+   * resolver consider the next member); every other gate must be approved, so a denial never resumes a Goal.
+   */
+  private gateResolved(
+    goalId: string,
+    goal: { status: string; status_reason_code: string | null; status_detail_json: string | null },
+  ): boolean {
+    if (goal.status !== 'needs_user' || goal.status_reason_code !== 'gate_pending') return false;
+    const approvalId = this.approvalIdOf(goal.status_detail_json);
+    const approval = approvalId ? getGoalApproval(this.db, approvalId) : undefined;
+    if (!approval || approval.goalId !== goalId || approval.status === 'pending') return false;
+    return approval.gate === 'pool_route_first_use' || approval.status === 'approved';
   }
 
   startGoal(goalId: string) {
@@ -538,22 +577,22 @@ export class GoalSupervisor {
    */
   private requestGate(
     goalId: string,
-    gate: 'each_cycle' | 'milestone_complete',
+    gate: 'each_cycle' | 'milestone_complete' | 'final_acceptance',
     action: Record<string, unknown>,
     reason: string,
+    options: { risk?: 'low' | 'medium' | 'high'; matchKeys?: readonly string[] } = {},
   ): string {
     return this.db.transaction(() => {
+      const keys = options.matchKeys ?? Object.keys(action);
       const existing = pendingGoalApprovals(this.db, goalId).find(
-        (approval) =>
-          approval.gate === gate &&
-          Object.entries(action).every(([key, value]) => approval.detail[key] === value),
+        (approval) => approval.gate === gate && keys.every((key) => approval.detail[key] === action[key]),
       );
       const approval =
         existing ??
         requestGoalApproval(this.db, {
           goalId,
           gate,
-          risk: 'low',
+          risk: options.risk ?? 'low',
           reason,
           requestedBy: 'supervisor',
           detail: action,
@@ -863,7 +902,28 @@ export class GoalSupervisor {
         this.tracker.sync(goalId);
         return { action: 'completed', goalId };
       }
-      return { action: 'completion_pending', goalId, code: outcome.evaluation.failures[0]?.code };
+      // Final acceptance is requested only when it is the sole thing left for the user (final apply may also remain).
+      const evaluation = outcome.evaluation;
+      if (
+        evaluation.finalAcceptance.required &&
+        !evaluation.finalAcceptance.ok &&
+        evaluation.failures.every((failure) => TERMINAL_USER_FAILURES.has(failure.code))
+      ) {
+        const approvalId = this.requestGate(
+          goalId,
+          'final_acceptance',
+          {
+            definitionVersion: evaluation.definitionVersion,
+            definitionHash: evaluation.definitionHash,
+            integrationTree: evaluation.integrationTree,
+            integrationHead: evaluation.integrationHead,
+          },
+          'Accept the finished Goal result at the current integration tree.',
+          { risk: 'medium', matchKeys: ['definitionVersion', 'definitionHash', 'integrationTree'] },
+        );
+        return { action: 'gate_requested', goalId, code: approvalId };
+      }
+      return { action: 'completion_pending', goalId, code: evaluation.failures[0]?.code };
     }
     const active = remaining.find((spec) => spec.dependsOn.every(done));
     if (!active) return { action: 'idle', goalId, code: 'no_eligible_milestone' };

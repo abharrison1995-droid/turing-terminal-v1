@@ -171,7 +171,10 @@ export interface GoalMilestoneView {
 
 export interface GoalCompletionView {
   ok: boolean;
+  definitionVersion: number | null;
+  definitionHash: string | null;
   integrationHead: string;
+  integrationTree: string;
   failures: CompletionFailure[];
   finalReview: { required: boolean; ok: boolean; reason: string | null };
   finalAcceptance: { required: boolean; ok: boolean; approvalId: string | null; reason: string | null };

@@ -36,7 +36,7 @@ import type {
 } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { toWorkflow } from '../serialize.js';
-import { getGoalApproval } from './approvals.js';
+import { getGoalApproval, pendingGoalApprovals } from './approvals.js';
 import { activeCycle, listCycles, type CycleRow } from './cycles.js';
 import { loadDefinitionVersion, validateStoredDefinition } from './definitions.js';
 import type { GoalDefinitionVersion } from '../../shared/goals.js';
@@ -370,6 +370,44 @@ const REVISE = new Set([
  * A pure, deterministic projection of what the user can do next. It reads persisted facts only and has no authority:
  * every action it names is still an explicit, separately validated user request.
  */
+const TERMINAL_USER_FAILURES = new Set(['final_acceptance_missing', 'final_apply_required']);
+
+/** The terminal completion actions: only meaningful when every remaining failure is a user action. */
+function terminalUserAction(
+  db: Db,
+  goalId: string,
+  completion: GoalCompletionView | null | undefined,
+): GoalNextAction | null {
+  if (!completion || completion.ok || completion.failures.length === 0) return null;
+  if (!completion.failures.every((failure) => TERMINAL_USER_FAILURES.has(failure.code))) return null;
+  if (completion.failures.some((failure) => failure.code === 'final_acceptance_missing')) {
+    const match = pendingGoalApprovals(db, goalId).find(
+      (approval) =>
+        approval.gate === 'final_acceptance' &&
+        approval.detail.definitionVersion === completion.definitionVersion &&
+        approval.detail.definitionHash === completion.definitionHash &&
+        approval.detail.integrationTree === completion.integrationTree,
+    );
+    return { kind: 'final_acceptance', approvalId: match?.id ?? null };
+  }
+  return { kind: 'final_apply' };
+}
+
+/** `needs_user(gate_pending)`: the action for the exact approval in the status detail; null when it names none. */
+function exactGateAction(
+  db: Db,
+  goalId: string,
+  detail: Record<string, unknown> | null,
+): GoalNextAction | null {
+  const approvalId = typeof detail?.approvalId === 'string' ? detail.approvalId : null;
+  const approval = approvalId ? getGoalApproval(db, approvalId) : undefined;
+  if (!approval || approval.goalId !== goalId) return null;
+  if (approval.status === 'pending') return { kind: 'review_approval', approvalId: approval.id };
+  if (approval.status === 'approved' || approval.gate === 'pool_route_first_use') return { kind: 'resume' };
+  // A denied gate is terminal: the Goal stays with the user, who revises it (or abandons it).
+  return { kind: 'revise_goal' };
+}
+
 export function deriveNextAction(
   db: Db,
   goalId: string,
@@ -387,8 +425,11 @@ export function deriveNextAction(
     case 'ready':
       return proposed !== null ? { kind: 'approve_definition', version: proposed } : { kind: 'start' };
     case 'running':
-    case 'reviewing':
-      return { kind: 'wait_for_turing' };
+    case 'reviewing': {
+      // Terminal user actions precede "wait": when the only completion failures are the user's, Turing has finished.
+      const terminal = terminalUserAction(db, goalId, completion);
+      return terminal ?? { kind: 'wait_for_turing' };
+    }
     case 'paused':
       return { kind: 'resume' };
     case 'completed':
@@ -403,8 +444,11 @@ export function deriveNextAction(
     }
     case 'needs_user': {
       const code = goal.reasonCode ?? 'needs_user';
-      const finalAcceptance = pending.find((approval) => approval.gate === 'final_acceptance');
-      if (finalAcceptance) return { kind: 'final_acceptance', approvalId: finalAcceptance.id };
+      if (code === 'gate_pending') {
+        // The exact gate the status names, never "the first pending approval".
+        const gateAction = exactGateAction(db, goalId, goal.detail);
+        if (gateAction) return gateAction;
+      }
       if (code === 'run_interrupted') {
         const cycle = activeCycle(db, goalId);
         const paused = cycle
@@ -421,13 +465,12 @@ export function deriveNextAction(
           ? { kind: 'approve_definition', version: proposed }
           : { kind: 'resume_after_amendment' };
       if (MANUAL.has(code)) return { kind: 'manual_reconciliation' };
-      if (
-        ['gate_pending', 'user_confirmation_pending', 'review_needs_decision'].includes(code) &&
-        firstApproval
-      )
+      if (['user_confirmation_pending', 'review_needs_decision'].includes(code) && firstApproval)
         return { kind: 'review_approval', approvalId: firstApproval.id };
-      if (completion?.finalApply.required && !completion.finalApply.ok && completion.failures.length === 0)
-        return { kind: 'final_apply' };
+      if (code !== 'gate_pending') {
+        const terminal = terminalUserAction(db, goalId, completion);
+        if (terminal) return terminal;
+      }
       if (firstApproval) return { kind: 'review_approval', approvalId: firstApproval.id };
       return { kind: 'resolve_blocker', reasonCode: code };
     }
@@ -568,7 +611,10 @@ export function completionView(
 ): GoalCompletionView {
   return {
     ok: evaluation.ok,
+    definitionVersion: evaluation.definitionVersion,
+    definitionHash: evaluation.definitionHash,
     integrationHead: evaluation.integrationHead,
+    integrationTree: evaluation.integrationTree,
     failures: evaluation.failures,
     finalReview: {
       required: evaluation.finalReview.required,
@@ -954,6 +1000,23 @@ export function getGoalEvents(
 
 const APPROVAL_STATUS = new Set<string>(['pending', 'approved', 'denied', 'all']);
 
+function goalApprovalToUnified(row: Record<string, unknown>): UnifiedApproval {
+  return {
+    source: 'goal',
+    id: String(row.id),
+    goalId: String(row.goal_id),
+    title: String(row.gate),
+    gate: row.gate as UnifiedApproval['gate'],
+    reason: String(row.reason),
+    risk: row.risk as UnifiedApproval['risk'],
+    status: row.status as GoalApprovalStatus,
+    requestedBy: String(row.requested_by),
+    decidedBy: (row.decided_by as string | null) ?? null,
+    createdAt: String(row.created_at),
+    respondedAt: (row.responded_at as string | null) ?? null,
+  };
+}
+
 export function unifiedApprovals(
   db: Db,
   options: { status?: string; goalId?: string; limit?: number } = {},
@@ -993,20 +1056,7 @@ export function unifiedApprovals(
         .get(...statusParams, ...goalParams) as { n: number }
     ).n;
   const merged: UnifiedApproval[] = [
-    ...goalRows.map((row): UnifiedApproval => ({
-      source: 'goal',
-      id: String(row.id),
-      goalId: String(row.goal_id),
-      title: String(row.gate),
-      gate: row.gate as UnifiedApproval['gate'],
-      reason: String(row.reason),
-      risk: row.risk as UnifiedApproval['risk'],
-      status: row.status as GoalApprovalStatus,
-      requestedBy: String(row.requested_by),
-      decidedBy: (row.decided_by as string | null) ?? null,
-      createdAt: String(row.created_at),
-      respondedAt: (row.responded_at as string | null) ?? null,
-    })),
+    ...goalRows.map(goalApprovalToUnified),
     ...runRows.map((row): UnifiedApproval => ({
       source: 'run',
       id: String(row.id),
@@ -1058,7 +1108,6 @@ export function dashboardGoals(db: Db): {
          OR EXISTS (SELECT 1 FROM goal_approvals a WHERE a.goal_id = g.id AND a.status = 'pending')`,
     )
     .get() as { n: number };
-  const approvals = unifiedApprovals(db, { status: 'pending', limit: 10 });
   return {
     goals: {
       total,
@@ -1072,7 +1121,14 @@ export function dashboardGoals(db: Db): {
       pending: (
         db.prepare("SELECT COUNT(*) AS n FROM goal_approvals WHERE status = 'pending'").get() as { n: number }
       ).n,
-      approvals: approvals.approvals.filter((approval) => approval.source === 'goal'),
+      // Selected as Goal approvals (not by truncating the mixed inbox), so newer run approvals cannot hide them.
+      approvals: (
+        db
+          .prepare(
+            "SELECT * FROM goal_approvals WHERE status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 10",
+          )
+          .all() as Array<Record<string, unknown>>
+      ).map(goalApprovalToUnified),
     },
   };
 }
