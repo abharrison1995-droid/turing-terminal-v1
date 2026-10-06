@@ -157,3 +157,32 @@ export function decideGoalApproval(
     return { approval: getGoalApproval(db, row.id)!, changed: true };
   })();
 }
+
+export type ExactGateBinding = { ok: true; approval: GoalApproval } | { ok: false };
+
+/**
+ * The one proof that a `needs_user(gate_pending)` Goal's status detail names a real gate: the status and reason match,
+ * the detail parses and carries a string `approvalId` and `gate`, and that approval exists, belongs to this Goal and has
+ * exactly that gate. Pure read; callers decide what each approval status means.
+ */
+export function bindExactGate(
+  db: Db,
+  goalId: string,
+  goal: { status: string; reasonCode: string | null; detail: string | Record<string, unknown> | null },
+): ExactGateBinding {
+  if (goal.status !== 'needs_user' || goal.reasonCode !== 'gate_pending') return { ok: false };
+  let detail: unknown = goal.detail;
+  if (typeof detail === 'string') {
+    try {
+      detail = JSON.parse(detail);
+    } catch {
+      return { ok: false };
+    }
+  }
+  const named = detail as { approvalId?: unknown; gate?: unknown } | null;
+  if (!named || typeof named.approvalId !== 'string' || typeof named.gate !== 'string' || !named.gate)
+    return { ok: false };
+  const approval = getGoalApproval(db, named.approvalId);
+  if (!approval || approval.goalId !== goalId || approval.gate !== named.gate) return { ok: false };
+  return { ok: true, approval };
+}

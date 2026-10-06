@@ -36,7 +36,7 @@ import type {
 } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { toWorkflow } from '../serialize.js';
-import { getGoalApproval, pendingGoalApprovals } from './approvals.js';
+import { bindExactGate, getGoalApproval, pendingGoalApprovals } from './approvals.js';
 import { activeCycle, listCycles, type CycleRow } from './cycles.js';
 import { loadDefinitionVersion, validateStoredDefinition } from './definitions.js';
 import type { GoalDefinitionVersion } from '../../shared/goals.js';
@@ -393,15 +393,14 @@ function terminalUserAction(
   return { kind: 'final_apply' };
 }
 
-/** `needs_user(gate_pending)`: the action for the exact approval in the status detail; null when it names none. */
-function exactGateAction(
-  db: Db,
-  goalId: string,
-  detail: Record<string, unknown> | null,
-): GoalNextAction | null {
-  const approvalId = typeof detail?.approvalId === 'string' ? detail.approvalId : null;
-  const approval = approvalId ? getGoalApproval(db, approvalId) : undefined;
-  if (!approval || approval.goalId !== goalId) return null;
+/**
+ * `needs_user(gate_pending)`: the action for the exact approval the status names. A status detail that does not bind
+ * to a real approval of this Goal with the same gate is corrupt: it is never guessed from other pending approvals.
+ */
+function exactGateAction(db: Db, goalId: string, detail: Record<string, unknown> | null): GoalNextAction {
+  const bound = bindExactGate(db, goalId, { status: 'needs_user', reasonCode: 'gate_pending', detail });
+  if (!bound.ok) return { kind: 'manual_reconciliation' };
+  const approval = bound.approval;
   if (approval.status === 'pending') return { kind: 'review_approval', approvalId: approval.id };
   if (approval.status === 'approved' || approval.gate === 'pool_route_first_use') return { kind: 'resume' };
   // A denied gate is terminal: the Goal stays with the user, who revises it (or abandons it). Until the supervisor has
@@ -445,11 +444,8 @@ export function deriveNextAction(
     }
     case 'needs_user': {
       const code = goal.reasonCode ?? 'needs_user';
-      if (code === 'gate_pending') {
-        // The exact gate the status names, never "the first pending approval".
-        const gateAction = exactGateAction(db, goalId, goal.detail);
-        if (gateAction) return gateAction;
-      }
+      // The exact gate the status names, never "the first pending approval"; malformed state fails closed.
+      if (code === 'gate_pending') return exactGateAction(db, goalId, goal.detail);
       if (code === 'run_interrupted') {
         const cycle = activeCycle(db, goalId);
         const paused = cycle

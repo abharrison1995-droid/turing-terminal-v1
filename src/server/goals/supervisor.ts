@@ -12,7 +12,7 @@ import {
   recoverIntegrationOps,
   verifyGoalRef,
 } from '../goalGit.js';
-import { getGoalApproval, pendingGoalApprovals, requestGoalApproval } from './approvals.js';
+import { bindExactGate, getGoalApproval, pendingGoalApprovals, requestGoalApproval } from './approvals.js';
 import { ActiveTimeTracker } from './activeTime.js';
 import { enforceBounds } from './bounds.js';
 import { completeGoal } from './completion.js';
@@ -362,10 +362,14 @@ export class GoalSupervisor {
     goalId: string,
     goal: { status: string; status_reason_code: string | null; status_detail_json: string | null },
   ): boolean {
-    if (goal.status !== 'needs_user' || goal.status_reason_code !== 'gate_pending') return false;
-    const approvalId = this.approvalIdOf(goal.status_detail_json);
-    const approval = approvalId ? getGoalApproval(this.db, approvalId) : undefined;
-    if (!approval || approval.goalId !== goalId || approval.status === 'pending') return false;
+    const bound = bindExactGate(this.db, goalId, {
+      status: goal.status,
+      reasonCode: goal.status_reason_code,
+      detail: goal.status_detail_json,
+    });
+    if (!bound.ok) return false;
+    const approval = bound.approval;
+    if (approval.status === 'pending') return false;
     return approval.gate === 'pool_route_first_use' || approval.status === 'approved';
   }
 
