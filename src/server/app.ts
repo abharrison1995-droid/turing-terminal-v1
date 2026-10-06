@@ -56,6 +56,9 @@ import {
   startGoalAuthoring,
 } from './goals/authoring.js';
 import { TuringExecutorError } from './goals/turingExecutor.js';
+import { registerGoalRoutes } from './goals/goalRoutes.js';
+import { dashboardGoals } from './goals/readModel.js';
+import type { GoalSupervisor } from './goals/supervisor.js';
 import {
   createRouteProbe,
   getRouteProbeStatus,
@@ -423,9 +426,11 @@ const pushSubscriptionSchema = z.object({
 export interface AppOptions {
   database: Db;
   engine: RunEngine;
+  /** Stage 7A: serves the Goal start/resume endpoints. Without it they answer 503. */
+  goalSupervisor?: GoalSupervisor;
 }
 
-export function createApp({ database: db, engine }: AppOptions): FastifyInstance {
+export function createApp({ database: db, engine, goalSupervisor }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
       level: process.env.TT_LOG_LEVEL ?? 'info',
@@ -939,6 +944,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         outputTokens: usage.output_tokens ?? null,
         provenance: 'Locally observed process events; provider quota unavailable unless explicitly reported.',
       },
+      ...dashboardGoals(db),
     };
   });
 
@@ -1752,6 +1758,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     if (!status) return reply.code(404).send({ error: 'The Goal has no authoring attempt.' });
     return { authoring: status };
   });
+
+  // Stage 7A: the Goal read models, explicit user controls and unified approvals (thin adapters over the services).
+  registerGoalRoutes(app, { db, supervisor: goalSupervisor, usageFilterFromQuery });
 
   // Stage 5B.1: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
   // the route identity itself and answers as soon as the run is queued. There is no revalidation endpoint: a probe only

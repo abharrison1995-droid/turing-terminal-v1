@@ -40,7 +40,7 @@ const routeProbeReconciler = new RouteProbeReconciler(database, (runId) =>
   startQueuedRun(database, engine, runId),
 );
 await routeProbeReconciler.reconcile();
-const app = createApp({ database, engine });
+const app = createApp({ database, engine, goalSupervisor });
 
 app.get('/api/events', async (request, reply) => {
   const runId = (request.query as { runId?: string }).runId;

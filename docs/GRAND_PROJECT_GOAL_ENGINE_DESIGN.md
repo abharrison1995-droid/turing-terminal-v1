@@ -1426,3 +1426,57 @@ that follow are asynchronous, so a user decision could still commit between that
   lock state: `applied`, `failed` or `aborted` releases it; a crash leaves it until `recoverIntegrationOps` resolves the
   op (no timeouts). A malformed plan locks nothing. No lock exists for a cycle, proposal or work run before the op is
   planned, and ordinary execution cycles never lock findings. No migration.
+
+## Stage 7A implementation notes: Goal API, read models, unified approvals, explicit user controls
+
+Stage 7A adds the HTTP surface only. There is no UI (7B), no prove-it or final apply (7C), no Model Opportunity Layer,
+no migration (tip stays 022) and the production executor is still `DisabledGoalExecutor`.
+
+- **Modules.** `goalRoutes.ts` (thin Fastify adapters, registered from `createApp`), `readModel.ts` (all read
+  projections), `preview.ts`, `goalCommands.ts` (pause, abandon, user finding decision), `src/shared/goalApi.ts` (shared
+  response types). `AppOptions.goalSupervisor` is optional; `index.ts` passes the production supervisor.
+- **Read-model boundaries.** Read routes read persisted rows, in-memory state and Git objects at the Goal head. They make
+  no provider, model or network call and write nothing. Every list is bounded (`READ_LIMITS`) and ordered
+  deterministically; an out-of-range `limit` or an unknown query field is a 400, never silently widened.
+  `needsUser` is derived (status `needs_user`/`blocked`, or a pending Goal approval), never stored. Evidence rows carry
+  per-row `current`/`stale` computed by `assessEvidence` against the Goal head, with a stale reason
+  (`repository_unavailable` and `verifier_not_current` among them).
+- **nextAction projection.** `deriveNextAction` is a pure function of the status, reason code, detail, pending approvals
+  and the read-only completion evaluation: `start`, `resume`, `approve_definition`, `resume_run`, `resolve_blocker`,
+  decisions for pending approvals, and so on. It is advice for the UI, not authority: the controls re-prove everything.
+- **Endpoints.** `GET /api/goals`, `/:id`, `/:id/definitions[/:version]`, `/cycles`, `/evidence?criterionKey`,
+  `/reviews`, `/findings?status`, `/events?limit&before`, `/usage`, `/preview`, `/final-apply/preflight`;
+  `POST /api/goals` (manual draft), `PUT .../definitions/:version`, `POST .../definitions` (amendment),
+  `.../approve`, `.../reject`, `/start`, `/resume`, `/pause`, `/abandon`, `.../findings/:id/decision`;
+  `GET /api/approvals/unified`; `POST /api/goal-approvals/:id/decision`. `GET /api/dashboard` gains additive `goals` and
+  `goalApprovals` fields.
+- **Strict authority inputs.** Every body and query is a `z.strictObject`. The actor is the server-fixed `user`.
+  `actor`, `approvedBy`, `decidedBy`, `definitionHash`, `approvalId`, `goalBaseCommit`, `integrationHead`,
+  `routeResolution` and `status` are never accepted. Status only changes through `transitionGoal`, `GoalSupervisor`
+  and the approved domain services; no route or helper writes `goals.status`. Domain refusals map to 400/404/409/422
+  with `{error, code, detail?}`; only an unexpected failure (for example a database error) is a 500.
+- **Preview read-only guarantee.** `previewGoal` uses `storedProviders` (stored status and cached catalog, no CLI
+  discovery, no OpenRouter fetch, no cache write), `observeProfiles`, `loadStoredEnvironment`, `previewGoalRoutes`
+  and `evaluateBounds`. It creates no run, cycle, route resolution, approval or event, shows only an already persisted
+  validated task, and reports `routing.observation: 'stored'`, so a provider not observed in this process shows as
+  unavailable rather than being discovered by a GET. Tests snapshot the relevant tables before and after and require
+  identical repeated responses.
+- **Unified approvals.** `/api/approvals/unified` merges run approvals (`approvals`) and Goal approvals
+  (`goal_approvals`) with `source`, ids, risk, reason and linkage; a run approval carries `goalId` only when linked by
+  `goal_runs`. `status` defaults to `pending` (`approved|denied|all`). Goal approvals are decided only through
+  `/api/goal-approvals/:id/decision`; the run decision endpoint is unchanged and the two never decide each other.
+- **Atomic finding decision.** `decideFindingAsUser` runs in one transaction: it creates a `finding_decision` approval
+  bound to the finding, the decision and the current definition version and hash, approves it as `user`, then calls
+  `decideFinding`. Any failure, including `finding_integration_in_progress`, rolls the approval back too. The client
+  never supplies an approval id.
+- **Pause and resume.** Pause is `running -> paused (user)` and cancels nothing: a child run in flight keeps running,
+  the active-time interval closes through the transition listener, and the supervisor does not progress or integrate a
+  paused Goal until an explicit resume. Resume takes a typed reason enum and the supervisor proves the claim from
+  persisted facts (`run_resumed` needs the exact paused run, `blocker_resolved` a blocked Goal, amendment reasons the
+  matching amendment decision); a false claim is refused with 409 and changes nothing. Start and resume return 503
+  without a supervisor and 409 with the supervisor's refusal code (and `approvalId` for a pending pool gate).
+- **Final-apply boundary.** Only `preflightFinalApply` is exposed, read-only. There is no final-apply mutation: nothing
+  updates, merges, rebases or checks out the user's branch.
+- **Production executor.** Still `DisabledGoalExecutor`, so a production Goal start is refused as `route_unavailable`.
+- **Follow-up.** `GET /api/events?goalId=` is not provided: there is no Goal event emitter. Goal events are read with
+  `/api/goals/:id/events`.

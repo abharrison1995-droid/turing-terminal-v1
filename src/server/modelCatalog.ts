@@ -6,7 +6,7 @@ import type {
 } from '../shared/types.js';
 import { classifyModelIdentity } from '../shared/modelSettings.js';
 import type { Db } from './db.js';
-import { discoverProviders, invalidateProviderCache } from './providers.js';
+import { discoverProviders, invalidateProviderCache, peekProviderCache } from './providers.js';
 import {
   fetchAccountCredits,
   fetchKeyTelemetry,
@@ -21,7 +21,12 @@ import { redactSecrets } from './security.js';
  * Model catalog cache. A successful live discovery replaces the cached catalog; when discovery
  * returns nothing, cached entries are shown as LAST KNOWN (never as current truth).
  */
-export function applyCatalogCache(db: Db, providers: ProviderStatus[]): ProviderStatus[] {
+export function applyCatalogCache(
+  db: Db,
+  providers: ProviderStatus[],
+  options: { persist?: boolean } = {},
+): ProviderStatus[] {
+  const persist = options.persist !== false;
   const upsert = db.prepare(
     `INSERT INTO model_catalog_cache (backend_id, model_id, provider_id, display_name, model_json, adapter_version, discovered_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -31,18 +36,19 @@ export function applyCatalogCache(db: Db, providers: ProviderStatus[]): Provider
   return providers.map((provider) => {
     const live = provider.models.filter((model) => model.status !== 'last-known');
     if (live.length) {
-      db.transaction(() => {
-        for (const model of live)
-          upsert.run(
-            provider.id,
-            model.id,
-            model.providerId,
-            model.name,
-            JSON.stringify(model),
-            provider.version,
-            model.discoveredAt ?? provider.checkedAt,
-          );
-      })();
+      if (persist)
+        db.transaction(() => {
+          for (const model of live)
+            upsert.run(
+              provider.id,
+              model.id,
+              model.providerId,
+              model.name,
+              JSON.stringify(model),
+              provider.version,
+              model.discoveredAt ?? provider.checkedAt,
+            );
+        })();
       return {
         ...provider,
         catalogSource: provider.catalogSource ?? 'live',
@@ -124,7 +130,7 @@ export function openRouterProfiles(db: Db) {
 /** OpenRouter is optional: without a connection profile Turing makes no OpenRouter network request. */
 export async function openRouterProviderStatus(
   db: Db,
-  options: { fetchImpl?: typeof fetch } = {},
+  options: { fetchImpl?: typeof fetch; network?: boolean } = {},
 ): Promise<ProviderStatus> {
   const profiles = openRouterProfiles(db);
   const store = SecretStore.forDatabase(db);
@@ -146,11 +152,12 @@ export async function openRouterProviderStatus(
       models: [],
       catalogSource: 'none',
     };
-  if (!openRouterCatalog || Date.now() > openRouterCatalog.expires) {
+  // `network: false` never fetches: only a catalog already held in memory is used.
+  if (options.network !== false && (!openRouterCatalog || Date.now() > openRouterCatalog.expires)) {
     const models = await fetchOpenRouterCatalog(options.fetchImpl);
     openRouterCatalog = { models, expires: Date.now() + (models.length ? 10 * 60_000 : 60_000), checkedAt };
   }
-  const models = [...openRouterCatalog.models];
+  const models = [...(openRouterCatalog?.models ?? [])];
   if (models.length && !models.some((model) => model.family === 'decision'))
     models.push(jevAdapterMetadata());
   return {
@@ -165,7 +172,7 @@ export async function openRouterProviderStatus(
     note: withKey.length
       ? 'Metered. Requests are billed to your OpenRouter account and are subject to Turing reservations, budgets, and provider max-price ceilings.'
       : 'An OpenRouter connection exists but has no stored inference key.',
-    checkedAt: openRouterCatalog.checkedAt,
+    checkedAt: openRouterCatalog?.checkedAt ?? checkedAt,
     capabilities: openRouterCaps,
     models,
   };
@@ -181,6 +188,17 @@ export async function allProviders(
   }
   const [cli, openRouter] = await Promise.all([discoverProviders(), openRouterProviderStatus(db, options)]);
   return applyCatalogCache(db, [...cli.filter((provider) => provider.id !== 'openrouter'), openRouter]);
+}
+
+/**
+ * A provider snapshot built only from what is already stored or held in memory: no CLI discovery, no network request and
+ * no write (the model catalog cache is read, never refreshed). Providers never discovered in this process are absent, so a
+ * route that depends on one reports it unavailable rather than triggering discovery.
+ */
+export async function storedProviders(db: Db): Promise<ProviderStatus[]> {
+  const cli = (peekProviderCache() ?? []).filter((provider) => provider.id !== 'openrouter');
+  const openRouter = await openRouterProviderStatus(db, { network: false });
+  return applyCatalogCache(db, [...cli, openRouter], { persist: false });
 }
 
 /** Provider-measured key (and optionally account) telemetry. Uses metadata endpoints only — no generation. */

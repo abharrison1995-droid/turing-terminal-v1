@@ -242,6 +242,14 @@ const adapters: ProviderAdapter[] = [
   },
 ];
 
+/**
+ * The last discovery result already held in memory, however old, or null. It starts no CLI process and makes no
+ * network request; read-only previews use it so they never trigger discovery.
+ */
+export function peekProviderCache(): ProviderStatus[] | null {
+  return providerCache ? structuredClone(providerCache) : null;
+}
+
 export function invalidateProviderCache(): void {
   providerCache = null;
   providerCacheExpires = 0;
