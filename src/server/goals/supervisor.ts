@@ -12,7 +12,7 @@ import {
   recoverIntegrationOps,
   verifyGoalRef,
 } from '../goalGit.js';
-import { bindExactGate, getGoalApproval, pendingGoalApprovals, requestGoalApproval } from './approvals.js';
+import { bindExactGate, pendingGoalApprovals, requestGoalApproval } from './approvals.js';
 import { ActiveTimeTracker } from './activeTime.js';
 import { enforceBounds } from './bounds.js';
 import { completeGoal } from './completion.js';
@@ -505,15 +505,6 @@ export class GoalSupervisor {
 
   // --- Human gates ----------------------------------------------------------------------------------------------
 
-  private approvalIdOf(detailJson: string | null): string | null {
-    try {
-      const detail = detailJson ? (JSON.parse(detailJson) as { approvalId?: unknown }) : {};
-      return typeof detail.approvalId === 'string' ? detail.approvalId : null;
-    } catch {
-      return null;
-    }
-  }
-
   /**
    * The pending first-use approval for exactly this pool member, created at most once: an equal pending request (same
    * pool and member identity) is reused. Asking never advances round robin and never starts anything.
@@ -619,9 +610,16 @@ export class GoalSupervisor {
     goal: { status_reason_code: string | null; status_detail_json: string | null },
   ): Promise<TickResult> {
     if (goal.status_reason_code !== 'gate_pending') return { action: 'idle', goalId };
-    const approvalId = this.approvalIdOf(goal.status_detail_json);
-    const approval = approvalId ? getGoalApproval(this.db, approvalId) : undefined;
-    if (!approval || approval.status === 'pending') return { action: 'waiting_gate', goalId };
+    // The same exact-gate proof as the read model and gate_resolved. A corrupt binding is never acted on: no cycle is
+    // cancelled, nothing resumes and nothing is rewritten; the read model shows manual_reconciliation.
+    const bound = bindExactGate(this.db, goalId, {
+      status: 'needs_user',
+      reasonCode: goal.status_reason_code,
+      detail: goal.status_detail_json,
+    });
+    if (!bound.ok) return { action: 'idle', goalId, code: 'gate_binding_invalid' };
+    const approval = bound.approval;
+    if (approval.status === 'pending') return { action: 'waiting_gate', goalId };
     if (approval.gate === 'pool_route_first_use') {
       // A first-use decision never cancels the cycle. Approval lets the same preflight re-resolve; a denial makes the
       // pool consider its next member (the denied one is no longer eligible), or refuse when none is left.
