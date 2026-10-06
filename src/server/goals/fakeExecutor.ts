@@ -2,7 +2,7 @@ import type { Db } from '../db.js';
 import { getCycle } from './cycles.js';
 import { readReviewPlan } from './reviewPlan.js';
 import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
-import { bindReviewRecord, reviewForCycle } from './reviews.js';
+import { bindReviewRecord, reviewForCycle, reviewMatchesCyclePlan } from './reviews.js';
 import type {
   ChildRunRequest,
   GoalExecutor,
@@ -107,7 +107,7 @@ export class FakeGoalExecutor implements GoalExecutor {
     const existing = this.existing(request.cycleId, 'review');
     if (existing) {
       const review = reviewForCycle(this.db, request.cycleId);
-      if (!review || review.runId !== existing)
+      if (!review || review.runId !== existing || !reviewMatchesCyclePlan(review, cycle))
         throw Object.assign(new Error('review binding missing'), { code: 'review_binding_missing' });
       return { runId: existing };
     }

@@ -8,6 +8,7 @@ import type {
   ReviewVerdict,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
+import type { CycleRow } from './cycles.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { readReviewPlan } from './reviewPlan.js';
 import { writeGoalEvent } from './events.js';
@@ -498,4 +499,22 @@ export function closeReview(
     if (!getReview(db, input.reviewId)) throw new GoalReviewError('review_not_found', 'No such review.');
     throw new GoalReviewError('review_not_pending', 'Only a pending review can be failed or cancelled.');
   }
+}
+
+/**
+ * Whether a PERSISTED review row still equals the immutable plan of the cycle that owns it: still pending, same kind,
+ * milestone and reviewed range start. Used before an existing review run is reused or started; it never rewrites.
+ */
+export function reviewMatchesCyclePlan(
+  review: GoalReviewRow,
+  cycle: Pick<CycleRow, 'milestoneId' | 'outcome'>,
+): boolean {
+  const plan = readReviewPlan(cycle.outcome);
+  return (
+    !!plan &&
+    review.status === 'pending' &&
+    review.reviewKind === plan.reviewKind &&
+    (review.reviewedFromCommit ?? null) === (plan.reviewedFromCommit ?? null) &&
+    (review.milestoneId ?? null) === (cycle.milestoneId ?? null)
+  );
 }

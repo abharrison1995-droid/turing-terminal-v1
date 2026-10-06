@@ -279,4 +279,22 @@ describe('Goal review run on the real RunEngine', () => {
     expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 0 });
     expect(calls).toHaveLength(0);
   });
+
+  it('a persisted review whose recorded tree no longer matches the Goal tree is never started', async () => {
+    h = await realRunHarness();
+    const cycleId = await reviewCycleOnHead();
+    await h.until('review_run_queued');
+    const run = h.fx.db
+      .prepare("SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = 'review'")
+      .get(cycleId) as { id: string };
+    h.fx.db.exec('DROP TRIGGER trg_goal_review_identity');
+    h.fx.db
+      .prepare('UPDATE goal_reviews SET reviewed_to_tree = ? WHERE run_id = ?')
+      .run('f'.repeat(40), run.id);
+    await h.until('review_decision_needed');
+    expect(h.runRow(run.id).status).toBe('queued');
+    expect(reviewRunsOf(cycleId)).toBe(1);
+    expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 1 });
+    expect(calls).toHaveLength(0);
+  });
 });

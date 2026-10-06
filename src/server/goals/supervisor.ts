@@ -30,7 +30,13 @@ import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
 import { pruneRunWorktree, recordRunEvidenceCollected } from './retention.js';
 import { applyReviewFindings, GoalFindingError } from './findings.js';
-import { closeReview, completeReview, GoalReviewError, reviewForCycle } from './reviews.js';
+import {
+  closeReview,
+  completeReview,
+  GoalReviewError,
+  reviewForCycle,
+  reviewMatchesCyclePlan,
+} from './reviews.js';
 import { deriveReviewIndependence } from './reviewIndependence.js';
 import { isReviewCurrent, recordReviewEvidence } from './reviewConsume.js';
 import { linkRunFindings, readGoalReviewReport } from './reviewReport.js';
@@ -1547,6 +1553,7 @@ export class GoalSupervisor {
   private async reviewRefProblem(
     goalId: string,
     cycle: CycleRow,
+    expectedTree?: string,
   ): Promise<'goal_ref_changed' | 'goal_ref_missing' | 'git_state_invalid' | 'review_base_moved' | null> {
     let verification;
     try {
@@ -1564,7 +1571,14 @@ export class GoalSupervisor {
       this.db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(goalId) as
         { integration_head: string | null } | undefined
     )?.integration_head;
-    return head && head === cycle.baseIntegrationCommit ? null : 'review_base_moved';
+    if (!head || head !== cycle.baseIntegrationCommit) return 'review_base_moved';
+    if (expectedTree !== undefined) {
+      // A persisted review is started only against the exact tree it recorded; nothing is recomputed or rewritten.
+      const resolved = await resolveGoalRepository(this.db, goalId);
+      if (!resolved.ok) return 'git_state_invalid';
+      if (resolved.state.head !== head || resolved.state.tree !== expectedTree) return 'review_base_moved';
+    }
+    return null;
   }
 
   private async tickReviewing(goalId: string): Promise<TickResult> {
@@ -1644,12 +1658,13 @@ export class GoalSupervisor {
       review.status !== 'pending' ||
       review.reviewKind !== plan.reviewKind ||
       review.definitionVersion !== cycle.definitionVersion ||
-      review.reviewedToCommit !== cycle.baseIntegrationCommit
+      review.reviewedToCommit !== cycle.baseIntegrationCommit ||
+      !reviewMatchesCyclePlan(review, cycle)
     )
       return this.reviewInfraFailure(goalId, cycle, 'review_binding_invalid');
     if (PAUSED_RUN.has(run.status)) return this.reviewPause(goalId, cycle, run);
     if (run.status === 'queued') {
-      const problem = await this.reviewRefProblem(goalId, cycle);
+      const problem = await this.reviewRefProblem(goalId, cycle, review.reviewedToTree);
       if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
       const started = this.deps.startRun(run.id);
       if (!started.started && started.reason === 'not-found')

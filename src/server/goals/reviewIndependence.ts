@@ -10,6 +10,8 @@ export type DerivedIndependence =
   { ok: true; independence: ReviewIndependence | undefined } | { ok: false; code: string };
 
 const MAX_COMPARED = 8;
+/** Distinct resolved identities one review run may report before independence fails closed (workflow cardinality is ≤ 10). */
+export const MAX_REVIEW_RESOLVED_IDENTITIES = 32;
 
 /**
  * Final-review independence, derived on the server from the cycle's persisted `final_reviewer` route resolution. The
@@ -50,7 +52,7 @@ export function deriveReviewIndependence(db: Db, review: GoalReviewRow): Derived
     comparedAgainst: IndependenceResult['comparedAgainst'];
   } = claim;
   if (policy.finalReview !== 'none') {
-    const resolvedIds = reviewResolvedModels(db, review.runId);
+    const { ids: resolvedIds, overflow } = reviewResolvedModels(db, review.runId);
     const authority = loadAuthoritySet(db, review.goalId, policy.against);
     const evaluations = (resolvedIds.length > 0 ? resolvedIds : [null]).map((resolvedModelId) =>
       evaluateIndependence({
@@ -67,7 +69,15 @@ export function deriveReviewIndependence(db: Db, review: GoalReviewRow): Derived
     // Several distinct resolved models in one review run contradict each other: report the worst, never the best.
     const worst =
       evaluations.find((entry) => entry.conflict) ?? evaluations.find((entry) => !entry.established);
-    const post = worst ?? evaluations[0]!;
+    const post = overflow
+      ? // More identities than will be inspected: an unseen one may conflict, so independence is never established.
+        {
+          ...(worst ?? evaluations[0]!),
+          established: false,
+          reasonCode: 'identity_conflict' as const,
+          conflict: true,
+        }
+      : (worst ?? evaluations[0]!);
     // The route-time claim must also have established independence (a floating candidate whose identity was unproven
     // at selection stays unestablished even if telemetry later names a model).
     result =
@@ -92,14 +102,19 @@ export function deriveReviewIndependence(db: Db, review: GoalReviewRow): Derived
   };
 }
 
-/** Distinct `resolved_model_id` values the review run's usage telemetry reported (bounded). */
-function reviewResolvedModels(db: Db, runId: string | null): string[] {
-  if (!runId) return [];
-  return (
+/**
+ * Distinct `resolved_model_id` values the review run's usage telemetry reported, in deterministic (id) order. One
+ * more than the bound is read so overflow is detectable; it is never truncated silently.
+ */
+function reviewResolvedModels(db: Db, runId: string | null): { ids: string[]; overflow: boolean } {
+  if (!runId) return { ids: [], overflow: false };
+  const rows = (
     db
       .prepare(
-        'SELECT DISTINCT resolved_model_id AS id FROM usage_events WHERE run_id = ? AND resolved_model_id IS NOT NULL LIMIT 8',
+        'SELECT DISTINCT resolved_model_id AS id FROM usage_events WHERE run_id = ? AND resolved_model_id IS NOT NULL ORDER BY resolved_model_id LIMIT ?',
       )
-      .all(runId) as Array<{ id: string }>
+      .all(runId, MAX_REVIEW_RESOLVED_IDENTITIES + 1) as Array<{ id: string }>
   ).map((row) => row.id);
+  const overflow = rows.length > MAX_REVIEW_RESOLVED_IDENTITIES;
+  return { ids: overflow ? rows.slice(0, MAX_REVIEW_RESOLVED_IDENTITIES) : rows, overflow };
 }

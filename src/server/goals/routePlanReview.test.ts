@@ -1,4 +1,4 @@
-import {} from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { GoalReviewKind, GoalRole } from '../../shared/goals.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
@@ -10,7 +10,7 @@ import {} from './routeResolution.js';
 import type {} from './routeIdentity.js';
 import { identityOf, NOW } from './routingKit.js';
 import { READINESS_ROLES } from './routePlan.js';
-import { deriveReviewIndependence } from './reviewIndependence.js';
+import { deriveReviewIndependence, MAX_REVIEW_RESOLVED_IDENTITIES } from './reviewIndependence.js';
 import type { GoalReviewRow } from './reviews.js';
 import {} from './reviewRole.js';
 import type {} from './runPlan.js';
@@ -348,6 +348,55 @@ describe('post-run independence uses canonical Stage-5 semantics and telemetry',
     expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
       ok: true,
       independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
+    });
+  });
+
+  describe('resolved-identity bound', () => {
+    // Distinct raw ids that all normalise to the pinned candidate `gpt-5`: only a conflicting id can break independence.
+    const PREFIXES = ['', 'openai/', 'openrouter/', 'opencode/', 'cline/', 'anthropic/', 'google/', 'qwen/'];
+    const CASES = ['gpt-5', 'GPT-5', 'Gpt-5', 'gPT-5', 'GPt-5'];
+    const cleanVariants = (count: number) =>
+      PREFIXES.flatMap((prefix) => CASES.map((name) => `${prefix}${name}`)).slice(0, count);
+    const addUsage = (f: ReturnType<typeof fx>, runId: string, model: string) =>
+      f.db
+        .prepare(
+          "INSERT INTO usage_events (id, occurred_at, run_id, provenance, resolved_model_id) VALUES (?, ?, ?, 'reported', ?)",
+        )
+        .run(randomUUID(), NOW, runId, model);
+    const withIds = async (ids: string[]) => {
+      const { f, cycleId, authorityCycle } = await planned();
+      f.telemetry(authorityCycle, 'execution', IMPLEMENTER);
+      const runId = f.telemetry(cycleId, 'review', ids[0]!);
+      for (const id of ids.slice(1)) addUsage(f, runId, id);
+      return deriveReviewIndependence(f.db, rowOf(f, cycleId, runId));
+    };
+
+    it('eight clean identities then a ninth conflicting one is NOT independent (the old LIMIT 8 hid it)', async () => {
+      const ids = [...cleanVariants(8), IMPLEMENTER];
+      expect(await withIds(ids.slice(0, 8))).toMatchObject({ independence: { established: true } });
+      for (const order of [ids, [...ids].reverse()])
+        expect(await withIds(order)).toMatchObject({
+          ok: true,
+          independence: { established: false, detail: { reasonCode: 'identity_conflict' } },
+        });
+    });
+
+    it('the result and bounded detail do not depend on telemetry insertion order', async () => {
+      const ids = [...cleanVariants(6), IMPLEMENTER, 'gpt-4o'];
+      const forward = await withIds(ids);
+      const reverse = await withIds([...ids].reverse());
+      expect(JSON.stringify(reverse)).toBe(JSON.stringify(forward));
+    });
+
+    it('exactly the bound is evaluated; one more distinct identity fails independence closed', async () => {
+      const atBound = await withIds(cleanVariants(MAX_REVIEW_RESOLVED_IDENTITIES));
+      expect(atBound).toMatchObject({ ok: true, independence: { established: true } });
+      const over = await withIds(cleanVariants(MAX_REVIEW_RESOLVED_IDENTITIES + 1));
+      expect(JSON.stringify(over).length).toBeLessThan(4000);
+      expect(over).toMatchObject({
+        ok: true,
+        independence: { established: false, detail: { reasonCode: 'identity_conflict', conflict: true } },
+      });
     });
   });
 });

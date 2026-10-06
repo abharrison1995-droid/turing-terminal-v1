@@ -29,7 +29,7 @@ import { readReviewPlan } from './reviewPlan.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import { materializeReviewWorkflow, reviewerCountFor } from './reviewWorkflow.js';
 import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
-import { bindReviewRecord, reviewForCycle } from './reviews.js';
+import { bindReviewRecord, reviewForCycle, reviewMatchesCyclePlan } from './reviews.js';
 import { readStoredResolutions } from './routeResolution.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
@@ -783,7 +783,8 @@ export class TuringGoalExecutor implements GoalExecutor {
       review.cycleId !== request.cycleId ||
       review.reviewKind !== request.reviewKind ||
       review.definitionVersion !== cycle.definitionVersion ||
-      review.reviewedToCommit !== request.baseCommit
+      review.reviewedToCommit !== request.baseCommit ||
+      !reviewMatchesCyclePlan(review, cycle)
     )
       throw new TuringExecutorError(
         'review_binding_missing',

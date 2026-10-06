@@ -483,4 +483,90 @@ describe('atomic review run + review record', () => {
     });
     expect(reviewRows(h)).toHaveLength(0);
   });
+
+  describe('persisted binding is fully re-proven before an existing run is started', () => {
+    const dropImmutability = (h: Harness) => {
+      for (const name of ['trg_goal_review_identity', 'trg_goal_review_terminal'])
+        h.fx.db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+    };
+    const corrupt = async (
+      kind: 'final' | 'milestone',
+      mutate: (h: Harness, runId: string) => void,
+    ): Promise<{ h: Harness; cycleId: string; runId: string }> => {
+      const { h, cycle } = await reviewing(kind);
+      expect(await h.tick()).toBe('launch_started');
+      const queued = await h.executor.queueReviewRun({
+        goalId: h.fx.goalId,
+        cycleId: cycle.id,
+        baseCommit: h.fx.head(),
+        reviewKind: kind,
+        reviewRole: kind === 'final' ? 'final_reviewer' : 'routine_reviewer',
+        reviewerCount: 2,
+      });
+      dropImmutability(h);
+      mutate(h, queued.runId);
+      return { h, cycleId: cycle.id, runId: queued.runId };
+    };
+    const expectRefused = async ({ h, cycleId, runId }: { h: Harness; cycleId: string; runId: string }) => {
+      const fresh = h.restart();
+      expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_decision_needed');
+      expect(h.startRun).not.toHaveBeenCalled();
+      expect(reviewRun(h).map((run) => run.id)).toEqual([runId]);
+      expect(reviewRows(h)).toHaveLength(1);
+      expect(h.cycle()!.id).toBe(cycleId);
+      return h.cycle()!.outcome as { code?: string };
+    };
+    const update = (h: Harness, runId: string, column: string, value: string | null) =>
+      h.fx.db.prepare(`UPDATE goal_reviews SET ${column} = ? WHERE run_id = ?`).run(value, runId);
+
+    it('wrong milestone', async () => {
+      const state = await corrupt('milestone', (h, runId) => update(h, runId, 'milestone_id', null));
+      expect(await expectRefused(state)).toMatchObject({ code: 'review_binding_invalid' });
+    });
+
+    it('wrong reviewedFromCommit', async () => {
+      const state = await corrupt('final', (h, runId) =>
+        update(h, runId, 'reviewed_from_commit', h.fx.head()),
+      );
+      expect(await expectRefused(state)).toMatchObject({ code: 'review_binding_invalid' });
+    });
+
+    it('wrong reviewedToTree', async () => {
+      const state = await corrupt('final', (h, runId) =>
+        update(h, runId, 'reviewed_to_tree', 'f'.repeat(40)),
+      );
+      expect(await expectRefused(state)).toMatchObject({ code: 'review_base_moved' });
+    });
+
+    it('non-pending review attached to the queued run', async () => {
+      const state = await corrupt('final', (h, runId) => update(h, runId, 'status', 'cancelled'));
+      expect(await expectRefused(state)).toMatchObject({ code: 'review_binding_invalid' });
+    });
+
+    it('the executor refuses to reuse such a run too, and creates no replacement review', async () => {
+      const state = await corrupt('final', (h, runId) =>
+        update(h, runId, 'reviewed_from_commit', h.fx.head()),
+      );
+      await expect(
+        state.h.restart().executor.queueReviewRun({
+          goalId: state.h.fx.goalId,
+          cycleId: state.cycleId,
+          baseCommit: state.h.fx.head(),
+          reviewKind: 'final',
+          reviewRole: 'final_reviewer',
+          reviewerCount: 2,
+        }),
+      ).rejects.toMatchObject({ code: 'review_binding_missing' });
+      expect(reviewRows(state.h)).toHaveLength(1);
+      expect(reviewRun(state.h)).toHaveLength(1);
+    });
+
+    it('a correct persisted binding still restarts and starts exactly once', async () => {
+      const state = await corrupt('final', () => undefined);
+      const fresh = state.h.restart();
+      expect((await fresh.supervisor.tickGoal(state.h.fx.goalId)).action).toBe('review_run_started');
+      expect(state.h.startRun).toHaveBeenCalledTimes(1);
+      expect(reviewRows(state.h)).toHaveLength(1);
+    });
+  });
 });
