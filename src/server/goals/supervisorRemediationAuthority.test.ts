@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { GoalDefinition } from '../../shared/goals.js';
-import { advanceGoalRef } from '../goalGit.js';
+import { advanceGoalRef, recoverIntegrationOps } from '../goalGit.js';
 import { cancelQueuedRun } from '../runLauncher.js';
 import { decideFinding } from './findings.js';
 import { openFinding, reviewWith } from './remediationKit.js';
@@ -322,8 +322,10 @@ describe('integration recovery keeps history honest', () => {
     return { h, finding, base, op };
   }
 
-  it('planned op, CAS not done, finding decided: recovery aborts, nothing advances, cycle retires', async () => {
+  it('planned op, CAS not done, finding decided once recovery released it: nothing advances, cycle retires', async () => {
     const { h, finding, base, op } = await crashed();
+    // (While the op is planned the decision is refused - Stage 6B.2.2 - so recovery runs first.)
+    await recoverIntegrationOps(h.fx.db, h.fx.goalId);
     decide(h, finding);
     const results = await h.supervisor.reconcile();
     expect(results.map((result) => result.action)).toEqual(['remediation_retired']);
@@ -335,9 +337,10 @@ describe('integration recovery keeps history honest', () => {
     expect(cycles(h)[0]).toMatchObject({ status: 'cancelled' });
   });
 
-  it('planned op, CAS already done, finding decided afterwards: recovery applies it and the cycle is integrated', async () => {
+  it('planned op, CAS already done, finding decided after recovery applied it: the op stays applied and the cycle is integrated', async () => {
     const { h, finding, base, op } = await crashed();
     h.fx.git('update-ref', `refs/heads/turing/goal/${h.fx.goalId}`, op.new_commit, base);
+    await recoverIntegrationOps(h.fx.db, h.fx.goalId);
     decide(h, finding);
     const results = await h.supervisor.reconcile();
     expect(results.map((result) => result.action)).toEqual(['cycle_succeeded']);

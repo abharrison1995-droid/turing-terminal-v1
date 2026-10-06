@@ -21,6 +21,7 @@ export type GoalFindingErrorCode =
   | 'run_finding_mismatch'
   | 'finding_not_found'
   | 'finding_not_open'
+  | 'finding_integration_in_progress'
   | 'user_authority_required'
   | 'approval_invalid'
   | 'definition_not_approved';
@@ -452,6 +453,40 @@ export async function applyReviewFindings(
 }
 
 /**
+ * True while a `planned` advance of a finding-remediation cycle targets this finding. The planned integration op is the
+ * lock (no extra state): it is released by the op becoming applied, failed or aborted. Only concrete string `findingId`
+ * values of a well-formed `remediationPlan.episodes` list are matched, so a corrupt plan locks nothing. (A bounded
+ * read here rather than `remediationPlan.ts`, which already imports this module.)
+ */
+function findingLockedByPlannedIntegration(db: Db, goalId: string, findingId: string): boolean {
+  const rows = db
+    .prepare(
+      `SELECT c.outcome_json AS outcome FROM goal_integration_ops o JOIN goal_cycles c ON c.id = o.cycle_id
+        WHERE o.goal_id = ? AND o.op = 'advance' AND o.status = 'planned'
+          AND c.kind = 'remediation' AND c.trigger_code = 'finding_remediation'`,
+    )
+    .all(goalId) as Array<{ outcome: string | null }>;
+  for (const row of rows) {
+    let episodes: unknown;
+    try {
+      episodes = (JSON.parse(row.outcome ?? 'null') as { remediationPlan?: { episodes?: unknown } } | null)
+        ?.remediationPlan?.episodes;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(episodes)) continue;
+    for (const episode of episodes)
+      if (
+        episode &&
+        typeof episode === 'object' &&
+        (episode as { findingId?: unknown }).findingId === findingId
+      )
+        return true;
+  }
+  return false;
+}
+
+/**
  * Accepts or dismisses an open finding. Only the user can: the decision must be backed by an approved `finding_decision`
  * Goal approval, decided by the user, bound to the finding id, the decision and the current definition (version and
  * hash).
@@ -485,6 +520,11 @@ export function decideFinding(
       throw new GoalFindingError('finding_not_found', 'No such finding for this Goal.');
     if (finding.status !== 'open')
       throw new GoalFindingError('finding_not_open', 'Only an open finding can be decided.');
+    if (findingLockedByPlannedIntegration(db, input.goalId, input.findingId))
+      throw new GoalFindingError(
+        'finding_integration_in_progress',
+        'A remediation integration for this finding is in progress; retry once it resolves.',
+      );
     const approval = getGoalApproval(db, input.approvalId);
     if (
       !approval ||

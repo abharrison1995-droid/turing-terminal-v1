@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { vi } from 'vitest';
 import type { GoalDefinition } from '../../shared/goals.js';
+import type { IntegrationHooks } from '../goalGit.js';
 import { ActiveTimeTracker } from './activeTime.js';
 import { FakeGoalExecutor, type FakeRunRequest } from './fakeExecutor.js';
 import { goalRepoFixture, milestone, simpleDefinition, type GoalRepoFixture } from './repoKit.js';
@@ -39,6 +40,8 @@ export interface Harness {
   /** Completes (or fails) a started proposal run from the next script entry, persisting its output as a stage. */
   answerProposal(runId: string): void;
   /** Creates a supervisor + executor pair on the same database, as after a process restart. */
+  /** Mutable test hooks forwarded to `advanceGoalRef` by every supervisor of this harness. */
+  integrationHooks: IntegrationHooks;
   restart(): { supervisor: GoalSupervisor; executor: FakeGoalExecutor };
   /** Files the next queued run commits in its worktree. */
   files: { current: Record<string, string | null> };
@@ -189,18 +192,34 @@ export function harness(
       return (row?.purpose === 'proposal') === proposal;
     }).length;
   const resumeRun = vi.fn<(runId: string) => void>();
-  const supervisor = new GoalSupervisor({ db, executor, startRun, resumeRun, activeTime: tracker });
+  const integrationHooks: IntegrationHooks = {};
+  const supervisor = new GoalSupervisor({
+    db,
+    executor,
+    startRun,
+    resumeRun,
+    activeTime: tracker,
+    integrationHooks,
+  });
   const h: Harness = {
     fx,
     supervisor,
     executor,
     model,
     answerProposal,
+    integrationHooks,
     restart() {
       const fresh = new FakeGoalExecutor(db, makeRun);
       return {
         executor: fresh,
-        supervisor: new GoalSupervisor({ db, executor: fresh, startRun, resumeRun, activeTime: tracker }),
+        supervisor: new GoalSupervisor({
+          db,
+          executor: fresh,
+          startRun,
+          resumeRun,
+          activeTime: tracker,
+          integrationHooks,
+        }),
       };
     },
     tracker,

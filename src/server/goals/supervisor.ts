@@ -3,6 +3,7 @@ import type { Db } from '../db.js';
 import { cancelQueuedRun } from '../runLauncher.js';
 import {
   advanceGoalRef,
+  type IntegrationHooks,
   changedEntries,
   changedPathSet,
   GoalGitError,
@@ -20,6 +21,7 @@ import {
   createCycle,
   CycleError,
   finalizeCycle,
+  getCycle,
   reconcileCounters,
   transitionCycle,
   type CycleRow,
@@ -141,6 +143,8 @@ export interface GoalSupervisorDeps {
   resumeRun: (runId: string) => void | Promise<void>;
   activeTime?: ActiveTimeTracker;
   now?: () => string;
+  /** Test seam only: forwarded to `advanceGoalRef`. Production supplies none. */
+  integrationHooks?: IntegrationHooks;
 }
 
 const ACTIVE_RUN = new Set([
@@ -967,17 +971,27 @@ export class GoalSupervisor {
     const resolved = await resolveGoalRepository(this.db, goalId);
     const proof = proveRemediationPlan(this.db, cycle, { tree: resolved.ok ? resolved.state.tree : null });
     if (proof.ok) return null;
+    return this.retireRemediation(goalId, cycle, proof.code, queuedRun);
+  }
+
+  /** Fails (corrupt plan) or retires (no longer current) a remediation cycle, cancelling a never-started queued run atomically. */
+  private retireRemediation(
+    goalId: string,
+    cycle: CycleRow,
+    code: 'remediation_plan_invalid' | 'remediation_no_longer_current',
+    queuedRun?: RunRow,
+  ): TickResult {
     return this.db.transaction((): TickResult => {
-      if (queuedRun) cancelQueuedRun(this.db, queuedRun.id, proof.code);
-      if (proof.code === 'remediation_plan_invalid') return this.fail(cycle, proof.code);
+      if (queuedRun) cancelQueuedRun(this.db, queuedRun.id, code);
+      if (code === 'remediation_plan_invalid') return this.fail(cycle, code);
       finalizeCycle(this.db, {
         cycleId: cycle.id,
         to: 'cancelled',
-        outcomeCode: proof.code,
+        outcomeCode: code,
         now: this.now(),
       });
       this.afterCycle(goalId);
-      return { action: 'remediation_retired', goalId, cycleId: cycle.id, code: proof.code };
+      return { action: 'remediation_retired', goalId, cycleId: cycle.id, code };
     })();
   }
 
@@ -1540,6 +1554,14 @@ export class GoalSupervisor {
       // remediation whose plan is no longer current must not advance the Goal ref.
       const stale = await this.reproveRemediation(goalId, cycle);
       if (stale) return stale;
+      // The current integration tree is established up front (asynchronously) for the late, synchronous authority check;
+      // a tree that cannot be established is a repository-state problem, not a stale plan.
+      let lateTree: string | null = null;
+      if (isFindingRemediation(cycle)) {
+        const resolved = await resolveGoalRepository(this.db, goalId);
+        if (!resolved.ok) return this.blockForIntegration(goalId, cycle, 'git_state_invalid');
+        lateTree = resolved.state.tree;
+      }
       const violations = await this.scopeViolations(goalId, cycle, run, spec);
       if (violations.length > 0) return this.scopeViolation(goalId, cycle, run, violations);
       const context = loadContext(this.db, goalId);
@@ -1550,6 +1572,30 @@ export class GoalSupervisor {
         this.db,
         { goalId, cycleId: cycle.id, runId: run.id, expectedHead: head },
         { allowedPaths: allowedPaths.length ? allowedPaths : undefined },
+        this.deps.integrationHooks ?? {},
+        isFindingRemediation(cycle)
+          ? {
+              // Second TOCTOU seal: runs synchronously immediately before the planned op is persisted.
+              beforePlanPersist: () => {
+                // Re-read the cycle: the proof is against the persisted plan, not this tick's snapshot.
+                const live = getCycle(this.db, cycle.id);
+                if (!live)
+                  return {
+                    ok: false,
+                    code: 'remediation_plan_invalid',
+                    message: 'The cycle no longer exists.',
+                  };
+                const proof = proveRemediationPlan(this.db, live, { tree: lateTree });
+                return proof.ok
+                  ? { ok: true }
+                  : {
+                      ok: false,
+                      code: proof.code,
+                      message: 'The remediation plan is not current at integration.',
+                    };
+              },
+            }
+          : {},
       );
       switch (result.outcome) {
         case 'advanced':
@@ -1570,6 +1616,8 @@ export class GoalSupervisor {
         case 'no_change':
           return this.fail(cycle, 'no_change', { runId: run.id });
         case 'rejected':
+          if (result.code === 'remediation_plan_invalid' || result.code === 'remediation_no_longer_current')
+            return this.retireRemediation(goalId, cycle, result.code);
           if (result.code === 'milestone_scope_violation')
             return this.scopeViolation(
               goalId,

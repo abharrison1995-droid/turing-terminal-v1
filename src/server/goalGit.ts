@@ -57,6 +57,20 @@ export interface IntegrationPolicy {
 export interface IntegrationHooks {
   /** Test seam: runs after checks and the planned op are written, immediately before the compare-and-swap. */
   beforeCas?: () => void | Promise<void>;
+  /** Test seam only: runs after every asynchronous check, immediately before the synchronous authority callback. */
+  beforePlanAuthorityCheck?: () => void | Promise<void>;
+}
+
+export type AdvanceAuthorityVerdict = { ok: true } | { ok: false; code: string; message: string };
+
+/**
+ * Trusted server-side authority seam. `beforePlanPersist` is synchronous, takes no model data and does no I/O; it runs
+ * after all asynchronous Git validation and immediately before the `planned` op is inserted, with no `await` between
+ * the two. Persisting the planned op is the linearization point: a rejection leaves no op row and performs no CAS.
+ * Ordinary execution supplies none.
+ */
+export interface AdvanceAuthority {
+  beforePlanPersist?: () => AdvanceAuthorityVerdict;
 }
 
 export type InitResult =
@@ -627,6 +641,7 @@ export async function advanceGoalRef(
   input: { goalId: string; cycleId: string; runId: string; expectedHead: string },
   policy: IntegrationPolicy = {},
   hooks: IntegrationHooks = {},
+  authority: AdvanceAuthority = {},
 ): Promise<AdvanceResult> {
   const checks: IntegrationCheck[] = [];
   const reject = (code: string, message: string, detail?: unknown): AdvanceResult => {
@@ -780,6 +795,10 @@ export async function advanceGoalRef(
     return reject(scan.code, 'The complete changed content could not be cleared by the secret scan.', scan);
   pass('secret_scan', { scannedBytes: scan.scannedBytes });
 
+  await hooks.beforePlanAuthorityCheck?.();
+  // No await from here to the INSERT: the verdict and the planned op are one synchronous step.
+  const verdict = authority.beforePlanPersist?.();
+  if (verdict && !verdict.ok) return reject(verdict.code.slice(0, 100), verdict.message.slice(0, 200));
   const opId = randomUUID();
   db.prepare(
     `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, run_id, op, expected_old, new_commit, status, checks_json, created_at)

@@ -1403,3 +1403,26 @@ and never resolves a finding: only a later review can. No migration, no new revi
 - **Observation-level consumption.** `remediationObservationKey` = sha256(canonicalJson{schema:1, findingId, lastSeenReviewId, definitionVersion}) has no milestone. Integrated, op-proved remediation consumes the observation as well as the full episode key; the selector skips consumed observations before anchoring, so a changed or null active milestone cannot regenerate the same review observation or produce `remediation_milestone_unavailable`. A later review (new `lastSeenReviewId`) or a new definition version is a new opportunity. The write-once `plan.milestoneKey` is never re-anchored.
 - **Dynamic actionability.** `remediationCandidates` is the single threshold + tree-bound blocking-review calculation shared by selection and reproof (using `allowedOpenFindings`). Every plan episode must still be open, unchanged, in the current definition, and a candidate by at least one rule; otherwise the whole plan is no longer current. The persisted `reason` stays a creation-time audit.
 - No migration and no new counters: consumption is a loop guard, not an attempt counter.
+
+## Stage 6B.2.2 correction: finding decision / integration linearization
+
+6B.2.1 re-proved a remediation plan before integration, but the Git inspection, changed-path validation and secret scan
+that follow are asynchronous, so a user decision could still commit between that proof and the integration op.
+
+- **Late pre-plan-persist authority.** `advanceGoalRef` takes an optional, trusted, synchronous `AdvanceAuthority.beforePlanPersist`
+  (no model data, no I/O; `goalGit.ts` stays generic). It runs after every asynchronous check and immediately before the
+  `planned` op INSERT, with no `await` between them. A rejection returns `rejected` with a bounded code/message, writes no
+  op row and performs no CAS. A finding-remediation cycle supplies a callback that re-reads the cycle and re-proves the
+  persisted plan against the current tree (`remediation_plan_invalid` / `remediation_no_longer_current`); the supervisor
+  maps those to the existing fail-closed / retire outcomes. Ordinary execution supplies none. The earlier supervisor
+  reproof stays as an early refusal; this is the second TOCTOU seal. A tree that cannot be established is a
+  repository-state problem (`git_state_invalid`), not a stale plan.
+- **Linearization point.** The persisted `planned` advance op. Decision commits first: the late check fails, no op, no CAS,
+  the cycle is retired and the finding stays decided. Op commits first: `decideFinding` refuses with
+  `finding_integration_in_progress` (finding untouched, approval unused, nothing queued), the CAS proceeds, and if it is
+  applied the remediation integrates honestly and is never retroactively cancelled.
+- **Lock.** Only while a `planned` `advance` op of a `finding_remediation` cycle names the finding in its persisted
+  `remediationPlan.episodes` (every episode, not just the first). Other findings are unaffected. The op status is the only
+  lock state: `applied`, `failed` or `aborted` releases it; a crash leaves it until `recoverIntegrationOps` resolves the
+  op (no timeouts). A malformed plan locks nothing. No lock exists for a cycle, proposal or work run before the op is
+  planned, and ordinary execution cycles never lock findings. No migration.
