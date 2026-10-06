@@ -13,7 +13,7 @@ export type Loaded<T> =
 export function useLoad<T>(
   load: () => Promise<T>,
   key: string,
-  refresh = 0,
+  refresh: number | string = 0,
 ): { result: Loaded<T>; reload: () => void } {
   const [held, setHeld] = useState<{ key: string; result: Loaded<T> } | null>(null);
   const [tick, setTick] = useState(0);

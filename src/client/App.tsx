@@ -53,7 +53,6 @@ import QRCode from 'qrcode';
 import { notificationsForSnapshot } from './notificationEvents.js';
 import { APP_VERSION } from '../shared/version';
 import type {
-  Approval,
   ConnectionProfile,
   DashboardSnapshot,
   ExecutionOperation,
@@ -74,7 +73,9 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { approvalSignature, pendingApprovalCounts } from './goals/dashboard';
 import { GoalsPage } from './goals/GoalsPage';
+import { UnifiedApprovals } from './goals/UnifiedApprovals';
 import {
   billingLaneLabel,
   billingLanesForBackend,
@@ -280,6 +281,7 @@ function App() {
   };
   const pageLabel =
     page === 'command' ? 'New task' : (navItems.find((item) => item.id === page)?.label ?? '');
+  const approvalCounts = pendingApprovalCounts(snapshot);
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
   const titleQuiet =
@@ -370,6 +372,12 @@ function App() {
                   aria-label={`${snapshot.approvals.length} approvals pending`}
                 />
               )}
+              {id === 'goals' && approvalCounts.goal > 0 && (
+                <span
+                  className="nav-alert-dot"
+                  aria-label={`${approvalCounts.goal} Goal approvals pending`}
+                />
+              )}
             </button>
           ))}
         </nav>
@@ -404,14 +412,12 @@ function App() {
             <button
               className="icon-button notification-button"
               aria-label={
-                snapshot?.approvals.length
-                  ? `${snapshot.approvals.length} pending approvals`
-                  : 'Notifications'
+                approvalCounts.total ? `${approvalCounts.total} pending approvals` : 'Notifications'
               }
               onClick={() => changePage('runs')}
             >
               <Bell size={17} />
-              {(snapshot?.approvals.length ?? 0) > 0 && <i />}
+              {approvalCounts.total > 0 && <i />}
             </button>
           </div>
         </header>
@@ -691,6 +697,7 @@ function PageHeading({
 
 function CommandCenter({
   snapshot,
+  onRefresh,
   onNavigate,
   onStart,
   onNotice,
@@ -916,8 +923,12 @@ function CommandCenter({
   return (
     <main className="page-content command-page">
       <div className={`home-column ${snapshot.runs.length > 0 ? 'home-has-activity' : ''}`}>
-        {snapshot.approvals.length > 0 && (
-          <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />
+        {pendingApprovalCounts(snapshot).total > 0 && (
+          <UnifiedApprovals
+            heading="Approval required"
+            refresh={approvalSignature(snapshot)}
+            onDecided={onRefresh}
+          />
         )}
         {(runningRuns.length > 0 || waitingRuns.length > 0 || recentFailed.length > 0) && (
           <div className="glance" role="group" aria-label="Runs at a glance">
@@ -1453,74 +1464,6 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
       </p>
     </section>
   );
-}
-
-function ApprovalInbox({
-  approvals,
-  onNotice,
-}: {
-  approvals: Approval[];
-  onNotice: (message: string) => void;
-}) {
-  return (
-    <section className="approval-inbox" aria-label="Approvals requiring attention">
-      <div className="approval-inbox-head">
-        <div>
-          <span className="approval-icon">
-            <LockKeyhole size={17} />
-          </span>
-          <div>
-            <h2>Approval required</h2>
-            <p>
-              {approvals.length} workflow {approvals.length === 1 ? 'action needs' : 'actions need'} your
-              decision before continuing.
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="approval-items">
-        {approvals.slice(0, 2).map((approval) => (
-          <div className="approval-item" key={approval.id}>
-            <div className="approval-copy">
-              <strong>{approval.operation}</strong>
-              <p className="approval-reason">
-                {approval.reason
-                  .split(/(`[^`]+`)/)
-                  .map((part, index) =>
-                    part.startsWith('`') && part.endsWith('`') ? (
-                      <code key={index}>{part.slice(1, -1)}</code>
-                    ) : (
-                      part
-                    ),
-                  )}
-              </p>
-              <small>Risk: {capitalize(approval.risk)}</small>
-            </div>
-            <div className="approval-actions">
-              <button className="secondary-button" onClick={() => void decide(approval.id, false)}>
-                Deny
-              </button>
-              <button
-                className="primary-button compact-button"
-                onClick={() => void decide(approval.id, true)}
-              >
-                <Check size={14} />
-                Approve once
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-  async function decide(id: string, approved: boolean) {
-    try {
-      await api.decideApproval(id, approved);
-      onNotice(approved ? 'Approval recorded.' : 'Approval denied.');
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Could not save that decision.');
-    }
-  }
 }
 
 function ProviderHealth({ providers, onNavigate }: { providers: ProviderStatus[]; onNavigate: () => void }) {
@@ -3994,7 +3937,13 @@ function RunsPage({
           }
         />
       )}
-      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
+      {pendingApprovalCounts(snapshot).total > 0 && (
+        <UnifiedApprovals
+          heading="Approval required"
+          refresh={approvalSignature(snapshot)}
+          onDecided={onRefresh}
+        />
+      )}
       <div
         className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''} ${
           snapshot.runs.length === 0 ? 'runs-layout-empty' : ''

@@ -256,3 +256,57 @@
   font-size: var(--fs-title);
   line-height: var(--lh-title);
 }
+
+/* Stage 7B.2A: Goal controls, unified approvals, finding decisions. */
+.goal-controls {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.goal-control-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.goal-confirm {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--amber-wash);
+  border: 1px solid var(--amber);
+  border-radius: var(--r-sm);
+}
+.goal-confirm label {
+  display: grid;
+  gap: var(--s-1);
+}
+.goal-danger {
+  color: var(--red);
+  border-color: var(--red);
+}
+.goal-source {
+  padding: 0 var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.goal-source-goal {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+.goal-source-run {
+  color: var(--ink-3);
+}
+.approval-expected {
+  border-color: var(--amber);
+  background: var(--amber-wash);
+}
+.goal-controls button,
+.goal-confirm button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

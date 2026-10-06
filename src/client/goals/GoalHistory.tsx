@@ -1,4 +1,4 @@
-import type { GoalCycleView, GoalEvidenceView, GoalFindingView, GoalReviewView } from '../../shared/goalApi';
+import type { GoalCycleView, GoalEvidenceView, GoalReviewView } from '../../shared/goalApi';
 import { goalsApi } from './api';
 import { Empty, Resource, TruncationNote } from './parts';
 import { formatTime, humanize, shortHash } from './presentation';
@@ -131,49 +131,6 @@ export function ReviewsPanel({ goalId, refresh }: { goalId: string; refresh: num
               ))}
             </ul>
             <TruncationNote shown={data.reviews.length} total={data.total} />
-          </>
-        )
-      }
-    </Resource>
-  );
-}
-
-export function FindingsPanel({ goalId, refresh }: { goalId: string; refresh: number }) {
-  const { result, reload } = useLoad(() => goalsApi.findings(goalId), goalId, refresh);
-  return (
-    <Resource result={result} label="Findings" onRetry={reload}>
-      {(data) =>
-        data.findings.length === 0 ? (
-          <Empty>No findings.</Empty>
-        ) : (
-          <>
-            <ul className="goal-findings" aria-label="Findings">
-              {data.findings.map((finding: GoalFindingView) => (
-                <li
-                  key={finding.id}
-                  className="surface-panel"
-                  data-finding-status={finding.status}
-                  data-finding-severity={finding.severity}
-                >
-                  <h3>
-                    <span className={`severity severity-${finding.severity}`}>{finding.severity}</span>{' '}
-                    {humanize(finding.category)}{' '}
-                    <span className="status-pill">{humanize(finding.status)}</span>
-                  </h3>
-                  <p>{finding.description}</p>
-                  {finding.affectedFiles.length > 0 && (
-                    <p className="goal-row-meta">Files: {finding.affectedFiles.join(', ')}</p>
-                  )}
-                  <p className="goal-row-meta">
-                    First seen in review <code>{shortHash(finding.firstSeenReviewId)}</code>
-                    {finding.resolvedByReviewId
-                      ? ` · resolved by review ${shortHash(finding.resolvedByReviewId)}`
-                      : ''}
-                  </p>
-                </li>
-              ))}
-            </ul>
-            <TruncationNote shown={data.findings.length} total={data.total} />
           </>
         )
       }

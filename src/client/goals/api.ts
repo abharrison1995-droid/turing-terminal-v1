@@ -9,15 +9,18 @@ import type {
   GoalFindingsResponse,
   GoalListResponse,
   GoalPreview,
+  GoalResumeReason,
   GoalReviewsResponse,
+  UnifiedApprovalsResponse,
 } from '../../shared/goalApi';
 import type { UsageAnalytics } from '../api';
 import { call } from '../api';
 
 /**
- * Stage 7B.1: the Goal client API. It is read-only by construction: every function is a GET that passes no request
- * init, so this module cannot start, pause, approve, amend or apply anything. Response types are the canonical
- * `shared/goalApi` shapes. Mutation endpoints arrive with 7B.2 in their own module.
+ * The Goal client API. Every operation is an explicit function with its own endpoint and body; nothing maps a
+ * `nextAction` to a request. Reads are GETs. The only mutations are the user controls below, each of which the server
+ * independently re-proves: start, resume, pause, abandon, a Goal-approval decision and a finding decision. Definition
+ * authoring/amendment and final apply are deliberately absent (7B.2B and 7C).
  */
 const query = (params: Record<string, string | number | undefined>): string => {
   const search = new URLSearchParams();
@@ -25,6 +28,8 @@ const query = (params: Record<string, string | number | undefined>): string => {
   const text = search.toString();
   return text ? `?${text}` : '';
 };
+const post = <T>(path: string, body: unknown) =>
+  call<T>(path, { method: 'POST', body: JSON.stringify(body) });
 const goalPath = (goalId: string) => `/api/goals/${encodeURIComponent(goalId)}`;
 
 export const goalsApi = {
@@ -48,4 +53,32 @@ export const goalsApi = {
   finalApplyPreflight: async (goalId: string) =>
     (await call<{ preflight: GoalFinalApplyPreflightView }>(`${goalPath(goalId)}/final-apply/preflight`))
       .preflight,
+
+  unifiedApprovals: (options: { status?: 'pending'; goalId?: string; limit?: number } = {}) =>
+    call<UnifiedApprovalsResponse>(`/api/approvals/unified${query(options)}`),
+
+  // --- User controls (each one POST, no chaining) ------------------------------------------------------------------
+  start: (goalId: string) => post<{ ok: true; goalStatus: string }>(`${goalPath(goalId)}/start`, {}),
+  /** The reason is a closed set; the server verifies it against persisted facts. */
+  resume: (goalId: string, reason: GoalResumeReason) =>
+    post<{ ok: true; goalStatus: string }>(`${goalPath(goalId)}/resume`, { reason }),
+  pause: (goalId: string) => post<{ status: 'paused' }>(`${goalPath(goalId)}/pause`, {}),
+  abandon: (goalId: string) => post<{ status: 'abandoned' }>(`${goalPath(goalId)}/abandon`, {}),
+  /** Only the decision and an optional note: the server binds the approval, definition and finding itself. */
+  decideFinding: (
+    goalId: string,
+    findingId: string,
+    decision: 'accepted_by_user' | 'dismissed_by_user',
+    note?: string,
+  ) =>
+    post<{ findingId: string; status: string; decisionApprovalId: string }>(
+      `${goalPath(goalId)}/findings/${encodeURIComponent(findingId)}/decision`,
+      note ? { decision, note } : { decision },
+    ),
+  /** Decides a Goal gate only. It never starts or resumes the Goal. Run approvals use `api.decideApproval`. */
+  decideApproval: (approvalId: string, decision: 'approved' | 'denied') =>
+    post<{ approvalId: string; status: string; changed: boolean }>(
+      `/api/goal-approvals/${encodeURIComponent(approvalId)}/decision`,
+      { decision },
+    ),
 };

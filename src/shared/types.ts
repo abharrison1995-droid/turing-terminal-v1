@@ -1,3 +1,5 @@
+import type { GoalDashboardApprovals, GoalDashboardSummary } from './goalApi.js';
+
 export type PermissionMode = 'supervised' | 'normal' | 'yolo' | 'enigma';
 export type ExecutionProfile = 'economy' | 'balanced' | 'maximum';
 export type RunStatus =
@@ -653,6 +655,9 @@ export interface DashboardSnapshot {
   providers: ProviderStatus[];
   runs: RunSummary[];
   approvals: Approval[];
+  /** Additive Goal fields the server already returns (Stage 7A); absent from older masters. */
+  goals?: GoalDashboardSummary;
+  goalApprovals?: GoalDashboardApprovals;
   usage: {
     events: number;
     localMinutesToday: number;

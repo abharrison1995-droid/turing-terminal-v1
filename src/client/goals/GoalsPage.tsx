@@ -14,8 +14,8 @@ export function GoalsPage() {
         <div>
           <h1>Grand Projects</h1>
           <p>
-            Long-running Goals that Turing advances in bounded cycles. This view is read-only; every decision
-            is still proved by the server.
+            Long-running Goals that Turing advances in bounded cycles. You can start, pause, resume and decide
+            here; the server still checks every action and may refuse it.
           </p>
         </div>
         {selected === null && (

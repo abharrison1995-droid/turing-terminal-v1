@@ -19,6 +19,23 @@ import type {
 } from '../shared/types';
 import { masterApiUrl } from './desktop';
 
+/**
+ * A failed API response. `message` is unchanged (`error` from the body, else the status), so existing callers that read
+ * only `error.message` behave exactly as before. Goal controls additionally read the structured refusal.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly detail?: unknown,
+    readonly approvalId?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(masterApiUrl(path), {
     ...init,
@@ -27,8 +44,20 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  const body = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
+  const body = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    code?: string;
+    detail?: unknown;
+    approvalId?: string;
+  };
+  if (!response.ok)
+    throw new ApiError(
+      body.error ?? `Request failed (${response.status}).`,
+      response.status,
+      typeof body.code === 'string' ? body.code : undefined,
+      body.detail,
+      typeof body.approvalId === 'string' ? body.approvalId : undefined,
+    );
   return body as T;
 }
 

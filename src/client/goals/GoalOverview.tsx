@@ -7,6 +7,7 @@ import type {
 import { goalsApi } from './api';
 import { NextActionCard } from './NextAction';
 import { Empty, Resource } from './parts';
+import { UnifiedApprovals } from './UnifiedApprovals';
 import { formatTime, humanize, shortHash } from './presentation';
 import { useLoad } from './useLoad';
 
@@ -17,30 +18,32 @@ const Fact = ({ label, children }: { label: string; children: React.ReactNode })
   </div>
 );
 
-export function GoalOverview({ goal, refresh }: { goal: GoalDetail; refresh: number }) {
+/** The exact approval the server's nextAction names, if any. Nothing else is ever treated as that approval. */
+const expectedApprovalId = (action: GoalDetail['nextAction']): string | null =>
+  action.kind === 'review_approval' || action.kind === 'final_acceptance' ? action.approvalId : null;
+
+export function GoalOverview({
+  goal,
+  refresh,
+  onChanged,
+}: {
+  goal: GoalDetail;
+  refresh: number;
+  onChanged: () => void;
+}) {
   const cycle = goal.activeCycle ?? goal.lastCycle;
   const completion = goal.completion;
   return (
     <div className="goal-overview">
       <NextActionCard action={goal.nextAction} />
 
-      {goal.pendingApprovals.length > 0 && (
-        <section className="surface-panel" aria-label="Pending approvals">
-          <h2>Pending approvals</h2>
-          <p className="goal-note">
-            Read-only here. Decisions are made in the approval surface, which Goal approvals join in a later
-            stage.
-          </p>
-          <ul className="goal-plain-list">
-            {goal.pendingApprovals.map((approval) => (
-              <li key={approval.id} data-approval-gate={approval.gate}>
-                <strong>{humanize(approval.gate)}</strong> · {approval.risk} risk
-                <span className="goal-row-meta"> — {approval.reason}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <UnifiedApprovals
+        goalId={goal.id}
+        heading="Approvals for this Goal"
+        expectedGoalApprovalId={expectedApprovalId(goal.nextAction)}
+        refresh={refresh}
+        onDecided={onChanged}
+      />
 
       <section className="surface-panel" aria-label="Where things stand">
         <h2>Where things stand</h2>
