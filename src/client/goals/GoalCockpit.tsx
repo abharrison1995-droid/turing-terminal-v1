@@ -26,14 +26,16 @@ type TabId = (typeof TABS)[number]['id'];
  */
 export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => void }) {
   const [tab, setTab] = useState<TabId>('overview');
-  const detail = useLoad(() => goalsApi.detail(goalId), goalId);
+  // Bumped by Refresh. Only the mounted tab reads it, so a refresh re-reads that tab and nothing unvisited.
+  const [generation, setGeneration] = useState(0);
+  const detail = useLoad(() => goalsApi.detail(goalId), goalId, generation);
   return (
     <div className="goal-cockpit">
       <div className="goal-cockpit-top">
         <button type="button" className="secondary-button" onClick={onBack}>
           <ArrowLeft size={14} aria-hidden="true" /> All Goals
         </button>
-        <RefreshButton onClick={detail.reload} />
+        <RefreshButton onClick={() => setGeneration((value) => value + 1)} />
       </div>
       <Resource result={detail.result} label="Goal" onRetry={detail.reload}>
         {(goal) => (
@@ -62,15 +64,19 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
               ))}
             </div>
             <div id="goal-tabpanel" role="tabpanel" aria-labelledby={`goal-tab-${tab}`}>
-              {tab === 'overview' && <GoalOverview goal={goal} />}
-              {tab === 'cycles' && <CyclesPanel goalId={goal.id} />}
-              {tab === 'reviews' && <ReviewsPanel goalId={goal.id} />}
-              {tab === 'findings' && <FindingsPanel goalId={goal.id} />}
-              {tab === 'evidence' && <EvidencePanel goalId={goal.id} />}
+              {tab === 'overview' && <GoalOverview goal={goal} refresh={generation} />}
+              {tab === 'cycles' && <CyclesPanel goalId={goal.id} refresh={generation} />}
+              {tab === 'reviews' && <ReviewsPanel goalId={goal.id} refresh={generation} />}
+              {tab === 'findings' && <FindingsPanel goalId={goal.id} refresh={generation} />}
+              {tab === 'evidence' && <EvidencePanel goalId={goal.id} refresh={generation} />}
               {tab === 'definitions' && (
-                <DefinitionsPanel goalId={goal.id} currentVersion={goal.currentDefinitionVersion} />
+                <DefinitionsPanel
+                  goalId={goal.id}
+                  currentVersion={goal.currentDefinitionVersion}
+                  refresh={generation}
+                />
               )}
-              {tab === 'usage' && <UsagePanel goalId={goal.id} />}
+              {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}
             </div>
           </>
         )}

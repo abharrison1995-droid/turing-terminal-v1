@@ -17,7 +17,7 @@ const Fact = ({ label, children }: { label: string; children: React.ReactNode })
   </div>
 );
 
-export function GoalOverview({ goal }: { goal: GoalDetail }) {
+export function GoalOverview({ goal, refresh }: { goal: GoalDetail; refresh: number }) {
   const cycle = goal.activeCycle ?? goal.lastCycle;
   const completion = goal.completion;
   return (
@@ -74,8 +74,8 @@ export function GoalOverview({ goal }: { goal: GoalDetail }) {
 
       <Milestones goal={goal} />
       {completion && <CompletionPanel completion={completion} />}
-      <FinalApplySection completion={completion} goalId={goal.id} />
-      <PreviewSection goalId={goal.id} />
+      {goal.nextAction.kind === 'final_apply' && <FinalApplyPreflight goalId={goal.id} refresh={refresh} />}
+      <PreviewSection goalId={goal.id} refresh={refresh} />
 
       <section className="surface-panel" aria-label="Integration branch">
         <h2>Integration</h2>
@@ -121,8 +121,11 @@ function Milestones({ goal }: { goal: GoalDetail }) {
               >
                 <strong>{milestone.title}</strong>
                 <span className="goal-row-meta">
-                  {done ? `Satisfied ${formatTime(milestone.satisfiedAt)}` : active ? 'Active' : 'Remaining'}{' '}
-                  · {humanize(milestone.runtimeStatus)}
+                  {done ? `Satisfied ${formatTime(milestone.satisfiedAt)}` : active ? 'Active' : 'Remaining'}
+                  {humanize(milestone.runtimeStatus).toLowerCase() ===
+                  (done ? 'satisfied' : active ? 'active' : 'remaining')
+                    ? ''
+                    : ` · ${humanize(milestone.runtimeStatus)}`}
                 </span>
                 {milestone.evaluation && milestone.evaluation.blockers.length > 0 && (
                   <ul className="goal-plain-list goal-blockers">
@@ -192,23 +195,9 @@ function CompletionPanel({ completion }: { completion: GoalCompletionView }) {
   );
 }
 
-function FinalApplySection({
-  completion,
-  goalId,
-}: {
-  completion: GoalCompletionView | null;
-  goalId: string;
-}) {
-  const relevant =
-    completion !== null &&
-    completion.finalApply.required &&
-    (!completion.finalAcceptance.required || completion.finalAcceptance.ok);
-  if (!relevant) return null;
-  return <FinalApplyPreflight goalId={goalId} />;
-}
-
-function FinalApplyPreflight({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.finalApplyPreflight(goalId), goalId);
+/** Shown only when the server's `nextAction` is `final_apply`; the client never rebuilds that readiness itself. */
+function FinalApplyPreflight({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.finalApplyPreflight(goalId), goalId, refresh);
   return (
     <section className="surface-panel" aria-label="Final apply preflight">
       <h2>Final apply preflight</h2>
@@ -236,8 +225,8 @@ function FinalApplyPreflight({ goalId }: { goalId: string }) {
   );
 }
 
-function PreviewSection({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.preview(goalId), goalId);
+function PreviewSection({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.preview(goalId), goalId, refresh);
   return (
     <section className="surface-panel" aria-label="Preview">
       <h2>Preview</h2>

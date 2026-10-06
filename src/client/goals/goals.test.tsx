@@ -5,6 +5,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   GoalCyclesResponse,
+  GoalDefinitionFull,
+  GoalDefinitionSummary,
   GoalDetail,
   GoalEvidenceResponse,
   GoalEvidenceView,
@@ -175,7 +177,7 @@ function serve(routes: Routes) {
       const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0]!;
       const handler = routes[path];
       if (!handler) return new Response(JSON.stringify({ error: `no route ${path}` }), { status: 404 });
-      const body = handler();
+      const body = await handler();
       return body instanceof Response ? body : new Response(JSON.stringify(body), { status: 200 });
     }),
   );
@@ -474,5 +476,215 @@ describe('Goal cockpit', () => {
     await waitFor(() => expect(calls.length).toBeGreaterThan(6));
     expect(calls.every((call) => call.method === 'GET')).toBe(true);
     expect(calls.every((call) => call.url.includes('/api/goals'))).toBe(true);
+  });
+});
+
+const definitionSummary = (version: number): GoalDefinitionSummary => ({
+  version,
+  parentVersion: version > 1 ? version - 1 : null,
+  status: 'approved',
+  definitionHash: `hash${version}${'0'.repeat(10)}`,
+  changeSummary: `Change ${version}`,
+  createdBy: 'user',
+  createdAt: NOW,
+  approvedAt: NOW,
+  approvedBy: 'user',
+  approvalId: null,
+});
+
+const definitionFull = (version: number): GoalDefinitionFull => ({
+  ...definitionSummary(version),
+  goalId: 'goal-1',
+  validation: { valid: true, errors: [], warnings: [] },
+  definition: {
+    contract: {
+      outcome: `Outcome of version ${version}`,
+      successCriteria: [],
+      nonGoals: [],
+      constraints: [],
+      deliverables: [],
+      completionPolicy: {
+        requireFinalReview: true,
+        requireUserAcceptance: false,
+        applyToBase: 'required',
+        maxOpenFindings: { critical: 0, high: 0 },
+        highSeverityResolution: 'review-only',
+      },
+    },
+    milestones: [],
+    routing: {
+      roles: {},
+      pools: [],
+      workflows: { planning: 'p', execution: 'e', review: 'r', verification: 'v' },
+      independence: { finalReview: 'none', against: [], allowFloatingFinalReviewer: false },
+    },
+    review: {
+      onMilestoneComplete: true,
+      final: true,
+      blocking: { periodic: false, milestone: true, final: true },
+    },
+    limits: {
+      maxExecutionCycles: 10,
+      maxConsecutiveFailedCycles: 3,
+      maxRemediationAttempts: 3,
+      maxActiveMinutes: 60,
+      maxWallClockDays: 2,
+      maxParallelAgents: 1,
+      maxMeteredUsd: null,
+      billingMode: 'subscriptions-only',
+      humanGates: {
+        eachCycle: false,
+        beforeMilestoneComplete: false,
+        poolRouteFirstUse: false,
+        finalAcceptance: false,
+      },
+    },
+  },
+});
+
+describe('Goal cockpit read-state correctness (7B.1A)', () => {
+  it('Refresh re-reads Goal detail and the active tab only, and renders the new data', async () => {
+    let head = 'aaaaaaaaaaaa';
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/evidence': () => ({
+          evidence: [
+            evidenceRow({
+              subject: { commit: head, tree: null, path: null, reviewedToCommit: null, reviewedToTree: null },
+            }),
+          ],
+          total: 1,
+          limit: 100,
+          integrationHead: head,
+        }),
+        '/api/goals/goal-1/reviews': () => ({ reviews: [], total: 0, limit: 50 }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await user.click(await screen.findByRole('tab', { name: 'Evidence' }));
+    expect(await screen.findByText(/commit aaaaaaaaaa/)).toBeInTheDocument();
+    const before = calls.length;
+    head = 'bbbbbbbbbbbb';
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText(/commit bbbbbbbbbb/)).toBeInTheDocument();
+    const after = calls.slice(before).map((call) => call.url.replace(/^https?:\/\/[^/]+/, ''));
+    expect(after).toContain('/api/goals/goal-1');
+    expect(after).toContain('/api/goals/goal-1/evidence');
+    expect(after.some((url) => url.includes('/reviews'))).toBe(false);
+    expect(
+      after.some((url) => url.includes('/cycles') || url.includes('/findings') || url.includes('/usage')),
+    ).toBe(false);
+  });
+
+  it('Refresh on Overview re-reads the preview', async () => {
+    let tasks = 0;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/preview': () => {
+          tasks += 1;
+          return { preview: preview() };
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await screen.findByLabelText('Preview');
+    await waitFor(() => expect(tasks).toBe(1));
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(tasks).toBe(2));
+  });
+
+  it('never shows definition v1 under a pending v2', async () => {
+    let releaseV2: () => void = () => undefined;
+    const v2Gate = new Promise<void>((resolve) => (releaseV2 = resolve));
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/definitions': () => ({
+          definitions: [definitionSummary(1), definitionSummary(2)],
+        }),
+        '/api/goals/goal-1/definitions/1': () => ({ definition: definitionFull(1) }),
+        '/api/goals/goal-1/definitions/2': async () => {
+          await v2Gate;
+          return { definition: definitionFull(2) };
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await user.click(await screen.findByRole('tab', { name: 'Definitions' }));
+    expect(await screen.findByText('Outcome of version 1')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /v2/ }));
+    await screen.findByText(/Loading Definition v2/);
+    expect(screen.queryByText('Outcome of version 1')).toBeNull();
+    releaseV2();
+    expect(await screen.findByText('Outcome of version 2')).toBeInTheDocument();
+    expect(screen.queryByText('Outcome of version 1')).toBeNull();
+  });
+
+  const unmet = {
+    ok: false,
+    definitionVersion: 1,
+    definitionHash: 'h',
+    integrationHead: 'abc',
+    integrationTree: 'def',
+    failures: [{ code: 'criterion_unsatisfied' as const, subject: 'parse-ok', detail: 'Not yet.' }],
+    finalReview: { required: true, ok: false, reason: 'final_review_missing' },
+    finalAcceptance: { required: false, ok: true, approvalId: null, reason: null },
+    finalApply: { required: true, ok: false, basis: null, reason: 'final_apply_required' },
+  };
+
+  it('does not mount or request the final-apply preflight unless nextAction is final_apply', async () => {
+    serve(detailRoutes(detail({ nextAction: { kind: 'wait_for_turing' }, completion: unmet })));
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await screen.findByLabelText('Completion');
+    await screen.findByLabelText('Preview');
+    expect(screen.queryByLabelText('Final apply preflight')).toBeNull();
+    expect(calls.some((call) => call.url.includes('final-apply'))).toBe(false);
+  });
+
+  it('shows the read-only preflight, with a GET and no apply control, when nextAction is final_apply', async () => {
+    serve(
+      detailRoutes(
+        detail({ nextAction: { kind: 'final_apply' }, completion: { ...unmet, ok: true, failures: [] } }),
+        {
+          '/api/goals/goal-1/final-apply/preflight': () => ({
+            preflight: {
+              status: 'ready_for_approved_apply',
+              recordedBaseBranch: 'main',
+              recordedBaseCommit: 'x',
+              currentBranch: 'main',
+              currentHead: 'x',
+              dirty: false,
+              integrationHead: 'abc',
+              goalRef: 'ref',
+              fastForwardPossible: true,
+              ahead: 1,
+              behind: 0,
+              changedPathCount: 1,
+              changedPaths: ['a'],
+              safety: { ok: true, violationCount: 0 },
+              appliedExternallySupported: false,
+              manualReconciliationRequired: false,
+            },
+          }),
+        },
+      ),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    expect(await screen.findByLabelText('Final apply preflight')).toBeInTheDocument();
+    await screen.findByText(/Ready for approved apply/);
+    const preflightCalls = calls.filter((call) => call.url.includes('final-apply/preflight'));
+    expect(preflightCalls).toHaveLength(1);
+    expect(preflightCalls[0]!.method).toBe('GET');
+    expect(screen.queryByRole('button', { name: /apply/i })).toBeNull();
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
   });
 });

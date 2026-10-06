@@ -237,3 +237,22 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.goals-page .surface-panel {
+  display: grid;
+  gap: var(--s-2);
+  align-content: start;
+  padding: var(--s-4);
+}
+.goals-page .surface-panel h2,
+.goals-page .surface-panel h3 {
+  margin: 0;
+}
+.goal-milestones li {
+  display: grid;
+  gap: 2px;
+}
+.goal-cockpit-head h2 {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+}

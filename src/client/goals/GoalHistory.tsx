@@ -4,8 +4,8 @@ import { Empty, Resource, TruncationNote } from './parts';
 import { formatTime, humanize, shortHash } from './presentation';
 import { useLoad } from './useLoad';
 
-export function CyclesPanel({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.cycles(goalId), goalId);
+export function CyclesPanel({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.cycles(goalId), goalId, refresh);
   return (
     <Resource result={result} label="Cycles" onRetry={reload}>
       {(data) =>
@@ -91,8 +91,8 @@ export function CyclesPanel({ goalId }: { goalId: string }) {
   );
 }
 
-export function ReviewsPanel({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.reviews(goalId), goalId);
+export function ReviewsPanel({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.reviews(goalId), goalId, refresh);
   return (
     <Resource result={result} label="Reviews" onRetry={reload}>
       {(data) =>
@@ -138,8 +138,8 @@ export function ReviewsPanel({ goalId }: { goalId: string }) {
   );
 }
 
-export function FindingsPanel({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.findings(goalId), goalId);
+export function FindingsPanel({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.findings(goalId), goalId, refresh);
   return (
     <Resource result={result} label="Findings" onRetry={reload}>
       {(data) =>
@@ -181,8 +181,8 @@ export function FindingsPanel({ goalId }: { goalId: string }) {
   );
 }
 
-export function EvidencePanel({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.evidence(goalId), goalId);
+export function EvidencePanel({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.evidence(goalId), goalId, refresh);
   return (
     <Resource result={result} label="Evidence" onRetry={reload}>
       {(data) => {

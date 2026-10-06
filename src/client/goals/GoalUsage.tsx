@@ -7,8 +7,8 @@ import { useLoad } from './useLoad';
  * The Goal Engine has no usage ledger of its own: this is the shared usage analytics filtered to the Goal by the
  * server, shown with the same metrics and provenance wording as the Usage page.
  */
-export function UsagePanel({ goalId }: { goalId: string }) {
-  const { result, reload } = useLoad(() => goalsApi.usage(goalId), goalId);
+export function UsagePanel({ goalId, refresh }: { goalId: string; refresh: number }) {
+  const { result, reload } = useLoad(() => goalsApi.usage(goalId), goalId, refresh);
   return (
     <Resource result={result} label="Usage" onRetry={reload}>
       {(usage) =>

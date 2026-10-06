@@ -9,11 +9,13 @@ import { useLoad } from './useLoad';
 export function DefinitionsPanel({
   goalId,
   currentVersion,
+  refresh,
 }: {
   goalId: string;
   currentVersion: number | null;
+  refresh: number;
 }) {
-  const list = useLoad(() => goalsApi.definitions(goalId), goalId);
+  const list = useLoad(() => goalsApi.definitions(goalId), goalId, refresh);
   const [chosen, setChosen] = useState<number | null>(null);
   return (
     <Resource result={list.result} label="Definitions" onRetry={list.reload}>
@@ -44,6 +46,7 @@ export function DefinitionsPanel({
             <DefinitionBody
               goalId={goalId}
               version={version}
+              refresh={refresh}
               summary={definitions.find((d) => d.version === version)}
             />
           </div>
@@ -56,13 +59,19 @@ export function DefinitionsPanel({
 function DefinitionBody({
   goalId,
   version,
+  refresh,
   summary,
 }: {
   goalId: string;
   version: number;
+  refresh: number;
   summary: GoalDefinitionSummary | undefined;
 }) {
-  const { result, reload } = useLoad(() => goalsApi.definition(goalId, version), `${goalId}:${version}`);
+  const { result, reload } = useLoad(
+    () => goalsApi.definition(goalId, version),
+    `${goalId}:${version}`,
+    refresh,
+  );
   return (
     <Resource result={result} label={`Definition v${version}`} onRetry={reload}>
       {(full: GoalDefinitionFull) => {
