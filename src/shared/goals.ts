@@ -353,6 +353,8 @@ export const GOAL_TRANSITIONS: readonly GoalTransitionRule[] = [
   { from: 'blocked', to: 'running', reasons: ['blocker_resolved', 'amendment_approved'], actors: either },
   { from: 'blocked', to: 'needs_user', reasons: ['amendment_in_progress'], actors: userOnly },
   { from: 'paused', to: 'needs_user', reasons: ['amendment_in_progress'], actors: userOnly },
+  // The one needs_user self-transition: the user leaves a denied-gate episode and starts an amendment (a new episode).
+  { from: 'needs_user', to: 'needs_user', reasons: ['amendment_in_progress'], actors: userOnly },
   { from: 'paused', to: 'running', reasons: ['user_resume'], actors: userOnly },
 ];
 

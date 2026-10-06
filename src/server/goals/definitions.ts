@@ -33,6 +33,7 @@ export type GoalDefinitionErrorCode =
   | 'goal_not_amendable'
   | 'approval_definition_changed'
   | 'proposal_exists'
+  | 'gate_denial_not_settled'
   | 'approval_mismatch';
 
 export class GoalDefinitionError extends Error {
@@ -365,6 +366,52 @@ export function beginAmendment(
       });
     else if (goal.status === 'needs_user' && goal.status_reason_code === 'amendment_in_progress') {
       // A previous proposal was discarded; the Goal is still quiesced for amendment.
+    } else if (goal.status === 'needs_user' && goal.status_reason_code === 'gate_pending') {
+      // Only a DENIED non-pool gate (proved from the exact approval in the status detail) may be revised. The supervisor
+      // owns the denial's cycle cleanup, so an unsettled active cycle refuses; nothing is retired here.
+      const detail = db
+        .prepare('SELECT status_detail_json AS d FROM goals WHERE id = ?')
+        .get(input.goalId) as {
+        d: string | null;
+      };
+      let named: { approvalId?: unknown; gate?: unknown } = {};
+      try {
+        named = detail.d ? (JSON.parse(detail.d) as typeof named) : {};
+      } catch {
+        named = {};
+      }
+      const approval =
+        typeof named.approvalId === 'string' ? getGoalApproval(db, named.approvalId) : undefined;
+      if (
+        !approval ||
+        approval.goalId !== input.goalId ||
+        approval.status !== 'denied' ||
+        approval.gate !== named.gate ||
+        !['each_cycle', 'milestone_complete', 'final_acceptance'].includes(approval.gate)
+      )
+        throw new GoalDefinitionError(
+          'goal_not_amendable',
+          'A Goal waiting on a gate cannot be amended unless that gate was denied.',
+        );
+      if (
+        db
+          .prepare(
+            "SELECT 1 FROM goal_cycles WHERE goal_id = ? AND status NOT IN ('succeeded','failed','cancelled','rejected')",
+          )
+          .get(input.goalId)
+      )
+        throw new GoalDefinitionError(
+          'gate_denial_not_settled',
+          'The gate denial has not been settled by the supervisor yet; retry shortly.',
+        );
+      transitionGoal(db, {
+        goalId: input.goalId,
+        to: 'needs_user',
+        reasonCode: 'amendment_in_progress',
+        actor: 'user',
+        detail: { deniedApprovalId: approval.id, gate: approval.gate },
+        now,
+      });
     } else if (goal.status === 'needs_user' && goal.status_reason_code === 'scope_violation') {
       // Already quiesced by the supervisor. The reason is deliberately kept: it is cleared only by a resume that
       // follows an approved (or discarded) amendment, never merely because a proposal exists.

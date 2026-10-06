@@ -1516,3 +1516,25 @@ pause and final-apply preflight are unchanged.
   by the same unified mapper, no longer by truncating the mixed inbox; `/api/approvals/unified` stays mixed.
 - **Amendment body.** `POST /api/goals/:id/definitions` again accepts the strict optional `definition`, passed straight
   to `beginAmendment`; the copy-then-PUT flow still works.
+
+## Stage 7A.2 denied-gate revision correction
+
+7A.1 made a denied non-pool gate show `nextAction = revise_goal`, but `beginAmendment` refused `needs_user(gate_pending)`.
+No migration; gate authority is not weakened.
+
+- **Eligibility.** `beginAmendment` accepts `needs_user(gate_pending)` only when the approval named by
+  `status_detail_json.approvalId` exists, belongs to the Goal, is `denied`, matches `status_detail.gate`, and its gate is
+  `each_cycle`, `milestone_complete` or `final_acceptance`. A pending or approved gate, a missing/unknown/foreign/mismatched
+  approval, and `pool_route_first_use` (a denied pool member stays `resume`: the resolver considers the next member) are
+  refused with `goal_not_amendable`. Denied approvals stay `denied`; no new approval state exists.
+- **State-machine edge.** One narrow `needs_user -> needs_user` rule, reason `amendment_in_progress`, actor `user`; no
+  generic self-transition. `beginAmendment` performs it inside the same outer transaction as the proposed-version insert
+  and `amendment_started`, so a failure rolls the whole step back and the Goal stays in its denied-gate state. The new
+  `state_changed` event starts a clean amendment episode for `verifyAmendmentResolution`, whose event-based authority is
+  unchanged.
+- **Denial settlement.** The supervisor stays the single authority for cancelling a denied `each_cycle` cycle
+  (`gate_denied`). While that cycle is still active, `beginAmendment` refuses with `gate_denial_not_settled` (409) and
+  changes nothing, and the read model returns `wait_for_turing`; once it is cancelled the action becomes `revise_goal`.
+  A denied final acceptance has no cycle and shows `revise_goal` immediately.
+- **No deadlock.** The historical denied approval is not pending, so preflight after an approved (or discarded)
+  amendment is not blocked by it; a later completion attempt may request a fresh, correctly bound final acceptance.

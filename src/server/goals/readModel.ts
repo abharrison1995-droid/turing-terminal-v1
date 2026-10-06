@@ -404,8 +404,9 @@ function exactGateAction(
   if (!approval || approval.goalId !== goalId) return null;
   if (approval.status === 'pending') return { kind: 'review_approval', approvalId: approval.id };
   if (approval.status === 'approved' || approval.gate === 'pool_route_first_use') return { kind: 'resume' };
-  // A denied gate is terminal: the Goal stays with the user, who revises it (or abandons it).
-  return { kind: 'revise_goal' };
+  // A denied gate is terminal: the Goal stays with the user, who revises it (or abandons it). Until the supervisor has
+  // settled the denial (cancelled the gate's cycle) the revision would be refused, so Turing still has one action.
+  return activeCycle(db, goalId) ? { kind: 'wait_for_turing' } : { kind: 'revise_goal' };
 }
 
 export function deriveNextAction(
