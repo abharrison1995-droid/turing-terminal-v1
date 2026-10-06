@@ -19,7 +19,7 @@ import type {
 } from '../shared/types';
 import { masterApiUrl } from './desktop';
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(masterApiUrl(path), {
     ...init,
     headers: {

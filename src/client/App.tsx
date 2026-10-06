@@ -37,6 +37,7 @@ import {
   Send,
   Settings,
   SlidersHorizontal,
+  Target,
   Shield,
   Smartphone,
   Sparkles,
@@ -73,6 +74,7 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { GoalsPage } from './goals/GoalsPage';
 import {
   billingLaneLabel,
   billingLanesForBackend,
@@ -109,11 +111,12 @@ import {
   type MachineProfile,
 } from './machineProfiles';
 
-type Page = 'command' | 'workflows' | 'projects' | 'runs' | 'usage' | 'machines' | 'settings';
+type Page = 'command' | 'workflows' | 'projects' | 'goals' | 'runs' | 'usage' | 'machines' | 'settings';
 
 const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
   { id: 'workflows', label: 'Workflows', icon: WorkflowIcon },
   { id: 'projects', label: 'Projects', icon: FileCode2 },
+  { id: 'goals', label: 'Grand Projects', icon: Target },
   { id: 'runs', label: 'Runs & history', icon: Activity },
   { id: 'usage', label: 'Usage', icon: Radio },
   { id: 'machines', label: 'Machines', icon: Monitor },
@@ -280,7 +283,7 @@ function App() {
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
   const titleQuiet =
-    ['workflows', 'projects', 'usage', 'machines', 'settings'].includes(page) ||
+    ['workflows', 'projects', 'goals', 'usage', 'machines', 'settings'].includes(page) ||
     (page === 'runs' && !selectedRun);
   const railTasks = (snapshot?.runs ?? [])
     .slice()
@@ -470,6 +473,7 @@ function App() {
                 onNotice={setNotice}
               />
             )}
+            {page === 'goals' && <GoalsPage />}
             {page === 'runs' && snapshot && (
               <RunsPage
                 snapshot={snapshot}

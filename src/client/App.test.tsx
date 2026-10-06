@@ -85,6 +85,24 @@ describe('Turing Terminal shell', () => {
     expect(screen.getByRole('button', { name: /Add project/ })).toBeTruthy();
   });
 
+  it('opens the Grand Projects area from navigation without disturbing other pages', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ goals: [], total: 0, limit: 50 }), { status: 200 })),
+    );
+    render(<App />);
+    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await user.click(
+      within(screen.getByRole('complementary', { name: 'Primary navigation' })).getByRole('button', {
+        name: 'Grand Projects',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Grand Projects' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
+  });
+
   it('shows a pairing gate instead of workspace data until the phone is approved', async () => {
     const user = userEvent.setup();
     dashboard.mockRejectedValue(new Error('Pair this device with the desktop before using it.'));
