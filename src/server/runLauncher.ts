@@ -245,6 +245,42 @@ export function startQueuedRun(db: Db, engine: RunEngine, runId: string): StartQ
   return { started: true };
 }
 
+export type CancelQueuedRunResult =
+  { cancelled: true } | { cancelled: false; reason: 'not-found' | 'not-queued' };
+
+/**
+ * Cancels a run that was persisted but never started. It acts ONLY on a `queued` run (never preparing, running,
+ * waiting, paused or terminal ones) and does not involve the RunEngine, which has never seen the run. Pending stages are
+ * cancelled (skipped ones stay skipped), completion is persisted and a bounded `run_cancelled` event is recorded, all in
+ * one transaction. It joins an enclosing transaction when called inside one.
+ */
+export function cancelQueuedRun(db: Db, runId: string, reason: string): CancelQueuedRunResult {
+  return db.transaction((): CancelQueuedRunResult => {
+    const row = db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as
+      { status: string } | undefined;
+    if (!row) return { cancelled: false, reason: 'not-found' };
+    if (row.status !== 'queued') return { cancelled: false, reason: 'not-queued' };
+    const now = new Date().toISOString();
+    const bounded = reason.slice(0, 200);
+    db.prepare(
+      "UPDATE stages SET status = 'cancelled', finished_at = ? WHERE run_id = ? AND status = 'pending'",
+    ).run(now, runId);
+    db.prepare(
+      "UPDATE runs SET status = 'cancelled', completed_at = ?, summary = ? WHERE id = ? AND status = 'queued'",
+    ).run(now, bounded, runId);
+    db.prepare(
+      'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(
+      randomUUID(),
+      runId,
+      'run_cancelled',
+      JSON.stringify({ status: 'cancelled', reason: bounded }),
+      now,
+    );
+    return { cancelled: true };
+  })();
+}
+
 /** Ordinary run path: persist the queued run, then start it immediately. */
 export function createRun(db: Db, engine: RunEngine, preview: RunPreview, options: QueueRunOptions = {}) {
   const { runId } = queueRun(db, preview, options);

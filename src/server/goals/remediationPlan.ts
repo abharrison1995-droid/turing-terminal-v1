@@ -3,7 +3,7 @@ import type { GoalDefinition } from '../../shared/goals.js';
 import type { Db } from '../db.js';
 import { canonicalJson } from './definitionHash.js';
 import { loadDefinitionVersion } from './definitions.js';
-import { getGoalFinding, type GoalFinding } from './findings.js';
+import { allowedOpenFindings, getGoalFinding, listGoalFindings, type GoalFinding } from './findings.js';
 import { getReview } from './reviews.js';
 
 /**
@@ -54,6 +54,80 @@ export function remediationEpisodeKey(input: {
       }),
     )
     .digest('hex');
+}
+
+/**
+ * One review observation of one finding under one definition version, independent of any milestone. A successfully
+ * integrated remediation consumes the observation, so a changed fallback milestone can never re-open the same one; only a
+ * later review (a new last-seen review) or a new definition version creates another opportunity.
+ */
+export function remediationObservationKey(input: {
+  findingId: string;
+  lastSeenReviewId: string;
+  definitionVersion: number;
+}): string {
+  return createHash('sha256')
+    .update(
+      canonicalJson({
+        schema: 1,
+        kind: 'remediation_observation',
+        findingId: input.findingId,
+        lastSeenReviewId: input.lastSeenReviewId,
+        definitionVersion: input.definitionVersion,
+      }),
+    )
+    .digest('hex');
+}
+
+const byCreation = (a: GoalFinding, b: GoalFinding) =>
+  a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+
+/** Findings the current completion policy cannot tolerate: the deterministic excess per limited severity. */
+export function thresholdBlockingFindingIds(
+  open: readonly GoalFinding[],
+  policy: GoalDefinition['contract']['completionPolicy'],
+): Set<string> {
+  const limits = allowedOpenFindings(policy);
+  const out = new Set<string>();
+  for (const severity of ['critical', 'high', 'medium'] as const) {
+    const limit = limits[severity];
+    if (limit === null) continue;
+    const ofSeverity = open.filter((finding) => finding.severity === severity).sort(byCreation);
+    for (const finding of ofSeverity.slice(0, Math.max(0, ofSeverity.length - limit))) out.add(finding.id);
+  }
+  return out;
+}
+
+/**
+ * The single canonical calculation of which open findings are automatic remediation candidates, shared by selection and
+ * runtime reproof: threshold excess under the CURRENT policy, or backed by the finding's last-seen review being a
+ * completed blocking review at the current definition version and the current tree (a null tree never qualifies).
+ */
+export function remediationCandidates(
+  db: Db,
+  goalId: string,
+  input: { definition: GoalDefinition; version: number; tree: string | null },
+): Map<string, { finding: GoalFinding; reason: RemediationReason }> {
+  const open = listGoalFindings(db, goalId, 'open');
+  const threshold = thresholdBlockingFindingIds(open, input.definition.contract.completionPolicy);
+  const out = new Map<string, { finding: GoalFinding; reason: RemediationReason }>();
+  for (const finding of open) {
+    const review = getReview(db, finding.lastSeenReviewId);
+    const blocking =
+      !!review &&
+      review.status === 'completed' &&
+      review.blocking === true &&
+      review.definitionVersion === input.version &&
+      input.tree !== null &&
+      review.reviewedToTree === input.tree;
+    const overThreshold = threshold.has(finding.id);
+    if (!blocking && !overThreshold) continue;
+    out.set(finding.id, {
+      finding,
+      reason: blocking && overThreshold ? 'both' : blocking ? 'blocking_review' : 'threshold',
+    });
+  }
+  return out;
 }
 
 const boundedString = (value: unknown, max: number): value is string =>
@@ -159,7 +233,7 @@ export function proveRemediationPlan(
     milestoneKey: string | null;
     outcome: Record<string, unknown> | null;
   },
-  options: { requireAnchor?: boolean } = {},
+  options: { requireAnchor?: boolean; tree?: string | null } = {},
 ): RemediationProof {
   const invalid = { ok: false, code: 'remediation_plan_invalid' } as const;
   const stale = { ok: false, code: 'remediation_no_longer_current' } as const;
@@ -175,10 +249,21 @@ export function proveRemediationPlan(
   if (!version) return invalid;
   const definition = version.definition as GoalDefinition;
   if (!definition.milestones.some((milestone) => milestone.key === plan.milestoneKey)) return stale;
+  const candidates =
+    options.tree === undefined
+      ? undefined
+      : remediationCandidates(db, cycle.goalId, {
+          definition,
+          version: plan.definitionVersion,
+          tree: options.tree,
+        });
   for (const episode of plan.episodes) {
     const finding = getGoalFinding(db, episode.findingId);
     if (!finding || finding.goalId !== cycle.goalId) return invalid;
     if (finding.status !== 'open' || finding.lastSeenReviewId !== episode.lastSeenReviewId) return stale;
+    // Still an automatic candidate by at least one accepted rule. The persisted reason is creation audit only and the
+    // target milestone is write-once, so neither is re-derived here.
+    if (candidates && !candidates.has(finding.id)) return stale;
     if (
       options.requireAnchor &&
       remediationAnchor(db, cycle.goalId, finding, definition) !== plan.milestoneKey

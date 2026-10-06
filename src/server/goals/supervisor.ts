@@ -1,5 +1,6 @@
 import type { CriterionEvaluation, GoalMilestoneSpec, MilestoneEvaluation } from '../../shared/goals.js';
 import type { Db } from '../db.js';
+import { cancelQueuedRun } from '../runLauncher.js';
 import {
   advanceGoalRef,
   changedEntries,
@@ -949,23 +950,35 @@ export class GoalSupervisor {
   }
 
   /**
-   * Re-proves a finding-remediation cycle's persisted plan before any provider work is queued for it. A corrupt plan
-   * fails the cycle closed; a plan whose findings, milestone or definition are no longer current retires the cycle
-   * without substituting anything. Other cycles are untouched. Returns the result to report, or null when it may proceed.
+   * Re-proves a finding-remediation cycle's persisted plan (structure, currentness AND that every selected finding is
+   * still an automatic candidate under the current policy / current blocking review) before provider or repository
+   * authority is exercised for it: queueing a run, starting a queued run, consuming a finished proposal, integrating.
+   * A corrupt plan fails the cycle closed; a plan that is no longer current retires it without substituting anything.
+   * When a never-started queued run is passed it is cancelled in the SAME transaction as the cycle's terminal
+   * transition, so neither a terminal cycle with a queued run nor a cancelled run with a live cycle can be committed.
+   * Other cycles are untouched. Returns the result to report, or null when the work may proceed.
    */
-  private reproveRemediation(goalId: string, cycle: CycleRow): TickResult | null {
+  private async reproveRemediation(
+    goalId: string,
+    cycle: CycleRow,
+    queuedRun?: RunRow,
+  ): Promise<TickResult | null> {
     if (!isFindingRemediation(cycle)) return null;
-    const proof = proveRemediationPlan(this.db, cycle);
+    const resolved = await resolveGoalRepository(this.db, goalId);
+    const proof = proveRemediationPlan(this.db, cycle, { tree: resolved.ok ? resolved.state.tree : null });
     if (proof.ok) return null;
-    if (proof.code === 'remediation_plan_invalid') return this.fail(cycle, proof.code);
-    finalizeCycle(this.db, {
-      cycleId: cycle.id,
-      to: 'cancelled',
-      outcomeCode: proof.code,
-      now: this.now(),
-    });
-    this.afterCycle(goalId);
-    return { action: 'remediation_retired', goalId, cycleId: cycle.id, code: proof.code };
+    return this.db.transaction((): TickResult => {
+      if (queuedRun) cancelQueuedRun(this.db, queuedRun.id, proof.code);
+      if (proof.code === 'remediation_plan_invalid') return this.fail(cycle, proof.code);
+      finalizeCycle(this.db, {
+        cycleId: cycle.id,
+        to: 'cancelled',
+        outcomeCode: proof.code,
+        now: this.now(),
+      });
+      this.afterCycle(goalId);
+      return { action: 'remediation_retired', goalId, cycleId: cycle.id, code: proof.code };
+    })();
   }
 
   private startReview(goalId: string, trigger: ReviewTrigger): TickResult {
@@ -1199,7 +1212,12 @@ export class GoalSupervisor {
   private async tickProposing(goalId: string, cycle: CycleRow): Promise<TickResult> {
     const result = await this.tickProposingStep(goalId, cycle);
     // Once the proposal result is durably consumed into cycle history the read-only proposal worktree is disposable.
-    if (!['proposal_recorded', 'proposal_rejected', 'cycle_failed'].includes(result.action)) return result;
+    if (
+      !['proposal_recorded', 'proposal_rejected', 'cycle_failed', 'remediation_retired'].includes(
+        result.action,
+      )
+    )
+      return result;
     const run = this.runForPurpose(cycle.id, 'proposal');
     if (!run) return result;
     const cleanup = await this.tryPrune(run.id);
@@ -1224,7 +1242,7 @@ export class GoalSupervisor {
     if (!run) {
       const blocked = await this.verifyRef(goalId);
       if (blocked) return blocked;
-      const retired = this.reproveRemediation(goalId, cycle);
+      const retired = await this.reproveRemediation(goalId, cycle);
       if (retired) return retired;
       try {
         await this.executor.queueProposalRun({
@@ -1248,6 +1266,8 @@ export class GoalSupervisor {
     if (run.status === 'queued') {
       const blocked = await this.verifyRef(goalId);
       if (blocked) return blocked;
+      const retired = await this.reproveRemediation(goalId, cycle, run);
+      if (retired) return retired;
       const outcome = this.startQueued(goalId, cycle, run);
       if (outcome.kind === 'result') return outcome.result;
       return outcome.kind === 'in_flight'
@@ -1272,6 +1292,9 @@ export class GoalSupervisor {
     if (run.status !== 'completed')
       return this.fail(cycle, 'run_state_invalid', { runId: run.id, runStatus: run.status });
 
+    // A finding may have changed while the proposal ran: a stale proposal is not consumed as current authority.
+    const staleProposal = await this.reproveRemediation(goalId, cycle);
+    if (staleProposal) return staleProposal;
     let result;
     try {
       result = await this.executor.readProposal(run.id);
@@ -1369,7 +1392,7 @@ export class GoalSupervisor {
               return { action: 'run_queued', goalId, cycleId: cycle.id };
             }
             if (purpose !== 'execution' && purpose !== 'remediation') return this.fail(cycle, 'launch_error');
-            const retired = this.reproveRemediation(goalId, cycle);
+            const retired = await this.reproveRemediation(goalId, cycle);
             if (retired) return retired;
             await this.executor.queueChildRun({
               goalId,
@@ -1394,6 +1417,8 @@ export class GoalSupervisor {
         if (run.status === 'queued') {
           const blocked = await this.verifyRef(goalId);
           if (blocked) return blocked;
+          const retired = await this.reproveRemediation(goalId, cycle, run);
+          if (retired) return retired;
           const outcome = this.startQueued(goalId, cycle, run);
           if (outcome.kind === 'result') return outcome.result;
           started = outcome.kind === 'in_flight';
@@ -1511,6 +1536,10 @@ export class GoalSupervisor {
         this.afterCycle(goalId);
         return { action: 'cycle_succeeded', goalId, cycleId: cycle.id };
       }
+      // Only after an already-applied advance has been recognised (it is history and must be recorded honestly): a
+      // remediation whose plan is no longer current must not advance the Goal ref.
+      const stale = await this.reproveRemediation(goalId, cycle);
+      if (stale) return stale;
       const violations = await this.scopeViolations(goalId, cycle, run, spec);
       if (violations.length > 0) return this.scopeViolation(goalId, cycle, run, violations);
       const context = loadContext(this.db, goalId);
