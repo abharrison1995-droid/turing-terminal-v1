@@ -618,13 +618,24 @@ describe('completion authority', () => {
       milestones: [milestone('m1', ['build', 'tests'])],
       policy: { requireFinalReview: true },
     });
-    const h = harness({ definition: withFinalReview });
+    const h = harness({
+      definition: withFinalReview,
+      tune: (definition) => {
+        definition.routing.workflows = {
+          planning: 'goal-planning-v1',
+          execution: 'goal-execution-v1',
+          review: 'goal-review-v1',
+          verification: 'goal-verification-v1',
+        };
+      },
+    });
     await passDeterministic(h.fx);
     await h.start();
-    expect(await h.tick()).toBe('completion_pending');
-    expect(h.status().status).toBe('running');
+    // With the final review required and absent, the supervisor schedules it (6B.1) rather than attempting completion.
+    expect(await h.tick()).toBe('cycle_created');
+    expect(h.status().status).toBe('reviewing');
     expect(listGoalEvents(h.fx.db, h.fx.goalId).some((event) => event.type === 'completion_evaluated')).toBe(
-      true,
+      false,
     );
   });
 

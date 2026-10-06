@@ -48,6 +48,8 @@ import { rebuildGoalMemory } from './memory.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
 import { validateNextTask } from './nextTask.js';
 import { runPreflight, type PreflightFailureCode } from './preflight.js';
+import { createReviewCycle } from './reviewCycle.js';
+import { determineReviewTrigger, type ReviewTrigger } from './reviewTriggers.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { pathInMilestoneScope, scopePrefixes } from './scope.js';
 import { transitionGoal } from './stateMachine.js';
@@ -807,6 +809,18 @@ export class GoalSupervisor {
     const done = (key: string) => status.get(key) === 'satisfied' || status.get(key) === 'skipped';
     const remaining = version.definition.milestones.filter((spec) => !done(spec.key));
 
+    // Review triggers sit BEFORE any ordinary next work (including a milestone's human gate and the final completion
+    // attempt) and after fresh evidence/milestone evaluation. The selector only reads; creation is the accepted
+    // createReviewCycle, exactly one cycle per tick, and the run itself is queued by the Stage-6A launch ticks.
+    const selection = await determineReviewTrigger(this.db, goalId, {
+      definition: version.definition,
+      version: version.version,
+      evaluations,
+      includeFinal: remaining.length === 0,
+    });
+    if (!selection.ok) return this.blockForRef(goalId, 'git_state_invalid');
+    if (selection.trigger) return this.startReview(goalId, selection.trigger);
+
     if (remaining.length === 0) {
       // Completion is decided only by the real evaluation; the supervisor never writes the completed status.
       const outcome = await completeGoal(this.db, goalId, { now: this.now() });
@@ -851,6 +865,34 @@ export class GoalSupervisor {
         kind: 'execution',
         triggerCode: 'next_task',
         milestoneKey: active.key,
+        now: this.now(),
+        liveActiveMs: this.tracker.pendingMs(goalId),
+      });
+      return { action: created.created ? 'cycle_created' : 'busy', goalId, cycleId: created.cycle.id };
+    } catch (error) {
+      if (error instanceof CycleError && error.code === 'bound_exceeded' && error.breach) {
+        transitionGoal(this.db, {
+          goalId,
+          to: 'blocked',
+          reasonCode: error.breach.reason,
+          actor: 'supervisor',
+          now: this.now(),
+        });
+        return { action: 'bound_blocked', goalId, code: error.breach.reason };
+      }
+      throw error;
+    }
+  }
+
+  private startReview(goalId: string, trigger: ReviewTrigger): TickResult {
+    try {
+      const created = createReviewCycle(this.db, {
+        goalId,
+        reviewKind: trigger.kind,
+        triggerCode: trigger.triggerCode,
+        ...(trigger.milestoneKey ? { milestoneKey: trigger.milestoneKey } : {}),
+        reviewedFromCommit: trigger.reviewedFromCommit,
+        triggerDetail: trigger.detail,
         now: this.now(),
         liveActiveMs: this.tracker.pendingMs(goalId),
       });

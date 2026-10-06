@@ -459,6 +459,44 @@ export async function changedEntries(repoRoot: string, from: string, to: string)
   return entries;
 }
 
+const DIFF_LINE_ENTRY_CAP = 20_000;
+
+export type DiffLineCount = { ok: true; lines: number; capped: boolean } | { ok: false };
+
+/**
+ * Added + deleted text lines for from..to over Git objects only (never a working tree), from `--numstat -z` records.
+ * Renames are reported as add+delete (`--no-renames`) so every record is `added TAB deleted TAB path`. A binary file
+ * (`-` counts) contributes 0 lines: it has no line count, and its path is still counted by the changed-path set. More
+ * than DIFF_LINE_ENTRY_CAP records stops parsing and reports `capped`, which callers treat as "at least this many".
+ * Any record that is not `digits|- TAB digits|- TAB path` makes the count unavailable rather than guessing.
+ */
+export async function diffLineCount(repoRoot: string, from: string, to: string): Promise<DiffLineCount> {
+  const result = await gitTry(repoRoot, [
+    'diff',
+    '--numstat',
+    '-z',
+    '--no-renames',
+    '--no-color',
+    '--no-ext-diff',
+    '--no-textconv',
+    from,
+    to,
+    '--',
+  ]);
+  if (!result.ok) return { ok: false };
+  let lines = 0;
+  let seen = 0;
+  for (const record of result.stdout.split('\0')) {
+    if (!record) continue;
+    if (seen >= DIFF_LINE_ENTRY_CAP) return { ok: true, lines, capped: true };
+    seen += 1;
+    const match = /^(\d+|-)\t(\d+|-)\t/.exec(record);
+    if (!match) return { ok: false };
+    if (match[1] !== '-') lines += Number(match[1]) + Number(match[2]);
+  }
+  return { ok: true, lines, capped: false };
+}
+
 export function changedPathSet(entries: ChangedEntry[]): string[] {
   const paths = new Set<string>();
   for (const entry of entries) {

@@ -63,6 +63,16 @@ export async function selectReviewRange(
   return (await isAncestorOfHead(resolved.state, candidate)) ? candidate : null;
 }
 
+function boundedDetail(
+  detail: Record<string, string | number | boolean | null>,
+): Record<string, string | number | boolean | null> {
+  return Object.fromEntries(
+    Object.entries(detail)
+      .slice(0, 12)
+      .map(([key, value]) => [key.slice(0, 40), typeof value === 'string' ? value.slice(0, 400) : value]),
+  );
+}
+
 export interface CreateReviewCycleInput {
   goalId: string;
   reviewKind: GoalReviewKind;
@@ -72,6 +82,8 @@ export interface CreateReviewCycleInput {
   milestoneKey?: string;
   /** The start of the reviewed range, from `selectReviewRange`; null = the whole relevant history. */
   reviewedFromCommit?: string | null;
+  /** Bounded finite facts about why it was triggered; recorded only in the `cycle_created` event. */
+  triggerDetail?: Record<string, string | number | boolean | null>;
   now?: string;
   liveActiveMs?: number;
 }
@@ -82,7 +94,7 @@ export interface CreateReviewCycleInput {
  * review plan) and moves the Goal `running -> reviewing` (`review_triggered`). A review does not count against
  * maxExecutionCycles or maxRemediationAttempts (those counters only ever count execution and remediation cycles); it
  * still obeys wall clock, active time, spend, the one-active-cycle rule and the migration-020 invariants. Idempotent:
- * an existing active cycle is returned and nothing is written. No automatic trigger calls this in Stage 6A.
+ * an existing active cycle is returned and nothing is written. The supervisor's trigger selector (`reviewTriggers.ts`) is its only automatic caller.
  */
 export function createReviewCycle(db: Db, input: CreateReviewCycleInput): CreateCycleResult {
   const now = input.now ?? new Date().toISOString();
@@ -165,6 +177,7 @@ export function createReviewCycle(db: Db, input: CreateReviewCycleInput): Create
         kind: 'review',
         triggerCode: input.triggerCode,
         milestoneKey: input.milestoneKey ?? null,
+        ...(input.triggerDetail ? { triggerDetail: boundedDetail(input.triggerDetail) } : {}),
         definitionVersion: version.version,
         baseIntegrationCommit: runtime.integration_head,
       },

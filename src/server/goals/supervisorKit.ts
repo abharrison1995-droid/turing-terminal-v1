@@ -72,6 +72,11 @@ export function harness(
     simpleDefinition({ milestones: [milestone('m1', ['build']), milestone('m2', ['tests'])] });
   delete definition.review.periodic;
   delete definition.review.onRepeatedFailure;
+  // Automatic review triggers are off by default so lifecycle tests stay about their own subject; trigger tests opt in
+  // through `tune`.
+  delete definition.review.onScopeChange;
+  definition.review.onMilestoneComplete = false;
+  if (!definition.contract.completionPolicy.requireFinalReview) definition.review.final = false;
   options.tune?.(definition);
   const fx = goalRepoFixture({ definition });
   const { db } = fx;
