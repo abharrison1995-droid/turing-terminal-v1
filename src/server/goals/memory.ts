@@ -95,6 +95,21 @@ export function compactMemory(
   return memory;
 }
 
+/** Focused findings first (in the given order, each once), then the rest by severity; the sort is stable. */
+function orderOpenFindings<T extends { id: string; severity: FindingSeverity }>(
+  findings: T[],
+  focus: readonly string[] | undefined,
+): T[] {
+  const rank = new Map((focus ?? []).map((id, index) => [id, index] as const));
+  const focused = findings
+    .filter((finding) => rank.has(finding.id))
+    .sort((a, b) => rank.get(a.id)! - rank.get(b.id)!);
+  const rest = findings
+    .filter((finding) => !rank.has(finding.id))
+    .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
+  return [...focused, ...rest];
+}
+
 /** Builds (without writing) the memory for a Goal from persisted state. */
 export function buildGoalMemory(
   db: Db,
@@ -105,6 +120,8 @@ export function buildGoalMemory(
     criterionStates?: ReadonlyMap<string, MemoryCriterionStatus>;
     nextHint?: string;
     budget?: number;
+    /** Stable finding ids listed first (before severity order and the cap), for a remediation planner. */
+    focusFindingIds?: readonly string[];
   } = {},
 ): GoalMemory {
   const goal = db
@@ -202,8 +219,7 @@ export function buildGoalMemory(
         }
       : null,
     decisions,
-    openFindings: listGoalFindings(db, goalId, 'open')
-      .sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity])
+    openFindings: orderOpenFindings(listGoalFindings(db, goalId, 'open'), options.focusFindingIds)
       .slice(0, MEMORY_LIMITS.openFindings)
       .map((finding) => ({
         goalFindingId: finding.id,

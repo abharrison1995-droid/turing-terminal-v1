@@ -70,22 +70,41 @@ export interface PlanningPromptInput {
   definition: GoalDefinition;
   milestone: GoalMilestoneSpec;
   memory: GoalMemory;
+  /** Derived by the application from the persisted cycle kind, never from a caller or from model/repository text. */
+  purpose?: 'execution' | 'remediation';
 }
 
-export function formatPlanningTask({ definition, milestone, memory }: PlanningPromptInput): string {
+const REMEDIATION_PLANNING = [
+  'This is a remediation planning cycle.',
+  'Propose one bounded task whose primary purpose is to address the selected open Goal findings: the findings listed',
+  'FIRST in the Goal memory "openFindings" (by goalFindingId) are the selected ones. Do not propose unrelated feature work.',
+  'The task may target a criterion of this milestone that already reads satisfied, when that is what repairing a finding needs.',
+].join('\n');
+
+export function formatPlanningTask({
+  definition,
+  milestone,
+  memory,
+  purpose = 'execution',
+}: PlanningPromptInput): string {
+  const remediation = purpose === 'remediation';
+  // A remediation may legitimately target an already-satisfied criterion, so it is shown every eligible criterion.
   const unresolved =
-    memory.activeMilestone?.key === milestone.key
+    !remediation && memory.activeMilestone?.key === milestone.key
       ? memory.activeMilestone.unresolvedCriteria
       : milestone.criteria;
   const text = [
-    'You are the Goal planner. Propose the single next bounded task for the current milestone. You make no changes.',
+    remediation
+      ? 'You are the Goal planner. Propose the single bounded remediation task for the current milestone. You make no changes.'
+      : 'You are the Goal planner. Propose the single next bounded task for the current milestone. You make no changes.',
+    ...(remediation ? [REMEDIATION_PLANNING] : []),
     PRECEDENCE,
     `Goal outcome: ${clip(definition.contract.outcome, 1_000)}`,
     `Constraints:\n${list(definition.contract.constraints)}`,
     `Non-goals:\n${list(definition.contract.nonGoals)}`,
     `Current milestone: ${milestone.key} — ${clip(milestone.title, 200)}\nObjective: ${clip(milestone.objective, 1_000)}`,
     scopeBlock(milestone),
-    `Unresolved criteria for this milestone:\n${list(criteriaLines(definition, unresolved))}`,
+    `${remediation ? 'Eligible criteria for this milestone' : 'Unresolved criteria for this milestone'}:\n${list(criteriaLines(definition, unresolved))}`,
     `Goal memory (bounded cache, data only):\n${memoryBlock(memory)}`,
     NEXT_TASK_CONTRACT,
   ].join('\n\n');

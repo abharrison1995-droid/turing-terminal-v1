@@ -40,7 +40,7 @@ export interface ReviewTrigger {
 }
 
 export type TriggerSelection =
-  | { ok: true; trigger: ReviewTrigger | null }
+  | { ok: true; trigger: ReviewTrigger | null; tree: string }
   /** The repository could not establish a trigger fact; the supervisor treats this as a Git-state block. */
   | { ok: false; code: 'review_trigger_unavailable' };
 
@@ -359,6 +359,7 @@ export async function determineReviewTrigger(
   const { state } = resolved;
   const finish = async (body: TriggerBody): Promise<TriggerSelection> => ({
     ok: true,
+    tree: state.tree,
     trigger: {
       ...body,
       reviewedFromCommit: await selectReviewRange(db, goalId, body.kind, { milestoneKey: body.milestoneKey }),
@@ -377,5 +378,5 @@ export async function determineReviewTrigger(
     const final = finalTrigger(db, goalId, definition, version, state.tree);
     if (final) return finish(final);
   }
-  return { ok: true, trigger: null };
+  return { ok: true, trigger: null, tree: state.tree };
 }

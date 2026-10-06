@@ -7,7 +7,7 @@ import type {
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
 import { loadDefinitionVersion } from './definitions.js';
-import { openFindingCounts } from './findings.js';
+import { allowedOpenFindings, openFindingCounts } from './findings.js';
 import { evaluateCriteria } from './freshness.js';
 import { evaluateMilestones, userApprovals } from './milestones.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
@@ -172,11 +172,7 @@ export async function evaluateCompletion(
 
   const policy = definition.contract.completionPolicy;
   const open = openFindingCounts(db, goalId);
-  const limits = {
-    critical: policy.maxOpenFindings.critical,
-    high: policy.maxOpenFindings.high,
-    medium: policy.maxOpenFindings.medium ?? null,
-  };
+  const limits = allowedOpenFindings(policy);
   let findingsOk = true;
   for (const severity of ['critical', 'high', 'medium'] as const) {
     const limit = limits[severity];

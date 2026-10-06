@@ -49,6 +49,13 @@ import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
 import { validateNextTask } from './nextTask.js';
 import { runPreflight, type PreflightFailureCode } from './preflight.js';
 import { createReviewCycle } from './reviewCycle.js';
+import {
+  isFindingRemediation,
+  proveRemediationPlan,
+  REMEDIATION_TRIGGER_CODE,
+  type RemediationPlan,
+} from './remediationPlan.js';
+import { determineRemediationPlan } from './remediationSelector.js';
 import { determineReviewTrigger, type ReviewTrigger } from './reviewTriggers.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { pathInMilestoneScope, scopePrefixes } from './scope.js';
@@ -102,6 +109,8 @@ export const TICK_ACTIONS = [
   'review_waiting',
   'review_decision_needed',
   'review_consumed',
+  'remediation_unavailable',
+  'remediation_retired',
 ] as const;
 export type TickAction = (typeof TICK_ACTIONS)[number];
 
@@ -821,6 +830,27 @@ export class GoalSupervisor {
     if (!selection.ok) return this.blockForRef(goalId, 'git_state_invalid');
     if (selection.trigger) return this.startReview(goalId, selection.trigger);
 
+    // Review > remediation > ordinary next work: a fresher review may update finding state before remediation is
+    // decided, and findings that block completion are repaired before completion or ordinary work is attempted. The
+    // selector only reads; it schedules a cycle (no run, route, approval or provider call).
+    const remediation = determineRemediationPlan(this.db, goalId, {
+      definition: version.definition,
+      version: version.version,
+      tree: selection.tree,
+    });
+    if (!remediation.ok) {
+      transitionGoal(this.db, {
+        goalId,
+        to: 'blocked',
+        reasonCode: 'review_blocked',
+        actor: 'supervisor',
+        detail: { code: remediation.code, findingId: remediation.findingId },
+        now: this.now(),
+      });
+      return { action: 'remediation_unavailable', goalId, code: remediation.code };
+    }
+    if (remediation.plan) return this.startRemediation(goalId, remediation.plan);
+
     if (remaining.length === 0) {
       // Completion is decided only by the real evaluation; the supervisor never writes the completed status.
       const outcome = await completeGoal(this.db, goalId, { now: this.now() });
@@ -882,6 +912,60 @@ export class GoalSupervisor {
       }
       throw error;
     }
+  }
+
+  /**
+   * Creates the remediation cycle for a selected plan. The active-milestone change and the cycle (with its write-once
+   * plan) are one transaction: a bound or validation failure leaves the Goal pointing where it did before.
+   */
+  private startRemediation(goalId: string, plan: RemediationPlan): TickResult {
+    try {
+      const created = this.db.transaction(() => {
+        this.markActiveMilestone(goalId, plan.milestoneKey);
+        return createCycle(this.db, {
+          goalId,
+          kind: 'remediation',
+          triggerCode: REMEDIATION_TRIGGER_CODE,
+          milestoneKey: plan.milestoneKey,
+          remediationPlan: plan,
+          now: this.now(),
+          liveActiveMs: this.tracker.pendingMs(goalId),
+        });
+      })();
+      return { action: created.created ? 'cycle_created' : 'busy', goalId, cycleId: created.cycle.id };
+    } catch (error) {
+      if (error instanceof CycleError && error.code === 'bound_exceeded' && error.breach) {
+        transitionGoal(this.db, {
+          goalId,
+          to: 'blocked',
+          reasonCode: error.breach.reason,
+          actor: 'supervisor',
+          now: this.now(),
+        });
+        return { action: 'bound_blocked', goalId, code: error.breach.reason };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Re-proves a finding-remediation cycle's persisted plan before any provider work is queued for it. A corrupt plan
+   * fails the cycle closed; a plan whose findings, milestone or definition are no longer current retires the cycle
+   * without substituting anything. Other cycles are untouched. Returns the result to report, or null when it may proceed.
+   */
+  private reproveRemediation(goalId: string, cycle: CycleRow): TickResult | null {
+    if (!isFindingRemediation(cycle)) return null;
+    const proof = proveRemediationPlan(this.db, cycle);
+    if (proof.ok) return null;
+    if (proof.code === 'remediation_plan_invalid') return this.fail(cycle, proof.code);
+    finalizeCycle(this.db, {
+      cycleId: cycle.id,
+      to: 'cancelled',
+      outcomeCode: proof.code,
+      now: this.now(),
+    });
+    this.afterCycle(goalId);
+    return { action: 'remediation_retired', goalId, cycleId: cycle.id, code: proof.code };
   }
 
   private startReview(goalId: string, trigger: ReviewTrigger): TickResult {
@@ -1073,6 +1157,24 @@ export class GoalSupervisor {
     return { action: 'proposal_rejected', goalId: cycle.goalId, cycleId: cycle.id, code };
   }
 
+  /**
+   * The memory a proposal is made from. For a finding-remediation cycle with a valid persisted plan the selected findings
+   * are listed first (before the normal severity order and the open-finding cap) with a short trusted hint; every other
+   * cycle gets the ordinary memory.
+   */
+  private proposalMemory(goalId: string, cycle: CycleRow) {
+    const proof = isFindingRemediation(cycle) ? proveRemediationPlan(this.db, cycle) : undefined;
+    return rebuildGoalMemory(this.db, goalId, {
+      now: this.now(),
+      ...(proof?.ok
+        ? {
+            focusFindingIds: proof.plan.episodes.map((episode) => episode.findingId),
+            nextHint: 'Remediation cycle: address the prioritised Goal findings before unrelated work.',
+          }
+        : {}),
+    });
+  }
+
   /** After a cycle finishes: rebuild the bounded memory cache from persisted rows. */
   private afterCycle(goalId: string): void {
     rebuildGoalMemory(this.db, goalId, { now: this.now() });
@@ -1122,6 +1224,8 @@ export class GoalSupervisor {
     if (!run) {
       const blocked = await this.verifyRef(goalId);
       if (blocked) return blocked;
+      const retired = this.reproveRemediation(goalId, cycle);
+      if (retired) return retired;
       try {
         await this.executor.queueProposalRun({
           goalId,
@@ -1129,7 +1233,7 @@ export class GoalSupervisor {
           definitionVersion: cycle.definitionVersion,
           milestone,
           baseCommit: cycle.baseIntegrationCommit!,
-          memory: rebuildGoalMemory(this.db, goalId, { now: this.now() }),
+          memory: this.proposalMemory(goalId, cycle),
         });
       } catch (error) {
         const first = this.firstUseFailure(error);
@@ -1265,6 +1369,8 @@ export class GoalSupervisor {
               return { action: 'run_queued', goalId, cycleId: cycle.id };
             }
             if (purpose !== 'execution' && purpose !== 'remediation') return this.fail(cycle, 'launch_error');
+            const retired = this.reproveRemediation(goalId, cycle);
+            if (retired) return retired;
             await this.executor.queueChildRun({
               goalId,
               cycleId: cycle.id,

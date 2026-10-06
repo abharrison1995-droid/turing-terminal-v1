@@ -4,6 +4,12 @@ import type { Db } from '../db.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { writeGoalEvent } from './events.js';
 import { evaluateBounds, type BoundBreach } from './bounds.js';
+import {
+  isFindingRemediation,
+  proveRemediationPlan,
+  readRemediationPlan,
+  type RemediationPlan,
+} from './remediationPlan.js';
 import { readReviewPlan } from './reviewPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
 
@@ -84,6 +90,7 @@ export type CycleErrorCode =
   | 'definition_not_current'
   | 'definition_hash_mismatch'
   | 'milestone_not_current'
+  | 'remediation_plan_invalid'
   | 'goal_not_initialized'
   | 'bound_exceeded';
 
@@ -225,6 +232,14 @@ export function transitionCycle(db: Db, request: CycleTransition): CycleRow {
       const { reviewPlan: _discard, ...rest } = outcome;
       void _discard;
       outcome = kept ? { ...rest, reviewPlan: kept } : rest;
+    }
+    // A scheduler-created finding remediation is bound to the episodes it was created for: write-once, carried into every
+    // later outcome, never replaceable, and never mintable onto a cycle that was created without one.
+    if (outcome && current.kind === 'remediation') {
+      const kept = readRemediationPlan(current.outcome);
+      const { remediationPlan: _discard, ...rest } = outcome;
+      void _discard;
+      outcome = kept ? { ...rest, remediationPlan: kept } : rest;
     }
     const outcomeJson = outcome ? JSON.stringify(outcome) : null;
     if (outcomeJson && outcomeJson.length > MAX_OUTCOME_CHARS)
@@ -396,6 +411,11 @@ export interface CreateCycleInput {
   now?: string;
   /** Active time the caller has accumulated beyond the persisted value (see ActiveTimeTracker). */
   liveActiveMs?: number;
+  /**
+   * Required for (and only accepted by) a scheduler-created `remediation` cycle with trigger `finding_remediation`: the
+   * validated plan is persisted in the same INSERT, so such a cycle never exists without the episodes that caused it.
+   */
+  remediationPlan?: RemediationPlan;
 }
 
 /**
@@ -436,6 +456,29 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
       .get(input.goalId) as { integration_head: string | null } | undefined;
     if (!runtime?.integration_head)
       throw new CycleError('goal_not_initialized', 'The Goal has no integration head.');
+    const wantsPlan = isFindingRemediation({ kind: input.kind, triggerCode: input.triggerCode });
+    if (wantsPlan !== (input.remediationPlan !== undefined))
+      throw new CycleError(
+        'remediation_plan_invalid',
+        'Exactly a finding-remediation cycle carries a remediation plan.',
+      );
+    if (input.remediationPlan) {
+      const proof = proveRemediationPlan(
+        db,
+        {
+          goalId: input.goalId,
+          definitionVersion: version.version,
+          milestoneKey: input.milestoneKey,
+          outcome: { remediationPlan: input.remediationPlan },
+        },
+        { requireAnchor: true },
+      );
+      if (!proof.ok)
+        throw new CycleError(
+          'remediation_plan_invalid',
+          'The remediation plan does not match current state.',
+        );
+    }
     const breach = evaluateBounds(db, input.goalId, {
       now,
       liveActiveMs: input.liveActiveMs,
@@ -455,7 +498,7 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
     const id = randomUUID();
     db.prepare(
       `INSERT INTO goal_cycles (id, goal_id, definition_version, milestone_id, sequence, kind, trigger_code, status,
-         base_integration_commit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)`,
+         base_integration_commit, outcome_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)`,
     ).run(
       id,
       input.goalId,
@@ -465,6 +508,7 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
       input.kind,
       input.triggerCode,
       runtime.integration_head,
+      input.remediationPlan ? JSON.stringify({ remediationPlan: input.remediationPlan }) : null,
       now,
     );
     writeGoalEvent(
@@ -479,6 +523,12 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
         milestoneKey: input.milestoneKey,
         definitionVersion: version.version,
         baseIntegrationCommit: runtime.integration_head,
+        ...(input.remediationPlan
+          ? {
+              findingIds: input.remediationPlan.episodes.map((episode) => episode.findingId),
+              episodeKeys: input.remediationPlan.episodes.map((episode) => episode.episodeKey),
+            }
+          : {}),
       },
       now,
     );

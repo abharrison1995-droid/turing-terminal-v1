@@ -118,6 +118,21 @@ export function openFindingCounts(db: Db, goalId: string): Record<FindingSeverit
   return counts;
 }
 
+/**
+ * The completion policy's per-severity open-finding allowance: `null` means "not limited" (an absent medium limit).
+ * Shared by completion evaluation and remediation scheduling so both read the same policy the same way. Low findings
+ * are never limited by completion thresholds.
+ */
+export function allowedOpenFindings(policy: {
+  maxOpenFindings: { critical: number; high: number; medium?: number };
+}): { critical: number; high: number; medium: number | null } {
+  return {
+    critical: policy.maxOpenFindings.critical,
+    high: policy.maxOpenFindings.high,
+    medium: policy.maxOpenFindings.medium ?? null,
+  };
+}
+
 function normalizeText(value: string): string {
   return value
     .normalize('NFKC')

@@ -443,6 +443,8 @@ export class TuringGoalExecutor implements GoalExecutor {
       definition: loaded.definition,
       milestone,
       memory: request.memory,
+      // Execution vs remediation is the persisted cycle kind, never a caller-supplied purpose.
+      purpose: loaded.cycle.kind === 'remediation' ? 'remediation' : 'execution',
     });
     return this.queue(
       loaded,

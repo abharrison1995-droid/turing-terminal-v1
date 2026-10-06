@@ -1362,3 +1362,35 @@ Stage 5A.1 changes no routing architecture (identity, fingerprint, live-catalog 
 Goal runtime consecutive-failure counters (`goal_runtime.consecutive_failed_cycles`) remain lifetime/global and are the sole authority for the hard `maxConsecutiveFailedCycles` bound; `enforceBounds()` still runs before review triggering and `computeCounters()` is unchanged.
 
 Repeated-failure REVIEW triggering derives a separate current-definition streak (`definitionFailureStreak`) from persisted execution/remediation cycles at the current approved definition version only (succeeded resets, failed/rejected extend, cancelled neutral). Its newest contributing failed/rejected cycle is the episode source, so amendment boundaries restart review-trigger history without resetting safety bounds. Stage 6B.2 must keep this distinction.
+
+## Stage 6B.2 implementation notes: bounded Goal-finding remediation scheduling
+
+Remediation reuses the existing pipeline (proposal → validated NextTask → remediation child run → integration → evidence)
+and never resolves a finding: only a later review can. No migration, no new review trigger, no counters.
+
+- **Candidates** (open findings only; user-accepted/dismissed are never candidates): (A) _threshold_ — the excess over the
+  CURRENT `completionPolicy.maxOpenFindings`: critical/high limit 0 means every open one; medium only when a limit is
+  configured, selecting `open − limit` oldest by `created_at, id`; low never through thresholds. (B) _blocking review_ —
+  the review that last saw the finding completed with `blocking=1` at the current definition version and current
+  integration tree (any severity). `reason` is `threshold`, `blocking_review` or `both`.
+- **Order and grouping**: critical, high, medium, low, then `created_at, id`. The highest-priority actionable candidate's
+  milestone wins; up to 6 same-milestone candidates form one cycle; one remediation cycle per tick.
+- **Anchor**: the last-seen review's milestone when still current and not skipped; for a broad review, the persisted
+  active milestone when current; otherwise the Goal is blocked `review_blocked` with detail
+  `remediation_milestone_unavailable` + `findingId`. No file names, titles or models are consulted. A removed or
+  skipped review milestone is never substituted.
+- **Episode key** = sha256(canonicalJson `{schema:1, findingId, lastSeenReviewId, definitionVersion, milestoneKey}`).
+- **Write-once plan** `outcome_json.remediationPlan` `{schema:1, definitionVersion, milestoneKey, episodes[…]}` is
+  inserted atomically with the cycle (kind `remediation`, trigger `finding_remediation`), parsed strictly, preserved by
+  `transitionCycle`, never minted on plan-less cycles, and carries no finding text. It is re-proven before the proposal
+  run and before the work run: a changed episode retires the cycle (`remediation_no_longer_current`, no provider call);
+  a corrupt plan fails the cycle closed (`remediation_plan_invalid`).
+- **Consumption**: an episode is consumed only by a current-definition scheduler remediation cycle that succeeded with
+  `outcome.code=integrated`, a result integration commit and a matching applied `advance` op. Created/failed/rejected/
+  cancelled attempts consume nothing and retry the identical episode, bounded by the existing
+  `maxRemediationAttempts` (per milestone), `maxExecutionCycles` and `maxConsecutiveFailedCycles`.
+- **Placement** in `tickNoCycle`: bounds → verifyRef → evidence → milestone refresh → review trigger (wins) →
+  remediation (wins over completion/execution) → ordinary flow. The active-milestone update shares a transaction with
+  cycle creation.
+- **Planner**: remediation is derived from the persisted cycle kind; memory puts the selected findings first and adds a
+  short trusted hint; `validateNextTask` is unchanged.
