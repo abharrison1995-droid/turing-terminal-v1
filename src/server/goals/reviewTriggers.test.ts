@@ -13,7 +13,7 @@ import {
   reportOf,
   simpleDefinition,
 } from './repoKit.js';
-import { coveredByExpected, determineReviewTrigger } from './reviewTriggers.js';
+import { coveredByExpected, definitionFailureStreak, determineReviewTrigger } from './reviewTriggers.js';
 import { completeReview, reviewForCycle } from './reviews.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import { transitionGoal } from './stateMachine.js';
@@ -484,6 +484,118 @@ describe('repeated-failure review trigger', () => {
     expect(await h.tick()).toBe('bound_blocked');
     expect(h.status()).toMatchObject({ status: 'blocked', reason: 'bound_failures' });
     expect(reviewCycles(h)).toHaveLength(0);
+  });
+
+  describe('definition-local streak', () => {
+    /** Approve a new definition version (hard-bound counters are untouched by amendments). */
+    async function amend(h: Harness): Promise<number> {
+      const { beginAmendment, approveDefinition } = await import('./definitions.js');
+      h.fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(h.fx.goalId);
+      const { version } = beginAmendment(h.fx.db, {
+        goalId: h.fx.goalId,
+        actor: 'user',
+        definition: structuredClone(h.fx.definition),
+      });
+      approveDefinition(h.fx.db, { goalId: h.fx.goalId, version, actor: 'user' });
+      h.fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(h.fx.goalId);
+      return version;
+    }
+    const settle = (h: Harness) => {
+      const active = h.cycle();
+      if (active && !['succeeded', 'failed', 'cancelled', 'rejected'].includes(active.status))
+        finalizeCycle(h.fx.db, { cycleId: active.id, to: 'cancelled', outcomeCode: 'cancelled' });
+    };
+    const streak = (h: Harness, version: number) => definitionFailureStreak(h.fx.db, h.fx.goalId, version);
+
+    it('old-definition failures never trigger a review under a new definition; two new failures do', async () => {
+      const h = goal(
+        { onRepeatedFailure: { afterConsecutiveFailures: 2 } },
+        {
+          tune: (d) => {
+            d.limits.maxConsecutiveFailedCycles = 10;
+          },
+        },
+      );
+      await h.start();
+      addWork(h, 'failed');
+      addWork(h, 'failed');
+      const v2 = await amend(h);
+      await h.tick();
+      expect(reviewCycles(h)).toHaveLength(0);
+      settle(h);
+      const first = addWork(h, 'failed', { version: v2 });
+      await h.tick();
+      expect(reviewCycles(h)).toHaveLength(0);
+      settle(h);
+      const second = addWork(h, 'rejected', { version: v2 });
+      expect(await h.tick()).toBe('cycle_created');
+      expect(reviewCycles(h)).toMatchObject([{ triggerCode: 'repeated_failure' }]);
+      const detail = (
+        listGoalEvents(h.fx.db, h.fx.goalId).find(
+          (entry) => entry.type === 'cycle_created' && (entry.payload as { kind?: string }).kind === 'review',
+        )!.payload as { triggerDetail: Record<string, unknown> }
+      ).triggerDetail;
+      expect(detail).toMatchObject({ sourceCycleId: second, consecutiveFailures: 2 });
+      expect(detail.sourceCycleId).not.toBe(first);
+      expect(streak(h, v2)).toMatchObject({ count: 2, sourceCycleId: second });
+    });
+
+    it('streak matrix: old failure leaks nowhere, old success irrelevant, cancelled neutral, success resets, rejected counts', async () => {
+      const h = failing();
+      await h.start();
+      addWork(h, 'failed');
+      addWork(h, 'succeeded');
+      const v2 = await amend(h);
+      expect(streak(h, v2).count).toBe(0);
+      addWork(h, 'failed', { version: v2 });
+      expect(streak(h, v2).count).toBe(1);
+      addWork(h, 'cancelled', { version: v2 });
+      addWork(h, 'failed', { version: v2 });
+      const twice = addWork(h, 'rejected', { version: v2 });
+      expect(streak(h, v2)).toMatchObject({ count: 3, sourceCycleId: twice });
+      addWork(h, 'succeeded', { version: v2 });
+      expect(streak(h, v2)).toEqual({ count: 0 });
+      const last = addWork(h, 'failed', { version: v2 });
+      expect(streak(h, v2)).toEqual({ count: 1, sourceCycleId: last, sourceSequence: expect.any(Number) });
+      expect(streak(h, 1).count).toBe(0);
+    });
+
+    it('a current-version success resets so no trigger fires', async () => {
+      const h = failing();
+      await h.start();
+      const v2 = await amend(h);
+      settle(h);
+      addWork(h, 'failed', { version: v2 });
+      addWork(h, 'succeeded', { version: v2 });
+      addWork(h, 'failed', { version: v2 });
+      await h.tick();
+      expect(reviewCycles(h)).toHaveLength(0);
+    });
+
+    it('a cancelled current-version cycle does not break the streak', async () => {
+      const h = failing();
+      await h.start();
+      const v2 = await amend(h);
+      settle(h);
+      addWork(h, 'failed', { version: v2 });
+      addWork(h, 'cancelled', { version: v2 });
+      addWork(h, 'failed', { version: v2 });
+      expect(await h.tick()).toBe('cycle_created');
+      expect(reviewCycles(h)).toMatchObject([{ triggerCode: 'repeated_failure' }]);
+    });
+
+    it('the lifetime hard bound still blocks across an amendment even when the local streak is below the threshold', async () => {
+      const h = goal({ onRepeatedFailure: { afterConsecutiveFailures: 3 } });
+      await h.start();
+      for (let index = 0; index < 3; index += 1) addWork(h, 'failed');
+      const v2 = await amend(h);
+      settle(h);
+      addWork(h, 'failed', { version: v2 }); // global streak 4 == maxConsecutiveFailedCycles, local streak 1
+      expect(streak(h, v2).count).toBe(1);
+      expect(await h.tick()).toBe('bound_blocked');
+      expect(h.status()).toMatchObject({ status: 'blocked', reason: 'bound_failures' });
+      expect(reviewCycles(h)).toHaveLength(0);
+    });
   });
 });
 

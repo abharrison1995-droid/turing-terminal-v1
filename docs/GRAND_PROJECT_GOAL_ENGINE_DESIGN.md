@@ -1356,3 +1356,9 @@ Stage 5A.1 changes no routing architecture (identity, fingerprint, live-catalog 
 - **Final:** when `review.final` is set, all milestones are done and no COMPLETED final review exists at the current definition version and integration tree. Any verdict or independence outcome counts as the final review having run, so a review whose independence is unestablished, or that leaves findings, is not repeated; completion simply stays `completion_pending` on its own blocker. A blocking final review already blocks the Goal and is not repeated at that head. A changed head or definition makes it stale and permits a new one.
 - **Failed/cancelled review cycles** are terminal history: they are never recreated automatically (periodic/failure/scope dedupe counts any terminal review cycle of that kind). For milestone/final currentness only a completed review counts, so after the user resolves a failed review the review is due again, never before.
 - No remediation cycle is created by any of this (Stage 6B.2), and review outcomes/blocking semantics are unchanged.
+
+### Stage 6B.1.1 correction: repeated-failure streak is definition-local
+
+Goal runtime consecutive-failure counters (`goal_runtime.consecutive_failed_cycles`) remain lifetime/global and are the sole authority for the hard `maxConsecutiveFailedCycles` bound; `enforceBounds()` still runs before review triggering and `computeCounters()` is unchanged.
+
+Repeated-failure REVIEW triggering derives a separate current-definition streak (`definitionFailureStreak`) from persisted execution/remediation cycles at the current approved definition version only (succeeded resets, failed/rejected extend, cancelled neutral). Its newest contributing failed/rejected cycle is the episode source, so amendment boundaries restart review-trigger history without resetting safety bounds. Stage 6B.2 must keep this distinction.

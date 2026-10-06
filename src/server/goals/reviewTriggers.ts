@@ -65,6 +65,39 @@ function lastReviewSequence(db: Db, goalId: string, version: number, kind: GoalR
   ).s;
 }
 
+/**
+ * The definition-local failure streak that drives repeated-failure REVIEW triggering. It is derived from persisted
+ * work cycles of this definition version only, with the same attempt semantics as `computeCounters` (success resets,
+ * failed/rejected extend, cancelled is neutral). `goal_runtime.consecutive_failed_cycles` stays lifetime/global and is
+ * the sole authority for the hard `maxConsecutiveFailedCycles` bound; amendments restart review history, not bounds.
+ */
+export function definitionFailureStreak(
+  db: Db,
+  goalId: string,
+  version: number,
+): { count: number; sourceCycleId?: string; sourceSequence?: number } {
+  const rows = db
+    .prepare(
+      `SELECT id, sequence, status FROM goal_cycles
+        WHERE goal_id = ? AND definition_version = ? AND kind IN ${WORK_KINDS}
+          AND status IN ('succeeded','failed','rejected','cancelled')
+        ORDER BY sequence`,
+    )
+    .all(goalId, version) as Array<{ id: string; sequence: number; status: string }>;
+  let count = 0;
+  let source: { id: string; sequence: number } | undefined;
+  for (const row of rows) {
+    if (row.status === 'succeeded') {
+      count = 0;
+      source = undefined;
+    } else if (row.status === 'failed' || row.status === 'rejected') {
+      count += 1;
+      source = { id: row.id, sequence: row.sequence };
+    }
+  }
+  return source ? { count, sourceCycleId: source.id, sourceSequence: source.sequence } : { count };
+}
+
 /** repeated_failure: the current failure streak's newest source cycle has not yet been followed by its review. */
 export function repeatedFailureTrigger(
   db: Db,
@@ -74,19 +107,14 @@ export function repeatedFailureTrigger(
 ): TriggerBody | null {
   const policy = definition.review.onRepeatedFailure;
   if (!policy) return null;
-  const runtime = db
-    .prepare('SELECT consecutive_failed_cycles AS n FROM goal_runtime WHERE goal_id = ?')
-    .get(goalId) as { n: number } | undefined;
-  if (!runtime || runtime.n < policy.afterConsecutiveFailures) return null;
-  const source = db
-    .prepare(
-      `SELECT id, sequence, status FROM goal_cycles
-        WHERE goal_id = ? AND kind IN ${WORK_KINDS} AND status IN ${ATTEMPTED}
-        ORDER BY sequence DESC LIMIT 1`,
-    )
-    .get(goalId) as { id: string; sequence: number; status: string } | undefined;
-  // A streak always ends in a failed/rejected attempt; anything else means the counter is not describing history.
-  if (!source || source.status === 'succeeded') return null;
+  const local = definitionFailureStreak(db, goalId, version);
+  if (
+    local.count < policy.afterConsecutiveFailures ||
+    !local.sourceCycleId ||
+    local.sourceSequence === undefined
+  )
+    return null;
+  const source = { id: local.sourceCycleId, sequence: local.sourceSequence };
   if (lastReviewSequence(db, goalId, version, 'repeated_failure') > source.sequence) return null;
   return {
     kind: 'repeated_failure',
@@ -94,7 +122,7 @@ export function repeatedFailureTrigger(
     detail: {
       sourceCycleId: source.id,
       sourceSequence: source.sequence,
-      consecutiveFailures: runtime.n,
+      consecutiveFailures: local.count,
       threshold: policy.afterConsecutiveFailures,
     },
   };
