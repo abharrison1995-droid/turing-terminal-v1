@@ -217,4 +217,66 @@ describe('Goal review run on the real RunEngine', () => {
       ).n,
     ).toBe(1);
   });
+
+  const reviewCycleOnHead = async (kind: 'final' | 'periodic' = 'periodic') => {
+    expect((await h.supervisor.startGoal(h.fx.goalId)).ok).toBe(true);
+    await h.until('cycle_created');
+    h.fx.db
+      .prepare("UPDATE goal_cycles SET status = 'cancelled', finished_at = ? WHERE goal_id = ?")
+      .run(new Date().toISOString(), h.fx.goalId);
+    h.fx.db.prepare("UPDATE runs SET status = 'cancelled' WHERE status = 'queued'").run();
+    const created = createReviewCycle(h.fx.db, {
+      goalId: h.fx.goalId,
+      reviewKind: kind,
+      triggerCode: 'test_trigger',
+    });
+    if (!created.created) throw new Error('expected a review cycle');
+    return created.cycle.id;
+  };
+  const reviewRunsOf = (cycleId: string) =>
+    (
+      h.fx.db
+        .prepare("SELECT COUNT(*) AS n FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = 'review'")
+        .get(cycleId) as { n: number }
+    ).n;
+
+  it('queues the real run and its review record in one transaction: an injected binding failure leaves nothing', async () => {
+    h = await realRunHarness();
+    const cycleId = await reviewCycleOnHead();
+    h.fx.db.exec(
+      "CREATE TRIGGER inject_bind_failure BEFORE INSERT ON goal_reviews BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END",
+    );
+    await h.until('review_decision_needed');
+    expect(reviewRunsOf(cycleId)).toBe(0);
+    expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 0 });
+    // The real queueRun inserted stages and events too; all of it rolled back with the run.
+    expect(h.fx.db.prepare("SELECT COUNT(*) AS n FROM runs WHERE goal_run_purpose = 'review'").get()).toEqual(
+      {
+        n: 0,
+      },
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('a real queued review run without its record is never adopted, started or duplicated', async () => {
+    h = await realRunHarness();
+    const cycleId = await reviewCycleOnHead();
+    // Tick only until the committed (not yet started) run exists.
+    await h.until('review_run_queued');
+    const run = h.fx.db
+      .prepare("SELECT id FROM runs WHERE goal_cycle_id = ? AND goal_run_purpose = 'review'")
+      .get(cycleId) as { id: string };
+    for (const row of h.fx.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%reviews cannot be deleted%'",
+      )
+      .all() as Array<{ name: string }>)
+      h.fx.db.exec(`DROP TRIGGER ${row.name}`);
+    h.fx.db.prepare('DELETE FROM goal_reviews WHERE run_id = ?').run(run.id);
+    await h.until('review_decision_needed');
+    expect(h.runRow(run.id).status).toBe('queued');
+    expect(reviewRunsOf(cycleId)).toBe(1);
+    expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 0 });
+    expect(calls).toHaveLength(0);
+  });
 });

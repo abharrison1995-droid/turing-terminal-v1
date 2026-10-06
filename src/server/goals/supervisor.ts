@@ -30,7 +30,7 @@ import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { collectRunEvidence, listUncollectedRunIds } from './runEvidence.js';
 import { pruneRunWorktree, recordRunEvidenceCollected } from './retention.js';
 import { applyReviewFindings, GoalFindingError } from './findings.js';
-import { closeReview, completeReview, createReview, GoalReviewError, reviewForCycle } from './reviews.js';
+import { closeReview, completeReview, GoalReviewError, reviewForCycle } from './reviews.js';
 import { deriveReviewIndependence } from './reviewIndependence.js';
 import { isReviewCurrent, recordReviewEvidence } from './reviewConsume.js';
 import { linkRunFindings, readGoalReviewReport } from './reviewReport.js';
@@ -90,7 +90,6 @@ export const TICK_ACTIONS = [
   'verification_unavailable',
   'review_restored',
   'review_run_queued',
-  'review_bound',
   'review_run_started',
   'review_waiting',
   'review_decision_needed',
@@ -1636,29 +1635,9 @@ export class GoalSupervisor {
       }
       return { action: 'review_run_queued', goalId, cycleId: cycle.id };
     }
-    if (!review) {
-      const problem = await this.reviewRefProblem(goalId, cycle);
-      if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
-      try {
-        const created = await createReview(this.db, {
-          goalId,
-          definitionVersion: cycle.definitionVersion!,
-          reviewKind: plan.reviewKind,
-          cycleId: cycle.id,
-          runId: run.id,
-          ...(cycle.milestoneId ? { milestoneId: cycle.milestoneId } : {}),
-          ...(plan.reviewedFromCommit ? { reviewedFromCommit: plan.reviewedFromCommit } : {}),
-          now: this.now(),
-        });
-        if (created.reviewedToCommit !== cycle.baseIntegrationCommit)
-          return this.reviewInfraFailure(goalId, cycle, 'review_base_moved');
-      } catch (error) {
-        if (error instanceof GoalReviewError)
-          return this.reviewInfraFailure(goalId, cycle, `review_bind_${error.code}`);
-        throw error;
-      }
-      return { action: 'review_bound', goalId, cycleId: cycle.id };
-    }
+    // A run without its immutable review record cannot arise from the atomic queue+bind; if a historical or corrupt
+    // state holds one, it fails closed: nothing is adopted, started or re-queued.
+    if (!review) return this.reviewInfraFailure(goalId, cycle, 'review_binding_missing');
     if (
       review.runId !== run.id ||
       review.cycleId !== cycle.id ||
@@ -1812,7 +1791,7 @@ export class GoalSupervisor {
       transitionGoal(this.db, {
         goalId,
         to: blocking ? 'blocked' : 'running',
-        reasonCode: blocking ? 'review_blocked' : 'review_passed',
+        reasonCode: blocking ? 'review_blocked' : stale ? 'review_stale' : 'review_passed',
         actor: 'supervisor',
         detail: { cycleId: cycle.id, reviewId: review.id, verdict: review.verdict, stale },
         now: this.now(),

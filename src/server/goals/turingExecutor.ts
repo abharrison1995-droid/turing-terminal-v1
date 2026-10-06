@@ -28,7 +28,8 @@ import { rebuildGoalMemory } from './memory.js';
 import { readReviewPlan } from './reviewPlan.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import { materializeReviewWorkflow, reviewerCountFor } from './reviewWorkflow.js';
-import { resolveGoalRepository } from './repository.js';
+import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
+import { bindReviewRecord, reviewForCycle } from './reviews.js';
 import { readStoredResolutions } from './routeResolution.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
 import { normalizeVerifierDigests } from './verifierDigest.js';
@@ -69,7 +70,9 @@ export type TuringExecutorErrorCode =
   | 'verification_run_inconsistent'
   | 'review_invalid'
   | 'review_plan_mismatch'
-  | 'review_repository_unavailable';
+  | 'review_repository_unavailable'
+  | 'review_binding_missing'
+  | 'review_from_commit_invalid';
 
 export class TuringExecutorError extends Error {
   constructor(
@@ -652,6 +655,8 @@ export class TuringGoalExecutor implements GoalExecutor {
         request.reviewRole !== reviewRoleForKind(request.reviewKind)
       )
         throw new TuringExecutorError('review_plan_mismatch', "The request is not the cycle's review plan.");
+      // A run that exists without its immutable review record is never adopted: every binding must re-prove exactly.
+      this.assertReviewBound(request, already);
       return { runId: already };
     }
     const loaded = this.load(request.goalId, request.cycleId, request.baseCommit);
@@ -729,7 +734,61 @@ export class TuringGoalExecutor implements GoalExecutor {
         'preview_not_startable',
         `The run preview refused to start: ${preview.warnings.slice(0, 3).join(' | ')}`.slice(0, 400),
       );
-    return { runId: queueRun(this.db, preview).runId };
+    const fromCommit = readReviewPlan(loaded.cycle.outcome)!.reviewedFromCommit;
+    if (fromCommit && !(await isAncestorOfHead(resolved.state, fromCommit)))
+      throw new TuringExecutorError(
+        'review_from_commit_invalid',
+        'The start of the reviewed range is not in the Goal history.',
+      );
+    const definitionVersion = loaded.cycle.definitionVersion!;
+    const cycleId = loaded.cycle.id;
+    const milestoneId = loaded.cycle.milestoneId;
+    const reviewedToCommit = resolved.state.head;
+    const reviewedToTree = resolved.state.tree;
+    // ONE outer transaction: the queued run and its immutable review record commit together or not at all. Every
+    // asynchronous read happened above; the binding re-proves what SQLite can prove, and any failure rolls the queued
+    // run back with it. Nothing starts here: the supervisor starts the committed run afterwards.
+    const runId = this.db.transaction(() => {
+      const queued = queueRun(this.db, preview);
+      if (queued.existed) {
+        this.assertReviewBound(request, queued.runId);
+        return queued.runId;
+      }
+      bindReviewRecord(this.db, {
+        goalId: loaded.goalId,
+        cycleId,
+        runId: queued.runId,
+        definitionVersion,
+        reviewKind: request.reviewKind,
+        milestoneId,
+        reviewedFromCommit: fromCommit,
+        reviewedToCommit,
+        reviewedToTree,
+        now: new Date().toISOString(),
+      });
+      return queued.runId;
+    })();
+    return { runId };
+  }
+
+  /** The existing review run must already carry exactly the immutable review record this request describes. */
+  private assertReviewBound(request: ReviewRunRequest, runId: string): void {
+    const cycle = getCycle(this.db, request.cycleId);
+    const review = reviewForCycle(this.db, request.cycleId);
+    if (
+      !cycle ||
+      !review ||
+      review.runId !== runId ||
+      review.goalId !== request.goalId ||
+      review.cycleId !== request.cycleId ||
+      review.reviewKind !== request.reviewKind ||
+      review.definitionVersion !== cycle.definitionVersion ||
+      review.reviewedToCommit !== request.baseCommit
+    )
+      throw new TuringExecutorError(
+        'review_binding_missing',
+        'The review run has no matching immutable review record.',
+      );
   }
 
   async readProposal(runId: string): Promise<ProposalResult> {

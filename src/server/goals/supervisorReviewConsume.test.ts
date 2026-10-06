@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GoalReviewKind } from '../../shared/goals.js';
 import { listGoalEvents } from './events.js';
 import { applyReviewFindings } from './findings.js';
@@ -11,7 +11,22 @@ import { completeReview, reviewForCycle } from './reviews.js';
 import { getCycle } from './cycles.js';
 import { harness, type Harness } from './supervisorKit.js';
 
-afterEach(cleanupRepoFixtures);
+const derive = vi.hoisted(() => ({
+  override: null as null | ((db: unknown, review: unknown) => unknown),
+}));
+vi.mock('./reviewIndependence.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./reviewIndependence.js')>();
+  return {
+    ...actual,
+    deriveReviewIndependence: (db: never, review: never) =>
+      derive.override ? derive.override(db, review) : actual.deriveReviewIndependence(db, review),
+  };
+});
+
+afterEach(() => {
+  derive.override = null;
+  cleanupRepoFixtures();
+});
 
 const BUILT_IN = {
   planning: 'goal-planning-v1',
@@ -261,7 +276,7 @@ describe('review consumption: stale review', () => {
     expect(evidence(h)).toEqual([]);
     expect(applied(h)).toEqual([]);
     // A stale blocking verdict must not block the current head.
-    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
+    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_stale' });
     expect(markers(h)[0]!.payload).toMatchObject({ evidenceCount: 0 });
   });
 });
@@ -484,5 +499,66 @@ describe('readGoalReviewReport', () => {
     // A run that is not completed is not read either.
     h.fx.db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(runId);
     expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'review_run_invalid' });
+  });
+});
+
+describe('review consumption: final-review independence outcomes', () => {
+  /** The route authority is exercised for real in routePlanReview.test.ts; here only the consumer's handling of it. */
+  const claim = (established: boolean, reasonCode: string) => ({
+    ok: true,
+    independence: {
+      established,
+      policy: 'different-family',
+      detail: { reasonCode, required: true, conflict: false, comparedAgainst: [] },
+    },
+  });
+  const finalEvidence = (h: Harness) => evidence(h).filter((row) => row.criterion_key === 'final-review');
+
+  it('an established independent final pass satisfies the final verifier', async () => {
+    derive.override = () => claim(true, 'established');
+    const { h, cycleId, action } = await consume('final', reportOf({ verdict: 'pass' }));
+    expect(action).toBe('review_consumed');
+    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+      status: 'completed',
+      independence: { established: true, policy: 'different-family' },
+    });
+    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['satisfies']);
+  });
+
+  it('the explicit floating exception is consumed: review completed, findings applied, independence false, evidence inconclusive', async () => {
+    derive.override = () => claim(false, 'candidate_identity_unproven');
+    const { h, cycleId, action } = await consume(
+      'final',
+      reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding()] }),
+    );
+    expect(action).toBe('review_consumed');
+    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+      status: 'completed',
+      independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
+    });
+    expect(findings(h)).toHaveLength(1);
+    expect(applied(h)).toHaveLength(1);
+    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
+    expect(h.status()).toMatchObject({ status: 'running' });
+  });
+
+  it('a clean final pass whose independence is unestablished never mints satisfying evidence', async () => {
+    derive.override = () => claim(false, 'identity_conflict');
+    const { h, action } = await consume('final', reportOf({ verdict: 'pass' }));
+    expect(action).toBe('review_consumed');
+    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
+  });
+
+  it('a route-integrity failure is an authority failure: the review fails closed and nothing is trusted', async () => {
+    derive.override = () => ({ ok: false, code: 'independence_reproof_independence' });
+    const { h, cycleId, action } = await consume(
+      'final',
+      reportOf({ verdict: 'pass', newFindings: [newFinding()] }),
+    );
+    expect(action).toBe('review_decision_needed');
+    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'failed', independence: null });
+    expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_independence_unproven' });
+    expect(findings(h)).toEqual([]);
+    expect(evidence(h)).toEqual([]);
   });
 });

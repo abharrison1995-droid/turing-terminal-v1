@@ -129,7 +129,6 @@ describe('review launch', () => {
     expect(await h.until('review_run_started')).toEqual([
       'launch_started',
       'review_run_queued',
-      'review_bound',
       'review_run_started',
     ]);
     expect(boundAtStart).toEqual([true]);
@@ -173,7 +172,7 @@ describe('review launch', () => {
       triggerCode: 't',
       reviewedFromCommit: first,
     });
-    await h.until('review_bound');
+    await h.until('review_run_queued');
     expect(reviewRows(h)[0]).toMatchObject({ reviewed_from_commit: first, reviewed_to_commit: h.fx.head() });
   });
 
@@ -186,10 +185,15 @@ describe('review launch', () => {
       triggerCode: 't',
       reviewedFromCommit: h.fx.orphanCommit(),
     });
-    await h.until('review_run_queued');
+    expect(await h.tick()).toBe('launch_started');
     expect(await h.tick()).toBe('review_decision_needed');
-    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_bind_from_commit_invalid' });
+    expect(h.cycle()!.outcome).toMatchObject({
+      code: 'review_queue_error',
+      queueCode: 'review_from_commit_invalid',
+    });
+    // Nothing durable: neither a run nor a review row survives the refused launch.
     expect(reviewRows(h)).toHaveLength(0);
+    expect(reviewRun(h)).toHaveLength(0);
   });
 
   it('never starts or duplicates anything across repeated ticks and restarts', async () => {
@@ -207,29 +211,22 @@ describe('review launch', () => {
     expect(reviewForCycle(h.fx.db, cycle.id)!.milestoneId).toBe(h.fx.milestoneId('m1'));
   });
 
-  it('crash after queueing: a new supervisor binds the existing run instead of queueing another', async () => {
+  it('crash after the atomic queue+bind commit, before start: the same run and review start exactly once', async () => {
     const { h } = await reviewing('final');
     await h.until('review_run_queued');
-    const fresh = h.restart();
-    expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_bound');
-    expect(fresh.executor.reviewQueueCalls).toHaveLength(0);
-    expect(reviewRun(h)).toHaveLength(1);
-    expect(reviewRows(h)).toHaveLength(1);
-    expect(h.startRun).not.toHaveBeenCalled();
-  });
-
-  it('crash after binding: the queued run starts exactly once', async () => {
-    const { h } = await reviewing('final');
-    await h.until('review_bound');
+    const runBefore = reviewRun(h)[0]!.id;
+    const reviewBefore = reviewRows(h)[0]!.id;
     const fresh = h.restart();
     expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_run_started');
+    expect(fresh.executor.reviewQueueCalls).toHaveLength(0);
+    expect(reviewRun(h).map((run) => run.id)).toEqual([runBefore]);
+    expect(reviewRows(h).map((row) => row.id)).toEqual([reviewBefore]);
     expect(h.startRun).toHaveBeenCalledTimes(1);
-    expect(reviewRows(h)).toHaveLength(1);
   });
 
   it('observes an already active run and consumes a terminal one without restarting it', async () => {
     const { h } = await reviewing('final');
-    await h.until('review_bound');
+    await h.until('review_run_queued');
     h.setRunStatus(reviewRun(h)[0]!.id, 'running');
     expect(await h.tick()).toBe('review_run_started');
     expect(h.startRun).not.toHaveBeenCalled();
@@ -246,7 +243,8 @@ describe('review launch', () => {
     expect(h.startRun).not.toHaveBeenCalled();
     expect(h.cycle()).toMatchObject({ status: 'failed' });
     expect(h.cycle()!.outcome).toMatchObject({ code: 'review_base_moved' });
-    expect(reviewRows(h)).toHaveLength(0);
+    // The atomically-bound review is closed failed with the cycle, never left pending.
+    expect(reviewRows(h).map((row) => row.status)).toEqual(['failed']);
     expect(h.status()).toMatchObject({ status: 'needs_user', reason: 'review_needs_decision' });
     expect(activeCycle(h.fx.db, h.fx.goalId)).toBeUndefined();
     void cycle;
@@ -352,7 +350,7 @@ describe('review infrastructure failures', () => {
 describe('migration 022 review identity', () => {
   it('allows at most one review per cycle and per run', async () => {
     const { h, cycle } = await reviewing('final');
-    await h.until('review_bound');
+    await h.until('review_run_queued');
     const row = reviewRows(h)[0]!;
     const insert = (cycleId: string | null, runId: string | null) =>
       h.fx.db
@@ -370,5 +368,119 @@ describe('migration 022 review identity', () => {
 
   it('is part of the shipped built-in workflow set', () => {
     expect(GOAL_BUILTIN_WORKFLOWS.some((workflow) => workflow.id === 'goal-review-v1')).toBe(true);
+  });
+});
+
+describe('atomic review run + review record', () => {
+  const request = (h: Harness, cycleId: string, reviewKind: 'final' | 'periodic' = 'final') => ({
+    goalId: h.fx.goalId,
+    cycleId,
+    baseCommit: h.fx.head(),
+    reviewKind,
+    reviewRole: reviewKind === 'final' ? ('final_reviewer' as const) : ('routine_reviewer' as const),
+    reviewerCount: 2,
+  });
+  const launching = async () => {
+    const { h, cycle } = await reviewing('final');
+    expect(await h.tick()).toBe('launch_started');
+    return { h, cycle };
+  };
+  const failReviewInserts = (h: Harness) =>
+    h.fx.db.exec(
+      "CREATE TRIGGER inject_review_bind_failure BEFORE INSERT ON goal_reviews BEGIN SELECT RAISE(ABORT, 'injected binding failure'); END",
+    );
+
+  it('a binding failure after the run was queued rolls the run back with it: nothing durable, nothing started', async () => {
+    const { h, cycle } = await launching();
+    failReviewInserts(h);
+    await expect(h.executor.queueReviewRun(request(h, cycle.id))).rejects.toThrow(/injected binding failure/);
+    expect(reviewRun(h)).toHaveLength(0);
+    expect(reviewRows(h)).toHaveLength(0);
+    expect(
+      h.fx.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM stages WHERE run_id IN (SELECT id FROM runs WHERE goal_cycle_id = ?)',
+        )
+        .get(cycle.id),
+    ).toEqual({ n: 0 });
+    expect(h.cycle()).toMatchObject({ status: 'launching' });
+    expect(h.startRun).not.toHaveBeenCalled();
+  });
+
+  it('the supervisor reports the failure as a queue error and leaves no half-launched review', async () => {
+    const { h } = await launching();
+    failReviewInserts(h);
+    expect(await h.tick()).toBe('review_decision_needed');
+    expect(h.cycle()).toMatchObject({ status: 'failed' });
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_queue_error' });
+    expect(reviewRun(h)).toHaveLength(0);
+    expect(reviewRows(h)).toHaveLength(0);
+    expect(h.startRun).not.toHaveBeenCalled();
+  });
+
+  it('retry after a rolled-back attempt creates exactly one run and one review', async () => {
+    const { h, cycle } = await launching();
+    failReviewInserts(h);
+    await expect(h.executor.queueReviewRun(request(h, cycle.id))).rejects.toThrow();
+    h.fx.db.exec('DROP TRIGGER inject_review_bind_failure');
+    expect(await h.tick()).toBe('review_run_queued');
+    expect(reviewRun(h)).toHaveLength(1);
+    expect(reviewRows(h)).toHaveLength(1);
+    expect(reviewRows(h)[0]).toMatchObject({ run_id: reviewRun(h)[0]!.id, status: 'pending' });
+    expect(h.startRun).not.toHaveBeenCalled();
+  });
+
+  it('a duplicate queue attempt returns the same run and review', async () => {
+    const { h, cycle } = await launching();
+    const first = await h.executor.queueReviewRun(request(h, cycle.id));
+    const second = await h.executor.queueReviewRun(request(h, cycle.id));
+    expect(second).toEqual(first);
+    expect(reviewRun(h)).toHaveLength(1);
+    expect(reviewRows(h)).toHaveLength(1);
+    expect(reviewRows(h)[0]).toMatchObject({
+      run_id: first.runId,
+      reviewed_to_commit: h.fx.head(),
+      review_kind: 'final',
+      definition_version: 1,
+    });
+  });
+
+  it('the binding is re-proven inside the transaction: a moved head or another review kind rolls everything back', async () => {
+    const { h, cycle } = await launching();
+    await expect(h.executor.queueReviewRun(request(h, cycle.id, 'periodic'))).rejects.toMatchObject({
+      code: 'review_binding_invalid',
+    });
+    expect(reviewRun(h)).toHaveLength(0);
+    expect(reviewRows(h)).toHaveLength(0);
+    h.fx.advance({ 'src/late.ts': 'export const late = 1;\n' }, 'late');
+    await expect(h.executor.queueReviewRun(request(h, cycle.id))).rejects.toMatchObject({
+      code: 'review_binding_invalid',
+    });
+    expect(reviewRun(h)).toHaveLength(0);
+    expect(reviewRows(h)).toHaveLength(0);
+  });
+
+  it('a historical queued review run without a review record fails closed and is never started or duplicated', async () => {
+    const { h, cycle } = await launching();
+    const queued = await h.executor.queueReviewRun(request(h, cycle.id));
+    // Simulate a historical/corrupt state: the immutability trigger is removed only to fabricate the orphan.
+    for (const row of h.fx.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND sql LIKE '%reviews cannot be deleted%'",
+      )
+      .all() as Array<{ name: string }>)
+      h.fx.db.exec(`DROP TRIGGER ${row.name}`);
+    h.fx.db.prepare('DELETE FROM goal_reviews WHERE run_id = ?').run(queued.runId);
+    const fresh = h.restart();
+    expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_decision_needed');
+    expect(h.cycle()!.outcome).toMatchObject({ code: 'review_binding_missing' });
+    expect(h.startRun).not.toHaveBeenCalled();
+    expect(reviewRun(h).map((run) => run.id)).toEqual([queued.runId]);
+    expect(reviewRows(h)).toHaveLength(0);
+    // The executor refuses to adopt it too, rather than manufacturing a record around an arbitrary run.
+    await expect(fresh.executor.queueReviewRun(request(h, cycle.id))).rejects.toMatchObject({
+      code: 'review_binding_missing',
+    });
+    expect(reviewRows(h)).toHaveLength(0);
   });
 });

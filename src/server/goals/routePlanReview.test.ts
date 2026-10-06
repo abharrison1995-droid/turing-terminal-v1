@@ -1,223 +1,25 @@
-import { randomUUID } from 'node:crypto';
+import {} from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { GoalDefinition, GoalReviewKind, GoalRole } from '../../shared/goals.js';
+import type { GoalReviewKind, GoalRole } from '../../shared/goals.js';
 import type { WorkflowDefinition } from '../../shared/types.js';
 import { isModelBackedStage } from '../../shared/workflowKinds.js';
-import type { Db } from '../db.js';
-import { approveDefinition, createGoalDraft } from './definitions.js';
+import type {} from '../db.js';
+import {} from './definitions.js';
 import { requestGoalApproval } from './approvals.js';
-import { readStoredResolutions } from './routeResolution.js';
-import type { RouteSnapshot } from './routeIdentity.js';
-import { identityOf, model, NOW, passRecords, provider } from './routingKit.js';
-import { READINESS_ROLES, ResolvedGoalRunPlanProvider } from './routePlan.js';
+import {} from './routeResolution.js';
+import type {} from './routeIdentity.js';
+import { identityOf, NOW } from './routingKit.js';
+import { READINESS_ROLES } from './routePlan.js';
 import { deriveReviewIndependence } from './reviewIndependence.js';
 import type { GoalReviewRow } from './reviews.js';
-import { reviewRoleForKind } from './reviewRole.js';
-import type { GoalRunPlanRequest } from './runPlan.js';
-import { cleanupTestDatabases, freshDatabase, seedProject, validDefinition } from './testKit.js';
+import {} from './reviewRole.js';
+import type {} from './runPlan.js';
+import { cleanupTestDatabases } from './testKit.js';
 import { canonicalNonRouteWorkflow, registeredGoalWorkflow } from './turingExecutor.js';
 
+import { IMPLEMENTER, catalog, memberOf, fx } from './routePlanReviewKit.js';
+
 afterEach(cleanupTestDatabases);
-
-const IMPLEMENTER = 'claude-sonnet-4-5';
-const ids = [IMPLEMENTER, 'orch', 'gpt-5', 'claude-opus-4-1', 'rev-a', 'rev-b', 'opus'];
-const catalog = () => [
-  provider(
-    {},
-    ids.map((id) => model(id)),
-  ),
-];
-const meteredOf = (modelId: string) => ({
-  configuration: {
-    backendId: 'opencode',
-    providerId: 'anthropic',
-    billingLane: 'anthropic-api' as const,
-    modelId,
-  },
-  identityKind: 'pinned' as const,
-  freshnessClass: 'stable-subscription' as const,
-});
-const memberOf = (modelId: string, identityKind: 'pinned' | 'floating' = 'pinned') => ({
-  configuration: {
-    backendId: 'opencode',
-    providerId: 'opencode-go',
-    billingLane: 'opencode-go-subscription' as const,
-    modelId,
-  },
-  identityKind,
-  freshnessClass: 'stable-subscription' as const,
-});
-
-interface Options {
-  finalModel?: string;
-  finalKind?: 'pinned' | 'floating';
-  allowFloating?: boolean;
-  firstUse?: boolean;
-  selection?: 'ordered' | 'round_robin';
-  metered?: boolean;
-  prepare?: (db: Db, definition: GoalDefinition) => void;
-}
-
-/** A running Goal with a finished execution cycle (the implementer authority) and one active review cycle. */
-function fx(options: Options = {}) {
-  const db = freshDatabase();
-  const projectId = seedProject(db);
-  const definition = validDefinition();
-  definition.routing.workflows = {
-    planning: 'goal-planning-v1',
-    execution: 'goal-execution-v1',
-    review: 'goal-review-v1',
-    verification: 'goal-verification-v1',
-  };
-  definition.limits.humanGates.poolRouteFirstUse = options.firstUse ?? false;
-  const pin = (id: string, kind: 'pinned' | 'floating' = 'pinned') => ({
-    kind: 'pinned' as const,
-    member: memberOf(id, kind),
-    availability: 'live-catalog-or-fresh-validation' as const,
-    requireRoleValidation: true,
-  });
-  definition.routing.roles.orchestrator = pin('orch');
-  definition.routing.roles.implementer = pin(IMPLEMENTER);
-  definition.routing.roles.final_reviewer = pin(options.finalModel ?? 'gpt-5', options.finalKind);
-  definition.routing.pools = [
-    {
-      id: 'reviewers',
-      label: 'Reviewers',
-      members: options.metered
-        ? [meteredOf('anthropic/rev-a'), meteredOf('anthropic/rev-b')]
-        : [memberOf('rev-a'), memberOf('rev-b')],
-      admission: 'static',
-      availability: 'live-catalog-or-fresh-validation',
-      requireRoleValidation: true,
-      selection: options.selection ?? 'ordered',
-      laneClass: options.metered ? 'metered' : 'subscription',
-      autoRevalidate: false,
-    },
-  ];
-  definition.routing.independence = {
-    finalReview: 'different-family',
-    against: ['implementer', 'remediation'],
-    allowFloatingFinalReviewer: options.allowFloating ?? false,
-  };
-  options.prepare?.(db, definition);
-  const { goalId } = createGoalDraft(db, { projectId, title: 'G', definition });
-  approveDefinition(db, { goalId, version: 1, actor: 'user' });
-  db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(goalId);
-  const base = 'b'.repeat(40);
-  const milestoneId = (
-    db.prepare('SELECT id FROM goal_milestones WHERE goal_id = ? ORDER BY rowid LIMIT 1').get(goalId) as {
-      id: string;
-    }
-  ).id;
-  const snapshot = { providers: catalog(), profiles: [] };
-  const insert = db.prepare(
-    `INSERT INTO route_validations (id, identity_hash, identity_json, profile, status, checks_json, provenance, adapter_version, capability_fingerprint, tested_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, '{}', 'turing_probe_run', ?, ?, ?, ?)`,
-  );
-  const validate = (member: ReturnType<typeof memberOf>, role: GoalRole) => {
-    for (const record of passRecords(member, role, snapshot))
-      insert.run(
-        record.id,
-        record.identityHash,
-        JSON.stringify(record.identity),
-        record.profile,
-        record.status,
-        record.adapterVersion,
-        record.capabilityFingerprint,
-        record.testedAt,
-        record.expiresAt,
-      );
-  };
-  validate(memberOf('orch'), 'orchestrator');
-  validate(memberOf(IMPLEMENTER), 'implementer');
-  validate(memberOf(options.finalModel ?? 'gpt-5', options.finalKind), 'final_reviewer');
-  for (const role of ['routine_reviewer', 'milestone_reviewer'] as const)
-    for (const id of ['rev-a', 'rev-b'])
-      validate(options.metered ? meteredOf(`anthropic/${id}`) : memberOf(id), role);
-  const observe = async (): Promise<RouteSnapshot> => snapshot;
-  const planner = new ResolvedGoalRunPlanProvider(db, { observe, now: () => NOW });
-  let sequence = 0;
-  const cycle = (kind: 'execution' | 'review', status: string, reviewKind?: GoalReviewKind) => {
-    sequence += 1;
-    const id = randomUUID();
-    db.prepare(
-      `INSERT INTO goal_cycles (id, goal_id, definition_version, sequence, kind, trigger_code, status, base_integration_commit, milestone_id, outcome_json, created_at, finished_at)
-       VALUES (?, ?, 1, ?, ?, 't', ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
-      goalId,
-      sequence,
-      kind,
-      status,
-      base,
-      milestoneId,
-      reviewKind
-        ? JSON.stringify({ reviewPlan: { reviewKind, reviewerCount: 2, reviewedFromCommit: null } })
-        : null,
-      NOW,
-      status === 'succeeded' ? NOW : null,
-    );
-    return id;
-  };
-  const f = {
-    db,
-    goalId,
-    base,
-    definition,
-    planner,
-    cycle,
-    /** The implementer authority (an executed cycle) that final-review independence compares against. */
-    async withImplementerAuthority() {
-      const id = cycle('execution', 'launching');
-      const plan = await planner.planRun({
-        goalId,
-        cycleId: id,
-        purpose: 'execution',
-        definitionVersion: 1,
-        workflowId: 'goal-execution-v1',
-        baseCommit: base,
-      });
-      expect(plan.ready).toBe(true);
-      const result = 'd'.repeat(40);
-      db.prepare(
-        `UPDATE goal_cycles SET status = 'succeeded', finished_at = ?, result_integration_commit = ?, outcome_json = ? WHERE id = ?`,
-      ).run(NOW, result, JSON.stringify({ code: 'integrated' }), id);
-      const op = randomUUID();
-      db.prepare(
-        `INSERT INTO goal_integration_ops (id, goal_id, cycle_id, op, expected_old, new_commit, status, checks_json, created_at)
-         VALUES (?, ?, ?, 'advance', ?, ?, 'planned', '{}', ?)`,
-      ).run(op, goalId, id, base, result, NOW);
-      db.prepare("UPDATE goal_integration_ops SET status = 'applied', finished_at = ? WHERE id = ?").run(
-        NOW,
-        op,
-      );
-    },
-    review(kind: GoalReviewKind) {
-      return cycle('review', 'launching', kind);
-    },
-    request(cycleId: string, kind: GoalReviewKind): GoalRunPlanRequest {
-      return {
-        goalId,
-        cycleId,
-        purpose: 'review',
-        reviewRole: reviewRoleForKind(kind),
-        definitionVersion: 1,
-        workflowId: 'goal-review-v1',
-        baseCommit: base,
-      };
-    },
-    stored(cycleId: string, role: GoalRole) {
-      return readStoredResolutions(
-        (
-          db.prepare('SELECT route_resolution_json AS j FROM goal_cycles WHERE id = ?').get(cycleId) as {
-            j: string | null;
-          }
-        ).j,
-      )[role];
-    },
-  };
-  return f;
-}
 
 const modelBacked = (workflow: WorkflowDefinition) =>
   workflow.stages.filter((s) => isModelBackedStage(s.kind));
@@ -474,6 +276,76 @@ describe('deriveReviewIndependence (server-derived, never model-supplied)', () =
     const cycleId = f.review('final');
     await f.planner.planRun(f.request(cycleId, 'final'));
     expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, 'final'))).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
+    });
+  });
+});
+
+describe('post-run independence uses canonical Stage-5 semantics and telemetry', () => {
+  const rowOf = (f: ReturnType<typeof fx>, cycleId: string, runId: string | null) =>
+    ({
+      goalId: f.goalId,
+      cycleId,
+      definitionVersion: 1,
+      reviewKind: 'final',
+      runId,
+    }) as unknown as GoalReviewRow;
+  const planned = async (options: Parameters<typeof fx>[0] = { finalModel: 'gpt-5' }) => {
+    const f = fx(options);
+    const authorityCycle = (await f.withImplementerAuthority()) as unknown as string;
+    const cycleId = f.review('final');
+    expect((await f.planner.planRun(f.request(cycleId, 'final'))).ready).toBe(true);
+    return { f, cycleId, authorityCycle };
+  };
+
+  it('establishes independence when telemetry agrees with the configured identities', async () => {
+    const { f, cycleId, authorityCycle } = await planned();
+    f.telemetry(authorityCycle, 'execution', IMPLEMENTER);
+    const runId = f.telemetry(cycleId, 'review', 'gpt-5');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
+      ok: true,
+      independence: { established: true, detail: { reasonCode: 'established' } },
+    });
+  });
+
+  it('candidate conflict: configured model A but usage resolves B is never independent', async () => {
+    const { f, cycleId } = await planned();
+    const runId = f.telemetry(cycleId, 'review', 'gpt-4o');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'identity_conflict' } },
+    });
+  });
+
+  it('authority conflict: the implementer ran as something other than configured, so a different reviewer proves nothing', async () => {
+    const { f, cycleId, authorityCycle } = await planned();
+    f.telemetry(authorityCycle, 'execution', 'gpt-4o');
+    const runId = f.telemetry(cycleId, 'review', 'gpt-5');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'identity_conflict' } },
+    });
+  });
+
+  it('proven overlap after runtime resolution: a floating reviewer that resolves to the implementer model is not independent', async () => {
+    const { f, cycleId } = await planned({ finalModel: 'gpt-5', finalKind: 'floating', allowFloating: true });
+    const runId = f.telemetry(cycleId, 'review', IMPLEMENTER);
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'same_model', conflict: true } },
+    });
+  });
+
+  it('the explicit floating exception stays unestablished even when telemetry later names a distinct model', async () => {
+    const { f, cycleId } = await planned({ finalModel: 'gpt-5', finalKind: 'floating', allowFloating: true });
+    const none = deriveReviewIndependence(f.db, rowOf(f, cycleId, null));
+    expect(none).toMatchObject({
+      ok: true,
+      independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
+    });
+    const runId = f.telemetry(cycleId, 'review', 'gpt-5');
+    expect(deriveReviewIndependence(f.db, rowOf(f, cycleId, runId))).toMatchObject({
       ok: true,
       independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
     });

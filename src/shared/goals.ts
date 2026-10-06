@@ -286,6 +286,7 @@ export const GOAL_TRANSITION_REASONS = [
   'user_abandoned',
   'review_triggered',
   'review_passed',
+  'review_stale',
   'amendment_approved',
   'amendment_discarded',
   'gate_resolved',
@@ -337,7 +338,7 @@ export const GOAL_TRANSITIONS: readonly GoalTransitionRule[] = [
   { from: 'running', to: 'blocked', reasons: BLOCKED_REASONS, actors: supervisorOnly },
   { from: 'running', to: 'paused', reasons: PAUSED_REASONS, actors: either },
   { from: 'running', to: 'completed', reasons: ['completion_verified'], actors: supervisorOnly },
-  { from: 'reviewing', to: 'running', reasons: ['review_passed'], actors: supervisorOnly },
+  { from: 'reviewing', to: 'running', reasons: ['review_passed', 'review_stale'], actors: supervisorOnly },
   { from: 'reviewing', to: 'blocked', reasons: ['review_blocked'], actors: supervisorOnly },
   { from: 'reviewing', to: 'needs_user', reasons: ['review_needs_decision'], actors: supervisorOnly },
   {

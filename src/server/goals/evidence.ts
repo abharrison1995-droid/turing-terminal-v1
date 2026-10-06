@@ -237,7 +237,7 @@ export async function recordEvidence(db: Db, input: RecordEvidenceInput): Promis
       'user_authority_required',
       'User confirmation evidence is created only from an explicit user approval.',
     );
-  const { verifier } = prepare(db, input);
+  const { verifier, definition } = prepare(db, input);
 
   switch (input.kind) {
     case 'build_result':
@@ -300,7 +300,7 @@ export async function recordEvidence(db: Db, input: RecordEvidenceInput): Promis
       const review = db
         .prepare(
           `SELECT id, goal_id, milestone_id, definition_version, review_kind, status, verdict, blocking,
-                  reviewed_from_commit, reviewed_to_commit, reviewed_to_tree
+                  reviewed_from_commit, reviewed_to_commit, reviewed_to_tree, independence_json
            FROM goal_reviews WHERE id = ?`,
         )
         .get(input.reviewId) as
@@ -316,6 +316,7 @@ export async function recordEvidence(db: Db, input: RecordEvidenceInput): Promis
             reviewed_from_commit: string | null;
             reviewed_to_commit: string;
             reviewed_to_tree: string;
+            independence_json: string | null;
           }
         | undefined;
       if (!review || review.goal_id !== input.goalId)
@@ -339,14 +340,29 @@ export async function recordEvidence(db: Db, input: RecordEvidenceInput): Promis
         )
         .get(review.id, input.verifierDigest) as { id: string } | undefined;
       if (existing) return { id: existing.id };
+      // A final review satisfies its verifier only with the exact `pass` completion requires AND, when the approved
+      // policy requires independence, a recorded established independence of that policy. An unestablished review
+      // (including the explicitly allowed floating reviewer) is valid history but never satisfying evidence.
+      const finalSatisfies = (): boolean => {
+        if (review.verdict !== 'pass') return false;
+        const policy = definition.routing.independence.finalReview;
+        if (policy === 'none') return true;
+        type Claim = { established?: unknown; policy?: unknown };
+        let claim: Claim | null = null;
+        try {
+          claim = review.independence_json ? (JSON.parse(review.independence_json) as Claim) : null;
+        } catch {
+          claim = null;
+        }
+        return claim?.established === true && claim.policy === policy;
+      };
       return {
         id: insertEvidence(db, input, {
-          // The verdict is derived from the stored review, never supplied by the caller. A final review satisfies its
-          // verifier only with the exact `pass` that completion requires; `pass_with_findings` is inconclusive there.
+          // The verdict is derived from the stored review, never supplied by the caller.
           verdict:
             review.verdict === 'block' || review.blocking === 1
               ? 'contradicts'
-              : review.review_kind === 'final' && review.verdict !== 'pass'
+              : review.review_kind === 'final' && !finalSatisfies()
                 ? 'inconclusive'
                 : 'satisfies',
           reviewId: review.id,

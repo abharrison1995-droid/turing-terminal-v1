@@ -8,7 +8,8 @@ import type {
   ReviewVerdict,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
-import { loadDefinitionVersion } from './definitions.js';
+import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
+import { readReviewPlan } from './reviewPlan.js';
 import { writeGoalEvent } from './events.js';
 import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
 
@@ -26,7 +27,8 @@ export type GoalReviewErrorCode =
   | 'review_not_found'
   | 'review_not_pending'
   | 'report_invalid'
-  | 'independence_invalid';
+  | 'independence_invalid'
+  | 'review_binding_invalid';
 
 export class GoalReviewError extends Error {
   constructor(
@@ -229,6 +231,110 @@ export async function createReview(
     );
   })();
   return { id, reviewedToCommit: state.head, reviewedToTree: state.tree };
+}
+
+export interface ReviewBindingInput {
+  goalId: string;
+  cycleId: string;
+  runId: string;
+  definitionVersion: number;
+  reviewKind: GoalReviewKind;
+  milestoneId?: string | null;
+  reviewedFromCommit?: string | null;
+  /** Read from Git by the trusted launcher alongside the head; re-proven against the Goal's head here. */
+  reviewedToCommit: string;
+  reviewedToTree: string;
+  now: string;
+}
+
+/**
+ * The SYNCHRONOUS immutable binding of a Goal review to its cycle, its run and the exact repository subject. It is
+ * meant to run in the SAME outer transaction as `queueRun`, so a review run can never exist durably without its review
+ * record. Because Git reads happened before the transaction, everything checkable in SQLite is re-proven here, and a
+ * single mismatch throws (rolling the whole launch back): the Goal still owns a non-terminal review cycle of the
+ * current approved definition (hash verified) whose plan is this kind/milestone/range, the run's immutable origin is
+ * this cycle and purpose `review`, and the Goal head is still the reviewed commit. Never creates a review for a run it
+ * cannot prove, and never updates an existing row.
+ */
+export function bindReviewRecord(db: Db, input: ReviewBindingInput): { id: string } {
+  const fail = (message: string): never => {
+    throw new GoalReviewError('review_binding_invalid', message);
+  };
+  assertCurrentApprovedDefinition(db, input.goalId, input.definitionVersion);
+  const stored = loadDefinitionVersion(db, input.goalId, input.definitionVersion);
+  if (!stored || !verifyDefinitionHash(stored)) fail('The approved definition no longer verifies.');
+  const cycle = db
+    .prepare(
+      `SELECT goal_id, kind, status, definition_version, milestone_id, base_integration_commit, outcome_json
+       FROM goal_cycles WHERE id = ?`,
+    )
+    .get(input.cycleId) as
+    | {
+        goal_id: string;
+        kind: string;
+        status: string;
+        definition_version: number | null;
+        milestone_id: string | null;
+        base_integration_commit: string | null;
+        outcome_json: string | null;
+      }
+    | undefined;
+  if (!cycle || cycle.goal_id !== input.goalId) fail('The cycle does not belong to this Goal.');
+  if (cycle!.kind !== 'review') fail('The cycle is not a review cycle.');
+  if (!['planned', 'launching', 'running', 'collecting'].includes(cycle!.status))
+    fail('The review cycle is no longer active.');
+  if (cycle!.definition_version !== input.definitionVersion)
+    fail('The review cycle belongs to another definition version.');
+  let outcome: unknown = null;
+  try {
+    outcome = cycle!.outcome_json ? JSON.parse(cycle!.outcome_json) : null;
+  } catch {
+    outcome = null;
+  }
+  const plan = readReviewPlan(outcome);
+  if (!plan) fail('The review cycle has no valid review plan.');
+  if (plan!.reviewKind !== input.reviewKind) fail('The review kind is not the cycle plan.');
+  if ((plan!.reviewedFromCommit ?? null) !== (input.reviewedFromCommit ?? null))
+    fail('The reviewed range is not the cycle plan.');
+  if ((cycle!.milestone_id ?? null) !== (input.milestoneId ?? null))
+    fail('The review milestone is not the cycle milestone.');
+  const head = (
+    db.prepare('SELECT integration_head FROM goal_runtime WHERE goal_id = ?').get(input.goalId) as
+      { integration_head: string | null } | undefined
+  )?.integration_head;
+  if (!head || head !== input.reviewedToCommit || cycle!.base_integration_commit !== input.reviewedToCommit)
+    fail('The Goal head is no longer the reviewed commit.');
+  const run = db
+    .prepare('SELECT goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = ?')
+    .get(input.runId) as
+    | { goal_cycle_id: string | null; goal_run_purpose: string | null; goal_base_commit: string | null }
+    | undefined;
+  if (
+    !run ||
+    run.goal_cycle_id !== input.cycleId ||
+    run.goal_run_purpose !== 'review' ||
+    run.goal_base_commit !== input.reviewedToCommit
+  )
+    fail('The run origin is not this review cycle.');
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO goal_reviews (id, goal_id, cycle_id, milestone_id, definition_version, run_id, review_kind, status,
+       reviewed_from_commit, reviewed_to_commit, reviewed_to_tree, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+  ).run(
+    id,
+    input.goalId,
+    input.cycleId,
+    input.milestoneId ?? null,
+    input.definitionVersion,
+    input.runId,
+    input.reviewKind,
+    input.reviewedFromCommit ?? null,
+    input.reviewedToCommit,
+    input.reviewedToTree,
+    input.now,
+  );
+  return { id };
 }
 
 const text = (max: number) => z.string().max(max);

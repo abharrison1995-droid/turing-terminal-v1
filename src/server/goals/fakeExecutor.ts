@@ -1,4 +1,8 @@
 import type { Db } from '../db.js';
+import { getCycle } from './cycles.js';
+import { readReviewPlan } from './reviewPlan.js';
+import { isAncestorOfHead, resolveGoalRepository } from './repository.js';
+import { bindReviewRecord, reviewForCycle } from './reviews.js';
 import type {
   ChildRunRequest,
   GoalExecutor,
@@ -98,14 +102,42 @@ export class FakeGoalExecutor implements GoalExecutor {
 
   async queueReviewRun(request: ReviewRunRequest): Promise<{ runId: string }> {
     this.reviewQueueCalls.push(request);
-    const runId =
-      this.existing(request.cycleId, 'review') ??
-      this.makeRun({
+    const cycle = getCycle(this.db, request.cycleId);
+    if (!cycle) throw new Error('review cycle missing');
+    const existing = this.existing(request.cycleId, 'review');
+    if (existing) {
+      const review = reviewForCycle(this.db, request.cycleId);
+      if (!review || review.runId !== existing)
+        throw Object.assign(new Error('review binding missing'), { code: 'review_binding_missing' });
+      return { runId: existing };
+    }
+    const resolved = await resolveGoalRepository(this.db, request.goalId);
+    if (!resolved.ok) throw new Error('repository unavailable');
+    const plan = readReviewPlan(cycle.outcome);
+    if (plan?.reviewedFromCommit && !(await isAncestorOfHead(resolved.state, plan.reviewedFromCommit)))
+      throw Object.assign(new Error('from commit invalid'), { code: 'review_from_commit_invalid' });
+    // Like production: the queued run and its immutable review record commit in ONE transaction.
+    const runId = this.db.transaction(() => {
+      const id = this.makeRun({
         goalId: request.goalId,
         cycleId: request.cycleId,
         purpose: 'review',
         baseCommit: request.baseCommit,
       });
+      bindReviewRecord(this.db, {
+        goalId: request.goalId,
+        cycleId: request.cycleId,
+        runId: id,
+        definitionVersion: cycle.definitionVersion!,
+        reviewKind: request.reviewKind,
+        milestoneId: cycle.milestoneId,
+        reviewedFromCommit: plan?.reviewedFromCommit ?? null,
+        reviewedToCommit: resolved.state.head,
+        reviewedToTree: resolved.state.tree,
+        now: new Date().toISOString(),
+      });
+      return id;
+    })();
     return { runId };
   }
 }

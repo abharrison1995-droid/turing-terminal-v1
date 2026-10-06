@@ -17,7 +17,7 @@ import { listVerifiers } from './verifierDigest.js';
 
 afterEach(cleanupRepoFixtures);
 
-const definition = (): GoalDefinition => {
+const definition = (policy: 'different-family' | 'none' = 'different-family'): GoalDefinition => {
   const def = simpleDefinition({
     criteria: [
       BUILD,
@@ -42,18 +42,34 @@ const definition = (): GoalDefinition => {
   const reviewer = def.routing.roles.implementer!;
   def.routing.roles.milestone_reviewer = reviewer;
   def.routing.roles.final_reviewer = reviewer;
+  def.routing.independence.finalReview = policy;
   return def;
 };
 
-async function reviewed(kind: GoalReviewKind, report: Partial<ReviewReport>) {
-  const fx = goalRepoFixture({ definition: definition() });
+type Claim = 'established' | 'unestablished' | 'none-recorded';
+const claimOf = (claim: Claim, policy: 'different-family' | 'none') =>
+  claim === 'none-recorded' ? undefined : { established: claim === 'established', policy, detail: {} };
+
+async function reviewed(
+  kind: GoalReviewKind,
+  report: Partial<ReviewReport>,
+  options: { policy?: 'different-family' | 'none'; claim?: Claim } = {},
+) {
+  const policy = options.policy ?? 'different-family';
+  const fx = goalRepoFixture({ definition: definition(policy) });
   const { id } = await createReview(fx.db, {
     goalId: fx.goalId,
     definitionVersion: 1,
     reviewKind: kind,
     ...(kind === 'milestone' ? { milestoneId: fx.milestoneId('m1') } : {}),
   });
-  completeReview(fx.db, { reviewId: id, report: reportOf(report) });
+  completeReview(fx.db, {
+    reviewId: id,
+    report: reportOf(report),
+    ...(kind === 'final' && options.claim
+      ? { independence: claimOf(options.claim, policy === 'none' ? 'none' : policy) }
+      : {}),
+  });
   const key = kind === 'milestone' ? 'm-review' : 'f-review';
   const verifier = listVerifiers(fx.definition).find(
     (v) => v.criterionKey === key && v.spec.kind === 'review_verdict',
@@ -77,7 +93,6 @@ describe('review_verdict evidence semantics (aligned with completion)', () => {
     ['milestone', 'pass', 'satisfies'],
     ['milestone', 'pass_with_findings', 'satisfies'],
     ['milestone', 'block', 'contradicts'],
-    ['final', 'pass', 'satisfies'],
     ['final', 'pass_with_findings', 'inconclusive'],
     ['final', 'block', 'contradicts'],
   ];
@@ -85,6 +100,45 @@ describe('review_verdict evidence semantics (aligned with completion)', () => {
     const { fx, record, key } = await reviewed(kind, { verdict });
     await record();
     expect(verdictOf(fx, key)).toEqual([expected]);
+  });
+
+  const finals: Array<[string, ReviewReport['verdict'], 'different-family' | 'none', Claim, string]> = [
+    ['pass, independence required and established', 'pass', 'different-family', 'established', 'satisfies'],
+    [
+      'pass, independence required and unestablished',
+      'pass',
+      'different-family',
+      'unestablished',
+      'inconclusive',
+    ],
+    [
+      'pass, independence required and nothing recorded',
+      'pass',
+      'different-family',
+      'none-recorded',
+      'inconclusive',
+    ],
+    ['pass, policy none', 'pass', 'none', 'unestablished', 'satisfies'],
+    [
+      'pass_with_findings, established',
+      'pass_with_findings',
+      'different-family',
+      'established',
+      'inconclusive',
+    ],
+    ['block, established', 'block', 'different-family', 'established', 'contradicts'],
+    ['block, unestablished', 'block', 'different-family', 'unestablished', 'contradicts'],
+  ];
+  it.each(finals)('final review: %s', async (_name, verdict, policy, claim, expected) => {
+    const { fx, record, key } = await reviewed('final', { verdict }, { policy, claim });
+    await record();
+    expect(verdictOf(fx, key)).toEqual([expected]);
+  });
+
+  it('milestone evidence ignores final-review independence entirely', async () => {
+    const { fx, record, key } = await reviewed('milestone', { verdict: 'pass' });
+    await record();
+    expect(verdictOf(fx, key)).toEqual(['satisfies']);
   });
 
   it('a final pass_with_findings is never recorded as satisfying the verifier completion needs', async () => {
