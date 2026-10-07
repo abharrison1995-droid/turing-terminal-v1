@@ -157,7 +157,13 @@ export const evidenceRow = (overrides: Partial<GoalEvidenceView>): GoalEvidenceV
 
 /** Keys are `/path` (any method) or `POST /path` (that method only; checked first). */
 export type Routes = Record<string, (body?: unknown) => unknown>;
-export let calls: Array<{ url: string; method: string; path: string; body?: unknown }>;
+export let calls: Array<{
+  url: string;
+  method: string;
+  path: string;
+  body?: unknown;
+  headers: Record<string, string>;
+}>;
 export const posts = () => calls.filter((call) => call.method !== 'GET');
 
 export function serve(routes: Routes) {
@@ -169,7 +175,18 @@ export function serve(routes: Routes) {
       const method = init?.method ?? 'GET';
       const path = url.replace(/^https?:\/\/[^/]+/, '').split('?')[0]!;
       const sent = typeof init?.body === 'string' ? (JSON.parse(init.body) as unknown) : undefined;
-      calls.push({ url, method, path, ...(sent !== undefined ? { body: sent } : {}) });
+      calls.push({
+        url,
+        method,
+        path,
+        headers: Object.fromEntries(
+          Object.entries((init?.headers ?? {}) as Record<string, string>).map(([k, v]) => [
+            k.toLowerCase(),
+            v,
+          ]),
+        ),
+        ...(sent !== undefined ? { body: sent } : {}),
+      });
       const handler = routes[`${method} ${path}`] ?? routes[path];
       if (!handler) return new Response(JSON.stringify({ error: `no route ${path}` }), { status: 404 });
       const body = await handler(sent);

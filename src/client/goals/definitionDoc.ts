@@ -140,3 +140,44 @@ export function diffLines(before: string, after: string): DiffLine[] | null {
   while (j < b.length) out.push({ kind: 'added', text: b[j++]! });
   return out;
 }
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const array = (value: unknown): value is unknown[] => Array.isArray(value);
+const strings = (value: unknown): boolean => array(value) && value.every((item) => typeof item === 'string');
+
+/**
+ * Whether the structured summary can read this stored document without dereferencing a missing field. A proposal may be
+ * stored while incomplete, so this is a presentation safety check only; the server's validation stays the authority.
+ */
+export function isSummarisable(definition: unknown): boolean {
+  if (!isRecord(definition)) return false;
+  const { contract, milestones, routing, review, limits } = definition;
+  if (!isRecord(contract) || !isRecord(routing) || !isRecord(review) || !isRecord(limits)) return false;
+  if (!array(contract.successCriteria) || !strings(contract.nonGoals) || !strings(contract.constraints))
+    return false;
+  const criteriaOk = contract.successCriteria.every(
+    (criterion) =>
+      isRecord(criterion) &&
+      typeof criterion.key === 'string' &&
+      array(criterion.verification) &&
+      criterion.verification.every((spec) => isRecord(spec) && typeof spec.kind === 'string'),
+  );
+  if (!criteriaOk || !isRecord(contract.completionPolicy)) return false;
+  if (!array(milestones)) return false;
+  const milestonesOk = milestones.every(
+    (m) => isRecord(m) && typeof m.key === 'string' && strings(m.criteria) && strings(m.dependsOn),
+  );
+  if (!milestonesOk) return false;
+  if (!isRecord(routing.roles) || !isRecord(routing.workflows) || !isRecord(routing.independence))
+    return false;
+  const rolesOk = Object.values(routing.roles).every(
+    (route) =>
+      isRecord(route) &&
+      (route.kind === 'pool' ||
+        (route.kind === 'pinned' && isRecord(route.member) && isRecord(route.member.configuration))),
+  );
+  if (!rolesOk) return false;
+  if (review.periodic !== undefined && review.periodic !== null && !isRecord(review.periodic)) return false;
+  return true;
+}

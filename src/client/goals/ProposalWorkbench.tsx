@@ -107,7 +107,14 @@ export function ProposalWorkbench({
     setParseError(null);
     void run(
       'save',
-      () => goalsApi.saveDefinition(goal.id, full.version, parsed.value, summary.trim() || undefined),
+      () =>
+        goalsApi.saveDefinition(
+          goal.id,
+          full.version,
+          full.definitionHash,
+          parsed.value,
+          summary.trim() || undefined,
+        ),
       `Saved v${full.version}. Review the new hash and validation below before approving.`,
     );
   }
@@ -296,7 +303,13 @@ export function ProposalWorkbench({
               onClick={() =>
                 void run(
                   'approve',
-                  () => goalsApi.approveDefinition(goal.id, full.version, note.trim() || undefined),
+                  () =>
+                    goalsApi.approveDefinition(
+                      goal.id,
+                      full.version,
+                      full.definitionHash,
+                      note.trim() || undefined,
+                    ),
                   `Approved v${full.version}. Showing the refreshed state.`,
                 )
               }
@@ -335,7 +348,7 @@ export function ProposalWorkbench({
               onClick={() =>
                 void run(
                   'reject',
-                  () => goalsApi.rejectDefinition(goal.id, full.version),
+                  () => goalsApi.rejectDefinition(goal.id, full.version, full.definitionHash),
                   `Rejected v${full.version}. Showing the refreshed state.`,
                 )
               }

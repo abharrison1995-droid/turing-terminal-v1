@@ -269,6 +269,21 @@ function App() {
     setPage(next);
     setMobileMenuOpen(false);
   };
+  // Unsaved Goal definition work (a boolean reported by the Goals page; the text never leaves it).
+  const [goalsUnsaved, setGoalsUnsaved] = useState(false);
+  const [queuedNav, setQueuedNav] = useState<{ next: Page; then?: () => void } | null>(null);
+  /**
+   * Every shell navigation that can leave Goals goes through here. Destination side effects (`then`) run only once the
+   * navigation is actually accepted, so cancelling leaves the app exactly where it was.
+   */
+  const navigate = (next: Page, then?: () => void) => {
+    if (page === 'goals' && next !== 'goals' && goalsUnsaved) {
+      setQueuedNav({ next, ...(then ? { then } : {}) });
+      return;
+    }
+    then?.();
+    changePage(next);
+  };
   const restartDesktopMaster = async () => {
     try {
       const runtime = await desktop.restartMaster();
@@ -300,13 +315,43 @@ function App() {
 
   return (
     <div className="app-shell">
+      {queuedNav && (
+        <div className="nav-guard-backdrop">
+          <div
+            className="goal-confirm nav-guard"
+            role="alertdialog"
+            aria-label="Confirm leave Grand Projects"
+          >
+            <strong>Discard unsaved Grand Project changes?</strong>
+            <p>
+              You have definition text that has not been saved. Leaving Grand Projects will discard those
+              local changes.
+            </p>
+            <div className="goal-control-buttons">
+              <button
+                type="button"
+                className="secondary-button goal-danger"
+                onClick={() => {
+                  const { next, then } = queuedNav;
+                  setQueuedNav(null);
+                  setGoalsUnsaved(false);
+                  then?.();
+                  changePage(next);
+                }}
+              >
+                Discard and leave
+              </button>
+              <button type="button" className="secondary-button" onClick={() => setQueuedNav(null)}>
+                Keep editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`} aria-label="Primary navigation">
         <button
           className="brand-lockup"
-          onClick={() => {
-            setSelectedRunId(null);
-            changePage('command');
-          }}
+          onClick={() => navigate('command', () => setSelectedRunId(null))}
           aria-label="Turing Terminal home"
         >
           <span className="brand-mark">
@@ -314,13 +359,7 @@ function App() {
           </span>
           <span className="brand-name">Turing Terminal</span>
         </button>
-        <button
-          className="new-task-button"
-          onClick={() => {
-            setSelectedRunId(null);
-            changePage('command');
-          }}
-        >
+        <button className="new-task-button" onClick={() => navigate('command', () => setSelectedRunId(null))}>
           <Plus size={16} /> New task
         </button>
         <p className="nav-label">Recent</p>
@@ -332,10 +371,7 @@ function App() {
               <button
                 key={run.id}
                 className={`task-link ${page === 'runs' && selectedRunId === run.id ? 'task-link-active' : ''}`}
-                onClick={() => {
-                  setSelectedRunId(run.id);
-                  changePage('runs');
-                }}
+                onClick={() => navigate('runs', () => setSelectedRunId(run.id))}
                 aria-current={page === 'runs' && selectedRunId === run.id ? 'page' : undefined}
               >
                 <span className={`run-status-glyph run-glyph-${run.status}`}>
@@ -356,10 +392,7 @@ function App() {
             <button
               key={id}
               className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-              onClick={() => {
-                if (id === 'runs') setSelectedRunId(null);
-                changePage(id);
-              }}
+              onClick={() => navigate(id, id === 'runs' ? () => setSelectedRunId(null) : undefined)}
               aria-current={page === id ? 'page' : undefined}
             >
               <Icon size={16} /> <span>{label}</span>
@@ -414,7 +447,7 @@ function App() {
               aria-label={
                 approvalCounts.total ? `${approvalCounts.total} pending approvals` : 'Notifications'
               }
-              onClick={() => changePage('runs')}
+              onClick={() => navigate('runs')}
             >
               <Bell size={17} />
               {approvalCounts.total > 0 && <i />}
@@ -480,7 +513,11 @@ function App() {
               />
             )}
             {page === 'goals' && (
-              <GoalsPage projects={snapshot?.projects ?? []} onOpenProjects={() => setPage('projects')} />
+              <GoalsPage
+                projects={snapshot?.projects ?? []}
+                onOpenProjects={() => navigate('projects')}
+                onUnsavedChange={setGoalsUnsaved}
+              />
             )}
             {page === 'runs' && snapshot && (
               <RunsPage

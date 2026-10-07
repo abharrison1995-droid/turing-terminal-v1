@@ -31,9 +31,15 @@ const query = (params: Record<string, string | number | undefined>): string => {
   const text = search.toString();
   return text ? `?${text}` : '';
 };
-const put = <T>(path: string, body: unknown) => call<T>(path, { method: 'PUT', body: JSON.stringify(body) });
-const post = <T>(path: string, body: unknown) =>
-  call<T>(path, { method: 'POST', body: JSON.stringify(body) });
+const put = <T>(path: string, body: unknown, headers?: Record<string, string>) =>
+  call<T>(path, { method: 'PUT', body: JSON.stringify(body), ...(headers ? { headers } : {}) });
+const post = <T>(path: string, body: unknown, headers?: Record<string, string>) =>
+  call<T>(path, { method: 'POST', body: JSON.stringify(body), ...(headers ? { headers } : {}) });
+/**
+ * The optimistic-concurrency precondition for changing an existing proposal: the PERSISTED hash the caller reviewed,
+ * as a strong entity tag. It is a precondition only; the server recomputes and verifies its own hash.
+ */
+const ifMatch = (observedHash: string) => ({ 'If-Match': `"${observedHash}"` });
 const goalPath = (goalId: string) => `/api/goals/${encodeURIComponent(goalId)}`;
 
 export const goalsApi = {
@@ -101,11 +107,18 @@ export const goalsApi = {
       ...(input.changeSummary ? { changeSummary: input.changeSummary } : {}),
     }),
   /** Saves the full document over a PROPOSED version only. No approval, hash or actor is sent. */
-  saveDefinition: (goalId: string, version: number, definition: GoalDefinition, changeSummary?: string) =>
-    put<{ definition: GoalDefinitionFull }>(`${goalPath(goalId)}/definitions/${version}`, {
-      definition,
-      ...(changeSummary ? { changeSummary } : {}),
-    }),
+  saveDefinition: (
+    goalId: string,
+    version: number,
+    observedHash: string,
+    definition: GoalDefinition,
+    changeSummary?: string,
+  ) =>
+    put<{ definition: GoalDefinitionFull }>(
+      `${goalPath(goalId)}/definitions/${version}`,
+      { definition, ...(changeSummary ? { changeSummary } : {}) },
+      ifMatch(observedHash),
+    ),
   /** Starts a revision/amendment. Without a body definition the server copies the current approved version. */
   beginRevision: (goalId: string, changeSummary?: string) =>
     post<{ version: number; definitionHash: string; validation: GoalDefinitionValidation }>(
@@ -116,11 +129,16 @@ export const goalsApi = {
    * The dedicated atomic approval of one proposed version. The server binds the approval to the exact Goal, version and
    * hash itself; this never goes through `/api/goal-approvals/:id/decision` and never resumes the Goal.
    */
-  approveDefinition: (goalId: string, version: number, note?: string) =>
+  approveDefinition: (goalId: string, version: number, observedHash: string, note?: string) =>
     post<{ version: number; definitionHash: string; approvalId: string; goalStatus: string }>(
       `${goalPath(goalId)}/definitions/${version}/approve`,
       note ? { note } : {},
+      ifMatch(observedHash),
     ),
-  rejectDefinition: (goalId: string, version: number) =>
-    post<{ version: number; goalStatus: string }>(`${goalPath(goalId)}/definitions/${version}/reject`, {}),
+  rejectDefinition: (goalId: string, version: number, observedHash: string) =>
+    post<{ version: number; goalStatus: string }>(
+      `${goalPath(goalId)}/definitions/${version}/reject`,
+      {},
+      ifMatch(observedHash),
+    ),
 };

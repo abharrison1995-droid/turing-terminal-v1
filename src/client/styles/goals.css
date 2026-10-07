@@ -372,3 +372,18 @@
   gap: var(--s-2);
   align-items: center;
 }
+
+/* Stage 7B.2B.1: shell-level leave confirmation for unsaved Goal definition work. */
+.nav-guard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: var(--s-4);
+  background: rgb(0 0 0 / 0.35);
+}
+.nav-guard {
+  width: min(32rem, 100%);
+  background: var(--surface);
+}

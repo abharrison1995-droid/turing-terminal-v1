@@ -13,6 +13,7 @@ import {
   beginAmendment,
   createGoalDraft,
   editProposedDefinition,
+  parseDefinitionPrecondition,
   rejectDefinition,
 } from './definitions.js';
 import { GoalFindingError } from './findings.js';
@@ -77,7 +78,11 @@ function domainError(error: unknown, reply: FastifyReply) {
       ? 404
       : error.code === 'definition_invalid' || error.code === 'definition_not_serialisable'
         ? 422
-        : 409;
+        : error.code === 'definition_precondition_required'
+          ? 428
+          : error.code === 'definition_precondition_failed'
+            ? 412
+            : 409;
     return send(reply, status, {
       error: error.message,
       code: error.code,
@@ -361,6 +366,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       editProposedDefinition(db, {
         goalId,
         version: version.data,
+        expectedDefinitionHash: parseDefinitionPrecondition(request.headers['if-match']),
         definition: body.data.definition,
         ...(body.data.changeSummary ? { changeSummary: body.data.changeSummary } : {}),
       });
@@ -403,6 +409,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       const approved = approveDefinition(db, {
         goalId,
         version: version.data,
+        expectedDefinitionHash: parseDefinitionPrecondition(request.headers['if-match']),
         actor: 'user',
         workflows: workflowContexts(db),
         ...(body.data.note ? { note: body.data.note } : {}),
@@ -435,7 +442,12 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     if (!body.ok) return reply;
     try {
       const goalId = goalIdOf(request);
-      const rejected = rejectDefinition(db, { goalId, version: version.data, actor: 'user' });
+      const rejected = rejectDefinition(db, {
+        goalId,
+        version: version.data,
+        expectedDefinitionHash: parseDefinitionPrecondition(request.headers['if-match']),
+        actor: 'user',
+      });
       const status = (db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: string })
         .status;
       return { version: rejected.version, goalStatus: status };

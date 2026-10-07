@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { Component, useState, type ReactNode } from 'react';
 import type { GoalDefinitionFull, GoalDefinitionSummary, GoalDetail } from '../../shared/goalApi';
 import type { GoalRoute } from '../../shared/goals';
 import { goalsApi } from './api';
 import { canOfferRevision, goalAcceptsDefinitionAuthority } from './controls';
+import { ValidationReport } from './DefinitionParts';
+import { isSummarisable, prettyDefinition } from './definitionDoc';
 import { ProposalWorkbench, RevisionControl } from './ProposalWorkbench';
 import { Empty, Resource } from './parts';
 import { formatTime, humanize, shortHash } from './presentation';
@@ -159,11 +161,80 @@ function DefinitionBody({
                   : `This ${full.status} version is historical and cannot be changed.`}
             </p>
           )}
-          <DefinitionSummary full={full} summary={summary} version={version} />
+          <SafeSummary full={full} summary={summary} version={version} />
         </>
       )}
     </Resource>
   );
+}
+
+/** Structured summary when the stored document is safe to read; otherwise the validation and the raw stored JSON. */
+function SafeSummary(props: {
+  full: GoalDefinitionFull;
+  summary: GoalDefinitionSummary | undefined;
+  version: number;
+}) {
+  const raw = <RawDefinition full={props.full} version={props.version} />;
+  if (!isSummarisable(props.full.definition)) return raw;
+  return (
+    <SummaryBoundary fallback={raw} resetKey={props.full.definitionHash}>
+      <DefinitionSummary {...props} />
+    </SummaryBoundary>
+  );
+}
+
+function RawDefinition({ full, version }: { full: GoalDefinitionFull; version: number }) {
+  return (
+    <article className="goal-definition" aria-label={`Definition v${version}`} data-summary="raw">
+      <p className="goal-note">
+        The structured summary is unavailable until the document structure is valid. This is the stored
+        document as it is.
+      </p>
+      <ValidationReport validation={full.validation} />
+      <dl className="goal-facts">
+        <div className="goal-fact">
+          <dt>Hash</dt>
+          <dd>
+            <code>{shortHash(full.definitionHash)}</code>
+          </dd>
+        </div>
+        <div className="goal-fact">
+          <dt>Status</dt>
+          <dd>{humanize(full.status)}</dd>
+        </div>
+        <div className="goal-fact">
+          <dt>Created</dt>
+          <dd>
+            {formatTime(full.createdAt)} by {humanize(full.createdBy)}
+          </dd>
+        </div>
+        <div className="goal-fact">
+          <dt>Parent version</dt>
+          <dd>{full.parentVersion ?? '—'}</dd>
+        </div>
+      </dl>
+      <pre className="goal-diff" aria-label="Stored definition JSON">
+        {prettyDefinition(full.definition)}
+      </pre>
+    </article>
+  );
+}
+
+/** A last line of defence: a summary that still throws shows the raw document instead of taking the cockpit down. */
+class SummaryBoundary extends Component<
+  { children: ReactNode; fallback: ReactNode; resetKey: string },
+  { failedFor: string | null }
+> {
+  override state = { failedFor: null as string | null };
+  static getDerivedStateFromError() {
+    return { failedFor: '*' };
+  }
+  override componentDidUpdate(previous: { resetKey: string }) {
+    if (previous.resetKey !== this.props.resetKey && this.state.failedFor) this.setState({ failedFor: null });
+  }
+  override render() {
+    return this.state.failedFor ? this.props.fallback : this.props.children;
+  }
 }
 
 function DefinitionSummary({

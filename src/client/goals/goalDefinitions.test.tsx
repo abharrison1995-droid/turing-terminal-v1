@@ -619,7 +619,7 @@ describe('Revision, amendment and resume (7B.2B)', () => {
     expect(paths()).toEqual(['POST /api/goals/goal-1/definitions']);
     expect(posts()[0]!.body).toEqual({ changeSummary: 'more' });
     expect(
-      screen.getByText(
+      await screen.findByText(
         (_, node) => node?.tagName === 'SUMMARY' && /^Compare with v1/.test(node.textContent ?? ''),
       ),
     ).toBeTruthy();
@@ -780,5 +780,226 @@ describe('Revision, amendment and resume (7B.2B)', () => {
     expect(alert.textContent).toContain('Amendment not resolved');
     expect(paths()).toEqual(['POST /api/goals/goal-1/resume']);
     expect(gets('/api/goals/goal-1')).toBeGreaterThan(1);
+  });
+});
+
+describe('Invalid stored definitions, optimistic concurrency and If-Match (7B.2B.1)', () => {
+  const INCOMPLETE = {
+    contract: {},
+    milestones: [],
+    routing: {},
+    review: {},
+    limits: {},
+  } as unknown as GoalDefinition;
+  const errors = [
+    { severity: 'error', path: 'contract.outcome', code: 'required', message: 'An outcome is required.' },
+  ] as const;
+  const invalid = (version = 1, overrides: Partial<GoalDefinitionFull> = {}) =>
+    proposed(version, {
+      definition: INCOMPLETE,
+      validation: { valid: false, errors: [...errors], warnings: [] },
+      ...overrides,
+    });
+  const ifMatch = (path: string) =>
+    calls.find((c) => c.path === path && c.method !== 'GET')?.headers['if-match'];
+
+  it('a structurally incomplete proposal renders, stays inspectable, editable and repairable', async () => {
+    const world: World = {
+      goal: goalWith('draft', { kind: 'approve_definition', version: 1 }, null, null),
+      defs: [invalid()],
+    };
+    const fixed = OK_DOC('Repaired');
+    const user = await openDefinitions(world, {
+      'PUT /api/goals/goal-1/definitions/1': (body) => {
+        world.defs = [
+          proposed(1, {
+            definitionHash: 'fixed0000000',
+            definition: (body as { definition: GoalDefinition }).definition,
+          }),
+        ];
+        return { definition: world.defs[0] };
+      },
+    });
+    expect(await screen.findByLabelText('Edit proposed definition v1')).toBeTruthy();
+    expect(screen.getAllByText(/An outcome is required/).length).toBeGreaterThan(0);
+    const raw = screen.getByLabelText('Definition v1');
+    expect(raw.getAttribute('data-summary')).toBe('raw');
+    expect(screen.getByLabelText('Stored definition JSON').textContent).toContain('"contract": {}');
+    expect(screen.getByText(/structured summary is unavailable/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Approve definition v1/ }).hasAttribute('disabled')).toBe(true);
+    edit(JSON.stringify(fixed));
+    await user.click(screen.getByRole('button', { name: 'Save proposed definition' }));
+    await waitFor(() => expect(persistedHash()).toBe('fixed00000'));
+    expect(paths()).toEqual(['PUT /api/goals/goal-1/definitions/1']);
+    expect(posts()[0]!.body).toEqual({ definition: fixed });
+    // Once structurally valid the rich summary returns.
+    await waitFor(() => expect(screen.getByLabelText('Definition v1').textContent).toContain('Repaired'));
+    expect(screen.getByLabelText('Definition v1').getAttribute('data-summary')).toBeNull();
+  });
+
+  it('a structurally incomplete rejected version opens read-only with its issues and raw content', async () => {
+    const world: World = {
+      goal: goalWith('ready', { kind: 'start' }, null, 1),
+      defs: [definitionFull(1), invalid(2, { status: 'rejected', approvedAt: null, approvedBy: null })],
+    };
+    const user = await openDefinitions(world);
+    await screen.findByLabelText('Definition v1');
+    await user.click(screen.getByRole('button', { name: /^v2/ }));
+    const raw = await screen.findByLabelText('Definition v2');
+    expect(raw.getAttribute('data-summary')).toBe('raw');
+    expect(raw.textContent).toContain('An outcome is required.');
+    expect(screen.getByText(/historical and cannot be changed/)).toBeTruthy();
+    expect(screen.queryByLabelText('Definition JSON')).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
+  it('an invalid proposal of a manual_reconciliation Goal stays non-editable', async () => {
+    const world: World = {
+      goal: goalWith('blocked', { kind: 'manual_reconciliation' }, 'git_state_invalid'),
+      defs: [definitionFull(1), invalid(2)],
+    };
+    const user = await openDefinitions(world);
+    await user.click(await screen.findByRole('button', { name: /^v2/ }));
+    expect((await screen.findByLabelText('Definition v2')).getAttribute('data-summary')).toBe('raw');
+    expect(screen.queryByLabelText('Definition JSON')).toBeNull();
+    expect(
+      screen.queryByRole('button', { name: /Save proposed|Approve definition|Reject proposed/ }),
+    ).toBeNull();
+  });
+
+  const draft = (): World => ({
+    goal: goalWith('draft', { kind: 'approve_definition', version: 1 }, null, null),
+    defs: [proposed(1)],
+  });
+  const REFUSE_STALE = () =>
+    refuse(412, 'The proposal changed since you reviewed it.', 'definition_precondition_failed');
+
+  it('Save, Approve and Reject each carry If-Match with the persisted hash and keep clean bodies', async () => {
+    const world = draft();
+    world.defs = [proposed(1, { validation: { valid: true, errors: [], warnings: [] } })];
+    const hash = world.defs[0]!.definitionHash;
+    const user = await openDefinitions(world, {
+      'PUT /api/goals/goal-1/definitions/1': (body) => {
+        world.defs = [
+          proposed(1, {
+            definitionHash: 'saved000000',
+            validation: { valid: true, errors: [], warnings: [] },
+            definition: (body as { definition: GoalDefinition }).definition,
+          }),
+        ];
+        return { definition: world.defs[0] };
+      },
+      'POST /api/goals/goal-1/definitions/1/approve': () => ({
+        version: 1,
+        definitionHash: hash,
+        approvalId: 'a',
+        goalStatus: 'ready',
+      }),
+      'POST /api/goals/goal-1/definitions/1/reject': () => ({ version: 1, goalStatus: 'draft' }),
+    });
+    await screen.findByLabelText('Definition JSON');
+    const doc = OK_DOC('x');
+    edit(JSON.stringify(doc));
+    await user.click(screen.getByRole('button', { name: 'Save proposed definition' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(ifMatch('/api/goals/goal-1/definitions/1')).toBe(`"${hash}"`);
+    expect(posts()[0]!.body).toEqual({ definition: doc });
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Approve definition v1/ }).hasAttribute('disabled')).toBe(
+        false,
+      ),
+    );
+    await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm approval' }));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(posts()[1]!.headers['if-match']).toBe('"saved000000"');
+    expect(posts()[1]!.body).toEqual({});
+    await user.click(await screen.findByRole('button', { name: 'Reject proposed definition' }));
+    await user.click(await screen.findByRole('button', { name: 'Reject proposal' }));
+    await waitFor(() => expect(posts()).toHaveLength(3));
+    expect(posts()[2]!.headers['if-match']).toBe('"saved000000"');
+    expect(posts()[2]!.body).toEqual({});
+  });
+
+  it('Begin revision, Create and Resume carry no If-Match', async () => {
+    const world: World = { goal: goalWith('ready', { kind: 'start' }), defs: [definitionFull(1)] };
+    const user = await openDefinitions(world, {
+      'POST /api/goals/goal-1/definitions': () => ({
+        version: 2,
+        definitionHash: 'n',
+        validation: { valid: true, errors: [], warnings: [] },
+      }),
+    });
+    await user.click(await screen.findByRole('button', { name: 'Revise Goal' }));
+    await user.click(await screen.findByRole('button', { name: 'Begin revision' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]!.headers['if-match']).toBeUndefined();
+  });
+
+  it('stale Save keeps the typed text, disables Save, and offers Reset to the newer persisted proposal', async () => {
+    const world = draft();
+    const user = await openDefinitions(world, {
+      'PUT /api/goals/goal-1/definitions/1': () => {
+        world.defs = [proposed(1, { definitionHash: 'other0000000', definition: OK_DOC('theirs') })];
+        return REFUSE_STALE();
+      },
+    });
+    await screen.findByLabelText('Definition JSON');
+    edit(JSON.stringify(OK_DOC('mine')));
+    await user.click(screen.getByRole('button', { name: 'Save proposed definition' }));
+    const alert = await screen.findByText(/Not done:/);
+    expect(alert.closest('[data-refusal-code]')!.getAttribute('data-refusal-code')).toBe(
+      'definition_precondition_failed',
+    );
+    expect(await screen.findByText(/persisted proposal changed since you started editing/)).toBeTruthy();
+    expect(editor().value).toContain('mine');
+    expect(screen.getByRole('button', { name: 'Save proposed definition' }).hasAttribute('disabled')).toBe(
+      true,
+    );
+    expect(paths()).toEqual(['PUT /api/goals/goal-1/definitions/1']);
+    await user.click(screen.getByRole('button', { name: 'Reset to persisted' }));
+    await user.click(screen.getByRole('button', { name: 'Discard edits' }));
+    expect(editor().value).toContain('theirs');
+    expect(persistedHash()).toBe('other00000');
+  });
+
+  it('stale Approve approves nothing, closes the confirmation, retries nothing and needs a fresh confirmation', async () => {
+    const world = draft();
+    const user = await openDefinitions(world, {
+      'POST /api/goals/goal-1/definitions/1/approve': () => {
+        world.defs = [proposed(1, { definitionHash: 'other0000000' })];
+        return REFUSE_STALE();
+      },
+    });
+    await screen.findByLabelText('Definition JSON');
+    await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
+    await user.click(await screen.findByRole('button', { name: 'Confirm approval' }));
+    await screen.findByText(/Not done:/);
+    await waitFor(() => expect(persistedHash()).toBe('other00000'));
+    expect(screen.queryByRole('alertdialog', { name: 'Confirm approve definition' })).toBeNull();
+    expect(paths()).toEqual(['POST /api/goals/goal-1/definitions/1/approve']);
+    await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
+    expect(
+      (await screen.findByRole('alertdialog', { name: 'Confirm approve definition' })).textContent,
+    ).toContain('other00000');
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('stale Reject rejects nothing, closes the confirmation, retries nothing and needs a fresh confirmation', async () => {
+    const world = draft();
+    const user = await openDefinitions(world, {
+      'POST /api/goals/goal-1/definitions/1/reject': () => {
+        world.defs = [proposed(1, { definitionHash: 'other0000000' })];
+        return REFUSE_STALE();
+      },
+    });
+    await screen.findByLabelText('Definition JSON');
+    await user.click(screen.getByRole('button', { name: 'Reject proposed definition' }));
+    await user.click(await screen.findByRole('button', { name: 'Reject proposal' }));
+    await screen.findByText(/Not done:/);
+    await waitFor(() => expect(persistedHash()).toBe('other00000'));
+    expect(screen.queryByRole('alertdialog', { name: 'Confirm reject definition' })).toBeNull();
+    expect(screen.getByLabelText('Edit proposed definition v1')).toBeTruthy();
+    expect(paths()).toEqual(['POST /api/goals/goal-1/definitions/1/reject']);
   });
 });

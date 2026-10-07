@@ -34,7 +34,33 @@ export type GoalDefinitionErrorCode =
   | 'approval_definition_changed'
   | 'proposal_exists'
   | 'gate_denial_not_settled'
-  | 'approval_mismatch';
+  | 'approval_mismatch'
+  | 'definition_precondition_required'
+  | 'definition_precondition_failed';
+
+/**
+ * The optimistic-concurrency precondition for mutating an existing proposal: exactly one strong `If-Match` entity tag
+ * holding a 64-hex SHA-256 definition hash, e.g. `If-Match: "0123…"`. `*`, weak tags, lists and anything else are refused.
+ * The hash only says which persisted revision the caller reviewed; it carries no authority (the server recomputes
+ * and verifies its own).
+ */
+export function parseDefinitionPrecondition(header: string | string[] | undefined): string {
+  const match = typeof header === 'string' ? /^"([0-9a-f]{64})"$/.exec(header.trim()) : null;
+  if (!match)
+    throw new GoalDefinitionError(
+      'definition_precondition_required',
+      'This change needs an If-Match header with the strong definition hash you reviewed.',
+    );
+  return match[1]!;
+}
+
+function assertReviewed(stored: { definitionHash: string }, expected: string | undefined): void {
+  if (expected !== undefined && stored.definitionHash !== expected)
+    throw new GoalDefinitionError(
+      'definition_precondition_failed',
+      'The proposal changed since you reviewed it. Refresh and review it again.',
+    );
+}
 
 export class GoalDefinitionError extends Error {
   constructor(
@@ -269,7 +295,14 @@ export function proposeAuthoredDefinition(
 /** Replaces the content of a proposed (undecided) version and recomputes its hash. */
 export function editProposedDefinition(
   db: Db,
-  input: { goalId: string; version: number; definition: GoalDefinition; changeSummary?: string },
+  input: {
+    goalId: string;
+    version: number;
+    /** The persisted hash the caller reviewed; compared inside this transaction. HTTP always supplies it. */
+    expectedDefinitionHash?: string;
+    definition: GoalDefinition;
+    changeSummary?: string;
+  },
 ): { definitionHash: string } {
   return db.transaction(() => {
     const existing = loadDefinitionVersion(db, input.goalId, input.version);
@@ -279,6 +312,7 @@ export function editProposedDefinition(
         'definition_not_editable',
         `A ${existing.status} definition cannot be edited.`,
       );
+    assertReviewed(existing, input.expectedDefinitionHash);
     const hash = hashOrThrow(input.definition);
     const json = serialise(input.definition);
     db.prepare(
@@ -515,6 +549,7 @@ export function approveDefinition(
   input: {
     goalId: string;
     version: number;
+    expectedDefinitionHash?: string;
     actor: 'user';
     approvalId?: string;
     note?: string;
@@ -549,6 +584,8 @@ export function approveDefinition(
         'definition_hash_mismatch',
         'The stored hash does not match the stored content.',
       );
+    // The reviewed-hash proof precedes everything that creates or decides an approval.
+    assertReviewed(proposed, input.expectedDefinitionHash);
     if (proposed.parentVersion !== goal.current_definition_version)
       throw new GoalDefinitionError(
         'definition_stale',
@@ -675,7 +712,7 @@ export function approveDefinition(
  */
 export function rejectDefinition(
   db: Db,
-  input: { goalId: string; version: number; actor: 'user'; now?: string },
+  input: { goalId: string; version: number; expectedDefinitionHash?: string; actor: 'user'; now?: string },
 ): { version: number } {
   if (input.actor !== 'user')
     throw new GoalDefinitionError('user_approval_required', 'Only the user rejects a proposal.');
@@ -688,6 +725,7 @@ export function rejectDefinition(
         'definition_not_proposed',
         `A ${proposed.status} definition cannot be rejected.`,
       );
+    assertReviewed(proposed, input.expectedDefinitionHash);
     db.prepare(
       "UPDATE goal_definition_versions SET status = 'rejected' WHERE goal_id = ? AND version = ? AND status = 'proposed'",
     ).run(input.goalId, input.version);

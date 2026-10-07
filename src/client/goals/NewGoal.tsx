@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ProjectProfile } from '../../shared/types';
 import { goalsApi } from './api';
 import { RefusalAlert, ConfirmPanel } from './DefinitionParts';
@@ -15,11 +15,14 @@ export function NewGoal({
   onCancel,
   onCreated,
   onOpenProjects,
+  onUnsavedChange,
 }: {
   projects: ProjectProfile[];
   onCancel: () => void;
   onCreated: (goalId: string) => void;
   onOpenProjects?: () => void;
+  /** True while the form holds anything the user typed or chose (a boolean only). */
+  onUnsavedChange?: (dirty: boolean) => void;
 }) {
   const [projectId, setProjectId] = useState('');
   const [title, setTitle] = useState('');
@@ -30,6 +33,13 @@ export function NewGoal({
   const [localError, setLocalError] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const touched = title !== '' || text !== '' || summary !== '' || projectId !== '';
+
+  const report = useRef(onUnsavedChange);
+  report.current = onUnsavedChange;
+  useEffect(() => {
+    report.current?.(touched);
+  }, [touched]);
+  useEffect(() => () => report.current?.(false), []);
 
   if (projects.length === 0)
     return (

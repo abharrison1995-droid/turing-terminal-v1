@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ProjectProfile } from '../../shared/types';
 import { goalsApi } from './api';
 import { GoalCockpit } from './GoalCockpit';
@@ -11,13 +11,25 @@ import { useLoad } from './useLoad';
 export function GoalsPage({
   projects = [],
   onOpenProjects,
+  onUnsavedChange,
 }: {
   /** The registered projects the app already holds; Goal creation never discovers or registers one. */
   projects?: ProjectProfile[];
   onOpenProjects?: () => void;
+  /** Whether the mounted Goals workflow holds unsaved definition text. Booleans only, never the text. */
+  onUnsavedChange?: (dirty: boolean) => void;
 } = {}) {
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const report = useRef(onUnsavedChange);
+  report.current = onUnsavedChange;
+  const dirty = formDirty || editorDirty;
+  useEffect(() => {
+    report.current?.(dirty);
+  }, [dirty]);
+  useEffect(() => () => report.current?.(false), []);
   const list = useLoad(() => goalsApi.list(), 'goals');
   return (
     <main className="page-content goals-page">
@@ -44,6 +56,7 @@ export function GoalsPage({
           projects={projects}
           onCancel={() => setCreating(false)}
           onOpenProjects={onOpenProjects}
+          onUnsavedChange={setFormDirty}
           onCreated={(goalId) => {
             setCreating(false);
             setSelected(goalId);
@@ -55,6 +68,7 @@ export function GoalsPage({
       ) : (
         <GoalCockpit
           goalId={selected}
+          onUnsavedChange={setEditorDirty}
           onBack={() => {
             setSelected(null);
             list.reload();

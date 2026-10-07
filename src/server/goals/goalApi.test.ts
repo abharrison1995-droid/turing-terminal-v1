@@ -184,7 +184,17 @@ describe('manual Goal drafts and definition authoring over HTTP', () => {
     ).toEqual({
       status: 'rejected',
     });
-    expect((await call(app, 'POST', `/api/goals/${body.goalId}/definitions/9/reject`, {})).status).toBe(404);
+    expect(
+      (
+        await call(
+          app,
+          'POST',
+          `/api/goals/${body.goalId}/definitions/9/reject`,
+          {},
+          { 'if-match': `"${'a'.repeat(64)}"` },
+        )
+      ).status,
+    ).toBe(404);
     expect((await call(app, 'GET', '/api/goals/missing/definitions')).status).toBe(404);
     expect((await call(app, 'GET', `/api/goals/${body.goalId}/definitions/abc`)).status).toBe(400);
   });

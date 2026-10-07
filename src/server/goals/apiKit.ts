@@ -38,12 +38,23 @@ export async function call(
   method: 'GET' | 'POST' | 'PUT',
   url: string,
   body?: unknown,
+  /** `headers` replaces the default. By default a definition mutation carries the CURRENT persisted hash. */
+  headers?: Record<string, string>,
   // Test responses are untyped JSON; the assertions state the shape.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<{ status: number; body: any }> {
+  let sent = headers;
+  const target = /^(\/api\/goals\/[^/]+\/definitions\/\d+)(\/approve|\/reject)?$/.exec(url);
+  if (!sent && target && (method === 'PUT' || (method === 'POST' && target[2]))) {
+    const read = await app.inject({ method: 'GET', url: target[1]! });
+    const hash = (JSON.parse(read.body) as { definition?: { definitionHash?: string } }).definition
+      ?.definitionHash;
+    if (hash) sent = { 'if-match': `"${hash}"` };
+  }
   const response = await app.inject({
     method,
     url,
+    ...(sent ? { headers: sent } : {}),
     ...(body === undefined ? {} : { payload: body as object }),
   });
   return { status: response.statusCode, body: response.body ? JSON.parse(response.body) : null };

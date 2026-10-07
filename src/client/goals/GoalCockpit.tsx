@@ -28,7 +28,16 @@ type TabId = (typeof TABS)[number]['id'];
  * The read-only desktop cockpit for one Goal. Only the selected tab is mounted, so each tab's read happens when the
  * user opens it and switching tabs never triggers anything but GETs.
  */
-export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => void }) {
+export function GoalCockpit({
+  goalId,
+  onBack,
+  onUnsavedChange,
+}: {
+  goalId: string;
+  onBack: () => void;
+  /** Reports whether the definition editor holds unsaved text (a boolean only; the text stays here). */
+  onUnsavedChange?: (dirty: boolean) => void;
+}) {
   const [tab, setTab] = useState<TabId>('overview');
   // Bumped by Refresh. Only the mounted tab reads it, so a refresh re-reads that tab and nothing unvisited.
   const [generation, setGeneration] = useState(0);
@@ -116,6 +125,7 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
                   guard={guard}
                   onDirty={(value) => {
                     dirty.current = value;
+                    onUnsavedChange?.(value);
                   }}
                 />
               )}

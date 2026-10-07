@@ -38,6 +38,10 @@ const DEFINITION_REFUSALS: Record<string, string> = {
   definition_hash_mismatch:
     'The stored definition no longer matches its recorded hash. Nothing was approved.',
   proposal_exists: 'An undecided proposal already exists for this Goal. Refresh to see it.',
+  definition_precondition_failed:
+    'This proposal changed since you reviewed it, so nothing was changed. Review the refreshed proposal and decide again.',
+  definition_precondition_required:
+    'The request was missing the reviewed definition hash, so nothing was changed.',
   goal_not_amendable: 'The Goal cannot be revised from its current state.',
 };
 
