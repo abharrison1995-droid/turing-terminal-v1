@@ -479,7 +479,9 @@ function App() {
                 onNotice={setNotice}
               />
             )}
-            {page === 'goals' && <GoalsPage />}
+            {page === 'goals' && (
+              <GoalsPage projects={snapshot?.projects ?? []} onOpenProjects={() => setPage('projects')} />
+            )}
             {page === 'runs' && snapshot && (
               <RunsPage
                 snapshot={snapshot}

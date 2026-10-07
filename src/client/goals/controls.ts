@@ -49,6 +49,19 @@ export function availableControls(
         hint: 'The Goal resumes its own interrupted run; no other run is chosen.',
       });
       break;
+    case 'resume_after_amendment':
+      // The server states which outcome its own persisted proof supports; one explicit control per proven outcome.
+      for (const reason of action.resolved)
+        controls.push({
+          id: 'resume',
+          label:
+            reason === 'amendment_approved'
+              ? 'Resume after approved amendment'
+              : 'Resume after discarded amendment',
+          reason,
+          hint: 'Resuming is a separate step; the server re-proves the amendment outcome and may refuse.',
+        });
+      break;
     case 'resolve_blocker':
       if (goal.status === 'blocked')
         controls.push({
@@ -80,3 +93,27 @@ export const goalAcceptsDecisions = (goal: Pick<GoalDetail, 'status' | 'nextActi
   goal.status !== 'completed' &&
   goal.status !== 'abandoned' &&
   goal.nextAction.kind !== 'manual_reconciliation';
+
+/**
+ * Whether definition authority controls (edit, save, approve, reject, revise) are shown at all: never for a finished
+ * Goal and never in manual_reconciliation. The server independently enforces every rule.
+ */
+export const goalAcceptsDefinitionAuthority = (goal: Pick<GoalDetail, 'status' | 'nextAction'>): boolean =>
+  goal.status !== 'completed' &&
+  goal.status !== 'abandoned' &&
+  goal.nextAction.kind !== 'manual_reconciliation';
+
+/** Statuses from which the accepted backend may begin a revision/amendment (it re-proves eligibility itself). */
+const REVISABLE = new Set(['ready', 'running', 'blocked', 'paused']);
+
+/** Whether to offer "Revise Goal". Presentation only: `POST /definitions` decides legality. */
+export function canOfferRevision(
+  goal: Pick<GoalDetail, 'status' | 'reasonCode' | 'nextAction' | 'currentDefinitionVersion'>,
+): boolean {
+  if (!goalAcceptsDefinitionAuthority(goal)) return false;
+  if (goal.currentDefinitionVersion === null) return false;
+  if (goal.nextAction.kind === 'approve_definition') return false;
+  if (goal.nextAction.kind === 'revise_goal') return true;
+  if (REVISABLE.has(goal.status)) return true;
+  return goal.status === 'needs_user' && goal.reasonCode === 'scope_violation';
+}

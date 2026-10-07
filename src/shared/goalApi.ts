@@ -51,7 +51,8 @@ export type GoalNextAction =
   | { kind: 'resume_run'; runId: string }
   | { kind: 'resolve_blocker'; reasonCode: string }
   | { kind: 'revise_goal' }
-  | { kind: 'resume_after_amendment' }
+  /** `resolved`: the amendment outcomes persisted history proves (the supervisor's own proof); empty = none yet. */
+  | { kind: 'resume_after_amendment'; resolved: Array<'amendment_approved' | 'amendment_discarded'> }
   | { kind: 'final_acceptance'; approvalId: string | null }
   | { kind: 'final_apply' }
   | { kind: 'manual_reconciliation' }
@@ -135,6 +136,13 @@ export interface GoalDefinitionValidation {
   valid: boolean;
   errors: GoalValidationIssue[];
   warnings: GoalValidationIssue[];
+}
+
+export interface GoalCreateResponse {
+  goalId: string;
+  version: number;
+  definitionHash: string;
+  validation: GoalDefinitionValidation;
 }
 
 export interface GoalDefinitionFull extends GoalDefinitionSummary {

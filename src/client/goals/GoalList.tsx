@@ -22,7 +22,7 @@ export function GoalList({
         data.goals.length === 0 ? (
           <Empty>
             No Grand Projects yet. A Goal is a bounded, supervised project that Turing works on across many
-            finite runs. Goal creation arrives in a later stage.
+            finite runs. Use New Grand Project to create one.
           </Empty>
         ) : (
           <>

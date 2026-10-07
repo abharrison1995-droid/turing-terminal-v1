@@ -145,7 +145,7 @@ describe('Goal lifecycle controls', () => {
   });
 
   it('offers no amendment resume and no definition control', async () => {
-    await open(goal('needs_user', { kind: 'resume_after_amendment' }, 'amendment_in_progress'));
+    await open(goal('needs_user', { kind: 'resume_after_amendment', resolved: [] }, 'amendment_in_progress'));
     expect(screen.queryByRole('button', { name: /Resume|Approve definition|Amend|Revise/ })).toBeNull();
   });
 

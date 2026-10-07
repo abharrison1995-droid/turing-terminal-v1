@@ -1,7 +1,9 @@
 import type {
+  GoalCreateResponse,
   GoalCyclesResponse,
   GoalDefinitionFull,
   GoalDefinitionSummary,
+  GoalDefinitionValidation,
   GoalDetail,
   GoalEventsResponse,
   GoalEvidenceResponse,
@@ -13,14 +15,15 @@ import type {
   GoalReviewsResponse,
   UnifiedApprovalsResponse,
 } from '../../shared/goalApi';
+import type { GoalDefinition } from '../../shared/goals';
 import type { UsageAnalytics } from '../api';
 import { call } from '../api';
 
 /**
  * The Goal client API. Every operation is an explicit function with its own endpoint and body; nothing maps a
  * `nextAction` to a request. Reads are GETs. The only mutations are the user controls below, each of which the server
- * independently re-proves: start, resume, pause, abandon, a Goal-approval decision and a finding decision. Definition
- * authoring/amendment and final apply are deliberately absent (7B.2B and 7C).
+ * independently re-proves: start, resume, pause, abandon, a Goal-approval decision, a finding decision and the
+ * definition operations (create, save, begin revision, approve, reject). Final apply is deliberately absent (7C).
  */
 const query = (params: Record<string, string | number | undefined>): string => {
   const search = new URLSearchParams();
@@ -28,6 +31,7 @@ const query = (params: Record<string, string | number | undefined>): string => {
   const text = search.toString();
   return text ? `?${text}` : '';
 };
+const put = <T>(path: string, body: unknown) => call<T>(path, { method: 'PUT', body: JSON.stringify(body) });
 const post = <T>(path: string, body: unknown) =>
   call<T>(path, { method: 'POST', body: JSON.stringify(body) });
 const goalPath = (goalId: string) => `/api/goals/${encodeURIComponent(goalId)}`;
@@ -81,4 +85,42 @@ export const goalsApi = {
       `/api/goal-approvals/${encodeURIComponent(approvalId)}/decision`,
       { decision },
     ),
+
+  // --- Definition authority (each one request; the server re-reads, re-hashes and re-validates) ---------------------
+  /** Creates the Goal shell and a PROPOSED v1. The server computes the hash; nothing is approved or started. */
+  createGoal: (input: {
+    projectId: string;
+    title: string;
+    definition: GoalDefinition;
+    changeSummary?: string;
+  }) =>
+    post<GoalCreateResponse>('/api/goals', {
+      projectId: input.projectId,
+      title: input.title,
+      definition: input.definition,
+      ...(input.changeSummary ? { changeSummary: input.changeSummary } : {}),
+    }),
+  /** Saves the full document over a PROPOSED version only. No approval, hash or actor is sent. */
+  saveDefinition: (goalId: string, version: number, definition: GoalDefinition, changeSummary?: string) =>
+    put<{ definition: GoalDefinitionFull }>(`${goalPath(goalId)}/definitions/${version}`, {
+      definition,
+      ...(changeSummary ? { changeSummary } : {}),
+    }),
+  /** Starts a revision/amendment. Without a body definition the server copies the current approved version. */
+  beginRevision: (goalId: string, changeSummary?: string) =>
+    post<{ version: number; definitionHash: string; validation: GoalDefinitionValidation }>(
+      `${goalPath(goalId)}/definitions`,
+      changeSummary ? { changeSummary } : {},
+    ),
+  /**
+   * The dedicated atomic approval of one proposed version. The server binds the approval to the exact Goal, version and
+   * hash itself; this never goes through `/api/goal-approvals/:id/decision` and never resumes the Goal.
+   */
+  approveDefinition: (goalId: string, version: number, note?: string) =>
+    post<{ version: number; definitionHash: string; approvalId: string; goalStatus: string }>(
+      `${goalPath(goalId)}/definitions/${version}/approve`,
+      note ? { note } : {},
+    ),
+  rejectDefinition: (goalId: string, version: number) =>
+    post<{ version: number; goalStatus: string }>(`${goalPath(goalId)}/definitions/${version}/reject`, {}),
 };

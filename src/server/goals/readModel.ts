@@ -42,6 +42,7 @@ import { activeCycle, listCycles, type CycleRow } from './cycles.js';
 import { loadDefinitionVersion, validateStoredDefinition } from './definitions.js';
 import type { GoalDefinitionVersion } from '../../shared/goals.js';
 import type { WorkflowContext } from './definitionValidation.js';
+import { verifyAmendmentResolution } from './amendmentAuthority.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { goalMeteredSpendUsd } from './bounds.js';
 import { assessEvidence, type EvidenceRow } from './freshness.js';
@@ -442,6 +443,18 @@ function exactGateAction(db: Db, goalId: string, detail: Record<string, unknown>
   return activeCycle(db, goalId) ? { kind: 'wait_for_turing' } : { kind: 'revise_goal' };
 }
 
+/**
+ * The amendment outcomes the persisted history proves for the Goal's current quiescent episode, using the very same
+ * proof the supervisor applies to a resume claim. Read-only and deterministic: the client offers exactly these resume
+ * reasons (normally one) and never infers one from a button it clicked.
+ */
+function amendmentResolutions(db: Db, goalId: string): Array<'amendment_approved' | 'amendment_discarded'> {
+  const reasons: Array<'amendment_approved' | 'amendment_discarded'> = [];
+  if (verifyAmendmentResolution(db, goalId, 'amendment_approved').ok) reasons.push('amendment_approved');
+  if (verifyAmendmentResolution(db, goalId, 'amendment_discarded').ok) reasons.push('amendment_discarded');
+  return reasons;
+}
+
 export function deriveNextAction(
   db: Db,
   goalId: string,
@@ -494,7 +507,7 @@ export function deriveNextAction(
       if (code === 'amendment_in_progress')
         return proposed !== null
           ? { kind: 'approve_definition', version: proposed }
-          : { kind: 'resume_after_amendment' };
+          : { kind: 'resume_after_amendment', resolved: amendmentResolutions(db, goalId) };
       if (MANUAL.has(code)) return { kind: 'manual_reconciliation' };
       if (['user_confirmation_pending', 'review_needs_decision'].includes(code) && firstApproval)
         return { kind: 'review_approval', approvalId: firstApproval.id };

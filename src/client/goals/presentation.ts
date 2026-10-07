@@ -52,7 +52,11 @@ export function describeNextAction(action: GoalNextAction): NextActionPresentati
   });
   switch (action.kind) {
     case 'author_definition':
-      return make('Author a definition', 'The Goal has no definition yet.', 'attention');
+      return make(
+        'Author a definition',
+        'The Goal has no definition yet, and this version cannot author one for you.',
+        'attention',
+      );
     case 'approve_definition':
       return make(
         `Approve definition v${action.version}`,

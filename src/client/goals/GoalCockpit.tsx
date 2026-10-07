@@ -1,6 +1,7 @@
 import { ArrowLeft } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { goalsApi } from './api';
+import { ConfirmPanel } from './DefinitionParts';
 import { DefinitionsPanel } from './GoalDefinitions';
 import { GoalControls } from './GoalControls';
 import { goalAcceptsDecisions } from './controls';
@@ -33,10 +34,14 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
   const [generation, setGeneration] = useState(0);
   const bump = () => setGeneration((value) => value + 1);
   const detail = useLoad(() => goalsApi.detail(goalId), goalId, generation);
+  // Unsaved definition text lives in the Definitions tab; leaving it (tab, Goal, version) asks first, in the app.
+  const dirty = useRef(false);
+  const [leaving, setLeaving] = useState<null | (() => void)>(null);
+  const guard = (proceed: () => void) => (dirty.current ? setLeaving(() => proceed) : proceed());
   return (
     <div className="goal-cockpit">
       <div className="goal-cockpit-top">
-        <button type="button" className="secondary-button" onClick={onBack}>
+        <button type="button" className="secondary-button" onClick={() => guard(onBack)}>
           <ArrowLeft size={14} aria-hidden="true" /> All Goals
         </button>
         <RefreshButton onClick={bump} />
@@ -52,6 +57,28 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
               <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
             </header>
             <GoalControls goal={goal} onChanged={bump} />
+            {leaving && (
+              <ConfirmPanel label="Confirm leave" title="Discard unsaved definition changes?">
+                <p>Your edits to the proposed definition have not been saved and will be lost.</p>
+                <div className="goal-control-buttons">
+                  <button
+                    type="button"
+                    className="secondary-button goal-danger"
+                    onClick={() => {
+                      const proceed = leaving;
+                      dirty.current = false;
+                      setLeaving(null);
+                      proceed();
+                    }}
+                  >
+                    Discard and leave
+                  </button>
+                  <button type="button" className="secondary-button" onClick={() => setLeaving(null)}>
+                    Keep editing
+                  </button>
+                </div>
+              </ConfirmPanel>
+            )}
             <div className="goal-tabs" role="tablist" aria-label="Goal sections">
               {TABS.map(({ id, label }) => (
                 <button
@@ -62,7 +89,7 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
                   aria-selected={tab === id}
                   aria-controls="goal-tabpanel"
                   className={`goal-tab${tab === id ? ' goal-tab-active' : ''}`}
-                  onClick={() => setTab(id)}
+                  onClick={() => guard(() => setTab(id))}
                 >
                   {label}
                 </button>
@@ -83,9 +110,13 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
               {tab === 'evidence' && <EvidencePanel goalId={goal.id} refresh={generation} />}
               {tab === 'definitions' && (
                 <DefinitionsPanel
-                  goalId={goal.id}
-                  currentVersion={goal.currentDefinitionVersion}
+                  goal={goal}
                   refresh={generation}
+                  onChanged={bump}
+                  guard={guard}
+                  onDirty={(value) => {
+                    dirty.current = value;
+                  }}
                 />
               )}
               {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}

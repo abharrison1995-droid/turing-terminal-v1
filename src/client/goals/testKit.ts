@@ -1,7 +1,13 @@
 import { screen } from '@testing-library/react';
 import type userEvent from '@testing-library/user-event';
 import { expect, vi } from 'vitest';
-import type { GoalDetail, GoalEvidenceView, GoalListItem, GoalPreview } from '../../shared/goalApi';
+import type {
+  GoalDefinitionFull,
+  GoalDetail,
+  GoalEvidenceView,
+  GoalListItem,
+  GoalPreview,
+} from '../../shared/goalApi';
 
 expect.extend({
   toHaveAttribute(received: Element, name: string, value?: string) {
@@ -186,3 +192,67 @@ export async function openGoal(user: ReturnType<typeof userEvent.setup>) {
 
 export const refuse = (status: number, error: string, code: string, extra: Record<string, unknown> = {}) =>
   new Response(JSON.stringify({ error, code, ...extra }), { status });
+
+/** A structurally complete definition document with a stored status/hash, for the definition-authority tests. */
+export const definitionFull = (
+  version: number,
+  overrides: Partial<GoalDefinitionFull> = {},
+): GoalDefinitionFull => ({
+  version,
+  parentVersion: version > 1 ? version - 1 : null,
+  status: 'approved',
+  definitionHash: `hash${version}${'0'.repeat(10)}`,
+  changeSummary: `Change ${version}`,
+  createdBy: 'user',
+  createdAt: NOW,
+  approvedAt: NOW,
+  approvedBy: 'user',
+  approvalId: null,
+  goalId: 'goal-1',
+  validation: { valid: true, errors: [], warnings: [] },
+  definition: {
+    contract: {
+      outcome: `Outcome of version ${version}`,
+      successCriteria: [],
+      nonGoals: [],
+      constraints: [],
+      deliverables: [],
+      completionPolicy: {
+        requireFinalReview: true,
+        requireUserAcceptance: false,
+        applyToBase: 'required',
+        maxOpenFindings: { critical: 0, high: 0 },
+        highSeverityResolution: 'review-only',
+      },
+    },
+    milestones: [],
+    routing: {
+      roles: {},
+      pools: [],
+      workflows: { planning: 'p', execution: 'e', review: 'r', verification: 'v' },
+      independence: { finalReview: 'none', against: [], allowFloatingFinalReviewer: false },
+    },
+    review: {
+      onMilestoneComplete: true,
+      final: true,
+      blocking: { periodic: false, milestone: true, final: true },
+    },
+    limits: {
+      maxExecutionCycles: 10,
+      maxConsecutiveFailedCycles: 3,
+      maxRemediationAttempts: 3,
+      maxActiveMinutes: 60,
+      maxWallClockDays: 2,
+      maxParallelAgents: 1,
+      maxMeteredUsd: null,
+      billingMode: 'subscriptions-only',
+      humanGates: {
+        eachCycle: false,
+        beforeMilestoneComplete: false,
+        poolRouteFirstUse: false,
+        finalAcceptance: false,
+      },
+    },
+  },
+  ...overrides,
+});
