@@ -10,7 +10,13 @@ import {
 import { writeGoalEvent } from './events.js';
 
 export type GoalApprovalErrorCode =
-  'goal_not_found' | 'invalid_gate' | 'approval_not_found' | 'user_decision_required' | 'already_decided';
+  | 'goal_not_found'
+  | 'invalid_gate'
+  | 'approval_not_found'
+  | 'user_decision_required'
+  | 'already_decided'
+  | 'goal_terminal'
+  | 'manual_reconciliation_required';
 
 export class GoalApprovalError extends Error {
   constructor(

@@ -63,6 +63,7 @@ import { determineReviewTrigger, type ReviewTrigger } from './reviewTriggers.js'
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { pathInMilestoneScope, scopePrefixes } from './scope.js';
 import { transitionGoal } from './stateMachine.js';
+import { TERMINAL_RUN_STATUSES } from '../../shared/goals.js';
 import type { GoalActor, GoalApproval, GoalReasonCode } from '../../shared/goals.js';
 
 /**
@@ -160,7 +161,7 @@ const TERMINAL_USER_FAILURES: ReadonlySet<string> = new Set([
   'final_acceptance_missing',
   'final_apply_required',
 ]);
-const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_RUN = TERMINAL_RUN_STATUSES;
 const FAILED_RUN = new Set(['failed']);
 const CANCELLED_RUN = new Set(['cancelled']);
 

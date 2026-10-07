@@ -6,7 +6,7 @@ import { GOAL_RESUME_REASONS } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
-import { GoalApprovalError, decideGoalApproval, getGoalApproval } from './approvals.js';
+import { GoalApprovalError } from './approvals.js';
 import {
   GoalDefinitionError,
   approveDefinition,
@@ -16,7 +16,7 @@ import {
   rejectDefinition,
 } from './definitions.js';
 import { GoalFindingError } from './findings.js';
-import { abandonGoal, decideFindingAsUser, pauseGoal } from './goalCommands.js';
+import { abandonGoal, decideFindingAsUser, decideGoalApprovalAsUser, pauseGoal } from './goalCommands.js';
 import { previewGoal } from './preview.js';
 import {
   GoalReadError,
@@ -544,15 +544,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   app.post('/api/goal-approvals/:approvalId/decision', async (request, reply) => {
     const body = parse(goalApprovalDecisionBody, request.body, reply);
     if (!body.ok) return reply;
-    const existing = getGoalApproval(db, (request.params as { approvalId: string }).approvalId);
-    if (!existing) return send(reply, 404, { error: 'No such Goal approval.', code: 'approval_not_found' });
     try {
       // The decider is fixed to the user: this route is the explicit user action. It never starts or resumes the Goal.
-      const decided = decideGoalApproval(db, {
-        goalId: existing.goalId,
-        approvalId: existing.id,
+      const decided = decideGoalApprovalAsUser(db, {
+        approvalId: (request.params as { approvalId: string }).approvalId,
         decision: body.data.decision,
-        decidedBy: 'user',
         ...(body.data.note ? { note: body.data.note } : {}),
       });
       return { approvalId: decided.approval.id, status: decided.approval.status, changed: decided.changed };

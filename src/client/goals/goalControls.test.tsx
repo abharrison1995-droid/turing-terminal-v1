@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GoalDetail, GoalFindingView, GoalNextAction, UnifiedApproval } from '../../shared/goalApi';
 import type { GoalStatus } from '../../shared/goals';
 import { GoalsPage } from './GoalsPage';
+import { UnifiedApprovals } from './UnifiedApprovals';
 import { calls, detail, detailRoutes, item, openGoal, posts, refuse, serve, type Routes } from './testKit';
 
 afterEach(() => {
@@ -501,6 +502,109 @@ describe('Finding decisions', () => {
     expect(refused.textContent).toContain('Finding integration in progress');
     expect(refused.getAttribute('data-finding-outcome')).toBe('refused');
     expect(document.querySelector('[data-finding-status="open"]')).not.toBeNull();
+  });
+});
+
+describe('Terminalisation and fail-closed authority (7B.2A.1)', () => {
+  const stuck = approval({ id: 'ga-9' });
+  const openFinding = finding({});
+
+  it('shows a server-refused Abandon with its code, keeps the Goal paused and refreshes', async () => {
+    const user = await open(goal('paused', { kind: 'resume' }), {
+      'POST /api/goals/goal-1/abandon': () =>
+        refuse(
+          409,
+          'The Goal still has work in flight. Wait for it to finish, then abandon the Goal.',
+          'goal_work_in_flight',
+        ),
+    });
+    const before = detailGets();
+    await user.click(screen.getByRole('button', { name: 'Abandon Goal' }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Abandon Goal' }));
+    const alert = await screen.findByText(/Not done:/);
+    expect(alert.textContent).toContain('work in flight');
+    expect(alert.closest('[data-refusal-code]')?.getAttribute('data-refusal-code')).toBe(
+      'goal_work_in_flight',
+    );
+    await waitFor(() => expect(detailGets()).toBeGreaterThan(before));
+    expect(screen.getByRole('button', { name: 'Resume Goal' })).toBeTruthy();
+    expect(screen.queryByText(/Abandoned/)).toBeNull();
+    expect(postPaths()).toEqual(['POST /api/goals/goal-1/abandon']);
+  });
+
+  it('offers no controls and no decisions on an abandoned Goal, even if stale data lists a pending gate', async () => {
+    const user = await open(goal('abandoned', { kind: 'abandoned' }), {
+      '/api/approvals/unified': listOf(stuck),
+      '/api/goals/goal-1/findings': findingsOf(openFinding),
+    });
+    expect(controls()).toBeNull();
+    expect(screen.queryByRole('button', { name: /^(Approve|Deny)$/ })).toBeNull();
+    expect(document.querySelector('[data-approval-readonly]')).not.toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'Findings' }));
+    await screen.findByRole('list', { name: 'Findings' });
+    expect(screen.queryByRole('button', { name: /Accept finding|Dismiss finding/ })).toBeNull();
+    expect(screen.getByText('Token logged in debug output')).toBeTruthy();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('manual_reconciliation: no lifecycle, approval or finding mutation; Refresh and diagnostics remain', async () => {
+    const g = goal('needs_user', { kind: 'manual_reconciliation' }, 'gate_pending');
+    const user = await open(g, {
+      '/api/approvals/unified': listOf(stuck, runApproval),
+      '/api/goals/goal-1/findings': findingsOf(openFinding),
+    });
+    expect(controls()).toBeNull();
+    expect(screen.queryByRole('button', { name: /Start|Resume|Retry|Pause|Abandon/ })).toBeNull();
+    // The Goal's own approval is shown for diagnosis but cannot be decided; the Deny/Approve buttons of a run approval are unrelated.
+    const goalRow = document.querySelector('[data-approval-source="goal"]')!;
+    expect(goalRow.textContent).toContain('Approve the next cycle');
+    expect(within(goalRow as HTMLElement).queryByRole('button')).toBeNull();
+    expect(screen.queryByText(/not among the pending approvals/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeTruthy();
+    await user.click(screen.getByRole('tab', { name: 'Findings' }));
+    await screen.findByRole('list', { name: 'Findings' });
+    expect(screen.queryByRole('button', { name: /Accept finding|Dismiss finding/ })).toBeNull();
+    expect(screen.getByText('Token logged in debug output')).toBeTruthy();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('the global inbox shows a server-flagged non-decidable Goal row read-only and never POSTs for it', async () => {
+    serve({
+      '/api/approvals/unified': listOf(
+        approval({ id: 'ga-1', decidable: false }),
+        approval({ id: 'ga-2', decidable: true }),
+      ),
+      'POST /api/goal-approvals/ga-2/decision': () =>
+        refuse(
+          409,
+          'This Goal needs manual reconciliation; its approvals cannot be decided here.',
+          'manual_reconciliation_required',
+        ),
+    });
+    const user = userEvent.setup();
+    render(<UnifiedApprovals heading="Approval required" />);
+    await screen.findAllByText('Goal gate');
+    const rows = [...document.querySelectorAll('[data-approval-source="goal"]')];
+    expect(within(rows[0] as HTMLElement).queryByRole('button')).toBeNull();
+    // A row the client believes decidable is still refused by the server; the refusal is shown and nothing else happens.
+    await user.click(within(rows[1] as HTMLElement).getByRole('button', { name: 'Approve' }));
+    const refused = await screen.findByText(/Not recorded:/);
+    expect(refused.textContent).toContain('Manual reconciliation required');
+    expect(postPaths()).toEqual(['POST /api/goal-approvals/ga-2/decision']);
+    expect(calls.some((call) => /\/(resume|start)$/.test(call.path))).toBe(false);
+  });
+
+  it('an ordinary healthy Goal still decides approvals and findings', async () => {
+    const user = await open(goal('running', { kind: 'wait_for_turing' }), {
+      '/api/approvals/unified': listOf(approval({ decidable: true })),
+      'POST /api/goal-approvals/ga-1/decision': () => ({
+        approvalId: 'ga-1',
+        status: 'approved',
+        changed: true,
+      }),
+    });
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(postPaths()).toEqual(['POST /api/goal-approvals/ga-1/decision']));
   });
 });
 

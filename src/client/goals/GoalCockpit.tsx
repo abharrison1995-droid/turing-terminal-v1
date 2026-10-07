@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { goalsApi } from './api';
 import { DefinitionsPanel } from './GoalDefinitions';
 import { GoalControls } from './GoalControls';
+import { goalAcceptsDecisions } from './controls';
 import { FindingsPanel } from './GoalFindings';
 import { CyclesPanel, EvidencePanel, ReviewsPanel } from './GoalHistory';
 import { RefreshButton } from './GoalList';
@@ -71,7 +72,14 @@ export function GoalCockpit({ goalId, onBack }: { goalId: string; onBack: () => 
               {tab === 'overview' && <GoalOverview goal={goal} refresh={generation} onChanged={bump} />}
               {tab === 'cycles' && <CyclesPanel goalId={goal.id} refresh={generation} />}
               {tab === 'reviews' && <ReviewsPanel goalId={goal.id} refresh={generation} />}
-              {tab === 'findings' && <FindingsPanel goalId={goal.id} refresh={generation} onDecided={bump} />}
+              {tab === 'findings' && (
+                <FindingsPanel
+                  goalId={goal.id}
+                  refresh={generation}
+                  onDecided={bump}
+                  decisionsEnabled={goalAcceptsDecisions(goal)}
+                />
+              )}
               {tab === 'evidence' && <EvidencePanel goalId={goal.id} refresh={generation} />}
               {tab === 'definitions' && (
                 <DefinitionsPanel

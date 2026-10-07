@@ -5,6 +5,7 @@ import type {
   GoalPreview,
 } from '../../shared/goalApi';
 import { goalsApi } from './api';
+import { goalAcceptsDecisions } from './controls';
 import { NextActionCard } from './NextAction';
 import { Empty, Resource } from './parts';
 import { UnifiedApprovals } from './UnifiedApprovals';
@@ -43,6 +44,7 @@ export function GoalOverview({
         expectedGoalApprovalId={expectedApprovalId(goal.nextAction)}
         refresh={refresh}
         onDecided={onChanged}
+        decisionsEnabled={goalAcceptsDecisions(goal)}
       />
 
       <section className="surface-panel" aria-label="Where things stand">

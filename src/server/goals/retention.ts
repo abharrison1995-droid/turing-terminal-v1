@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { TERMINAL_RUN_STATUSES } from '../../shared/goals.js';
 import type { Db } from '../db.js';
 import { gitTry, GoalGitError, loadContext } from '../goalGit.js';
 import { writeGoalEvent } from './events.js';
@@ -39,7 +40,7 @@ export type PruneResult =
   | { status: 'refused'; reasons: RetentionReason[] }
   | { status: 'failed'; reasons: ['worktree_remove_failed']; error: string };
 
-const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_RUN = TERMINAL_RUN_STATUSES;
 const TERMINAL_CYCLE = new Set(['succeeded', 'failed', 'rejected', 'cancelled']);
 /** Purposes whose results are extracted into evidence before the worktree may go. */
 const EVIDENCE_PURPOSES = new Set(['execution', 'remediation', 'verification', 'review']);

@@ -358,6 +358,9 @@ export const GOAL_TRANSITIONS: readonly GoalTransitionRule[] = [
   { from: 'paused', to: 'running', reasons: ['user_resume'], actors: userOnly },
 ];
 
+/** The one definition of a finished run (the runs table has no other terminal status). */
+export const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+
 export const GOAL_TERMINAL_STATUSES: readonly GoalStatus[] = ['completed', 'abandoned'];
 
 // --- Evidence, reviews, findings, approvals, events, route validations (migration 017) ---------------------------

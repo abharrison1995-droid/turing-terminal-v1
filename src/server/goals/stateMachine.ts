@@ -27,7 +27,8 @@ export type GoalStateErrorCode =
   | 'project_lease_conflict'
   | 'completion_proof_required'
   | 'completion_proof_failed'
-  | 'completion_proof_stale';
+  | 'completion_proof_stale'
+  | 'goal_work_in_flight';
 
 export class GoalStateError extends Error {
   constructor(

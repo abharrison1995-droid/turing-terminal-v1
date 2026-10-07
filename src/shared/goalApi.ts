@@ -382,6 +382,11 @@ export interface UnifiedApproval {
   createdAt: string;
   respondedAt?: string | null;
   gate?: GoalApprovalGate;
+  /**
+   * Goal approvals only: whether the server would accept a user decision now. False for a Goal that is terminal or
+   * needs manual reconciliation; the row is then shown read-only.
+   */
+  decidable?: boolean;
 }
 
 export interface UnifiedApprovalsResponse {

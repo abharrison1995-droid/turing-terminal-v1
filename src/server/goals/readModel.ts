@@ -5,6 +5,7 @@ import type {
   GoalStatus,
   NextTask,
 } from '../../shared/goals.js';
+import { TERMINAL_RUN_STATUSES } from '../../shared/goals.js';
 import type {
   GoalApprovalView,
   GoalChildRunBrief,
@@ -93,7 +94,7 @@ const ACTIVE_RUN = new Set([
   'cancelling',
 ]);
 const PAUSED_RUN = new Set(['paused', 'paused_limit_reached']);
-const TERMINAL_RUN = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_RUN = TERMINAL_RUN_STATUSES;
 const MAX_DETAIL_CHARS = 4_000;
 const MAX_TEXT = 500;
 
@@ -293,10 +294,43 @@ function approvalView(approval: NonNullable<ReturnType<typeof getGoalApproval>>)
   };
 }
 
+/**
+ * A pending Goal approval is live user work only while its Goal is not terminal. A pending row under a completed or
+ * abandoned Goal (legacy data from before abandonment settled them) stays in the table as history but is never
+ * presented as something awaiting a decision.
+ */
+const LIVE_PENDING = `a.status = 'pending' AND a.goal_id IN (SELECT id FROM goals WHERE status NOT IN ('completed','abandoned'))`;
+
+const MANUAL_CODES_FOR_GATE = 'gate_pending';
+
+/**
+ * True when the Goal's persisted state requires manual reconciliation: a manual-only reason code, or a
+ * `needs_user(gate_pending)` status detail that does not bind exactly to a real approval of this Goal. Pure read of
+ * persisted rows (the same facts `deriveNextAction` uses); it never guesses another approval.
+ */
+export function isManualReconciliation(db: Db, goalId: string): boolean {
+  const row = db
+    .prepare('SELECT status, status_reason_code, status_detail_json FROM goals WHERE id = ?')
+    .get(goalId) as
+    { status: GoalStatus; status_reason_code: string | null; status_detail_json: string | null } | undefined;
+  if (!row) return false;
+  const code = row.status_reason_code ?? '';
+  if (row.status === 'blocked' || row.status === 'needs_user') {
+    if (MANUAL.has(code)) return true;
+    if (row.status === 'needs_user' && code === MANUAL_CODES_FOR_GATE)
+      return !bindExactGate(db, goalId, {
+        status: 'needs_user',
+        reasonCode: 'gate_pending',
+        detail: boundedObject(row.status_detail_json),
+      }).ok;
+  }
+  return false;
+}
+
 export function pendingApprovalViews(db: Db, goalId: string): GoalApprovalView[] {
   const rows = db
     .prepare(
-      "SELECT id FROM goal_approvals WHERE goal_id = ? AND status = 'pending' ORDER BY created_at, rowid LIMIT 50",
+      `SELECT a.id FROM goal_approvals a WHERE a.goal_id = ? AND ${LIVE_PENDING} ORDER BY a.created_at, a.rowid LIMIT 50`,
     )
     .all(goalId) as Array<{ id: string }>;
   return rows.map((row) => approvalView(getGoalApproval(db, row.id)!));
@@ -554,7 +588,7 @@ const pendingCounts = (db: Db): Map<string, number> =>
     (
       db
         .prepare(
-          "SELECT goal_id, COUNT(*) AS n FROM goal_approvals WHERE status = 'pending' GROUP BY goal_id",
+          `SELECT a.goal_id, COUNT(*) AS n FROM goal_approvals a WHERE ${LIVE_PENDING} GROUP BY a.goal_id`,
         )
         .all() as Array<{ goal_id: string; n: number }>
     ).map((row) => [row.goal_id, row.n]),
@@ -997,7 +1031,22 @@ export function getGoalEvents(
 
 const APPROVAL_STATUS = new Set<string>(['pending', 'approved', 'denied', 'all']);
 
-function goalApprovalToUnified(row: Record<string, unknown>): UnifiedApproval {
+/**
+ * Whether the server would accept a user decision on this Goal approval right now: pending, its Goal not terminal and
+ * not in manual reconciliation. The decision route enforces the same rule; this projection only lets a surface with no
+ * Goal context show the row as read-only instead of offering a decision that will be refused.
+ */
+function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApproval {
+  const goalId = String(row.goal_id);
+  const goalStatus = (
+    db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: GoalStatus } | undefined
+  )?.status;
+  const decidable =
+    row.status === 'pending' &&
+    goalStatus !== undefined &&
+    goalStatus !== 'completed' &&
+    goalStatus !== 'abandoned' &&
+    !isManualReconciliation(db, goalId);
   return {
     source: 'goal',
     id: String(row.id),
@@ -1011,6 +1060,7 @@ function goalApprovalToUnified(row: Record<string, unknown>): UnifiedApproval {
     decidedBy: (row.decided_by as string | null) ?? null,
     createdAt: String(row.created_at),
     respondedAt: (row.responded_at as string | null) ?? null,
+    decidable,
   };
 }
 
@@ -1028,9 +1078,10 @@ export function unifiedApprovals(
   const statusParams = status === 'all' ? [] : [status];
   const goalClause = options.goalId ? 'AND a.goal_id = ?' : '';
   const goalParams = options.goalId ? [options.goalId] : [];
+  const goalLive = status === 'pending' ? `AND ${LIVE_PENDING}` : '';
   const goalRows = db
     .prepare(
-      `SELECT a.* FROM goal_approvals a WHERE 1 = 1 ${statusClause} ${goalClause}
+      `SELECT a.* FROM goal_approvals a WHERE 1 = 1 ${statusClause} ${goalLive} ${goalClause}
        ORDER BY a.created_at DESC, a.rowid DESC LIMIT ?`,
     )
     .all(...statusParams, ...goalParams, limit) as Array<Record<string, unknown>>;
@@ -1044,7 +1095,9 @@ export function unifiedApprovals(
   const total =
     (
       db
-        .prepare(`SELECT COUNT(*) AS n FROM goal_approvals a WHERE 1 = 1 ${statusClause} ${goalClause}`)
+        .prepare(
+          `SELECT COUNT(*) AS n FROM goal_approvals a WHERE 1 = 1 ${statusClause} ${goalLive} ${goalClause}`,
+        )
         .get(...statusParams, ...goalParams) as { n: number }
     ).n +
     (
@@ -1053,7 +1106,7 @@ export function unifiedApprovals(
         .get(...statusParams, ...goalParams) as { n: number }
     ).n;
   const merged: UnifiedApproval[] = [
-    ...goalRows.map(goalApprovalToUnified),
+    ...goalRows.map((row) => goalApprovalToUnified(db, row)),
     ...runRows.map((row): UnifiedApproval => ({
       source: 'run',
       id: String(row.id),
@@ -1102,7 +1155,7 @@ export function dashboardGoals(db: Db): {
   const attention = db
     .prepare(
       `SELECT COUNT(*) AS n FROM goals g WHERE g.status IN ('needs_user','blocked')
-         OR EXISTS (SELECT 1 FROM goal_approvals a WHERE a.goal_id = g.id AND a.status = 'pending')`,
+         OR EXISTS (SELECT 1 FROM goal_approvals a WHERE a.goal_id = g.id AND ${LIVE_PENDING})`,
     )
     .get() as { n: number };
   return {
@@ -1116,16 +1169,16 @@ export function dashboardGoals(db: Db): {
     },
     goalApprovals: {
       pending: (
-        db.prepare("SELECT COUNT(*) AS n FROM goal_approvals WHERE status = 'pending'").get() as { n: number }
+        db.prepare(`SELECT COUNT(*) AS n FROM goal_approvals a WHERE ${LIVE_PENDING}`).get() as { n: number }
       ).n,
       // Selected as Goal approvals (not by truncating the mixed inbox), so newer run approvals cannot hide them.
       approvals: (
         db
           .prepare(
-            "SELECT * FROM goal_approvals WHERE status = 'pending' ORDER BY created_at DESC, rowid DESC LIMIT 10",
+            `SELECT a.* FROM goal_approvals a WHERE ${LIVE_PENDING} ORDER BY a.created_at DESC, a.rowid DESC LIMIT 10`,
           )
           .all() as Array<Record<string, unknown>>
-      ).map(goalApprovalToUnified),
+      ).map((row) => goalApprovalToUnified(db, row)),
     },
   };
 }

@@ -71,3 +71,12 @@ export function availableControls(
   if (ABANDONABLE.has(goal.status)) controls.push({ id: 'abandon', label: 'Abandon Goal' });
   return controls;
 }
+
+/**
+ * Whether Goal gates and findings may be decided from the Goal's own screens: not for a finished Goal, and never while
+ * the server advises manual reconciliation. The server enforces the same rules; this only avoids offering a dead end.
+ */
+export const goalAcceptsDecisions = (goal: Pick<GoalDetail, 'status' | 'nextAction'>): boolean =>
+  goal.status !== 'completed' &&
+  goal.status !== 'abandoned' &&
+  goal.nextAction.kind !== 'manual_reconciliation';

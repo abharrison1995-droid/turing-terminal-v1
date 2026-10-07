@@ -22,6 +22,8 @@ export type GoalFindingErrorCode =
   | 'finding_not_found'
   | 'finding_not_open'
   | 'finding_integration_in_progress'
+  | 'goal_terminal'
+  | 'manual_reconciliation_required'
   | 'user_authority_required'
   | 'approval_invalid'
   | 'definition_not_approved';

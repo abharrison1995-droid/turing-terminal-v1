@@ -25,12 +25,15 @@ export function UnifiedApprovals({
   refresh = 0,
   onDecided,
   heading = 'Approvals',
+  decisionsEnabled = true,
 }: {
   goalId?: string;
   expectedGoalApprovalId?: string | null;
   refresh?: number | string;
   onDecided?: () => void;
   heading?: string;
+  /** False renders every row read-only (a terminal or manual-reconciliation Goal); the server refuses regardless. */
+  decisionsEnabled?: boolean;
 }) {
   const { result, reload } = useLoad(
     () => goalsApi.unifiedApprovals({ status: 'pending', ...(goalId ? { goalId } : {}), limit: 20 }),
@@ -101,7 +104,10 @@ export function UnifiedApprovals({
           const goalIds = new Set(
             data.approvals.filter((entry) => entry.source === 'goal').map((entry) => entry.id),
           );
-          const mismatch = Boolean(expectedGoalApprovalId) && !goalIds.has(expectedGoalApprovalId as string);
+          const mismatch =
+            decisionsEnabled &&
+            Boolean(expectedGoalApprovalId) &&
+            !goalIds.has(expectedGoalApprovalId as string);
           return (
             <>
               {outcome && (
@@ -126,6 +132,8 @@ export function UnifiedApprovals({
                 {data.approvals.map((approval) => {
                   const key = rowKey(approval);
                   const expected = approval.source === 'goal' && approval.id === expectedGoalApprovalId;
+                  const readOnly =
+                    approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false);
                   const disabled = busy !== null || (approval.source === 'goal' && mismatch);
                   return (
                     <div
@@ -156,25 +164,31 @@ export function UnifiedApprovals({
                           <small>Approving final acceptance does not apply anything to your branch.</small>
                         )}
                       </div>
-                      <div className="approval-actions">
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          disabled={disabled}
-                          onClick={() => void decide(approval, 'denied')}
-                        >
-                          Deny
-                        </button>
-                        <button
-                          type="button"
-                          className="primary-button compact-button"
-                          disabled={disabled}
-                          onClick={() => void decide(approval, 'approved')}
-                        >
-                          <Check size={14} />
-                          {approval.source === 'run' ? 'Approve once' : 'Approve'}
-                        </button>
-                      </div>
+                      {readOnly ? (
+                        <p className="goal-note" data-approval-readonly="true">
+                          Not actionable here: this Goal cannot take approval decisions right now.
+                        </p>
+                      ) : (
+                        <div className="approval-actions">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={disabled}
+                            onClick={() => void decide(approval, 'denied')}
+                          >
+                            Deny
+                          </button>
+                          <button
+                            type="button"
+                            className="primary-button compact-button"
+                            disabled={disabled}
+                            onClick={() => void decide(approval, 'approved')}
+                          >
+                            <Check size={14} />
+                            {approval.source === 'run' ? 'Approve once' : 'Approve'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

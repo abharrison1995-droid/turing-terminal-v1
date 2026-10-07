@@ -18,10 +18,13 @@ export function FindingsPanel({
   goalId,
   refresh,
   onDecided,
+  decisionsEnabled = true,
 }: {
   goalId: string;
   refresh: number;
   onDecided: () => void;
+  /** False (a terminal or manual-reconciliation Goal) shows findings read-only. */
+  decisionsEnabled?: boolean;
 }) {
   const { result, reload } = useLoad(() => goalsApi.findings(goalId), goalId, refresh);
   const [pending, setPending] = useState<{ finding: GoalFindingView; decision: Decision } | null>(null);
@@ -95,7 +98,7 @@ export function FindingsPanel({
                         ? ` · resolved by review ${shortHash(finding.resolvedByReviewId)}`
                         : ''}
                     </p>
-                    {finding.status === 'open' && (
+                    {finding.status === 'open' && decisionsEnabled && (
                       <div className="goal-control-buttons">
                         {(Object.keys(VERB) as Decision[]).map((decision) => (
                           <button
