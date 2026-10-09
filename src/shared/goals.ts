@@ -431,6 +431,8 @@ export interface GoalApproval {
   decisionNote: string | null;
   createdAt: string;
   respondedAt: string | null;
+  /** Present only for a prospective final-apply authority record. */
+  intentDigest?: string;
 }
 
 export const GOAL_EVENT_TYPES = [

@@ -103,10 +103,20 @@ All must have recorded evidence in this file:
 
 ## Stage 7C.1 bounded evidence — 2026-10-09
 
-This checkpoint records deterministic evidence on `feature/grand-project-goal-engine`, parent `30f2415afc9a16d56a145c0a29ab3ee8059bf5f6`. It supplements the historical RC2 baseline above; it does not revise RC2 release claims or mark Stage 7C.1 accepted. Scenario-by-scenario evidence is in [GOAL_E2E_ACCEPTANCE_MATRIX.md](GOAL_E2E_ACCEPTANCE_MATRIX.md).
+This checkpoint records deterministic evidence on `feature/grand-project-goal-engine`, accepted at `3a0d4130b53d4252ee4253e412364c73bc2e8694` (parent `30f2415afc9a16d56a145c0a29ab3ee8059bf5f6`). It supplements the historical RC2 baseline above; it does not revise RC2 release claims or mark the full Goal Engine release-ready. Scenario-by-scenario evidence is in [GOAL_E2E_ACCEPTANCE_MATRIX.md](GOAL_E2E_ACCEPTANCE_MATRIX.md).
 
 - **End-to-end fake-provider-proven:** a real temporary SQLite/Git/registered-project harness traverses the production Goal supervisor, definition and approval APIs, `TuringGoalExecutor`, run-plan resolution, launcher, `RunEngine`, provider broker, Goal-ref CAS, verifier/evidence collection, final review, final acceptance, and final-apply preflight. The same suite covers denial, out-of-scope refusal, cycle-bound refusal, same-family review refusal, queued-proposal restart, and an ordinary finite-run regression.
 - **Integration/unit evidence retained:** Git operation recovery, read-only preflight statuses, billing/refusal rules, stale evidence, approval idempotency, and the production disabled-executor boundary remain supported by their focused suites as classified in the acceptance matrix.
 - **Production boundary:** production still constructs `DisabledGoalExecutor`. No production execution feature or final-apply writer/API was added. Final apply remains a read-only preflight boundary; no user/base branch was changed by these fixtures.
-- **Not established:** fake identities are test fixtures only. No live provider/account/allowance, real model call, installer, desktop, phone, or physical acceptance was used. This evidence does not establish release readiness. Stage 7C.2 and 7C.3 remain unstarted pending independent review.
+- **Not established:** fake identities are test fixtures only. No live provider/account/allowance, real model call, installer, desktop, phone, or physical acceptance was used. This evidence does not establish release readiness. Stage 7C.2A is recorded below as an implementation candidate pending independent review; 7C.2B and 7C.3 have not started.
 - **Validation and CI:** exact committed-tree gate results and the PR #3 CI run are recorded in the Stage 7C.1 checkpoint report, after the pushed commit and CI complete.
+
+## Stage 7C.2A final-apply authority — implementation candidate
+
+This bounded checkpoint descends directly from accepted `3a0d4130b53d4252ee4253e412364c73bc2e8694` on `feature/grand-project-goal-engine` and is pending independent review. It does not change RC2 release claims or declare the Goal Engine release-ready.
+
+- **Authority contract:** [GOAL_FINAL_APPLY_AUTHORITY.md](GOAL_FINAL_APPLY_AUTHORITY.md) defines the immutable prospective intent, repository identity, strict completion/preflight eligibility, duplicate and stale-request behavior, the async-validation interval, and the future 7C.2B recovery/concurrency contract.
+- **Implemented:** server-owned version 1 `FinalApplyIntent`, deterministic canonical SHA-256 digest, registered repository identity, current completion proof and read-only preflight, high-risk user-only approval through `goal_approvals`, digest immutability/uniqueness migration, and a read-only validator for later use. The existing approval decision route revalidates prospective intents; there is no public request endpoint or final-apply execution route.
+- **Hard boundary:** approval alone cannot move a ref or satisfy completion. Final apply remains unavailable; base-ref crash recovery remains unimplemented. Production still uses `DisabledGoalExecutor`. No provider/model call or visual-design work was included.
+- **Validation:** targeted integration/schema tests are recorded in the Stage 7C.2A checkpoint report after the committed-tree gate. The complete npm gate and PR #3 CI result are added there after commit and push.
+- **Still pending:** independent Stage 7C.2A review; then Stage 7C.2B design and implementation. Live-provider and physical acceptance remain pending.

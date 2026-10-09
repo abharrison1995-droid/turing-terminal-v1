@@ -19,6 +19,11 @@ import { loadDefinitionVersion } from './definitions.js';
 import { decideFinding, getGoalFinding, GoalFindingError, type GoalFinding } from './findings.js';
 import { isManualReconciliation } from './readModel.js';
 import { GoalStateError, isLegalGoalTransition, transitionGoal } from './stateMachine.js';
+import {
+  assertFinalApplyApprovalDatabaseCurrent,
+  FinalApplyAuthorityError,
+  validateFinalApplyAuthority,
+} from './finalApplyAuthority.js';
 
 /**
  * Narrow, user-initiated Goal commands (Stage 7A). Each is a thin composition of the accepted domain services: status
@@ -113,10 +118,33 @@ export function abandonGoal(db: Db, goalId: string, options: { now?: string } = 
  * and its Goal is terminal, or needs manual reconciliation, whatever a stale client or a Goal-less surface shows. The
  * system's own cleanup uses `decideGoalApproval` directly and is unaffected. It never starts or resumes the Goal.
  */
-export function decideGoalApprovalAsUser(
+export async function decideGoalApprovalAsUser(
   db: Db,
   input: { approvalId: string; decision: 'approved' | 'denied'; note?: string; now?: string },
-): { approval: GoalApproval; changed: boolean } {
+): Promise<{ approval: GoalApproval; changed: boolean }> {
+  const beforeValidation = getGoalApproval(db, input.approvalId);
+  const prospectiveFinalApply =
+    beforeValidation?.gate === 'final_apply' &&
+    (beforeValidation.intentDigest !== undefined ||
+      beforeValidation.detail.action === 'apply_to_base_intent');
+  // Preserve the approval service's idempotent repeat semantics. An identical repeat does not create a new
+  // authorization decision; stale authority is still refused by validateFinalApplyAuthority before any later use.
+  if (prospectiveFinalApply && beforeValidation.status === 'approved' && input.decision === 'approved')
+    return decideGoalApproval(db, {
+      goalId: beforeValidation.goalId,
+      approvalId: beforeValidation.id,
+      decision: 'approved',
+      decidedBy: 'user',
+      ...(input.note ? { note: input.note } : {}),
+      ...(input.now ? { now: input.now } : {}),
+    });
+  if (input.decision === 'approved' && prospectiveFinalApply) {
+    const validation = await validateFinalApplyAuthority(db, beforeValidation.goalId, beforeValidation.id, {
+      expectedStatus: 'pending',
+    });
+    if (!validation.ok)
+      throw new FinalApplyAuthorityError(validation.code, validation.detail, validation.detail);
+  }
   return db.transaction(() => {
     const existing = getGoalApproval(db, input.approvalId);
     if (!existing) throw new GoalApprovalError('approval_not_found', 'No such Goal approval.');
@@ -133,6 +161,8 @@ export function decideGoalApprovalAsUser(
           'manual_reconciliation_required',
           'This Goal needs manual reconciliation; its approvals cannot be decided here.',
         );
+      if (input.decision === 'approved' && prospectiveFinalApply)
+        assertFinalApplyApprovalDatabaseCurrent(db, existing.id);
     }
     return decideGoalApproval(db, {
       goalId: existing.goalId,

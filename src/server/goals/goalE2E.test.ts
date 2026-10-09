@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalDefinition, GoalRole, RouteMember } from '../../shared/goals.js';
@@ -17,6 +17,14 @@ import type { ProviderRunRequest } from '../providers.js';
 import { preflightFinalApply } from '../goalGit.js';
 import { buildPreview, createRun } from '../runLauncher.js';
 import { evaluateCompletion } from './completionEvaluation.js';
+import { decideGoalApproval, requestGoalApproval } from './approvals.js';
+import { approveDefinition, beginAmendment } from './definitions.js';
+import {
+  computeFinalApplyIntentDigest,
+  prepareFinalApplyIntent,
+  requestFinalApplyApproval,
+  validateFinalApplyAuthority,
+} from './finalApplyAuthority.js';
 import { cleanupRepoFixtures, milestone, reportOf, simpleDefinition } from './repoKit.js';
 import { passRecords } from './routingKit.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
@@ -349,7 +357,7 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(h.fx.git('status', '--porcelain')).toBe('');
 
     await h.until('cycle_succeeded');
-    const integratedHead = h.fx.git('rev-parse', ref);
+    let integratedHead = h.fx.git('rev-parse', ref);
     expect(integratedHead).not.toBe(base);
     expect(h.fx.head()).toBe(integratedHead);
     expect(h.fx.git('rev-parse', 'main')).toBe(base);
@@ -469,6 +477,9 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
       integrationHead: integratedHead,
       integrationTree: integratedTree,
     });
+    await expect(prepareFinalApplyIntent(h.fx.db, h.fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
     const decided = await call('POST', `/api/goal-approvals/${acceptance.id}/decision`, {
       decision: 'approved',
     });
@@ -498,6 +509,363 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(preflight.status).toBe('ready_for_approved_apply');
     expect(preflight.integrationHead).toBe(integratedHead);
     expect(h.fx.git('rev-parse', 'main')).toBe(base);
+    expect(h.fx.git('rev-parse', ref)).toBe(integratedHead);
+
+    const providerCallsBeforeAuthority = providerCalls.length;
+    const prepared = await prepareFinalApplyIntent(h.fx.db, h.fx.goalId);
+    const preparedAgain = await prepareFinalApplyIntent(h.fx.db, h.fx.goalId);
+    expect(preparedAgain.intent).toEqual(prepared.intent);
+    expect(prepared.intent).toMatchObject({
+      schemaVersion: 1,
+      action: 'apply_to_base_intent',
+      goalId: h.fx.goalId,
+      definitionVersion: 1,
+      definitionHash: hash,
+      source: { goalRef: ref, integrationHead: integratedHead, integrationTree: integratedTree },
+      destination: {
+        baseBranch: 'main',
+        baseRef: 'refs/heads/main',
+        expectedBaseCommit: base,
+      },
+    });
+    expect(prepared.intent.destination.repoIdentity).toMatch(/^[0-9a-f]{64}$/);
+    expect(prepared.intent.review).toMatchObject({
+      changedPathDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      diffStatDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      diffPreviewDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(prepared.reviewDisplay.diffPreview.length).toBeLessThanOrEqual(1_000);
+
+    const { intentDigest: originalDigest, ...body } = prepared.intent;
+    const digestChanges: Array<(candidate: typeof body) => void> = [
+      (candidate) => (candidate.goalId = `${candidate.goalId}-other`),
+      (candidate) => (candidate.definitionVersion += 1),
+      (candidate) => (candidate.definitionHash = 'f'.repeat(64)),
+      (candidate) => (candidate.source.integrationHead = 'e'.repeat(40)),
+      (candidate) => (candidate.source.integrationTree = 'd'.repeat(40)),
+      (candidate) => (candidate.destination.baseBranch = 'other'),
+      (candidate) => (candidate.destination.expectedBaseCommit = 'c'.repeat(40)),
+      (candidate) => (candidate.destination.repoIdentity = 'b'.repeat(64)),
+      (candidate) => (candidate.review.diffPreviewDigest = 'a'.repeat(64)),
+      (candidate) => (candidate.review.diffStatDigest = '9'.repeat(64)),
+    ];
+    for (const change of digestChanges) {
+      const candidate = structuredClone(body);
+      change(candidate);
+      expect(computeFinalApplyIntentDigest(candidate)).not.toBe(originalDigest);
+    }
+
+    const firstIntentApproval = await requestFinalApplyApproval(h.fx.db, h.fx.goalId, {
+      now: '2026-10-09T01:00:00.000Z',
+    });
+    expect(firstIntentApproval).toMatchObject({
+      gate: 'final_apply',
+      risk: 'high',
+      requestedBy: 'user',
+      status: 'pending',
+      intentDigest: prepared.intent.intentDigest,
+    });
+    expect(firstIntentApproval.detail).toMatchObject({
+      action: 'apply_to_base_intent',
+      intentDigest: prepared.intent.intentDigest,
+      intent: prepared.intent,
+      reviewDisplay: prepared.reviewDisplay,
+    });
+    expect(() =>
+      requestGoalApproval(h.fx.db, {
+        goalId: h.fx.goalId,
+        gate: 'final_apply',
+        risk: 'high',
+        reason: 'Unbound prospective apply must be refused.',
+        requestedBy: 'user',
+        detail: { action: 'apply_to_base_intent' },
+      }),
+    ).toThrow(/prospective final-apply digest/);
+
+    const deniedFirst = decideGoalApproval(h.fx.db, {
+      goalId: h.fx.goalId,
+      approvalId: firstIntentApproval.id,
+      decision: 'denied',
+      decidedBy: 'user',
+      note: 'Test explicit retry behavior.',
+    });
+    expect(deniedFirst.approval.status).toBe('denied');
+    const deniedReuse = await requestFinalApplyApproval(h.fx.db, h.fx.goalId);
+    expect(deniedReuse.id).toBe(firstIntentApproval.id);
+    expect(deniedReuse.status).toBe('denied');
+
+    const [pendingA, pendingB] = await Promise.all([
+      requestFinalApplyApproval(h.fx.db, h.fx.goalId, { retryDenied: true }),
+      requestFinalApplyApproval(h.fx.db, h.fx.goalId, { retryDenied: true }),
+    ]);
+    expect(pendingA.id).toBe(pendingB.id);
+    expect(pendingA.id).not.toBe(firstIntentApproval.id);
+    expect(pendingA.status).toBe('pending');
+    const pendingValidation = await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, pendingA.id, {
+      expectedStatus: 'pending',
+    });
+    expect(pendingValidation.ok).toBe(true);
+
+    const wrongId = await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, 'missing-approval');
+    expect(wrongId).toMatchObject({ ok: false, code: 'approval_not_found' });
+    const wrongGoal = await validateFinalApplyAuthority(h.fx.db, 'different-goal', pendingA.id, {
+      expectedStatus: 'pending',
+    });
+    expect(wrongGoal).toMatchObject({ ok: false, code: 'approval_mismatch' });
+    const acceptanceId = acceptance.id;
+    const wrongGate = await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, acceptanceId);
+    expect(wrongGate).toMatchObject({ ok: false, code: 'approval_mismatch' });
+
+    const wrongRisk = requestGoalApproval(h.fx.db, {
+      goalId: h.fx.goalId,
+      gate: 'final_apply',
+      risk: 'medium',
+      reason: 'Wrong-risk negative case.',
+      requestedBy: 'user',
+      detail: { action: 'applied_externally' },
+    });
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, wrongRisk.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({
+      ok: false,
+      code: 'approval_mismatch',
+    });
+    const malformed = requestGoalApproval(h.fx.db, {
+      goalId: h.fx.goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'Malformed prospective detail negative case.',
+      requestedBy: 'user',
+      detail: { action: 'applied_externally' },
+    });
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, malformed.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({
+      ok: false,
+      code: 'final_apply_intent_invalid',
+    });
+    expect(() =>
+      h.fx.db
+        .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+        .run(JSON.stringify({ action: 'apply_to_base_intent', intentDigest: '0'.repeat(64) }), pendingA.id),
+    ).toThrow(/immutable/);
+
+    const originalGoalState = h.fx.db
+      .prepare('SELECT status, status_reason_code FROM goals WHERE id = ?')
+      .get(h.fx.goalId) as { status: string; status_reason_code: string | null };
+    h.fx.db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?").run(h.fx.goalId);
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, pendingA.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({
+      ok: false,
+      code: 'goal_terminal',
+    });
+    h.fx.db
+      .prepare('UPDATE goals SET status = ?, status_reason_code = ? WHERE id = ?')
+      .run(originalGoalState.status, originalGoalState.status_reason_code, h.fx.goalId);
+    h.fx.db
+      .prepare("UPDATE goals SET status = 'blocked', status_reason_code = 'base_diverged' WHERE id = ?")
+      .run(h.fx.goalId);
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, pendingA.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({
+      ok: false,
+      code: 'manual_reconciliation_required',
+    });
+    h.fx.db
+      .prepare('UPDATE goals SET status = ?, status_reason_code = ? WHERE id = ?')
+      .run(originalGoalState.status, originalGoalState.status_reason_code, h.fx.goalId);
+    expect(() =>
+      decideGoalApproval(h.fx.db, {
+        goalId: h.fx.goalId,
+        approvalId: pendingA.id,
+        decision: 'approved',
+        decidedBy: 'system',
+      }),
+    ).toThrow(/explicit user action/);
+
+    const decisionPath = `/api/goal-approvals/${pendingA.id}/decision`;
+    const refusePendingApproval = async (code?: string) => {
+      const response = await call('POST', decisionPath, { decision: 'approved' });
+      expect(response.status).toBe(409);
+      if (code) expect(response.body.code).toBe(code);
+      expect(h!.fx.db.prepare('SELECT status FROM goal_approvals WHERE id = ?').get(pendingA.id)).toEqual({
+        status: 'pending',
+      });
+      return response;
+    };
+
+    h.fx.db.prepare('UPDATE goals SET current_definition_version = NULL WHERE id = ?').run(h.fx.goalId);
+    await refusePendingApproval('definition_not_approved');
+    h.fx.db.prepare('UPDATE goals SET current_definition_version = 1 WHERE id = ?').run(h.fx.goalId);
+
+    h.fx.db.prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?').run(base, h.fx.goalId);
+    await refusePendingApproval('completion_not_ready');
+    h.fx.db
+      .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
+      .run(integratedHead, h.fx.goalId);
+
+    h.fx.db.prepare('UPDATE goal_runtime SET base_branch = ? WHERE goal_id = ?').run('other', h.fx.goalId);
+    await refusePendingApproval('preflight_wrong_branch');
+    h.fx.db.prepare('UPDATE goal_runtime SET base_branch = ? WHERE goal_id = ?').run('main', h.fx.goalId);
+
+    h.fx.db
+      .prepare('UPDATE goal_runtime SET base_commit = ? WHERE goal_id = ?')
+      .run(integratedHead, h.fx.goalId);
+    await refusePendingApproval('preflight_base_diverged');
+    h.fx.db.prepare('UPDATE goal_runtime SET base_commit = ? WHERE goal_id = ?').run(base, h.fx.goalId);
+
+    h.fx.git('checkout', '-b', 'authority-wrong-branch', base);
+    await refusePendingApproval('preflight_wrong_branch');
+    h.fx.git('checkout', 'main');
+
+    const dirt = join(h.fx.repo, 'authority-untracked.txt');
+    writeFileSync(dirt, 'untracked fixture state\n');
+    await refusePendingApproval('preflight_dirty_checkout');
+    rmSync(dirt, { force: true });
+
+    const baseTree = h.fx.git('rev-parse', `${base}^{tree}`);
+    const divergedBase = h.fx.git('commit-tree', baseTree, '-p', base, '-m', 'Authority stale base fixture');
+    h.fx.git('update-ref', 'refs/heads/main', divergedBase);
+    await refusePendingApproval('preflight_base_diverged');
+    h.fx.git('update-ref', 'refs/heads/main', base);
+
+    h.fx.git('update-ref', ref, base);
+    await refusePendingApproval('completion_not_ready');
+    h.fx.git('update-ref', ref, integratedHead);
+
+    const existingRun = h.fx.db
+      .prepare('SELECT run_id FROM goal_runs WHERE goal_id = ? ORDER BY run_id LIMIT 1')
+      .get(h.fx.goalId) as { run_id: string };
+    h.fx.db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(existingRun.run_id);
+    await refusePendingApproval('active_work');
+    h.fx.db.prepare("UPDATE runs SET status = 'completed' WHERE id = ?").run(existingRun.run_id);
+
+    h.fx.db
+      .prepare(
+        `INSERT INTO goal_integration_ops (id, goal_id, op, expected_old, new_commit, status, checks_json, created_at)
+         VALUES ('authority-planned-test', ?, 'advance', ?, ?, 'planned', '[]', '2026-10-09T01:00:00.000Z')`,
+      )
+      .run(h.fx.goalId, base, integratedHead);
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, pendingA.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({ ok: false, code: 'integration_operation_in_progress' });
+    h.fx.db
+      .prepare(
+        "UPDATE goal_integration_ops SET status = 'aborted', error_code = 'test_cleanup', finished_at = ? WHERE id = 'authority-planned-test'",
+      )
+      .run('2026-10-09T01:01:00.000Z');
+
+    const alternateHead = h.fx.git(
+      'commit-tree',
+      integratedTree,
+      '-p',
+      base,
+      '-m',
+      'Same tree, distinct source commit',
+    );
+    h.fx.git('update-ref', ref, alternateHead);
+    h.fx.db
+      .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
+      .run(alternateHead, h.fx.goalId);
+    expect(
+      await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, pendingA.id, { expectedStatus: 'pending' }),
+    ).toMatchObject({ ok: false, code: 'final_apply_intent_stale' });
+    const currentIntentApproval = await requestFinalApplyApproval(h.fx.db, h.fx.goalId);
+    expect(currentIntentApproval.id).not.toBe(pendingA.id);
+    expect(currentIntentApproval.intentDigest).not.toBe(pendingA.intentDigest);
+    expect(
+      h.fx.db.prepare('SELECT status, decided_by FROM goal_approvals WHERE id = ?').get(pendingA.id),
+    ).toEqual({ status: 'denied', decided_by: 'system' });
+    integratedHead = alternateHead;
+
+    const approvedResponse = await call('POST', `/api/goal-approvals/${currentIntentApproval.id}/decision`, {
+      decision: 'approved',
+    });
+    expect(approvedResponse.status).toBe(200);
+    expect(approvedResponse.body).toMatchObject({
+      approvalId: currentIntentApproval.id,
+      status: 'approved',
+      changed: true,
+    });
+    const repeatedApprovalDecision = await call(
+      'POST',
+      `/api/goal-approvals/${currentIntentApproval.id}/decision`,
+      { decision: 'approved' },
+    );
+    expect(repeatedApprovalDecision.status).toBe(200);
+    expect(repeatedApprovalDecision.body).toMatchObject({
+      approvalId: currentIntentApproval.id,
+      status: 'approved',
+      changed: false,
+    });
+    expect(await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, currentIntentApproval.id)).toMatchObject({
+      ok: true,
+      authority: { intent: { source: { integrationHead: alternateHead } } },
+    });
+    const originalAuthorityDetail = JSON.stringify(currentIntentApproval.detail);
+    const tamperedAuthorityDetail = JSON.stringify({
+      ...currentIntentApproval.detail,
+      intentDigest: '0'.repeat(64),
+    });
+    h.fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+    try {
+      h.fx.db
+        .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+        .run(tamperedAuthorityDetail, currentIntentApproval.id);
+      expect(await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, currentIntentApproval.id)).toMatchObject(
+        {
+          ok: false,
+          code: 'final_apply_intent_digest_mismatch',
+        },
+      );
+      h.fx.db
+        .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+        .run(originalAuthorityDetail, currentIntentApproval.id);
+    } finally {
+      h.fx.db.exec(`
+        CREATE TRIGGER trg_goal_approval_identity BEFORE UPDATE ON goal_approvals
+        WHEN NEW.id IS NOT OLD.id OR NEW.goal_id IS NOT OLD.goal_id OR NEW.gate IS NOT OLD.gate OR NEW.risk IS NOT OLD.risk
+          OR NEW.reason IS NOT OLD.reason OR NEW.requested_by IS NOT OLD.requested_by
+          OR NEW.detail_json IS NOT OLD.detail_json OR NEW.created_at IS NOT OLD.created_at
+          OR NEW.intent_digest IS NOT OLD.intent_digest
+        BEGIN SELECT RAISE(ABORT, 'goal approval identity is immutable'); END;
+        CREATE TRIGGER trg_goal_approval_terminal BEFORE UPDATE ON goal_approvals
+        WHEN OLD.status <> 'pending'
+        BEGIN SELECT RAISE(ABORT, 'a decided goal approval is immutable'); END;
+      `);
+    }
+    expect(await requestFinalApplyApproval(h.fx.db, h.fx.goalId)).toMatchObject({
+      id: currentIntentApproval.id,
+      status: 'approved',
+    });
+
+    const completionAfterProspectiveApproval = await evaluateCompletion(h.fx.db, h.fx.goalId);
+    expect(completionAfterProspectiveApproval.finalApply).toMatchObject({
+      required: true,
+      ok: false,
+      basis: null,
+      reason: 'not_applied',
+    });
+    expect(completionAfterProspectiveApproval.failures.map((failure) => failure.code)).toEqual([
+      'final_apply_required',
+    ]);
+    expect(
+      h.fx.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base' AND status = 'applied'",
+        )
+        .get(h.fx.goalId),
+    ).toEqual({ n: 0 });
+    expect(h.fx.git('rev-parse', 'main')).toBe(base);
+    expect(h.fx.git('rev-parse', ref)).toBe(alternateHead);
+    expect(providerCalls.length).toBe(providerCallsBeforeAuthority);
+    expect((await call('POST', `/api/goals/${h.fx.goalId}/final-apply`, {})).status).toBe(404);
+
+    // An intent is still stale after approval if the approved definition changes; its final review and acceptance
+    // remain bound to version 1 and cannot be reused for version 2.
+    const oldAuthority = currentIntentApproval.id;
+
     expect(h.fx.git('rev-parse', ref)).toBe(integratedHead);
     expect(providerCalls.every((request) => request.billingLane === 'claude-subscription')).toBe(true);
     expect(
@@ -605,6 +973,35 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(h.fx.git('rev-parse', ref)).toBe(integratedHead);
     expect(h.fx.git('rev-parse', 'main')).toBe(base);
     expect(h.fx.git('status', '--porcelain')).toBe('');
+
+    h.fx.git('checkout', '-b', 'authority-tree-source', base);
+    const changedTree = h.fx.advance(
+      { 'src/add.js': 'export function add(a, b) { return a + b + 0; }\n' },
+      'Advance source tree after approval',
+    );
+    expect(changedTree.tree).not.toBe(integratedTree);
+    const staleTreeEvaluation = await evaluateCompletion(h.fx.db, h.fx.goalId);
+    expect(staleTreeEvaluation.finalReview.ok).toBe(false);
+    expect(staleTreeEvaluation.finalAcceptance).toMatchObject({ required: true, ok: false });
+    expect(await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, oldAuthority)).toMatchObject({
+      ok: false,
+      code: 'completion_not_ready',
+    });
+
+    const amendment = beginAmendment(h.fx.db, { goalId: h.fx.goalId, actor: 'user' });
+    approveDefinition(h.fx.db, {
+      goalId: h.fx.goalId,
+      version: amendment.version,
+      actor: 'user',
+      expectedDefinitionHash: amendment.definitionHash,
+    });
+    const staleDefinitionEvaluation = await evaluateCompletion(h.fx.db, h.fx.goalId);
+    expect(staleDefinitionEvaluation.finalReview.ok).toBe(false);
+    expect(staleDefinitionEvaluation.finalAcceptance).toMatchObject({ required: true, ok: false });
+    expect(await validateFinalApplyAuthority(h.fx.db, h.fx.goalId, oldAuthority)).toMatchObject({
+      ok: false,
+      code: 'completion_not_ready',
+    });
   }, 30_000);
 
   it('keeps a denied each-cycle gate closed through API decision and supervisor reconciliation', async () => {

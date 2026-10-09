@@ -7,6 +7,7 @@ import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
 import { GoalApprovalError } from './approvals.js';
+import { FinalApplyAuthorityError } from './finalApplyAuthority.js';
 import {
   GoalDefinitionError,
   approveDefinition,
@@ -68,6 +69,12 @@ const NOT_FOUND = new Set([
 
 /** Maps a thrown domain error to a response; rethrows anything that is not a known domain refusal. */
 function domainError(error: unknown, reply: FastifyReply) {
+  if (error instanceof FinalApplyAuthorityError)
+    return send(reply, error.code === 'approval_not_found' ? 404 : 409, {
+      error: error.message,
+      code: error.code,
+      ...(error.detail ? { detail: error.detail } : {}),
+    });
   if (error instanceof GoalReadError)
     return send(reply, error.code === 'invalid_filter' ? 400 : 404, {
       error: error.message,
@@ -558,7 +565,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     if (!body.ok) return reply;
     try {
       // The decider is fixed to the user: this route is the explicit user action. It never starts or resumes the Goal.
-      const decided = decideGoalApprovalAsUser(db, {
+      const decided = await decideGoalApprovalAsUser(db, {
         approvalId: (request.params as { approvalId: string }).approvalId,
         decision: body.data.decision,
         ...(body.data.note ? { note: body.data.note } : {}),

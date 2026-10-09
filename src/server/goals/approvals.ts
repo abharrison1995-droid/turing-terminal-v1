@@ -16,7 +16,8 @@ export type GoalApprovalErrorCode =
   | 'user_decision_required'
   | 'already_decided'
   | 'goal_terminal'
-  | 'manual_reconciliation_required';
+  | 'manual_reconciliation_required'
+  | 'invalid_intent_digest';
 
 export class GoalApprovalError extends Error {
   constructor(
@@ -41,6 +42,7 @@ interface Row {
   decision_note: string | null;
   created_at: string;
   responded_at: string | null;
+  intent_digest: string | null;
 }
 
 function toApproval(row: Row): GoalApproval {
@@ -57,6 +59,7 @@ function toApproval(row: Row): GoalApproval {
     decisionNote: row.decision_note,
     createdAt: row.created_at,
     respondedAt: row.responded_at,
+    ...(row.intent_digest ? { intentDigest: row.intent_digest } : {}),
   };
 }
 
@@ -85,19 +88,34 @@ export function requestGoalApproval(
     reason: string;
     requestedBy: GoalApprovalRequester;
     detail?: Record<string, unknown>;
+    intentDigest?: string;
     now?: string;
   },
 ): GoalApproval {
   if (!GOAL_APPROVAL_GATES.includes(input.gate))
     throw new GoalApprovalError('invalid_gate', `Unknown gate "${input.gate}".`);
+  if (
+    (input.intentDigest !== undefined || input.detail?.action === 'apply_to_base_intent') &&
+    (input.gate !== 'final_apply' ||
+      input.risk !== 'high' ||
+      input.requestedBy !== 'user' ||
+      input.detail?.action !== 'apply_to_base_intent' ||
+      input.detail?.intentDigest !== input.intentDigest ||
+      input.intentDigest === undefined ||
+      !/^[0-9a-f]{64}$/.test(input.intentDigest))
+  )
+    throw new GoalApprovalError(
+      'invalid_intent_digest',
+      'A prospective final-apply digest must match its final-apply approval detail.',
+    );
   const now = input.now ?? new Date().toISOString();
   return db.transaction(() => {
     if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId))
       throw new GoalApprovalError('goal_not_found', 'The Goal does not exist.');
     const id = randomUUID();
     db.prepare(
-      `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at, intent_digest)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
     ).run(
       id,
       input.goalId,
@@ -107,6 +125,7 @@ export function requestGoalApproval(
       input.requestedBy,
       JSON.stringify(input.detail ?? {}),
       now,
+      input.intentDigest ?? null,
     );
     writeGoalEvent(
       db,
