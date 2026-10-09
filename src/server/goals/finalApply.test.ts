@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { applyApprovedGoalToBase, FinalApplyInjectedCrash } from './finalApply.js';
 import { decideGoalApprovalAsUser } from './goalCommands.js';
@@ -140,21 +140,25 @@ describe('guarded Goal final apply', () => {
     },
   );
 
-  it.skipIf(process.platform === 'win32')(
-    'reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate',
-    async () => {
-      const { fx, approval, sourceHead } = await readyApplyFixture();
+  describe.skipIf(process.platform === 'win32')('final read-tree boundary characterization', () => {
+    let prepared: Awaited<ReturnType<typeof readyApplyFixture>>;
+
+    beforeAll(async () => {
+      prepared = await readyApplyFixture();
+      const excludePath = join(prepared.fx.repo, '.git', 'info', 'exclude');
+      const previousExclude = readFileSync(excludePath, 'utf8');
+      writeFileSync(excludePath, `${previousExclude}\n/src/final-apply.txt\n`);
+    });
+
+    it('reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate', async () => {
+      const { fx, approval, sourceHead } = prepared;
       const relativeTarget = 'src/final-apply.txt';
       const target = join(fx.repo, relativeTarget);
       const originalBytes = 'USER-ORIGINAL-IGNORED-BYTES\n';
       const approvedBytes = 'approved Goal content\n';
-      const excludePath = join(fx.repo, '.git', 'info', 'exclude');
-      const previousExclude = readFileSync(excludePath, 'utf8');
-      writeFileSync(excludePath, `${previousExclude}\n/${relativeTarget}\n`);
 
       const wrapperDir = mkdtempSync(join(tmpdir(), 'turing-final-apply-git-boundary-'));
       const wrapperPath = join(wrapperDir, 'git');
-      const commandLogMarker = join(wrapperDir, 'git-commands');
       const statusMarker = join(wrapperDir, 'status-before-read-tree');
       const exitMarker = join(wrapperDir, 'read-tree-exit');
       const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
@@ -164,18 +168,16 @@ describe('guarded Goal final apply', () => {
         'TT_FINAL_APPLY_REPO',
         'TT_FINAL_APPLY_TARGET',
         'TT_FINAL_APPLY_BYTES',
-        'TT_FINAL_APPLY_COMMAND_LOG',
         'TT_FINAL_APPLY_STATUS_MARKER',
         'TT_FINAL_APPLY_EXIT_MARKER',
       ] as const;
       const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
       const wrapper = `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
-const { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname } = require('node:path');
 const args = process.argv.slice(2);
 const input = args.includes('--stdin') ? readFileSync(0) : undefined;
-appendFileSync(process.env.TT_FINAL_APPLY_COMMAND_LOG, JSON.stringify(args) + '\\n');
 if (args.includes('read-tree') && args.includes('-u') && !existsSync(process.env.TT_FINAL_APPLY_EXIT_MARKER)) {
   mkdirSync(dirname(process.env.TT_FINAL_APPLY_TARGET), { recursive: true });
   writeFileSync(process.env.TT_FINAL_APPLY_TARGET, process.env.TT_FINAL_APPLY_BYTES);
@@ -200,7 +202,6 @@ process.exit(result.status || 0);
       process.env.TT_FINAL_APPLY_REPO = fx.repo;
       process.env.TT_FINAL_APPLY_TARGET = target;
       process.env.TT_FINAL_APPLY_BYTES = originalBytes;
-      process.env.TT_FINAL_APPLY_COMMAND_LOG = commandLogMarker;
       process.env.TT_FINAL_APPLY_STATUS_MARKER = statusMarker;
       process.env.TT_FINAL_APPLY_EXIT_MARKER = exitMarker;
       process.env.PATH = [wrapperDir, originalPath].filter(Boolean).join(delimiter);
@@ -208,18 +209,8 @@ process.exit(result.status || 0);
       let result;
       let statusBeforeReadTree = '';
       let readTreeExit = '';
-      let commandLog = '';
       try {
         result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
-        commandLog = existsSync(commandLogMarker)
-          ? readFileSync(commandLogMarker, 'utf8')
-          : '<wrapper not invoked>';
-        if (result.outcome !== 'applied') {
-          const operation = fx.db
-            .prepare("SELECT status, recovery_json FROM goal_integration_ops WHERE op = 'apply_to_base'")
-            .get();
-          throw new Error(JSON.stringify({ result, commandLog, operation }));
-        }
         expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
         statusBeforeReadTree = readFileSync(statusMarker, 'utf8');
         readTreeExit = readFileSync(exitMarker, 'utf8');
@@ -245,8 +236,8 @@ process.exit(result.status || 0);
         ok: true,
         basis: 'applied_by_turing',
       });
-    },
-  );
+    });
+  });
 
   it('keeps an ignored untracked target intact and refuses before creating an operation', async () => {
     const { fx, approval, sourceHead } = await readyApplyFixture();
