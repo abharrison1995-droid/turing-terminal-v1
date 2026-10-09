@@ -26,6 +26,7 @@ export function UnifiedApprovals({
   onDecided,
   heading = 'Approvals',
   decisionsEnabled = true,
+  readOnlyAll = false,
 }: {
   goalId?: string;
   expectedGoalApprovalId?: string | null;
@@ -34,6 +35,8 @@ export function UnifiedApprovals({
   heading?: string;
   /** False renders every row read-only (a terminal or manual-reconciliation Goal); the server refuses regardless. */
   decisionsEnabled?: boolean;
+  /** Phone manual-reconciliation and terminal states suppress run and Goal approval mutations alike. */
+  readOnlyAll?: boolean;
 }) {
   const { result, reload } = useLoad(
     () => goalsApi.unifiedApprovals({ status: 'pending', ...(goalId ? { goalId } : {}), limit: 20 }),
@@ -133,7 +136,8 @@ export function UnifiedApprovals({
                   const key = rowKey(approval);
                   const expected = approval.source === 'goal' && approval.id === expectedGoalApprovalId;
                   const readOnly =
-                    approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false);
+                    readOnlyAll ||
+                    (approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false));
                   const disabled = busy !== null || (approval.source === 'goal' && mismatch);
                   return (
                     <div

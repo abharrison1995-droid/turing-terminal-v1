@@ -56,6 +56,10 @@
   font-size: var(--fs-meta);
   line-height: var(--lh-meta);
 }
+.goal-row-side {
+  display: grid;
+  gap: 2px;
+}
 .goal-eyebrow {
   display: block;
   color: var(--ink-3);
@@ -120,6 +124,73 @@
 }
 .goal-cockpit-head h2 {
   margin: 0;
+}
+
+.goal-mobile-cockpit {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-mobile-top > button {
+  min-height: 44px;
+}
+.goal-mobile-heading {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.goal-mobile-heading h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+}
+.goal-mobile-heading p {
+  margin: var(--s-1) 0 0;
+  color: var(--ink-3);
+}
+.goal-mobile-title {
+  min-width: 0;
+}
+.goal-mobile-needs {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  color: var(--ink);
+  background: var(--amber-wash);
+  border-radius: var(--r-md);
+}
+.goal-mobile-desktop-note {
+  margin: 0;
+  padding: var(--s-3);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+.goal-mobile-progress dl {
+  display: grid;
+  gap: var(--s-3);
+  margin: 0;
+}
+.goal-mobile-progress dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.goal-mobile-progress dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.goal-mobile-progress dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.goal-mobile-integration {
+  display: grid;
+  gap: var(--s-1);
+}
+.goal-mobile-integration code {
+  overflow-wrap: anywhere;
 }
 .goal-tabs {
   display: flex;
@@ -235,6 +306,70 @@
 @media (max-width: 900px) {
   .goal-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .goals-page-compact {
+    padding-inline: var(--s-3);
+  }
+  .goals-page-compact .page-heading {
+    gap: var(--s-2);
+  }
+  .goal-row-mobile {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-2);
+    padding: var(--s-3);
+    border-color: var(--hairline);
+    text-wrap: pretty;
+  }
+  .goal-row-mobile .goal-row-main,
+  .goal-row-mobile .goal-row-next,
+  .goal-row-mobile .goal-row-side {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .goal-row-mobile .goal-row-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  .goal-row-mobile .status-pill,
+  .goal-mobile-heading > .status-pill {
+    max-width: 100%;
+    white-space: normal;
+    flex-wrap: wrap;
+  }
+  .goal-mobile-cockpit .goal-cockpit-top {
+    align-items: stretch;
+  }
+  .goal-mobile-cockpit .goal-control-buttons > button,
+  .goal-mobile-cockpit .approval-actions > button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .goal-mobile-cockpit .goal-control-buttons {
+    gap: var(--s-2);
+  }
+  .goal-mobile-cockpit .goal-next {
+    padding: var(--s-3);
+  }
+  .goal-mobile-cockpit .goal-next > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .goal-mobile-cockpit .goal-cockpit-head,
+  .goal-mobile-cockpit .goal-facts {
+    min-width: 0;
+  }
+  .goal-mobile-cockpit .approval-item {
+    min-width: 0;
+  }
+  .goal-mobile-cockpit .approval-copy,
+  .goal-mobile-cockpit .approval-actions {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 }
 

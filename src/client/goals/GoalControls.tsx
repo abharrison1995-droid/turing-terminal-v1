@@ -8,8 +8,20 @@ import { refusalText, toRefusal, type Refusal } from './refusal';
  * The Goal lifecycle controls. Each button performs exactly one POST and nothing else: there is no optimistic status
  * change, no chained follow-up, and the result (success or refusal) only triggers a read refresh via `onChanged`.
  */
-export function GoalControls({ goal, onChanged }: { goal: GoalDetail; onChanged: () => void }) {
-  const controls = availableControls(goal);
+export function GoalControls({
+  goal,
+  onChanged,
+  compact = false,
+}: {
+  goal: GoalDetail;
+  onChanged: () => void;
+  /** The phone cockpit reuses the same proven controls but offers only pause and explicit resume reasons. */
+  compact?: boolean;
+}) {
+  const offered = availableControls(goal);
+  const controls = compact
+    ? offered.filter((control) => control.id === 'pause' || control.id === 'resume')
+    : offered;
   const [busy, setBusy] = useState(false);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -78,12 +90,15 @@ export function GoalControls({ goal, onChanged }: { goal: GoalDetail; onChanged:
       )}
       {controls.map((control) =>
         'hint' in control ? (
-          <p key={`hint-${control.id}`} className="goal-note">
+          <p
+            key={`hint-${control.id}${control.id === 'resume' ? `-${control.reason}` : ''}`}
+            className="goal-note"
+          >
             {control.label}: {control.hint}
           </p>
         ) : null,
       )}
-      {confirmingAbandon && (
+      {confirmingAbandon && !compact && (
         <div className="goal-confirm" role="alertdialog" aria-label="Confirm abandon">
           <strong>Abandon this Goal?</strong>
           <p>

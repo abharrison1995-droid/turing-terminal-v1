@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { GoalListItem, UnifiedApproval } from '../shared/goalApi.js';
 import type { DashboardSnapshot } from '../shared/types.js';
 import { notificationsForSnapshot } from './notificationEvents.js';
 
@@ -82,5 +83,92 @@ describe('browser notification events', () => {
       'provider:codex-cli:disconnected',
     ]);
     expect(events.some((event) => event.body.includes('secrets'))).toBe(false);
+  });
+
+  it('notifies once for new Goal approvals and actionable needs-user transitions', () => {
+    const goal = {
+      id: 'goal-a',
+      status: 'running',
+      reasonCode: null,
+      updatedAt: '2026-10-09T10:00:00.000Z',
+    } as unknown as GoalListItem;
+    const previous = snapshot({
+      goals: { total: 1, active: 1, needsUser: 0, blocked: 0, paused: 0, cards: [goal] },
+    });
+    const approval = {
+      source: 'goal',
+      id: 'approval-a',
+      goalId: 'goal-a',
+      title: 'review',
+      reason: 'private details',
+      risk: 'medium',
+      status: 'pending',
+      createdAt: '2026-10-09T10:01:00.000Z',
+    } as unknown as UnifiedApproval;
+    const currentGoal = {
+      ...goal,
+      status: 'needs_user',
+      reasonCode: 'gate_pending',
+      pendingApprovalCount: 1,
+      updatedAt: '2026-10-09T10:01:00.000Z',
+    } as GoalListItem;
+    const current = snapshot({
+      goals: { total: 1, active: 0, needsUser: 1, blocked: 0, paused: 0, cards: [currentGoal] },
+      goalApprovals: { pending: 1, approvals: [approval] },
+    });
+
+    expect(notificationsForSnapshot(previous, current)).toEqual([
+      {
+        key: 'goal-approval:approval-a',
+        title: 'Grand Project needs approval',
+        body: 'Open Turing Terminal to review the Goal gate.',
+      },
+    ]);
+    expect(
+      notificationsForSnapshot(
+        current,
+        snapshot({
+          goals: { total: 1, active: 0, needsUser: 1, blocked: 0, paused: 0, cards: [currentGoal] },
+          goalApprovals: { pending: 1, approvals: [approval] },
+        }),
+      ),
+    ).toEqual([]);
+
+    const alreadyNotifiedApproval = snapshot({
+      goals: { total: 1, active: 1, needsUser: 0, blocked: 0, paused: 0, cards: [goal] },
+      goalApprovals: { pending: 1, approvals: [approval] },
+    });
+    expect(notificationsForSnapshot(alreadyNotifiedApproval, current)).toEqual([]);
+
+    const noApprovalTransition = snapshot({
+      goals: {
+        total: 1,
+        active: 0,
+        needsUser: 1,
+        blocked: 0,
+        paused: 0,
+        cards: [{ ...currentGoal, reasonCode: 'scope_violation' }],
+      },
+    });
+    expect(notificationsForSnapshot(previous, noApprovalTransition).map((event) => event.title)).toEqual([
+      'Grand Project needs you',
+    ]);
+  });
+
+  it('does not infer Goal completion from disappearance in bounded dashboard cards', () => {
+    const previous = snapshot({
+      goals: {
+        total: 9,
+        active: 1,
+        needsUser: 0,
+        blocked: 0,
+        paused: 0,
+        cards: [{ id: 'goal-a', status: 'running' } as never],
+      },
+    });
+    const current = snapshot({
+      goals: { total: 9, active: 1, needsUser: 0, blocked: 0, paused: 0, cards: [] },
+    });
+    expect(notificationsForSnapshot(previous, current)).toEqual([]);
   });
 });

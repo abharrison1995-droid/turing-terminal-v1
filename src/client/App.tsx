@@ -75,6 +75,7 @@ import type {
 import { api } from './api';
 import { approvalSignature, pendingApprovalCounts } from './goals/dashboard';
 import { GoalsPage } from './goals/GoalsPage';
+import { cleanGoalNavigationUrl, parseGoalNavigationRequest } from './goals/deepLink';
 import { UnifiedApprovals } from './goals/UnifiedApprovals';
 import {
   billingLaneLabel,
@@ -165,9 +166,11 @@ const stageLabels: Record<StageKind, string> = {
 };
 
 function App() {
+  const [goalNavigation] = useState(() => parseGoalNavigationRequest(window.location.href));
+  const [initialGoalId, setInitialGoalId] = useState(goalNavigation?.goalId ?? null);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfile[]>(readBrowserMachineProfiles);
-  const [page, setPage] = useState<Page>('command');
+  const [page, setPage] = useState<Page>(goalNavigation ? 'goals' : 'command');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -217,6 +220,11 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 6_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!goalNavigation) return;
+    window.history.replaceState(window.history.state, '', cleanGoalNavigationUrl(window.location.href));
+  }, [goalNavigation]);
 
   useEffect(() => {
     const events = notificationsForSnapshot(priorSnapshot.current, snapshot);
@@ -515,6 +523,8 @@ function App() {
             {page === 'goals' && (
               <GoalsPage
                 projects={snapshot?.projects ?? []}
+                initialGoalId={initialGoalId}
+                onInitialGoalConsumed={() => setInitialGoalId(null)}
                 onOpenProjects={() => navigate('projects')}
                 onUnsavedChange={setGoalsUnsaved}
               />

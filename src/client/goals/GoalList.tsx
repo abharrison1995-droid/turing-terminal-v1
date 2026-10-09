@@ -11,18 +11,21 @@ export function GoalList({
   result,
   onRetry,
   onSelect,
+  compact = false,
 }: {
   result: Loaded<GoalListResponse>;
   onRetry: () => void;
   onSelect: (goalId: string) => void;
+  compact?: boolean;
 }) {
   return (
     <Resource result={result} label="Grand Projects" onRetry={onRetry}>
       {(data) =>
         data.goals.length === 0 ? (
           <Empty>
-            No Grand Projects yet. A Goal is a bounded, supervised project that Turing works on across many
-            finite runs. Use New Grand Project to create one.
+            {compact
+              ? 'No Grand Projects yet. Create a definition from the desktop interface.'
+              : 'No Grand Projects yet. A Goal is a bounded, supervised project that Turing works on across many finite runs. Use New Grand Project to create one.'}
           </Empty>
         ) : (
           <>
@@ -34,7 +37,7 @@ export function GoalList({
                   <li key={goal.id}>
                     <button
                       type="button"
-                      className={`goal-row${goal.needsUser ? ' goal-row-attention' : ''}`}
+                      className={`goal-row${goal.needsUser ? ' goal-row-attention' : ''}${compact ? ' goal-row-mobile' : ''}`}
                       data-needs-user={goal.needsUser ? 'true' : 'false'}
                       onClick={() => onSelect(goal.id)}
                     >
@@ -42,8 +45,13 @@ export function GoalList({
                         <strong>{goal.title}</strong>
                         <span className="goal-row-meta">
                           {goal.projectName}
-                          {goal.activeMilestone ? ` · ${goal.activeMilestone.title}` : ''}
+                          {compact ? '' : goal.activeMilestone ? ` · ${goal.activeMilestone.title}` : ''}
                         </span>
+                        {compact && goal.activeMilestone && (
+                          <span className="goal-row-meta">
+                            Active milestone · {goal.activeMilestone.title}
+                          </span>
+                        )}
                       </span>
                       <span className="goal-row-state">
                         <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
@@ -54,12 +62,13 @@ export function GoalList({
                         {next.label}
                       </span>
                       <span className="goal-row-meta goal-row-side">
-                        {goal.lastCycle
-                          ? `Cycle ${goal.lastCycle.sequence} · ${humanize(goal.lastCycle.status)}`
-                          : 'No cycles yet'}
-                        {findings > 0 ? ` · ${findings} open finding${findings === 1 ? '' : 's'}` : ''}
-                        <br />
-                        Updated {formatTime(goal.updatedAt)}
+                        <span>
+                          {goal.lastCycle
+                            ? `Cycle ${goal.lastCycle.sequence} · ${humanize(goal.lastCycle.status)}`
+                            : 'No cycles yet'}
+                          {findings > 0 ? ` · ${findings} open finding${findings === 1 ? '' : 's'}` : ''}
+                        </span>
+                        <span>Updated {formatTime(goal.updatedAt)}</span>
                       </span>
                     </button>
                   </li>

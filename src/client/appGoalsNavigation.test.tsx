@@ -200,3 +200,42 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy());
   });
 });
+
+describe('Goal notification deep links', () => {
+  it('opens the exact Goal from a navigation-only URL, then cleans only its parameters', async () => {
+    window.history.replaceState({}, '', '/?page=goals&goalId=goal-1&pairRequest=pair-token');
+    serve(proposedRoutes());
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: 'Ship the importer' })).toBeTruthy();
+    await waitFor(() =>
+      expect(calls.some((call) => call.method === 'GET' && call.path === '/api/goals/goal-1')).toBe(true),
+    );
+    expect(posts()).toEqual([]);
+    expect(window.location.search).toBe('?pairRequest=pair-token');
+  });
+
+  it('shows a normal not-found state for an exact missing Goal without selecting another', async () => {
+    window.history.replaceState({}, '', '/?page=goals&goalId=goal-missing');
+    serve({
+      '/api/goals': () => ({ goals: [item()], total: 1, limit: 50 }),
+      '/api/goals/goal-missing': () =>
+        new Response(JSON.stringify({ error: 'Goal was not found.' }), { status: 404 }),
+    });
+    render(<App />);
+    expect(await screen.findByText(/Goal could not be loaded/)).toBeTruthy();
+    expect(calls.some((call) => call.path === '/api/goals/goal-1')).toBe(false);
+    expect(posts()).toEqual([]);
+  });
+
+  it('ignores a malformed Goal ID and does not select a different listed Goal', async () => {
+    window.history.replaceState({}, '', '/?page=goals&goalId=..%2Fgoal-1');
+    serve({ '/api/goals': () => ({ goals: [item()], total: 1, limit: 50 }) });
+    render(<App />);
+    expect(await screen.findByRole('list', { name: 'Grand Projects' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Ship the importer/ })).toBeTruthy();
+    expect(calls.some((call) => call.path.startsWith('/api/goals/') && call.path !== '/api/goals')).toBe(
+      false,
+    );
+    expect(posts()).toEqual([]);
+  });
+});

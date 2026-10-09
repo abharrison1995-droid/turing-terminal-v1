@@ -45,7 +45,109 @@ export function isAllowedPushEndpoint(value: string): boolean {
   }
 }
 
+const boundedId = (value: unknown): string | null =>
+  typeof value === 'string' && value.length > 0 && value.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(value)
+    ? value
+    : null;
+
+const goalUrl = (goalId: string): string => `/?page=goals&goalId=${encodeURIComponent(goalId)}`;
+
+const goalReasonLabel = (reason: unknown): string => {
+  const labels: Record<string, string> = {
+    scope_violation: 'work outside the approved scope',
+    goal_ref_changed: 'the Goal branch changed',
+    goal_ref_missing: 'the Goal branch is missing',
+    git_state_invalid: 'the Git state needs review',
+    budget_exceeded: 'a configured limit was reached',
+    cycles_exhausted: 'the cycle limit was reached',
+    active_time_exhausted: 'the active-time limit was reached',
+    wall_clock_exhausted: 'the time limit was reached',
+    repeated_failures: 'repeated cycles failed',
+  };
+  return typeof reason === 'string'
+    ? (labels[reason] ?? 'a bounded Goal condition needs review')
+    : 'a Goal condition needs review';
+};
+
+function noticeForGoalEvent(
+  event: string,
+  payload: Record<string, unknown>,
+  goalId: string,
+): PushNotice | null {
+  const url = goalUrl(goalId);
+  const eventId = boundedId(payload.goalEventId);
+  if (event === 'approval_requested') {
+    const approvalId = boundedId(payload.approvalId);
+    if (!approvalId) return null;
+    return {
+      key: `goal-approval:${approvalId}`,
+      title: 'Grand Project needs approval',
+      body: 'Open Turing Terminal to review the Goal gate.',
+      url,
+    };
+  }
+  if (event === 'state_changed' && payload.to === 'needs_user' && payload.reasonCode !== 'gate_pending') {
+    if (!eventId) return null;
+    const reasonCode = boundedId(payload.reasonCode) ?? 'unknown';
+    return {
+      key: `goal:${goalId}:needs-you:${reasonCode}:${eventId}`,
+      title: 'Grand Project needs you',
+      body: 'Open Turing Terminal to review the Goal state.',
+      url,
+    };
+  }
+  if (event === 'state_changed' && payload.to === 'blocked') {
+    if (!eventId) return null;
+    const reasonCode = boundedId(payload.reasonCode) ?? 'unknown';
+    return {
+      key: `goal:${goalId}:blocked:${reasonCode}:${eventId}`,
+      title: 'Grand Project blocked',
+      body: `The Goal is blocked by ${goalReasonLabel(payload.reasonCode)}.`,
+      url,
+    };
+  }
+  if (event === 'state_changed' && payload.to === 'completed')
+    return {
+      key: `goal:${goalId}:completed`,
+      title: 'Grand Project completed',
+      body: 'Open Turing Terminal to inspect the completed Goal.',
+      url,
+    };
+  if (event === 'review_completed' && payload.blocking === true) {
+    const reviewId = boundedId(payload.reviewId);
+    if (!reviewId) return null;
+    return {
+      key: `goal-review:${reviewId}:blocked`,
+      title: 'Grand Project review found a blocker',
+      body: 'Open Turing Terminal to review the Goal findings.',
+      url,
+    };
+  }
+  if (event === 'completion_evaluated') {
+    const failures = payload.failureCodes;
+    const definitionHash = boundedId(payload.definitionHash);
+    const integrationHead = boundedId(payload.integrationHead);
+    if (
+      !Array.isArray(failures) ||
+      failures.length !== 1 ||
+      failures[0] !== 'final_apply_required' ||
+      !definitionHash ||
+      !integrationHead
+    )
+      return null;
+    return {
+      key: `goal:${goalId}:final-apply:${definitionHash}:${integrationHead}`,
+      title: 'Grand Project ready for final apply',
+      body: 'Final apply is a separate step in the desktop interface.',
+      url,
+    };
+  }
+  return null;
+}
+
 export function noticeForMasterEvent(event: string, payload: Record<string, unknown>): PushNotice | null {
+  const goalId = boundedId(payload.goalId);
+  if (goalId && boundedId(payload.goalEventId)) return noticeForGoalEvent(event, payload, goalId);
   const runId = typeof payload.runId === 'string' ? payload.runId : null;
   if (!runId) return null;
   const status = payload.status;
