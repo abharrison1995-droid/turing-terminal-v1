@@ -927,6 +927,21 @@ describe('verifyGoalRef', () => {
 });
 
 describe('preflightFinalApply', () => {
+  const gitState = (h: Harness) => ({
+    refs: git(h.repo, 'for-each-ref', '--format=%(refname) %(objectname)'),
+    headRef: git(h.repo, 'symbolic-ref', '-q', 'HEAD'),
+    headCommit: git(h.repo, 'rev-parse', 'HEAD'),
+    checkout: git(h.repo, 'status', '--porcelain=v1', '--untracked-files=all'),
+    worktrees: git(h.repo, 'worktree', 'list', '--porcelain'),
+  });
+
+  async function readOnlyPreflight(h: Harness) {
+    const before = gitState(h);
+    const result = await preflightFinalApply(h.db, h.goalId);
+    expect(gitState(h)).toEqual(before);
+    return result;
+  }
+
   async function advanced() {
     const h = await initialised();
     const step = await advance(h, { 'app.txt': 'goal change\n' });
@@ -936,12 +951,12 @@ describe('preflightFinalApply', () => {
 
   it('reports not initialised before init', async () => {
     const h = await setup();
-    expect((await preflightFinalApply(h.db, h.goalId)).status).toBe('goal_not_initialized');
+    expect((await readOnlyPreflight(h)).status).toBe('goal_not_initialized');
   });
 
   it('is ready when the checkout is clean, on the base branch at the base commit', async () => {
     const { h, tip } = await advanced();
-    const result = await preflightFinalApply(h.db, h.goalId);
+    const result = await readOnlyPreflight(h);
     expect(result).toMatchObject({
       status: 'ready_for_approved_apply',
       recordedBaseBranch: 'main',
@@ -956,21 +971,18 @@ describe('preflightFinalApply', () => {
       changedPaths: ['app.txt'],
     });
     expect(result.diffPreview).toContain('goal change');
-    // Strictly read-only.
-    expect(git(h.repo, 'rev-parse', 'main')).toBe(h.base);
-    expect(git(h.repo, 'status', '--porcelain')).toBe('');
   });
 
   it('reports a dirty checkout, including untracked files', async () => {
     const { h } = await advanced();
     writeFileSync(join(h.repo, 'untracked.txt'), 'u');
-    expect((await preflightFinalApply(h.db, h.goalId)).status).toBe('dirty_checkout');
+    expect((await readOnlyPreflight(h)).status).toBe('dirty_checkout');
   });
 
   it('reports the wrong branch', async () => {
     const { h } = await advanced();
     git(h.repo, 'checkout', '-q', '-b', 'feature');
-    expect((await preflightFinalApply(h.db, h.goalId)).status).toBe('wrong_branch');
+    expect((await readOnlyPreflight(h)).status).toBe('wrong_branch');
   });
 
   it('reports a diverged base branch', async () => {
@@ -978,7 +990,7 @@ describe('preflightFinalApply', () => {
     writeFileSync(join(h.repo, 'user.txt'), 'u');
     git(h.repo, 'add', '.');
     git(h.repo, 'commit', '-qm', 'user work');
-    const result = await preflightFinalApply(h.db, h.goalId);
+    const result = await readOnlyPreflight(h);
     expect(result.status).toBe('base_diverged');
     expect(result).toMatchObject({ ahead: 1, behind: 1, fastForwardPossible: false });
   });
@@ -993,14 +1005,31 @@ describe('preflightFinalApply', () => {
     git(h.repo, 'branch', '-q', '-D', 'other');
     h.db.prepare('UPDATE goal_runtime SET base_commit = ? WHERE goal_id = ?').run(unrelated, h.goalId);
     git(h.repo, 'reset', '-q', '--hard', unrelated);
-    const result = await preflightFinalApply(h.db, h.goalId);
+    const result = await readOnlyPreflight(h);
     expect(result.status).toBe('not_fast_forward');
   });
 
   it('reports a moved Goal ref', async () => {
     const { h } = await advanced();
     git(h.repo, 'update-ref', h.ref, h.base);
-    expect((await preflightFinalApply(h.db, h.goalId)).status).toBe('goal_ref_changed');
+    expect((await readOnlyPreflight(h)).status).toBe('goal_ref_changed');
+  });
+
+  it('reports a Goal ref checked out in another worktree without changing repository state', async () => {
+    const { h } = await advanced();
+    const occupied = join(h.root, 'occupied-goal-worktree');
+    git(h.repo, 'worktree', 'add', '-q', occupied, `turing/goal/${h.goalId}`);
+    expect((await readOnlyPreflight(h)).status).toBe('goal_ref_changed');
+    git(h.repo, 'worktree', 'remove', '--force', occupied);
+  });
+
+  it('reports an unsafe path in an already advanced Goal ref without changing repository state', async () => {
+    const h = await initialised();
+    const cycle = h.newCycle();
+    const run = h.makeRun(cycle, { '.env': 'NONSECRET_FIXTURE=value\\n' });
+    git(h.repo, 'update-ref', h.ref, run.tip);
+    h.db.prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?').run(run.tip, h.goalId);
+    expect((await readOnlyPreflight(h)).status).toBe('unsafe_changes');
   });
 
   it('truncates and redacts the display preview without weakening the safety scan', async () => {
@@ -1012,7 +1041,9 @@ describe('preflightFinalApply', () => {
     });
     git(h.repo, 'update-ref', h.ref, run.tip);
     h.db.prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?').run(run.tip, h.goalId);
+    const before = gitState(h);
     const result = await preflightFinalApply(h.db, h.goalId, { previewChars: 500 });
+    expect(gitState(h)).toEqual(before);
     expect(result.diffPreviewTruncated).toBe(true);
     expect(result.diffPreview.length).toBeLessThanOrEqual(500);
     expect(result.status).toBe('unsafe_changes');

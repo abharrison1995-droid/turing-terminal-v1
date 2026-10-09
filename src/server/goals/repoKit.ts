@@ -100,6 +100,7 @@ export function simpleDefinition(options: DefinitionOptions = {}): GoalDefinitio
 export interface GoalRepoFixture {
   db: Db;
   repo: string;
+  baseCommit: string;
   projectId: string;
   goalId: string;
   definition: GoalDefinition;
@@ -124,9 +125,15 @@ export interface GoalRepoFixture {
   currentHash(): string;
 }
 
-/** A real temporary Git repository plus a Goal with an approved definition and a Goal ref at the initial commit. */
+/** Creates a real temporary Git repository and Goal; approval and Goal-ref initialization are on by default. */
 export function goalRepoFixture(
-  options: { definition?: GoalDefinition; subdir?: string } = {},
+  options: {
+    definition?: GoalDefinition;
+    subdir?: string;
+    initialFiles?: Record<string, string>;
+    approved?: boolean;
+    initializeRef?: boolean;
+  } = {},
 ): GoalRepoFixture {
   const root = mkdtempSync(join(tmpdir(), 'turing-goalrepo-'));
   folders.push(root);
@@ -147,7 +154,11 @@ export function goalRepoFixture(
       }
     }
   };
-  write({ 'src/parser.ts': 'export const parse = 1;\n', 'docs/README.md': '# docs\n' });
+  write({
+    'src/parser.ts': 'export const parse = 1;\n',
+    'docs/README.md': '# docs\n',
+    ...options.initialFiles,
+  });
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'initial');
   const base = git(repo, 'rev-parse', 'HEAD');
@@ -163,12 +174,14 @@ export function goalRepoFixture(
   ).run(projectId, machine, projectPath, repo);
   const definition = options.definition ?? simpleDefinition();
   const { goalId } = createGoalDraft(db, { projectId, title: 'G', definition });
-  approveDefinition(db, { goalId, version: 1, actor: 'user' });
   const ref = `refs/heads/turing/goal/${goalId}`;
-  git(repo, 'update-ref', ref, base);
-  db.prepare(
-    'UPDATE goal_runtime SET integration_head = ?, goal_branch = ?, base_branch = ?, base_commit = ? WHERE goal_id = ?',
-  ).run(base, `turing/goal/${goalId}`, 'main', base, goalId);
+  if (options.approved !== false) approveDefinition(db, { goalId, version: 1, actor: 'user' });
+  if (options.initializeRef !== false) {
+    git(repo, 'update-ref', ref, base);
+    db.prepare(
+      'UPDATE goal_runtime SET integration_head = ?, goal_branch = ?, base_branch = ?, base_commit = ? WHERE goal_id = ?',
+    ).run(base, `turing/goal/${goalId}`, 'main', base, goalId);
+  }
 
   const commitFiles = (files: Record<string, string | null>, message: string) => {
     write(files);
@@ -181,6 +194,7 @@ export function goalRepoFixture(
   return {
     db,
     repo,
+    baseCommit: base,
     projectId,
     goalId,
     definition,

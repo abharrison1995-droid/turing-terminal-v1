@@ -61,6 +61,12 @@ export async function realRunHarness(
     route?: FixedRoute;
     mutate?: ConstructorParameters<typeof FixedGoalRunPlanProvider>[1];
     definition?: GoalDefinition;
+    /** Leave the fixture definition proposed so a test can use the real approval service/API. */
+    approved?: boolean;
+    /** Leave Goal-ref initialization to the production supervisor's Start preflight. */
+    initializeGoalRef?: boolean;
+    /** Package scripts for deterministic, real build/test commands in the isolated repo. */
+    scripts?: { build: string; test: string };
     /** Non-built-in workflows registered and selected for a purpose (context-authority tests). */
     custom?: Array<{ purpose: 'planning' | 'execution'; workflow: WorkflowDefinition }>;
     /** A real route-plan provider in place of the fixed test provider (Stage 5B). */
@@ -80,21 +86,21 @@ export async function realRunHarness(
   definition.routing.workflows = { ...BUILT_IN_WORKFLOWS };
   for (const { purpose, workflow } of options.custom ?? [])
     definition.routing.workflows = { ...definition.routing.workflows, [purpose]: workflow.id };
-  const fx = goalRepoFixture({ definition });
+  const scripts = options.scripts ?? {
+    build: `node -e "console.log('build-ok')"`,
+    test: `node -e "console.log('test-ok')"`,
+  };
+  const fx = goalRepoFixture({
+    definition,
+    approved: options.approved,
+    initializeRef: options.initializeGoalRef,
+    initialFiles: { 'package.json': JSON.stringify({ scripts }) },
+  });
   const { db } = fx;
   const root = dirname(fx.repo);
   const previousDataDir = process.env.TT_DATA_DIR;
   process.env.TT_DATA_DIR = join(root, 'engine-data');
 
-  const buildOk = `node -e "console.log('build-ok')"`;
-  fx.advance(
-    {
-      'package.json': JSON.stringify({
-        scripts: { build: buildOk, test: `node -e "console.log('test-ok')"` },
-      }),
-    },
-    'project scripts',
-  );
   db.prepare('UPDATE projects SET build_command_json = ?, test_command_json = ? WHERE id = ?').run(
     JSON.stringify(['npm', 'run', 'build']),
     JSON.stringify(['npm', 'run', 'test']),
@@ -102,8 +108,6 @@ export async function realRunHarness(
   );
 
   let engine = new RunEngine(db, () => undefined);
-  const app = createApp({ database: db, engine });
-  await app.ready();
   const tracker = new ActiveTimeTracker(db, { nowMs: () => 5_000_000_000 }, 15_000);
   const plans = new FixedGoalRunPlanProvider(options.route, options.mutate);
   for (const { workflow } of options.custom ?? []) {
@@ -138,6 +142,8 @@ export async function realRunHarness(
     };
   };
   const first = make(engine);
+  const app = createApp({ database: db, engine, goalSupervisor: first.supervisor });
+  await app.ready();
   const settle = async () => {
     await vi.waitFor(
       () => {
@@ -163,7 +169,7 @@ export async function realRunHarness(
     plans,
     provider,
     ...first,
-    baseCommit: fx.head(),
+    baseCommit: fx.baseCommit,
     restart() {
       engine = new RunEngine(db, () => undefined);
       harness.engine = engine;
