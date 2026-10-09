@@ -2,8 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    // The repository's proven concurrency cap: the default (one worker per core) times out DB/git-heavy tests under load.
-    maxWorkers: 6,
+    // DB/Git integration tests exceed their 5s budgets when CI runs six workers at once.
+    maxWorkers: 2,
     exclude: ['**/node_modules/**', '**/dist/**', '**/dist-server/**', '**/.git/**'],
   },
 });
