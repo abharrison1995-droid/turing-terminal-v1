@@ -2,6 +2,7 @@
 
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GoalDetail, GoalFindingView, GoalNextAction, UnifiedApproval } from '../../shared/goalApi';
 import type { GoalStatus } from '../../shared/goals';
@@ -21,10 +22,18 @@ const postPaths = () => posts().map((call) => `${call.method} ${call.path}`);
 const detailGets = () =>
   calls.filter((call) => call.method === 'GET' && call.path === '/api/goals/goal-1').length;
 
-async function open(g: GoalDetail, extra: Routes = {}) {
+async function open(g: GoalDetail, extra: Routes = {}, strict = false) {
   serve(detailRoutes(g, extra));
   const user = userEvent.setup();
-  render(<GoalsPage />);
+  render(
+    strict ? (
+      <StrictMode>
+        <GoalsPage />
+      </StrictMode>
+    ) : (
+      <GoalsPage />
+    ),
+  );
   await openGoal(user);
   await screen.findByLabelText('Next action');
   return user;
@@ -160,18 +169,29 @@ describe('Goal lifecycle controls', () => {
   });
 
   it('Abandon needs a deliberate confirmation and is not offered while running or reviewing', async () => {
-    const user = await open(goal('paused', { kind: 'resume' }), {
-      'POST /api/goals/goal-1/abandon': () => ({ status: 'abandoned' }),
-    });
-    await user.click(screen.getByRole('button', { name: 'Abandon Goal' }));
-    const dialog = screen.getByRole('alertdialog', { name: 'Confirm abandon' });
+    const user = await open(
+      goal('paused', { kind: 'resume' }),
+      { 'POST /api/goals/goal-1/abandon': () => ({ status: 'abandoned' }) },
+      true,
+    );
+    const abandon = screen.getByRole('button', { name: 'Abandon Goal' });
+    await user.click(abandon);
+    const dialog = screen.getByRole('alertdialog', { name: 'Abandon this Goal?' });
+    expect(dialog.getAttribute('aria-labelledby')).toBe(dialog.querySelector('h2')?.id);
+    expect(dialog.getAttribute('aria-describedby')).toBe(dialog.querySelector('p')?.id);
+    expect(dialog.getAttribute('aria-modal')).toBeNull();
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Keep Goal' }));
     expect(dialog.textContent).toContain('history stays recorded');
     expect(dialog.textContent).toContain('Nothing is applied to your branch');
     expect(posts()).toHaveLength(0);
-    await user.click(within(dialog).getByRole('button', { name: 'Keep Goal' }));
+    await user.keyboard('{Escape}');
     expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(document.activeElement).toBe(abandon);
     expect(posts()).toHaveLength(0);
-    await user.click(screen.getByRole('button', { name: 'Abandon Goal' }));
+    await user.click(abandon);
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Keep Goal' }));
+    expect(document.activeElement).toBe(abandon);
+    await user.click(abandon);
     await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Abandon Goal' }));
     await waitFor(() => expect(postPaths()).toEqual(['POST /api/goals/goal-1/abandon']));
   });
@@ -266,6 +286,12 @@ describe('Unified approvals in the cockpit', () => {
     expect(section.textContent).toContain('Approve the next cycle');
     expect(section.textContent).toContain('Risk: Medium');
     expect(section.textContent).toContain('Risk: High');
+    expect(
+      within(section).getByRole('button', { name: 'Approve Goal gate: Each cycle (approval ga-1)' }),
+    ).toBeTruthy();
+    expect(
+      within(section).getByRole('button', { name: 'Approve Run action: git push for run run-1' }),
+    ).toBeTruthy();
     const read = calls.find((call) => call.path === '/api/approvals/unified')!;
     expect(read.url).toContain('status=pending');
     expect(read.url).toContain('goalId=goal-1');
@@ -279,7 +305,7 @@ describe('Unified approvals in the cockpit', () => {
     });
     expect((await screen.findByText(/Approvals could not be loaded/)).textContent).toContain('down');
     fail = false;
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await user.click(screen.getByRole('button', { name: 'Retry loading Approvals' }));
     expect(await screen.findByText('Nothing is waiting for your decision.')).toBeTruthy();
   });
 
@@ -436,7 +462,9 @@ describe('Finding decisions', () => {
       finding({ id: 'f2', status: 'resolved' }),
       finding({ id: 'f3', status: 'accepted_by_user' }),
     ]);
-    expect(screen.getAllByRole('button', { name: /Accept finding|Dismiss finding/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /Accept high finding|Dismiss high finding/ })).toHaveLength(
+      2,
+    );
     expect(document.querySelectorAll('[data-finding-status="resolved"] button')).toHaveLength(0);
     expect(document.querySelectorAll('[data-finding-status="accepted_by_user"] button')).toHaveLength(0);
   });
@@ -449,8 +477,8 @@ describe('Finding decisions', () => {
         decisionApprovalId: 'ap-1',
       }),
     });
-    await user.click(screen.getByRole('button', { name: 'Accept finding' }));
-    const dialog = screen.getByRole('alertdialog', { name: 'Confirm finding decision' });
+    await user.click(screen.getByRole('button', { name: 'Accept high finding: Security' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Accept this high finding?' });
     expect(dialog.textContent).toContain('Accept this high finding?');
     expect(dialog.textContent).toContain('Token logged in debug output');
     expect(dialog.textContent).toContain('This is a high finding');
@@ -477,7 +505,7 @@ describe('Finding decisions', () => {
         decisionApprovalId: 'ap-1',
       }),
     });
-    await user.click(screen.getByRole('button', { name: 'Dismiss finding' }));
+    await user.click(screen.getByRole('button', { name: 'Dismiss low finding: Security' }));
     await user.click(screen.getByRole('button', { name: 'Confirm dismiss' }));
     await waitFor(() => expect(posts()).toHaveLength(1));
     expect(posts()[0]!.body).toEqual({ decision: 'dismissed_by_user' });
@@ -485,7 +513,7 @@ describe('Finding decisions', () => {
 
   it('cancelling the confirmation sends nothing', async () => {
     const user = await openFindings([finding({})]);
-    await user.click(screen.getByRole('button', { name: 'Dismiss finding' }));
+    await user.click(screen.getByRole('button', { name: 'Dismiss high finding: Security' }));
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(posts()).toHaveLength(0);
@@ -496,7 +524,7 @@ describe('Finding decisions', () => {
       'POST /api/goals/goal-1/findings/f1/decision': () =>
         refuse(409, 'A remediation is being integrated.', 'finding_integration_in_progress'),
     });
-    await user.click(screen.getByRole('button', { name: 'Accept finding' }));
+    await user.click(screen.getByRole('button', { name: 'Accept high finding: Security' }));
     await user.click(screen.getByRole('button', { name: 'Confirm accept' }));
     const refused = await screen.findByText(/Not recorded:/);
     expect(refused.textContent).toContain('Finding integration in progress');
@@ -587,7 +615,11 @@ describe('Terminalisation and fail-closed authority (7B.2A.1)', () => {
     const rows = [...document.querySelectorAll('[data-approval-source="goal"]')];
     expect(within(rows[0] as HTMLElement).queryByRole('button')).toBeNull();
     // A row the client believes decidable is still refused by the server; the refusal is shown and nothing else happens.
-    await user.click(within(rows[1] as HTMLElement).getByRole('button', { name: 'Approve' }));
+    await user.click(
+      within(rows[1] as HTMLElement).getByRole('button', {
+        name: 'Approve Goal gate: Each cycle (approval ga-2)',
+      }),
+    );
     const refused = await screen.findByText(/Not recorded:/);
     expect(refused.textContent).toContain('Manual reconciliation required');
     expect(postPaths()).toEqual(['POST /api/goal-approvals/ga-2/decision']);

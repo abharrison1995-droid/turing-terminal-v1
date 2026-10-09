@@ -79,7 +79,7 @@ describe('Goal list', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/Loading/);
     expect(await screen.findByRole('alert')).toHaveTextContent('boom');
     fail = false;
-    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await user.click(screen.getByRole('button', { name: 'Retry loading Grand Projects' }));
     expect(await screen.findByText('Ship the importer')).toBeInTheDocument();
   });
 });
@@ -158,6 +158,54 @@ describe('Goal cockpit', () => {
     expect(card).toHaveAttribute('role', 'alert');
     expect(card).toHaveTextContent('Failed closed');
     expect(within(card).queryByRole('button')).toBeNull();
+  });
+
+  it('uses unique tab panels and roving Arrow/Home/End keyboard navigation without a mutation', async () => {
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/cycles': () => ({ cycles: [], total: 0, limit: 50 }),
+        '/api/goals/goal-1/reviews': () => ({ reviews: [], total: 0, limit: 50 }),
+        '/api/goals/goal-1/findings': () => ({ findings: [], total: 0, limit: 50 }),
+        '/api/goals/goal-1/evidence': () => ({ evidence: [], total: 0, limit: 50 }),
+        '/api/goals/goal-1/definitions': () => ({ definitions: [] }),
+        '/api/goals/goal-1/usage': () => ({ totals: { events: 0 }, byModel: [] }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await screen.findByLabelText('Next action');
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Selected Goal' }));
+
+    const tabs = screen.getAllByRole('tab');
+    const panels = tabs.map((tab) => document.getElementById(tab.getAttribute('aria-controls') ?? ''));
+    expect(new Set(tabs.map((tab) => tab.id)).size).toBe(tabs.length);
+    expect(new Set(panels.map((panel) => panel?.id)).size).toBe(tabs.length);
+    expect(panels.every((panel) => panel !== null)).toBe(true);
+    expect(tabs.filter((tab) => tab.getAttribute('tabindex') === '0')).toHaveLength(1);
+    expect(tabs.find((tab) => tab.getAttribute('aria-selected') === 'true')?.textContent).toBe('Overview');
+    expect(panels[0]?.getAttribute('aria-labelledby')).toBe(tabs[0]?.id);
+
+    const overview = screen.getByRole('tab', { name: 'Overview' });
+    overview.focus();
+    await user.keyboard('{ArrowRight}');
+    const cycles = screen.getByRole('tab', { name: 'Cycles' });
+    expect(document.activeElement).toBe(cycles);
+    expect(cycles.getAttribute('aria-selected')).toBe('true');
+    expect(
+      document.getElementById(cycles.getAttribute('aria-controls') ?? '')?.getAttribute('hidden'),
+    ).toBeNull();
+
+    await user.keyboard('{Home}');
+    expect(document.activeElement).toBe(overview);
+    await user.keyboard('{End}');
+    const usage = screen.getByRole('tab', { name: 'Usage' });
+    expect(document.activeElement).toBe(usage);
+    await user.keyboard('{ArrowRight}');
+    expect(document.activeElement).toBe(overview);
+    await user.keyboard('{ArrowLeft}');
+    expect(document.activeElement).toBe(usage);
+    expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
   });
 
   it('shows final acceptance and final apply as distinct read-only gates with no apply control', async () => {

@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { GOAL_EVENT_TYPES } from '../../shared/goals';
 import { masterApiUrl } from '../desktop';
 import { goalsApi } from './api';
@@ -13,6 +13,7 @@ import { RefreshButton } from './GoalList';
 import { GoalOverview } from './GoalOverview';
 import { UsagePanel } from './GoalUsage';
 import { GoalStatusPill, Resource } from './parts';
+import { humanize } from './presentation';
 import { useLoad } from './useLoad';
 import { GoalMobileCockpit } from './GoalMobileCockpit';
 
@@ -44,6 +45,9 @@ export function GoalCockpit({
   compact?: boolean;
 }) {
   const [tab, setTab] = useState<TabId>('overview');
+  const tabSetId = useId();
+  const tabButtons = useRef<Partial<Record<TabId, HTMLButtonElement | null>>>({});
+  const focusAfterTabChange = useRef<TabId | null>(null);
   // Bumped by Refresh. Only the mounted tab reads it, so a refresh re-reads that tab and nothing unvisited.
   const [generation, setGeneration] = useState(0);
   const bump = useCallback(() => setGeneration((value) => value + 1), []);
@@ -70,8 +74,38 @@ export function GoalCockpit({
   const dirty = useRef(false);
   const [leaving, setLeaving] = useState<null | (() => void)>(null);
   const guard = (proceed: () => void) => (dirty.current ? setLeaving(() => proceed) : proceed());
+  useLayoutEffect(() => {
+    if (focusAfterTabChange.current !== tab) return;
+    tabButtons.current[tab]?.focus();
+    focusAfterTabChange.current = null;
+  }, [tab]);
+  const selectTab = (next: TabId, moveFocus = false) => {
+    if (next === tab) {
+      if (moveFocus) tabButtons.current[next]?.focus();
+      return;
+    }
+    if (moveFocus) focusAfterTabChange.current = next;
+    guard(() => setTab(next));
+  };
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const current = TABS.findIndex(({ id }) => id === tab);
+    let next = current;
+    if (event.key === 'ArrowRight') next = (current + 1) % TABS.length;
+    else if (event.key === 'ArrowLeft') next = (current - 1 + TABS.length) % TABS.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = TABS.length - 1;
+    else return;
+    event.preventDefault();
+    selectTab(TABS[next]!.id, true);
+  };
   return (
-    <div className="goal-cockpit">
+    <div
+      className="goal-cockpit"
+      data-goal-cockpit-focus
+      role="region"
+      aria-label="Selected Goal"
+      tabIndex={-1}
+    >
       {!compact && (
         <div className="goal-cockpit-top">
           <button type="button" className="secondary-button" onClick={() => guard(onBack)}>
@@ -100,11 +134,38 @@ export function GoalCockpit({
                   </div>
                   <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
                 </header>
+                {goal.needsUser && (
+                  <section className="goal-cockpit-attention" aria-label="Needs you">
+                    <strong>Needs you</strong>
+                    <span>
+                      {goal.reasonCode
+                        ? `Reason: ${humanize(goal.reasonCode)}.`
+                        : goal.pendingApprovalCount > 0
+                          ? 'A Goal approval is waiting for your decision.'
+                          : 'Review the current Goal state.'}
+                    </span>
+                  </section>
+                )}
                 <GoalControls goal={goal} onChanged={bump} />
                 {leaving && (
-                  <ConfirmPanel label="Confirm leave" title="Discard unsaved definition changes?">
-                    <p>Your edits to the proposed definition have not been saved and will be lost.</p>
+                  <ConfirmPanel
+                    label="Confirm leave"
+                    title="Discard unsaved definition changes?"
+                    description="Your edits to the proposed definition have not been saved and will be lost."
+                    onCancel={() => {
+                      focusAfterTabChange.current = null;
+                      setLeaving(null);
+                    }}
+                  >
                     <div className="goal-control-buttons">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        data-confirm-safe
+                        onClick={() => setLeaving(null)}
+                      >
+                        Keep editing
+                      </button>
                       <button
                         type="button"
                         className="secondary-button goal-danger"
@@ -117,55 +178,78 @@ export function GoalCockpit({
                       >
                         Discard and leave
                       </button>
-                      <button type="button" className="secondary-button" onClick={() => setLeaving(null)}>
-                        Keep editing
-                      </button>
                     </div>
                   </ConfirmPanel>
                 )}
-                <div className="goal-tabs" role="tablist" aria-label="Goal sections">
+                <div
+                  className="goal-tabs"
+                  role="tablist"
+                  aria-label="Goal sections"
+                  aria-orientation="horizontal"
+                >
                   {TABS.map(({ id, label }) => (
                     <button
                       key={id}
                       type="button"
                       role="tab"
-                      id={`goal-tab-${id}`}
+                      ref={(element) => {
+                        tabButtons.current[id] = element;
+                      }}
+                      id={`${tabSetId}-tab-${id}`}
                       aria-selected={tab === id}
-                      aria-controls="goal-tabpanel"
+                      aria-controls={`${tabSetId}-panel-${id}`}
+                      tabIndex={tab === id ? 0 : -1}
                       className={`goal-tab${tab === id ? ' goal-tab-active' : ''}`}
-                      onClick={() => guard(() => setTab(id))}
+                      onClick={() => selectTab(id)}
+                      onKeyDown={onTabKeyDown}
                     >
                       {label}
                     </button>
                   ))}
                 </div>
-                <div id="goal-tabpanel" role="tabpanel" aria-labelledby={`goal-tab-${tab}`}>
-                  {tab === 'overview' && <GoalOverview goal={goal} refresh={generation} onChanged={bump} />}
-                  {tab === 'cycles' && <CyclesPanel goalId={goal.id} refresh={generation} />}
-                  {tab === 'reviews' && <ReviewsPanel goalId={goal.id} refresh={generation} />}
-                  {tab === 'findings' && (
-                    <FindingsPanel
-                      goalId={goal.id}
-                      refresh={generation}
-                      onDecided={bump}
-                      decisionsEnabled={goalAcceptsDecisions(goal)}
-                    />
-                  )}
-                  {tab === 'evidence' && <EvidencePanel goalId={goal.id} refresh={generation} />}
-                  {tab === 'definitions' && (
-                    <DefinitionsPanel
-                      goal={goal}
-                      refresh={generation}
-                      onChanged={bump}
-                      guard={guard}
-                      onDirty={(value) => {
-                        dirty.current = value;
-                        onUnsavedChange?.(value);
-                      }}
-                    />
-                  )}
-                  {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}
-                </div>
+                {TABS.map(({ id, label }) => (
+                  <div
+                    key={id}
+                    id={`${tabSetId}-panel-${id}`}
+                    role="tabpanel"
+                    aria-labelledby={`${tabSetId}-tab-${id}`}
+                    tabIndex={tab === id ? 0 : -1}
+                    hidden={tab !== id}
+                  >
+                    {tab === id && (
+                      <>
+                        <h2 className="sr-only">{label}</h2>
+                        {tab === 'overview' && (
+                          <GoalOverview goal={goal} refresh={generation} onChanged={bump} />
+                        )}
+                        {tab === 'cycles' && <CyclesPanel goalId={goal.id} refresh={generation} />}
+                        {tab === 'reviews' && <ReviewsPanel goalId={goal.id} refresh={generation} />}
+                        {tab === 'findings' && (
+                          <FindingsPanel
+                            goalId={goal.id}
+                            refresh={generation}
+                            onDecided={bump}
+                            decisionsEnabled={goalAcceptsDecisions(goal)}
+                          />
+                        )}
+                        {tab === 'evidence' && <EvidencePanel goalId={goal.id} refresh={generation} />}
+                        {tab === 'definitions' && (
+                          <DefinitionsPanel
+                            goal={goal}
+                            refresh={generation}
+                            onChanged={bump}
+                            guard={guard}
+                            onDirty={(value) => {
+                              dirty.current = value;
+                              onUnsavedChange?.(value);
+                            }}
+                          />
+                        )}
+                        {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}
+                      </>
+                    )}
+                  </div>
+                ))}
               </>
             )}
           </>

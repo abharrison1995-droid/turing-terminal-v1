@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ProjectProfile } from '../../shared/types';
 import { goalsApi } from './api';
 import { GoalCockpit } from './GoalCockpit';
@@ -35,6 +35,8 @@ export function GoalsPage({
   const [editorDirty, setEditorDirty] = useState(false);
   const [keepDesktopForCompact, setKeepDesktopForCompact] = useState(false);
   const [discardingForCompact, setDiscardingForCompact] = useState(false);
+  const main = useRef<HTMLElement>(null);
+  const pendingFocus = useRef<'compact' | 'list' | 'goal' | null>(null);
   const report = useRef(onUnsavedChange);
   report.current = onUnsavedChange;
   const dirty = formDirty || editorDirty;
@@ -51,6 +53,24 @@ export function GoalsPage({
   const compactTransitionBlocked = viewportCompact && dirty && !discardingForCompact;
   const showCompactConfirmation =
     compactTransitionBlocked && !keepDesktopForCompact && !navigationGuardActive;
+  useLayoutEffect(() => {
+    const intent = pendingFocus.current;
+    if (intent === 'compact' && !effectiveCompact) return;
+    if (intent === 'list' && (selected !== null || creating)) return;
+    if (intent === 'goal' && selected === null) return;
+    if (!intent) return;
+    const target =
+      intent === 'list'
+        ? (main.current?.querySelector<HTMLElement>('.goal-row') ??
+          main.current?.querySelector<HTMLElement>('[data-goal-list-heading]'))
+        : intent === 'compact'
+          ? main.current?.querySelector<HTMLElement>('[data-compact-focus-target]')
+          : main.current?.querySelector<HTMLElement>('[data-goal-cockpit-focus]');
+    if (target) {
+      target.focus();
+      pendingFocus.current = null;
+    }
+  }, [creating, effectiveCompact, list.result.state, selected]);
   useEffect(() => {
     if (!viewportCompact || !dirty) {
       setKeepDesktopForCompact(false);
@@ -61,28 +81,42 @@ export function GoalsPage({
     if (effectiveCompact && creating) setCreating(false);
   }, [effectiveCompact, creating]);
   return (
-    <main className={`page-content goals-page${effectiveCompact ? ' goals-page-compact' : ''}`}>
+    <main
+      ref={main}
+      className={`page-content goals-page${effectiveCompact ? ' goals-page-compact' : ''}`}
+      tabIndex={-1}
+    >
       {showCompactConfirmation && (
-        <ConfirmPanel label="Confirm switch to phone view" title="Switch to phone view?">
-          <p>
-            {editorDirty
+        <ConfirmPanel
+          label="Confirm switch to phone view"
+          title="Switch to phone view?"
+          description={
+            editorDirty
               ? 'The phone Goal cockpit does not include definition editing. Your unsaved definition changes would be discarded.'
-              : 'Grand Project creation is desktop-only. Your unsaved draft form would be discarded.'}
-          </p>
+              : 'Grand Project creation is desktop-only. Your unsaved draft form would be discarded.'
+          }
+          onCancel={() => setKeepDesktopForCompact(true)}
+        >
           <div className="goal-control-buttons">
+            <button
+              type="button"
+              className="secondary-button"
+              data-confirm-safe
+              onClick={() => setKeepDesktopForCompact(true)}
+            >
+              Keep editing
+            </button>
             <button
               type="button"
               className="secondary-button goal-danger"
               onClick={() => {
                 setKeepDesktopForCompact(false);
+                pendingFocus.current = 'compact';
                 setDiscardingForCompact(true);
                 setCreating(false);
               }}
             >
               Discard and switch to phone view
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setKeepDesktopForCompact(true)}>
-              Keep editing
             </button>
           </div>
         </ConfirmPanel>
@@ -90,7 +124,9 @@ export function GoalsPage({
       {(!effectiveCompact || selected === null) && (
         <div className="page-heading">
           <div>
-            <h1>Grand Projects</h1>
+            <h1 data-goal-list-heading data-compact-focus-target tabIndex={-1}>
+              Grand Projects
+            </h1>
             <p>
               {effectiveCompact
                 ? 'Track Goal progress, review approvals and use the bounded pause or resume controls.'
@@ -112,7 +148,10 @@ export function GoalsPage({
       {creating && !effectiveCompact ? (
         <NewGoal
           projects={projects}
-          onCancel={() => setCreating(false)}
+          onCancel={() => {
+            pendingFocus.current = 'list';
+            setCreating(false);
+          }}
           onOpenProjects={onOpenProjects}
           onUnsavedChange={setFormDirty}
           onCreated={(goalId) => {
@@ -131,7 +170,10 @@ export function GoalsPage({
           <GoalList
             result={list.result}
             onRetry={list.reload}
-            onSelect={setSelected}
+            onSelect={(goalId) => {
+              pendingFocus.current = 'goal';
+              setSelected(goalId);
+            }}
             compact={effectiveCompact}
           />
         </>
@@ -141,6 +183,7 @@ export function GoalsPage({
           compact={effectiveCompact}
           onUnsavedChange={setEditorDirty}
           onBack={() => {
+            pendingFocus.current = 'list';
             setSelected(null);
             list.reload();
           }}

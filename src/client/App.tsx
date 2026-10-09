@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -280,6 +280,32 @@ function App() {
   // Unsaved Goal definition work (a boolean reported by the Goals page; the text never leaves it).
   const [goalsUnsaved, setGoalsUnsaved] = useState(false);
   const [queuedNav, setQueuedNav] = useState<{ next: Page; then?: () => void } | null>(null);
+  const navGuardId = useId();
+  const navGuard = useRef<HTMLDivElement>(null);
+  const navGuardTrigger = useRef<HTMLElement | null>(null);
+  const navGuardCancelled = useRef(false);
+  const focusNextPageHeading = useRef(false);
+  useLayoutEffect(() => {
+    if (!queuedNav) return;
+    navGuardCancelled.current = false;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !navGuard.current?.contains(active)) {
+      navGuardTrigger.current = active;
+    }
+    navGuard.current?.querySelector<HTMLElement>('[data-confirm-safe]')?.focus();
+    return () => {
+      if (navGuardCancelled.current && navGuardTrigger.current?.isConnected) navGuardTrigger.current.focus();
+    };
+  }, [queuedNav]);
+  useLayoutEffect(() => {
+    if (!focusNextPageHeading.current) return;
+    const heading = document.querySelector<HTMLElement>('.app-main h1');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+    focusNextPageHeading.current = false;
+  }, [page]);
   /**
    * Every shell navigation that can leave Goals goes through here. Destination side effects (`then`) run only once the
    * navigation is actually accepted, so cancelling leaves the app exactly where it was.
@@ -326,16 +352,55 @@ function App() {
       {queuedNav && (
         <div className="nav-guard-backdrop">
           <div
+            ref={navGuard}
             className="goal-confirm nav-guard"
             role="alertdialog"
-            aria-label="Confirm leave Grand Projects"
+            aria-modal="true"
+            aria-labelledby={`${navGuardId}-title`}
+            aria-describedby={`${navGuardId}-description`}
+            tabIndex={-1}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                navGuardCancelled.current = true;
+                setQueuedNav(null);
+                return;
+              }
+              if (event.key !== 'Tab') return;
+              const focusable = navGuard.current?.querySelectorAll<HTMLElement>('button:not(:disabled)');
+              if (!focusable?.length) return;
+              const first = focusable[0]!;
+              const last = focusable[focusable.length - 1]!;
+              const focusIsInside = navGuard.current?.contains(document.activeElement) ?? false;
+              if (!focusIsInside) {
+                event.preventDefault();
+                (event.shiftKey ? last : first).focus();
+              } else if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+              }
+            }}
           >
-            <strong>Discard unsaved Grand Project changes?</strong>
-            <p>
+            <h2 id={`${navGuardId}-title`}>Discard unsaved Grand Project changes?</h2>
+            <p id={`${navGuardId}-description`}>
               You have definition text that has not been saved. Leaving Grand Projects will discard those
               local changes.
             </p>
             <div className="goal-control-buttons">
+              <button
+                type="button"
+                className="secondary-button"
+                data-confirm-safe
+                onClick={() => {
+                  navGuardCancelled.current = true;
+                  setQueuedNav(null);
+                }}
+              >
+                Keep editing
+              </button>
               <button
                 type="button"
                 className="secondary-button goal-danger"
@@ -343,14 +408,12 @@ function App() {
                   const { next, then } = queuedNav;
                   setQueuedNav(null);
                   setGoalsUnsaved(false);
+                  focusNextPageHeading.current = true;
                   then?.();
                   changePage(next);
                 }}
               >
                 Discard and leave
-              </button>
-              <button type="button" className="secondary-button" onClick={() => setQueuedNav(null)}>
-                Keep editing
               </button>
             </div>
           </div>

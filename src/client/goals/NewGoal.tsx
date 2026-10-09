@@ -86,7 +86,7 @@ export function NewGoal({
   }
 
   return (
-    <section className="surface-panel goal-new" aria-label="New Grand Project">
+    <section className="surface-panel goal-new" aria-label="New Grand Project" aria-busy={busy}>
       <h2>New Grand Project</h2>
       <p className="goal-row-meta">
         This creates a draft with a proposed definition. Nothing starts, no model is called and your branch is
@@ -150,6 +150,7 @@ export function NewGoal({
           className="primary-button"
           data-action="create-goal"
           disabled={busy}
+          aria-busy={busy}
           onClick={() => void create()}
         >
           {busy ? 'Creating…' : 'Create draft'}
@@ -164,14 +165,23 @@ export function NewGoal({
         </button>
       </div>
       {confirmCancel && (
-        <ConfirmPanel label="Confirm discard new Grand Project" title="Discard this draft form?">
-          <p>Nothing has been created. What you typed will be lost.</p>
+        <ConfirmPanel
+          label="Confirm discard new Grand Project"
+          title="Discard this draft form?"
+          description="Nothing has been created. What you typed will be lost."
+          onCancel={() => setConfirmCancel(false)}
+        >
           <div className="goal-control-buttons">
+            <button
+              type="button"
+              className="secondary-button"
+              data-confirm-safe
+              onClick={() => setConfirmCancel(false)}
+            >
+              Keep editing
+            </button>
             <button type="button" className="secondary-button goal-danger" onClick={onCancel}>
               Discard
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setConfirmCancel(false)}>
-              Keep editing
             </button>
           </div>
         </ConfirmPanel>

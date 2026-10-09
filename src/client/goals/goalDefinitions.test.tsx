@@ -234,8 +234,10 @@ describe('Definition editor (7B.2B)', () => {
     edit(JSON.stringify(OK_DOC('compact')));
     await user.click(screen.getByRole('button', { name: 'Format JSON' }));
     expect(editor().value).toContain('\n  "contract"');
-    await user.click(screen.getByRole('button', { name: 'Reset to persisted' }));
+    const resetTrigger = screen.getByRole('button', { name: 'Reset to persisted' });
+    await user.click(resetTrigger);
     await user.click(screen.getByRole('button', { name: 'Discard edits' }));
+    expect(document.activeElement).toBe(resetTrigger);
     expect(editor().value).toBe(original);
     expect(screen.getByText('No unsaved changes')).toBeTruthy();
     expect(posts()).toEqual([]);
@@ -296,7 +298,7 @@ describe('Definition editor (7B.2B)', () => {
     const approve = screen.getByRole('button', { name: /Approve definition v1/ });
     expect(approve.hasAttribute('disabled')).toBe(true);
     await user.click(approve);
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm approve definition' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: /^Approve v\d+ of/ })).toBeNull();
     expect(screen.getByText(/Save your changes before approving/)).toBeTruthy();
     expect(posts()).toEqual([]);
   });
@@ -334,7 +336,9 @@ describe('Definition editor (7B.2B)', () => {
     await screen.findByLabelText('Definition JSON');
     edit(JSON.stringify(OK_DOC('unsaved')));
     await user.click(screen.getByRole('button', { name: /^v1/ }));
-    expect(await screen.findByRole('alertdialog', { name: 'Confirm leave' })).toBeTruthy();
+    expect(
+      await screen.findByRole('alertdialog', { name: 'Discard unsaved definition changes?' }),
+    ).toBeTruthy();
     expect(screen.getByLabelText('Definition JSON')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect(editor().value).toContain('unsaved');
@@ -428,7 +432,7 @@ describe('Definition approval and rejection (7B.2B)', () => {
     await screen.findByLabelText('Definition JSON');
     await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
     expect(posts()).toEqual([]);
-    const dialog = await screen.findByRole('alertdialog', { name: 'Confirm approve definition' });
+    const dialog = await screen.findByRole('alertdialog', { name: /^Approve v\d+ of/ });
     expect(dialog.textContent).toContain('Initial definition');
     expect(dialog.textContent).toContain('immutable and current');
     expect(dialog.textContent).toContain('hash10000000'.slice(0, 5));
@@ -498,17 +502,17 @@ describe('Definition approval and rejection (7B.2B)', () => {
     });
     await screen.findByLabelText('Definition JSON');
     await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
-    expect(
-      (await screen.findByRole('alertdialog', { name: 'Confirm approve definition' })).textContent,
-    ).toContain('hash100000');
+    expect((await screen.findByRole('alertdialog', { name: /^Approve v\d+ of/ })).textContent).toContain(
+      'hash100000',
+    );
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     edit(JSON.stringify(OK_DOC('beta')));
     await user.click(screen.getByRole('button', { name: 'Save proposed definition' }));
     await waitFor(() => expect(persistedHash()).toBe('beta000000'));
     // No stale confirmation survived the Save; a new one binds to the new hash and the approve body carries no hash.
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm approve definition' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: /^Approve v\d+ of/ })).toBeNull();
     await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Confirm approve definition' });
+    const dialog = await screen.findByRole('alertdialog', { name: /^Approve v\d+ of/ });
     expect(dialog.textContent).toContain('beta000000');
     expect(dialog.textContent).not.toContain('hash100000');
     expect(paths()).toEqual(['PUT /api/goals/goal-1/definitions/1']);
@@ -522,12 +526,10 @@ describe('Definition approval and rejection (7B.2B)', () => {
     const user = await openDefinitions(world);
     await screen.findByLabelText('Definition JSON');
     await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
-    await screen.findByRole('alertdialog', { name: 'Confirm approve definition' });
+    await screen.findByRole('alertdialog', { name: /^Approve v\d+ of/ });
     world.defs = [proposed(1, { definitionHash: 'moved0000000' })];
     await user.click(screen.getByRole('button', { name: 'Refresh' }));
-    await waitFor(() =>
-      expect(screen.queryByRole('alertdialog', { name: 'Confirm approve definition' })).toBeNull(),
-    );
+    await waitFor(() => expect(screen.queryByRole('alertdialog', { name: /^Approve v\d+ of/ })).toBeNull());
     expect(posts()).toEqual([]);
   });
 
@@ -549,7 +551,7 @@ describe('Definition approval and rejection (7B.2B)', () => {
     await screen.findByLabelText('Definition JSON');
     await user.click(screen.getByRole('button', { name: 'Reject proposed definition' }));
     expect(posts()).toEqual([]);
-    const dialog = await screen.findByRole('alertdialog', { name: 'Confirm reject definition' });
+    const dialog = await screen.findByRole('alertdialog', { name: /^Reject proposed definition v/ });
     expect(dialog.textContent).toContain('does not delete or abandon the Goal');
     await user.click(within(dialog).getByRole('button', { name: 'Reject proposal' }));
     await waitFor(() => expect(paths()).toEqual(['POST /api/goals/goal-1/definitions/2/reject']));
@@ -581,7 +583,7 @@ describe('Definition approval and rejection (7B.2B)', () => {
     await screen.findByLabelText('Definition JSON');
     await user.click(screen.getByRole('button', { name: 'Reject proposed definition' }));
     expect(
-      (await screen.findByRole('alertdialog', { name: 'Confirm reject definition' })).textContent,
+      (await screen.findByRole('alertdialog', { name: /^Reject proposed definition v/ })).textContent,
     ).toContain('until you explicitly resume');
     await user.click(screen.getByRole('button', { name: 'Reject proposal' }));
     await waitFor(() =>
@@ -611,7 +613,7 @@ describe('Revision, amendment and resume (7B.2B)', () => {
     await user.click(await screen.findByRole('button', { name: 'Revise Goal' }));
     expect(posts()).toEqual([]);
     expect(
-      (await screen.findByRole('alertdialog', { name: 'Confirm begin revision' })).textContent,
+      (await screen.findByRole('alertdialog', { name: /^Begin (an amendment|a revision)\?/ })).textContent,
     ).toContain('returns to draft');
     await user.type(screen.getByLabelText('Change summary (optional)'), 'more');
     await user.click(screen.getByRole('button', { name: 'Begin revision' }));
@@ -649,7 +651,7 @@ describe('Revision, amendment and resume (7B.2B)', () => {
       );
       await user.click(await screen.findByRole('button', { name: 'Revise Goal' }));
       expect(
-        (await screen.findByRole('alertdialog', { name: 'Confirm begin revision' })).textContent,
+        (await screen.findByRole('alertdialog', { name: /^Begin (an amendment|a revision)\?/ })).textContent,
       ).toContain('nothing resumes automatically');
       await user.click(screen.getByRole('button', { name: 'Begin amendment' }));
       await screen.findByLabelText('Edit proposed definition v2');
@@ -976,12 +978,12 @@ describe('Invalid stored definitions, optimistic concurrency and If-Match (7B.2B
     await user.click(await screen.findByRole('button', { name: 'Confirm approval' }));
     await screen.findByText(/Not done:/);
     await waitFor(() => expect(persistedHash()).toBe('other00000'));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm approve definition' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: /^Approve v\d+ of/ })).toBeNull();
     expect(paths()).toEqual(['POST /api/goals/goal-1/definitions/1/approve']);
     await user.click(screen.getByRole('button', { name: /Approve definition v1/ }));
-    expect(
-      (await screen.findByRole('alertdialog', { name: 'Confirm approve definition' })).textContent,
-    ).toContain('other00000');
+    expect((await screen.findByRole('alertdialog', { name: /^Approve v\d+ of/ })).textContent).toContain(
+      'other00000',
+    );
     expect(posts()).toHaveLength(1);
   });
 
@@ -998,7 +1000,7 @@ describe('Invalid stored definitions, optimistic concurrency and If-Match (7B.2B
     await user.click(await screen.findByRole('button', { name: 'Reject proposal' }));
     await screen.findByText(/Not done:/);
     await waitFor(() => expect(persistedHash()).toBe('other00000'));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm reject definition' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: /^Reject proposed definition v/ })).toBeNull();
     expect(screen.getByLabelText('Edit proposed definition v1')).toBeTruthy();
     expect(paths()).toEqual(['POST /api/goals/goal-1/definitions/1/reject']);
   });

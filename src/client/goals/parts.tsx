@@ -28,17 +28,22 @@ export function Resource<T>({
   if (result.state === 'loading')
     return (
       <div className="goal-state" role="status">
-        <LoaderCircle size={16} className="spin" /> Loading {label}…
+        <LoaderCircle size={16} className="spin" aria-hidden="true" /> Loading {label}…
       </div>
     );
   if (result.state === 'error')
     return (
       <div className="form-error goal-state" role="alert">
-        <AlertTriangle size={15} />
+        <AlertTriangle size={15} aria-hidden="true" />
         <span>
           {label} could not be loaded: {result.message}
         </span>
-        <button type="button" className="secondary-button" onClick={onRetry}>
+        <button
+          type="button"
+          className="secondary-button"
+          aria-label={`Retry loading ${label}`}
+          onClick={onRetry}
+        >
           Retry
         </button>
       </div>

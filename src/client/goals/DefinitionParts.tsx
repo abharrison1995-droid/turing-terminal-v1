@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import type { GoalDefinitionValidation, GoalValidationIssue } from '../../shared/goalApi';
 import { definitionRefusalText, refusalIssues, type Refusal } from './refusal';
 
@@ -62,15 +62,63 @@ export function RefusalAlert({ refusal, prefix = 'Not done' }: { refusal: Refusa
 export function ConfirmPanel({
   label,
   title,
+  description,
+  onCancel,
+  busy = false,
   children,
 }: {
   label: string;
   title: string;
+  description: string;
+  onCancel: () => void;
+  busy?: boolean;
   children: ReactNode;
 }) {
+  const id = useId();
+  const root = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLElement | null>(null);
+  const restoreTrigger = useRef(false);
+  const cancel = useRef(onCancel);
+  cancel.current = onCancel;
+
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !root.current?.contains(active)) trigger.current = active;
+    const safeAction = root.current?.querySelector<HTMLElement>('[data-confirm-safe]:not(:disabled)');
+    (safeAction ?? root.current)?.focus();
+    return () => {
+      if (restoreTrigger.current && trigger.current?.isConnected) trigger.current.focus();
+    };
+  }, []);
+
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Escape' || busy) return;
+    event.preventDefault();
+    event.stopPropagation();
+    restoreTrigger.current = true;
+    cancel.current();
+  };
+  const onClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-confirm-safe], [data-confirm-restore-trigger]')) {
+      restoreTrigger.current = true;
+    }
+  };
+
   return (
-    <div className="goal-confirm" role="alertdialog" aria-label={label}>
-      <strong>{title}</strong>
+    <div
+      ref={root}
+      className="goal-confirm"
+      role="alertdialog"
+      aria-labelledby={`${id}-title`}
+      aria-describedby={`${id}-description`}
+      data-confirm-label={label}
+      tabIndex={-1}
+      onKeyDown={onKeyDown}
+      onClickCapture={onClickCapture}
+    >
+      <h2 id={`${id}-title`}>{title}</h2>
+      <p id={`${id}-description`}>{description}</p>
       {children}
     </div>
   );

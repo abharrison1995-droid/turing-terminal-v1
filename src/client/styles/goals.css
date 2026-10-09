@@ -20,7 +20,7 @@
 }
 .goal-row {
   display: grid;
-  grid-template-columns: minmax(0, 2fr) auto minmax(0, 1.2fr) minmax(0, 1.2fr);
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1.1fr);
   gap: var(--s-4);
   align-items: center;
   width: 100%;
@@ -42,14 +42,16 @@
   outline-offset: 2px;
 }
 .goal-row-attention {
-  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
 }
 .goal-row-main,
 .goal-row-state,
-.goal-row-next {
+.goal-row-next,
+.goal-row-side {
   display: grid;
   gap: 2px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .goal-row-meta {
   color: var(--ink-3);
@@ -57,8 +59,7 @@
   line-height: var(--lh-meta);
 }
 .goal-row-side {
-  display: grid;
-  gap: 2px;
+  align-content: center;
 }
 .goal-eyebrow {
   display: block;
@@ -68,16 +69,23 @@
   text-transform: uppercase;
 }
 .goal-needs-you {
-  color: var(--accent-ink);
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0 var(--s-2);
+  color: var(--amber);
+  background: var(--amber-wash);
+  border-radius: var(--r-pill);
   font-size: var(--fs-meta);
   font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
 }
 .goal-pill-reason {
-  opacity: 0.8;
+  font-weight: var(--fw-regular);
 }
 .goal-tone-active {
   color: var(--info);
-  background: #e0ebf7;
+  background: var(--info-wash);
 }
 .goal-tone-wait,
 .goal-tone-attention {
@@ -105,6 +113,10 @@
   margin: 0;
   color: var(--ink-3);
 }
+.goal-state {
+  min-width: 0;
+  flex-wrap: wrap;
+}
 .goal-note {
   margin: 0 0 var(--s-2);
   color: var(--ink-3);
@@ -118,12 +130,35 @@
 .goal-cockpit-top,
 .goal-cockpit-head {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--s-3);
   align-items: center;
   justify-content: space-between;
 }
 .goal-cockpit-head h2 {
   margin: 0;
+}
+.goal-cockpit-head > div {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-cockpit-head h2 {
+  overflow-wrap: anywhere;
+}
+.goal-cockpit-head > .goal-tone {
+  flex: 0 1 auto;
+}
+.goal-cockpit-attention {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: baseline;
+  padding: var(--s-3) var(--s-4);
+  color: var(--amber);
+  background: var(--amber-wash);
+  border-radius: var(--r-md);
+  overflow-wrap: anywhere;
 }
 
 .goal-mobile-cockpit {
@@ -132,7 +167,7 @@
   min-width: 0;
 }
 .goal-mobile-top > button {
-  min-height: 44px;
+  min-height: var(--h-touch);
 }
 .goal-mobile-heading {
   display: grid;
@@ -159,6 +194,7 @@
   color: var(--ink);
   background: var(--amber-wash);
   border-radius: var(--r-md);
+  overflow-wrap: anywhere;
 }
 .goal-mobile-desktop-note {
   margin: 0;
@@ -195,10 +231,12 @@
 .goal-tabs {
   display: flex;
   flex-wrap: wrap;
+  min-width: 0;
   gap: var(--s-1);
   border-bottom: 1px solid var(--hairline);
 }
 .goal-tab {
+  min-width: 0;
   padding: var(--s-2) var(--s-3);
   color: var(--ink-3);
   background: none;
@@ -225,11 +263,15 @@
   border: 1px solid var(--hairline);
   border-radius: var(--r-md);
 }
+.goal-next > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .goal-next p {
   margin: 2px 0 0;
 }
 .goal-next-failclosed {
-  border: 2px solid var(--red);
+  border: 1px solid var(--red-line);
 }
 .goal-facts {
   display: grid;
@@ -255,7 +297,7 @@
   border-radius: var(--r-sm);
 }
 .goal-evidence-current {
-  border-left: 3px solid var(--green);
+  background: var(--green-wash);
 }
 .goal-evidence-stale {
   background: var(--amber-wash);
@@ -288,6 +330,7 @@
   background: var(--selected);
 }
 .goal-debug pre {
+  max-width: 100%;
   overflow: auto;
   max-height: 240px;
   font-family: var(--font-mono);
@@ -296,6 +339,7 @@
 .goal-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 .goal-table th,
 .goal-table td {
@@ -303,10 +347,19 @@
   text-align: left;
   border-bottom: 1px solid var(--hairline);
 }
-@media (max-width: 900px) {
+@media (max-width: 1024px) {
   .goal-row {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.goals-page :is(p, li, dd, strong, code, .goal-row-meta, .approval-reason) {
+  overflow-wrap: anywhere;
+}
+.goal-tone {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 640px) {
@@ -346,8 +399,8 @@
   }
   .goal-mobile-cockpit .goal-control-buttons > button,
   .goal-mobile-cockpit .approval-actions > button {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--h-touch);
+    min-height: var(--h-touch);
   }
   .goal-mobile-cockpit .goal-control-buttons {
     gap: var(--s-2);
@@ -414,6 +467,12 @@
   border: 1px solid var(--amber);
   border-radius: var(--r-sm);
 }
+.goal-confirm h2 {
+  margin: 0;
+  font-size: var(--fs-section);
+  line-height: var(--lh-section);
+  overflow-wrap: anywhere;
+}
 .goal-confirm label {
   display: grid;
   gap: var(--s-1);
@@ -443,7 +502,14 @@
 .goal-controls button,
 .goal-confirm button {
   max-width: 100%;
+  min-width: 0;
   overflow-wrap: anywhere;
+  white-space: normal;
+}
+.goal-controls[aria-busy='true'],
+.goal-workbench[aria-busy='true'],
+.goal-new[aria-busy='true'] {
+  cursor: progress;
 }
 
 /* Stage 7B.2B: definition authority (create, edit, approve, reject, revise). */
@@ -481,6 +547,8 @@
   overflow-wrap: anywhere;
 }
 .goal-diff {
+  width: 100%;
+  max-width: 100%;
   max-height: 24rem;
   margin: 0;
   padding: var(--s-2);
@@ -515,10 +583,36 @@
   z-index: 100;
   display: grid;
   place-items: center;
-  padding: var(--s-4);
-  background: rgb(0 0 0 / 0.35);
+  padding: calc(var(--s-4) + env(safe-area-inset-top)) var(--s-4)
+    calc(var(--s-4) + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background: var(--scrim);
 }
 .nav-guard {
   width: min(32rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
   background: var(--surface);
+}
+
+@media (max-width: 680px) {
+  .goal-row,
+  .goal-tab,
+  .goal-version,
+  .goal-control-buttons > button,
+  .approval-actions > button {
+    min-height: var(--h-touch);
+  }
+  .goal-row {
+    width: 100%;
+  }
+  .goal-cockpit-head {
+    align-items: flex-start;
+  }
+  .goal-cockpit-head > .goal-tone {
+    flex-basis: auto;
+  }
+  .goal-confirm {
+    max-width: 100%;
+  }
 }

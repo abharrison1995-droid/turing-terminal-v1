@@ -2,6 +2,7 @@
 
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardSnapshot } from '../shared/types';
 import { calls, definitionFull, detail, item, openGoal, posts, serve, type Routes } from './goals/testKit';
@@ -99,10 +100,18 @@ function proposedRoutes(): Routes {
   };
 }
 
-async function openDirtyEditor() {
+async function openDirtyEditor(strict = false) {
   serve(proposedRoutes());
   const user = userEvent.setup();
-  render(<App />);
+  render(
+    strict ? (
+      <StrictMode>
+        <App />
+      </StrictMode>
+    ) : (
+      <App />
+    ),
+  );
   await screen.findByRole('heading', { name: 'What should the agents do?' });
   await user.click(nav().getByRole('button', { name: 'Grand Projects' }));
   await openGoal(user);
@@ -116,13 +125,13 @@ async function openDirtyEditor() {
 
 describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
   it('a dirty proposal editor blocks sidebar navigation; Keep editing retains page and text', async () => {
-    const user = await openDirtyEditor();
+    const user = await openDirtyEditor(true);
     await user.click(nav().getByRole('button', { name: 'Projects' }));
-    const dialog = await screen.findByRole('alertdialog', { name: 'Confirm leave Grand Projects' });
+    const dialog = await screen.findByRole('alertdialog', { name: 'Discard unsaved Grand Project changes?' });
     expect(dialog.textContent).toContain(guardTitle);
     expect(screen.queryByRole('heading', { name: 'Projects' })).toBeNull();
     await user.click(within(dialog).getByRole('button', { name: 'Keep editing' }));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm leave Grand Projects' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Discard unsaved Grand Project changes?' })).toBeNull();
     expect((screen.getByLabelText('Definition JSON') as HTMLTextAreaElement).value).toBe(
       '{"typed": "unsaved"}',
     );
@@ -134,7 +143,26 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     await user.click(nav().getByRole('button', { name: 'Projects' }));
     await user.click(await screen.findByRole('button', { name: 'Discard and leave' }));
     expect(await screen.findByRole('heading', { name: 'Projects' })).toBeTruthy();
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm leave Grand Projects' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Discard unsaved Grand Project changes?' })).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
+  it('the leave alertdialog names its title, focuses the safe action, traps Tab, and Escape restores focus', async () => {
+    const user = await openDirtyEditor(true);
+    const trigger = nav().getByRole('button', { name: 'Projects' });
+    await user.click(trigger);
+    const dialog = await screen.findByRole('alertdialog', { name: guardTitle });
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.getAttribute('aria-labelledby')).toBe(dialog.querySelector('h2')?.id);
+    expect(dialog.getAttribute('aria-describedby')).toBe(dialog.querySelector('p')?.id);
+    const keep = within(dialog).getByRole('button', { name: 'Keep editing' });
+    const discard = within(dialog).getByRole('button', { name: 'Discard and leave' });
+    expect(document.activeElement).toBe(keep);
+    await user.keyboard('{Shift>}{Tab}{/Shift}');
+    expect(document.activeElement).toBe(discard);
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('alertdialog', { name: guardTitle })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
     expect(posts()).toEqual([]);
   });
 
@@ -160,7 +188,7 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     await user.click(await screen.findByRole('button', { name: /New Grand Project/ }));
     await user.type(await screen.findByLabelText('Title'), 'half typed');
     await user.click(nav().getByRole('button', { name: 'Projects' }));
-    await screen.findByRole('alertdialog', { name: 'Confirm leave Grand Projects' });
+    await screen.findByRole('alertdialog', { name: 'Discard unsaved Grand Project changes?' });
     await user.click(screen.getByRole('button', { name: 'Keep editing' }));
     expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('half typed');
     await user.click(nav().getByRole('button', { name: 'Projects' }));

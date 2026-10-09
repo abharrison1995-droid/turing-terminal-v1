@@ -56,7 +56,9 @@ export function GoalMobileCockpit({
 
       <header className="goal-mobile-heading">
         <div className="goal-mobile-title">
-          <h1>{goal.title}</h1>
+          <h1 data-compact-focus-target tabIndex={-1}>
+            {goal.title}
+          </h1>
           <p>{goal.projectName}</p>
         </div>
         <GoalStatusPill status={goal.status} reason={goal.reasonCode} />

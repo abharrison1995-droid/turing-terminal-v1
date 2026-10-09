@@ -232,10 +232,10 @@ describe('phone Goal cockpit', () => {
     const user = userEvent.setup();
     render(<GoalsPage />);
     await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
-    await screen.findByRole('button', { name: 'Approve once' });
-    await user.click(screen.getByRole('button', { name: 'Approve once' }));
+    await screen.findByRole('button', { name: 'Approve Run action: git push for run run-1' });
+    await user.click(screen.getByRole('button', { name: 'Approve Run action: git push for run run-1' }));
     await waitFor(() => expect(posts()).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: 'Approve' }));
+    await user.click(screen.getByRole('button', { name: 'Approve Goal gate: Each cycle (approval ga-1)' }));
     await waitFor(() => expect(posts()).toHaveLength(2));
     expect(posts().map((call) => call.path)).toEqual([
       '/api/approvals/ra-1/decision',
@@ -483,23 +483,23 @@ describe('responsive Goal authoring transitions', () => {
     await screen.findByText('Unsaved changes');
 
     act(() => viewport.dispatch(true));
-    const firstPrompt = await screen.findByRole('alertdialog', { name: 'Confirm switch to phone view' });
+    const firstPrompt = await screen.findByRole('alertdialog', { name: 'Switch to phone view?' });
     expect((screen.getByLabelText('Definition JSON') as HTMLTextAreaElement).value).toBe(unsaved);
     expect(document.querySelector('.goal-mobile-cockpit')).toBeNull();
     expect(document.querySelector('.goals-page-compact')).toBeNull();
     expect(posts()).toEqual([]);
     await user.click(within(firstPrompt).getByRole('button', { name: 'Keep editing' }));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Switch to phone view?' })).toBeNull();
     expect((screen.getByLabelText('Definition JSON') as HTMLTextAreaElement).value).toBe(unsaved);
     expect(document.querySelector('.goal-mobile-cockpit')).toBeNull();
     expect(posts()).toEqual([]);
 
     act(() => viewport.dispatch(false));
     await waitFor(() =>
-      expect(screen.queryByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeNull(),
+      expect(screen.queryByRole('alertdialog', { name: 'Switch to phone view?' })).toBeNull(),
     );
     act(() => viewport.dispatch(true));
-    const secondPrompt = await screen.findByRole('alertdialog', { name: 'Confirm switch to phone view' });
+    const secondPrompt = await screen.findByRole('alertdialog', { name: 'Switch to phone view?' });
     await user.click(within(secondPrompt).getByRole('button', { name: 'Discard and switch to phone view' }));
     await waitFor(() => expect(document.querySelector('.goal-mobile-cockpit')).not.toBeNull());
     expect(screen.queryByLabelText('Definition JSON')).toBeNull();
@@ -508,7 +508,7 @@ describe('responsive Goal authoring transitions', () => {
 
     act(() => viewport.dispatch(false));
     await screen.findByRole('tab', { name: 'Definitions' });
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Switch to phone view?' })).toBeNull();
     expect(((await screen.findByLabelText('Definition JSON')) as HTMLTextAreaElement).value).not.toBe(
       unsaved,
     );
@@ -527,7 +527,7 @@ describe('responsive Goal authoring transitions', () => {
     fireEvent.change(screen.getByLabelText('Definition JSON'), { target: { value: draft } });
 
     act(() => viewport.dispatch(true));
-    const prompt = await screen.findByRole('alertdialog', { name: 'Confirm switch to phone view' });
+    const prompt = await screen.findByRole('alertdialog', { name: 'Switch to phone view?' });
     expect((screen.getByLabelText('Title') as HTMLInputElement).value).toBe('Keep this draft');
     expect((screen.getByLabelText('Definition JSON') as HTMLTextAreaElement).value).toBe(draft);
     expect(document.querySelector('.goal-mobile-cockpit')).toBeNull();
@@ -538,7 +538,7 @@ describe('responsive Goal authoring transitions', () => {
 
     act(() => viewport.dispatch(false));
     act(() => viewport.dispatch(true));
-    const discardPrompt = await screen.findByRole('alertdialog', { name: 'Confirm switch to phone view' });
+    const discardPrompt = await screen.findByRole('alertdialog', { name: 'Switch to phone view?' });
     await user.click(within(discardPrompt).getByRole('button', { name: 'Discard and switch to phone view' }));
     await screen.findByText('No Grand Projects yet. Create a definition from the desktop interface.');
     expect(screen.queryByRole('region', { name: 'New Grand Project' })).toBeNull();
@@ -559,7 +559,7 @@ describe('responsive Goal authoring transitions', () => {
 
     act(() => viewport.dispatch(true));
     await screen.findByText('No Grand Projects yet. Create a definition from the desktop interface.');
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Switch to phone view?' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'New Grand Project' })).toBeNull();
     expect(document.querySelector('.goals-page-compact')).not.toBeNull();
     expect(posts()).toEqual([]);
@@ -590,10 +590,10 @@ describe('responsive Goal authoring transitions', () => {
     });
     await screen.findByText('Unsaved changes');
     act(() => viewport.dispatch(true));
-    expect(screen.queryByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeNull();
+    expect(screen.queryByRole('alertdialog', { name: 'Switch to phone view?' })).toBeNull();
     expect(screen.getByLabelText('Definition JSON')).toBeTruthy();
     view.rerender(<GoalsPage navigationGuardActive={false} />);
-    expect(await screen.findByRole('alertdialog', { name: 'Confirm switch to phone view' })).toBeTruthy();
+    expect(await screen.findByRole('alertdialog', { name: 'Switch to phone view?' })).toBeTruthy();
     expect(posts()).toEqual([]);
   });
 });

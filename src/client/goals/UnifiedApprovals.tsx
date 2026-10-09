@@ -139,12 +139,18 @@ export function UnifiedApprovals({
                     readOnlyAll ||
                     (approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false));
                   const disabled = busy !== null || (approval.source === 'goal' && mismatch);
+                  const target =
+                    approval.source === 'goal'
+                      ? `Goal gate: ${humanize(approval.gate ?? approval.title)} (approval ${approval.id})`
+                      : `Run action: ${approval.title}${approval.runId ? ` for run ${shortHash(approval.runId)}` : ''}`;
+                  const primary = expected || (!expectedGoalApprovalId && data.approvals.length === 1);
                   return (
                     <div
                       className={`approval-item${expected ? ' approval-expected' : ''}`}
                       key={key}
                       data-approval-source={approval.source}
                       data-approval-id={approval.id}
+                      aria-busy={busy === key}
                     >
                       <div className="approval-copy">
                         <span className={`goal-source goal-source-${approval.source}`}>
@@ -162,6 +168,7 @@ export function UnifiedApprovals({
                             ? ` · run ${shortHash(approval.runId)}`
                             : ''}
                           {approval.goalId ? ` · Goal ${shortHash(approval.goalId)}` : ''}
+                          {expected ? ` · expected approval ${shortHash(approval.id)}` : ''}
                           {expected ? ' · the Goal is waiting on this' : ''}
                         </small>
                         {approval.source === 'goal' && approval.gate === 'final_acceptance' && (
@@ -178,18 +185,25 @@ export function UnifiedApprovals({
                             type="button"
                             className="secondary-button"
                             disabled={disabled}
+                            aria-label={data.approvals.length > 1 ? `Deny ${target}` : undefined}
                             onClick={() => void decide(approval, 'denied')}
                           >
-                            Deny
+                            {busy === key ? 'Denying…' : 'Deny'}
                           </button>
                           <button
                             type="button"
-                            className="primary-button compact-button"
+                            className={`${primary ? 'primary-button' : 'secondary-button'} compact-button`}
                             disabled={disabled}
+                            aria-busy={busy === key}
+                            aria-label={data.approvals.length > 1 ? `Approve ${target}` : undefined}
                             onClick={() => void decide(approval, 'approved')}
                           >
-                            <Check size={14} />
-                            {approval.source === 'run' ? 'Approve once' : 'Approve'}
+                            <Check size={14} aria-hidden="true" />
+                            {busy === key
+                              ? 'Approving…'
+                              : approval.source === 'run'
+                                ? 'Approve once'
+                                : 'Approve'}
                           </button>
                         </div>
                       )}

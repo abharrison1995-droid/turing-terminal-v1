@@ -139,6 +139,7 @@ export function ProposalWorkbench({
     <section
       className="goal-workbench surface-panel"
       aria-label={`Edit proposed definition v${full.version}`}
+      aria-busy={busy !== null}
     >
       <header className="goal-workbench-head">
         <h3>
@@ -206,20 +207,35 @@ export function ProposalWorkbench({
           className="primary-button"
           data-action="save-definition"
           disabled={!dirty || stale || busy !== null}
+          aria-busy={busy === 'save'}
           onClick={save}
         >
           {busy === 'save' ? 'Saving…' : 'Save proposed definition'}
         </button>
       </div>
       {confirmReset && (
-        <ConfirmPanel label="Confirm reset" title="Discard your unsaved edits?">
-          <p>The editor returns to the persisted proposal. Nothing is sent to the server.</p>
+        <ConfirmPanel
+          label="Confirm reset"
+          title="Discard your unsaved edits?"
+          description="The editor returns to the persisted proposal. Nothing is sent to the server."
+          onCancel={() => setConfirmReset(false)}
+        >
           <div className="goal-control-buttons">
-            <button type="button" className="secondary-button goal-danger" onClick={reset}>
-              Discard edits
-            </button>
-            <button type="button" className="secondary-button" onClick={() => setConfirmReset(false)}>
+            <button
+              type="button"
+              className="secondary-button"
+              data-confirm-safe
+              onClick={() => setConfirmReset(false)}
+            >
               Keep editing
+            </button>
+            <button
+              type="button"
+              className="secondary-button goal-danger"
+              data-confirm-restore-trigger
+              onClick={reset}
+            >
+              Discard edits
             </button>
           </div>
         </ConfirmPanel>
@@ -260,6 +276,9 @@ export function ProposalWorkbench({
         <ConfirmPanel
           label="Confirm approve definition"
           title={`Approve v${full.version} of “${goal.title}”?`}
+          description="Approval makes this exact definition immutable and current. Changing it later needs a new revision."
+          onCancel={() => setPending(null)}
+          busy={busy !== null}
         >
           <dl className="goal-facts">
             <div className="goal-fact">
@@ -281,10 +300,6 @@ export function ProposalWorkbench({
               <dd>{full.changeSummary}</dd>
             </div>
           </dl>
-          <p>
-            Approval makes this exact definition immutable and current. Changing it later needs a new
-            revision.
-          </p>
           {kind === 'amendment' && (
             <p>
               Approving the amendment does not resume the Goal. It stays waiting for you until you resume it
@@ -298,8 +313,18 @@ export function ProposalWorkbench({
           <div className="goal-control-buttons">
             <button
               type="button"
+              className="secondary-button"
+              disabled={busy !== null}
+              data-confirm-safe
+              onClick={() => setPending(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
               className="primary-button"
               disabled={busy !== null}
+              aria-busy={busy === 'approve'}
               onClick={() =>
                 void run(
                   'approve',
@@ -316,14 +341,6 @@ export function ProposalWorkbench({
             >
               {busy === 'approve' ? 'Approving…' : 'Confirm approval'}
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy !== null}
-              onClick={() => setPending(null)}
-            >
-              Cancel
-            </button>
           </div>
         </ConfirmPanel>
       )}
@@ -331,6 +348,9 @@ export function ProposalWorkbench({
         <ConfirmPanel
           label="Confirm reject definition"
           title={`Reject proposed definition v${full.version}?`}
+          description={`Rejecting only proposal v${full.version} does not delete or abandon the Goal.`}
+          onCancel={() => setPending(null)}
+          busy={busy !== null}
         >
           <p>
             This discards only this proposal. It does not delete or abandon the Goal.
@@ -343,8 +363,18 @@ export function ProposalWorkbench({
           <div className="goal-control-buttons">
             <button
               type="button"
+              className="secondary-button"
+              disabled={busy !== null}
+              data-confirm-safe
+              onClick={() => setPending(null)}
+            >
+              Keep proposal
+            </button>
+            <button
+              type="button"
               className="secondary-button goal-danger"
               disabled={busy !== null}
+              aria-busy={busy === 'reject'}
               onClick={() =>
                 void run(
                   'reject',
@@ -354,14 +384,6 @@ export function ProposalWorkbench({
               }
             >
               {busy === 'reject' ? 'Rejecting…' : 'Reject proposal'}
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy !== null}
-              onClick={() => setPending(null)}
-            >
-              Keep proposal
             </button>
           </div>
         </ConfirmPanel>
@@ -379,16 +401,25 @@ export function ProposalWorkbench({
 /** Persisted parent vs persisted proposal. Bounded line diff; no semantic engine, no unsaved text. */
 function Comparison({ goalId, proposal }: { goalId: string; proposal: GoalDefinitionFull }) {
   const parent = proposal.parentVersion as number;
-  const { result } = useLoad(
+  const { result, reload } = useLoad(
     () => goalsApi.definition(goalId, parent),
     `${goalId}:${parent}:compare`,
     proposal.definitionHash,
   );
-  if (result.state !== 'ready')
+  if (result.state === 'loading')
     return (
-      <p className="goal-note">
-        {result.state === 'loading' ? 'Loading comparison…' : `Comparison unavailable: ${result.message}`}
+      <p className="goal-note" role="status">
+        Loading comparison…
       </p>
+    );
+  if (result.state === 'error')
+    return (
+      <div className="form-error" role="alert">
+        <span>Comparison could not be loaded: {result.message}</span>
+        <button type="button" className="secondary-button" onClick={reload}>
+          Retry comparison
+        </button>
+      </div>
     );
   const before = result.data;
   const lines = diffLines(prettyDefinition(before.definition), prettyDefinition(proposal.definition));
@@ -451,7 +482,7 @@ export function RevisionControl({ goal, onChanged }: { goal: GoalDetail; onChang
 
   const executing = goal.status !== 'ready';
   return (
-    <section className="goal-controls" aria-label="Revise Goal">
+    <section className="goal-controls" aria-label="Revise Goal" aria-busy={busy}>
       <div className="goal-control-buttons">
         <button
           type="button"
@@ -467,29 +498,36 @@ export function RevisionControl({ goal, onChanged }: { goal: GoalDetail; onChang
         <ConfirmPanel
           label="Confirm begin revision"
           title={executing ? 'Begin an amendment?' : 'Begin a revision?'}
+          description={
+            executing
+              ? 'Turing copies the current approved definition into a proposal. The Goal waits for you after the amendment begins; nothing resumes automatically.'
+              : 'Turing copies the current approved definition into a proposal. The Goal returns to draft for review; nothing changes until you approve it.'
+          }
+          onCancel={() => setConfirming(false)}
+          busy={busy}
         >
-          <p>
-            Turing copies the current approved definition into a new proposal for you to edit. Nothing changes
-            until you approve it.
-            {executing
-              ? ' Starting an amendment quiesces the Goal: it waits for you, and nothing resumes automatically.'
-              : ' While the proposal exists the Goal returns to draft and cannot be started.'}
-          </p>
           <label className="form-field">
             <span>Change summary (optional)</span>
             <input value={summary} maxLength={500} onChange={(event) => setSummary(event.target.value)} />
           </label>
           <div className="goal-control-buttons">
-            <button type="button" className="primary-button" disabled={busy} onClick={() => void begin()}>
-              {busy ? 'Starting…' : executing ? 'Begin amendment' : 'Begin revision'}
-            </button>
             <button
               type="button"
               className="secondary-button"
               disabled={busy}
+              data-confirm-safe
               onClick={() => setConfirming(false)}
             >
               Cancel
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy}
+              aria-busy={busy}
+              onClick={() => void begin()}
+            >
+              {busy ? 'Starting…' : executing ? 'Begin amendment' : 'Begin revision'}
             </button>
           </div>
         </ConfirmPanel>

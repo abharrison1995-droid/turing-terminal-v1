@@ -39,6 +39,7 @@ export function GoalList({
                       type="button"
                       className={`goal-row${goal.needsUser ? ' goal-row-attention' : ''}${compact ? ' goal-row-mobile' : ''}`}
                       data-needs-user={goal.needsUser ? 'true' : 'false'}
+                      data-goal-list-focus
                       onClick={() => onSelect(goal.id)}
                     >
                       <span className="goal-row-main">

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { GoalDetail } from '../../shared/goalApi';
 import { goalsApi } from './api';
 import { availableControls, type GoalControl } from './controls';
+import { ConfirmPanel } from './DefinitionParts';
 import { refusalText, toRefusal, type Refusal } from './refusal';
 
 /**
@@ -23,6 +24,7 @@ export function GoalControls({
     ? offered.filter((control) => control.id === 'pause' || control.id === 'resume')
     : offered;
   const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [confirmingAbandon, setConfirmingAbandon] = useState(false);
@@ -39,6 +41,7 @@ export function GoalControls({
   async function run(label: string, request: () => Promise<unknown>) {
     if (busy) return;
     setBusy(true);
+    setBusyLabel(label);
     setRefusal(null);
     setDone(null);
     try {
@@ -48,6 +51,7 @@ export function GoalControls({
       setRefusal(toRefusal(error));
     } finally {
       setBusy(false);
+      setBusyLabel(null);
       setConfirmingAbandon(false);
       // A read refresh only, after success or refusal alike, so what is shown is what the server now holds.
       onChanged();
@@ -70,7 +74,7 @@ export function GoalControls({
 
   if (controls.length === 0 && !refusal && !done) return null;
   return (
-    <section className="goal-controls" aria-label="Goal controls">
+    <section className="goal-controls" aria-label="Goal controls" aria-busy={busy}>
       {controls.length > 0 && (
         <div className="goal-control-buttons">
           {controls.map((control) => (
@@ -79,11 +83,12 @@ export function GoalControls({
               type="button"
               className={control.id === 'abandon' ? 'secondary-button goal-danger' : 'primary-button'}
               disabled={busy}
+              aria-busy={busyLabel === control.label}
               data-control={control.id}
               {...(control.id === 'resume' ? { 'data-resume-reason': control.reason } : {})}
               onClick={() => void perform(control)}
             >
-              {control.label}
+              {busyLabel === control.label ? `${control.label}…` : control.label}
             </button>
           ))}
         </div>
@@ -99,31 +104,34 @@ export function GoalControls({
         ) : null,
       )}
       {confirmingAbandon && !compact && (
-        <div className="goal-confirm" role="alertdialog" aria-label="Confirm abandon">
-          <strong>Abandon this Goal?</strong>
-          <p>
-            The Goal stops and cannot be resumed. Its history stays recorded. Nothing is applied to your
-            branch.
-          </p>
+        <ConfirmPanel
+          label="Confirm abandon"
+          title="Abandon this Goal?"
+          description="The Goal stops and cannot be resumed. Its history stays recorded. Nothing is applied to your branch."
+          onCancel={() => setConfirmingAbandon(false)}
+          busy={busy}
+        >
           <div className="goal-control-buttons">
             <button
               type="button"
-              className="secondary-button goal-danger"
-              disabled={busy}
-              onClick={() => void run('Abandon', () => goalsApi.abandon(goal.id))}
-            >
-              Abandon Goal
-            </button>
-            <button
-              type="button"
               className="secondary-button"
+              data-confirm-safe
               disabled={busy}
               onClick={() => setConfirmingAbandon(false)}
             >
               Keep Goal
             </button>
+            <button
+              type="button"
+              className="secondary-button goal-danger"
+              disabled={busy}
+              aria-busy={busyLabel === 'Abandon'}
+              onClick={() => void run('Abandon', () => goalsApi.abandon(goal.id))}
+            >
+              {busyLabel === 'Abandon' ? 'Abandoning…' : 'Abandon Goal'}
+            </button>
           </div>
-        </div>
+        </ConfirmPanel>
       )}
       {busy && (
         <p className="goal-note" role="status">
