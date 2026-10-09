@@ -133,13 +133,14 @@ export function goalRepoFixture(
     initialFiles?: Record<string, string>;
     approved?: boolean;
     initializeRef?: boolean;
+    objectFormat?: 'sha1' | 'sha256';
   } = {},
 ): GoalRepoFixture {
   const root = mkdtempSync(join(tmpdir(), 'turing-goalrepo-'));
   folders.push(root);
   const repo = join(root, 'repo');
   mkdirSync(repo);
-  git(repo, 'init', '-q', '-b', 'main');
+  git(repo, 'init', '-q', '-b', 'main', `--object-format=${options.objectFormat ?? 'sha1'}`);
   git(repo, 'config', 'user.email', 't@example.com');
   git(repo, 'config', 'user.name', 'T');
   git(repo, 'config', 'commit.gpgsign', 'false');

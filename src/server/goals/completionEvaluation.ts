@@ -12,6 +12,7 @@ import { evaluateCriteria } from './freshness.js';
 import { evaluateMilestones, userApprovals } from './milestones.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { listReviews } from './reviews.js';
+import { hasVerifiedAppliedFinalApplyOperation } from './finalApplyOperation.js';
 
 /**
  * Completion authority. This module is the only place a `CompletionEvaluation` can become proof: the registry below
@@ -227,11 +228,7 @@ export async function evaluateCompletion(
   if (policy.applyToBase !== 'required')
     finalApply = { required: false, ok: true, basis: 'not_required', reason: null };
   else {
-    const applied = db
-      .prepare(
-        "SELECT 1 FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base' AND status = 'applied' AND new_commit = ?",
-      )
-      .get(goalId, state.head);
+    const applied = await hasVerifiedAppliedFinalApplyOperation(db, goalId, state.head, state.tree);
     const attested = userApprovals(db, goalId, 'final_apply').find(
       (approval) =>
         approval.detail.action === 'applied_externally' &&

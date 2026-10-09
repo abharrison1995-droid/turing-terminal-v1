@@ -87,7 +87,13 @@ export type AdvanceResult =
 export type RecoveryResult = {
   opId: string;
   op: string;
-  outcome: 'completed' | 'aborted' | 'goal_ref_changed' | 'skipped';
+  outcome:
+    | 'completed'
+    | 'aborted'
+    | 'goal_ref_changed'
+    | 'skipped'
+    | 'checkout_index_sync_incomplete'
+    | 'manual_reconciliation_required';
   observedRef: string | null;
 };
 
@@ -146,7 +152,7 @@ interface OpRow {
 }
 
 let noHooksDirectory: string | null = null;
-function disabledHooksPath(): string {
+export function disabledHooksPath(): string {
   if (!noHooksDirectory) {
     noHooksDirectory = join(tmpdir(), 'turing-goal-git-no-hooks');
     mkdirSync(noHooksDirectory, { recursive: true, mode: 0o700 });
@@ -418,7 +424,7 @@ function completeOp(db: Db, op: OpRow): boolean {
 // ---------------------------------------------------------------------------------------------------------------
 // Changed-path and content inspection
 
-interface ChangedEntry {
+export interface ChangedEntry {
   status: string;
   oldPath: string | null;
   newPath: string | null;
@@ -856,7 +862,8 @@ export async function recoverIntegrationOps(db: Db, goalId: string): Promise<Rec
     .all(goalId) as OpRow[];
   for (const op of ops) {
     if (op.op === 'apply_to_base') {
-      results.push({ opId: op.id, op: op.op, outcome: 'skipped', observedRef: null });
+      const { recoverPlannedFinalApplyOperation } = await import('./goals/finalApply.js');
+      results.push(await recoverPlannedFinalApplyOperation(db, goalId, op.id));
       continue;
     }
     const observed = await readRef(context.repoRoot, context.ref);

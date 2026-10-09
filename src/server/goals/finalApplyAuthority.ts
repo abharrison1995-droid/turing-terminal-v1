@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
-import { z } from 'zod';
 import { GOAL_TERMINAL_STATUSES, TERMINAL_RUN_STATUSES } from '../../shared/goals.js';
 import type { GoalApproval } from '../../shared/goals.js';
 import type { Db } from '../db.js';
@@ -18,6 +17,14 @@ import { evaluateCompletion } from './completionEvaluation.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { isManualReconciliation } from './readModel.js';
+import {
+  computeFinalApplyIntentDigest,
+  computeFinalApplyRepositoryIdentity,
+  finalApplyApprovalDetailSchema,
+  parseFinalApplyOperationRecord,
+  sameFinalApplyIntent,
+} from './finalApplyOperation.js';
+export { computeFinalApplyIntentDigest } from './finalApplyOperation.js';
 
 export const FINAL_APPLY_INTENT_SCHEMA_VERSION = 1 as const;
 const ACTION = 'apply_to_base_intent' as const;
@@ -98,88 +105,12 @@ export class FinalApplyAuthorityError extends Error {
   }
 }
 
-const digestSchema = z.string().regex(/^[0-9a-f]{64}$/);
-const objectIdSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
-const intentSchema = z
-  .object({
-    schemaVersion: z.literal(FINAL_APPLY_INTENT_SCHEMA_VERSION),
-    action: z.literal(ACTION),
-    goalId: z.string().min(1).max(200),
-    definitionVersion: z.number().int().positive(),
-    definitionHash: digestSchema,
-    source: z
-      .object({
-        goalRef: z.string().min(1).max(300),
-        integrationHead: objectIdSchema,
-        integrationTree: objectIdSchema,
-      })
-      .strict(),
-    destination: z
-      .object({
-        repoIdentity: digestSchema,
-        baseBranch: z.string().min(1).max(300),
-        baseRef: z.string().min(1).max(500),
-        expectedBaseCommit: objectIdSchema,
-      })
-      .strict(),
-    review: z
-      .object({
-        changedPathDigest: digestSchema,
-        diffStatDigest: digestSchema,
-        diffPreviewDigest: digestSchema,
-        diffPreviewTruncated: z.boolean(),
-      })
-      .strict(),
-    intentDigest: digestSchema,
-  })
-  .strict();
-
-const detailSchema = z
-  .object({
-    action: z.literal(ACTION),
-    intentDigest: digestSchema,
-    repositoryProjectId: z.string().min(1).max(200),
-    intent: intentSchema,
-    reviewDisplay: z
-      .object({
-        diffStat: z.string().max(DIFF_STAT_CHARS + 32),
-        diffPreview: z.string().max(PREVIEW_CHARS),
-      })
-      .strict(),
-  })
-  .strict();
+const detailSchema = finalApplyApprovalDetailSchema;
 
 type IntentBody = Omit<FinalApplyIntent, 'intentDigest'>;
 
 function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-/** Fixed-order, version-tagged tuple. Object key order and display formatting cannot alter authority. */
-function canonicalIntentTuple(intent: IntentBody): unknown[] {
-  return [
-    'turing-final-apply-intent',
-    FINAL_APPLY_INTENT_SCHEMA_VERSION,
-    intent.action,
-    intent.goalId,
-    intent.definitionVersion,
-    intent.definitionHash,
-    intent.source.goalRef,
-    intent.source.integrationHead,
-    intent.source.integrationTree,
-    intent.destination.repoIdentity,
-    intent.destination.baseBranch,
-    intent.destination.baseRef,
-    intent.destination.expectedBaseCommit,
-    intent.review.changedPathDigest,
-    intent.review.diffStatDigest,
-    intent.review.diffPreviewDigest,
-    intent.review.diffPreviewTruncated,
-  ];
-}
-
-export function computeFinalApplyIntentDigest(intent: IntentBody): string {
-  return sha256(JSON.stringify(canonicalIntentTuple(intent)));
 }
 
 function boundedDisplay(value: string, maxChars: number): string {
@@ -197,12 +128,8 @@ function ensure(
   if (!condition) throw new FinalApplyAuthorityError(code, message, detail);
 }
 
-function identityBytes(intent: FinalApplyIntent): unknown[] {
-  return canonicalIntentTuple(intent);
-}
-
 function sameIntent(left: FinalApplyIntent, right: FinalApplyIntent): boolean {
-  return JSON.stringify(identityBytes(left)) === JSON.stringify(identityBytes(right));
+  return sameFinalApplyIntent(left, right);
 }
 
 function activeRun(db: Db, goalId: string): boolean {
@@ -224,9 +151,17 @@ function hasPlannedOperation(db: Db, goalId: string): boolean {
   );
 }
 
+export interface PlannedFinalApplyAllowance {
+  operationId: string;
+  approvalId: string;
+  operationDigest: string;
+  intent: FinalApplyIntent;
+}
+
 function assertDatabaseEligibility(
   db: Db,
   goalId: string,
+  allowance?: PlannedFinalApplyAllowance,
 ): {
   projectId: string;
   definitionVersion: number;
@@ -267,11 +202,43 @@ function assertDatabaseEligibility(
     'active_work',
     'Goal work is still active; final-apply authority requires a stable source.',
   );
-  ensure(
-    !hasPlannedOperation(db, goalId),
-    'integration_operation_in_progress',
-    'A Goal integration operation is unresolved.',
-  );
+  const planned = db
+    .prepare(
+      "SELECT id, approval_id, expected_old, new_commit, checks_json FROM goal_integration_ops WHERE goal_id = ? AND status = 'planned'",
+    )
+    .get(goalId) as
+    | {
+        id: string;
+        approval_id: string | null;
+        expected_old: string | null;
+        new_commit: string;
+        checks_json: string;
+      }
+    | undefined;
+  if (planned) {
+    ensure(allowance, 'integration_operation_in_progress', 'A Goal integration operation is unresolved.');
+    const record = parseFinalApplyOperationRecord(planned.checks_json);
+    ensure(
+      record !== null &&
+        planned.id === allowance.operationId &&
+        planned.approval_id === allowance.approvalId &&
+        record.operationId === allowance.operationId &&
+        record.goalId === goalId &&
+        record.approvalId === allowance.approvalId &&
+        record.operationDigest === allowance.operationDigest &&
+        sameIntent(record.intent, allowance.intent) &&
+        planned.expected_old === record.destination.expectedBaseCommit &&
+        planned.new_commit === record.source.integrationHead,
+      'integration_operation_in_progress',
+      'Only the exact matching planned final-apply operation may pass this recheck.',
+    );
+  } else if (allowance) {
+    ensure(
+      false,
+      'integration_operation_in_progress',
+      'The planned final-apply operation is no longer active.',
+    );
+  }
   ensure(
     goal.definition_version !== null,
     'definition_not_approved',
@@ -303,17 +270,6 @@ function assertDatabaseEligibility(
     baseBranch: goal.base_branch,
     baseCommit: goal.base_commit,
   };
-}
-
-function repositoryIdentity(
-  projectId: string,
-  repoRoot: string,
-  gitCommonDir: string,
-  scope: string,
-): string {
-  return sha256(
-    JSON.stringify(['turing-goal-repository-identity-v1', projectId, repoRoot, gitCommonDir, scope]),
-  );
 }
 
 function validObjectId(value: string | null, format: ObjectFormat): value is string {
@@ -367,8 +323,12 @@ function preflightRefusal(preflight: FinalApplyPreflight): {
  * Constructs the only prospective authority record. This is read-only: completion evaluation and Git preflight only
  * inspect persisted Goal state and repository objects/worktree state.
  */
-export async function prepareFinalApplyIntent(db: Db, goalId: string): Promise<PreparedFinalApplyIntent> {
-  const eligibility = assertDatabaseEligibility(db, goalId);
+async function prepareIntent(
+  db: Db,
+  goalId: string,
+  allowance?: PlannedFinalApplyAllowance,
+): Promise<PreparedFinalApplyIntent> {
+  const eligibility = assertDatabaseEligibility(db, goalId, allowance);
   const evaluation = await evaluateCompletion(db, goalId);
   // `evaluateCompletion` returns the exact proof basis, including the current definition and integration head.
   const completionReady =
@@ -440,7 +400,12 @@ export async function prepareFinalApplyIntent(db: Db, goalId: string): Promise<P
   const gitCommonDir = realpathSync(
     isAbsolute(commonPath) ? commonPath : resolve(context.repoRoot, commonPath),
   );
-  const repoIdentity = repositoryIdentity(context.projectId, context.repoRoot, gitCommonDir, context.scope);
+  const repoIdentity = computeFinalApplyRepositoryIdentity(
+    context.projectId,
+    context.repoRoot,
+    gitCommonDir,
+    context.scope,
+  );
   const reviewDisplay: FinalApplyReviewDisplay = {
     diffStat: boundedDisplay(preflight.diffStat, DIFF_STAT_CHARS),
     diffPreview: preflight.diffPreview,
@@ -485,6 +450,10 @@ export async function prepareFinalApplyIntent(db: Db, goalId: string): Promise<P
   };
 }
 
+export async function prepareFinalApplyIntent(db: Db, goalId: string): Promise<PreparedFinalApplyIntent> {
+  return prepareIntent(db, goalId);
+}
+
 function parseProspectiveDetail(approval: NonNullable<ReturnType<typeof getGoalApproval>>): {
   intent: FinalApplyIntent;
   repositoryProjectId: string;
@@ -527,6 +496,7 @@ function parseProspectiveDetail(approval: NonNullable<ReturnType<typeof getGoalA
 export interface ValidatedFinalApplyAuthority {
   goalId: string;
   approvalId: string;
+  repositoryProjectId: string;
   intent: FinalApplyIntent;
   reviewDisplay: FinalApplyReviewDisplay;
 }
@@ -543,7 +513,10 @@ export async function validateFinalApplyAuthority(
   db: Db,
   goalId: string,
   approvalId: string,
-  options: { expectedStatus?: 'pending' | 'approved' } = {},
+  options: {
+    expectedStatus?: 'pending' | 'approved';
+    allowPlannedOperation?: PlannedFinalApplyAllowance;
+  } = {},
 ): Promise<FinalApplyAuthorityValidation> {
   try {
     const approval = getGoalApproval(db, approvalId);
@@ -579,7 +552,15 @@ export async function validateFinalApplyAuthority(
 
     const stored = parseProspectiveDetail(approval);
     ensure(stored.intent.goalId === goalId, 'approval_mismatch', 'The intent belongs to a different Goal.');
-    const current = await prepareFinalApplyIntent(db, goalId);
+    if (options.allowPlannedOperation) {
+      ensure(
+        options.allowPlannedOperation.approvalId === approvalId &&
+          sameIntent(options.allowPlannedOperation.intent, stored.intent),
+        'integration_operation_in_progress',
+        'The planned-operation exception is not bound to this complete approved intent.',
+      );
+    }
+    const current = await prepareIntent(db, goalId, options.allowPlannedOperation);
     ensure(
       sameIntent(stored.intent, current.intent) &&
         stored.intent.intentDigest === current.intent.intentDigest &&
@@ -593,6 +574,7 @@ export async function validateFinalApplyAuthority(
       authority: {
         goalId,
         approvalId,
+        repositoryProjectId: stored.repositoryProjectId,
         intent: stored.intent,
         reviewDisplay: stored.reviewDisplay,
       },
@@ -606,6 +588,44 @@ export async function validateFinalApplyAuthority(
       detail: 'Final-apply authority could not be revalidated against current state.',
     };
   }
+}
+
+/** Database-only write-boundary recheck. Caller holds BEGIN IMMEDIATE and supplies the complete matching plan. */
+export function assertFinalApplyOperationDatabaseCurrent(
+  db: Db,
+  goalId: string,
+  approvalId: string,
+  allowance: PlannedFinalApplyAllowance,
+): void {
+  const approval = getGoalApproval(db, approvalId);
+  ensure(approval, 'approval_not_found', 'No such Goal approval.');
+  ensure(
+    approval.goalId === goalId &&
+      approval.gate === 'final_apply' &&
+      approval.risk === 'high' &&
+      approval.requestedBy === 'user' &&
+      approval.status === 'approved' &&
+      approval.decidedBy === 'user',
+    'approval_mismatch',
+    'Only the explicit approved user authority may apply this Goal.',
+  );
+  const stored = parseProspectiveDetail(approval);
+  ensure(
+    allowance.approvalId === approvalId && sameIntent(allowance.intent, stored.intent),
+    'integration_operation_in_progress',
+    'The write-boundary exception is not bound to the complete approved intent.',
+  );
+  const current = assertDatabaseEligibility(db, goalId, allowance);
+  ensure(
+    current.projectId === stored.repositoryProjectId &&
+      current.definitionVersion === stored.intent.definitionVersion &&
+      current.definitionHash === stored.intent.definitionHash &&
+      current.integrationHead === stored.intent.source.integrationHead &&
+      current.baseBranch === stored.intent.destination.baseBranch &&
+      current.baseCommit === stored.intent.destination.expectedBaseCommit,
+    'final_apply_intent_stale',
+    'The approved intent no longer matches the current Goal database state.',
+  );
 }
 
 /** Synchronous database-only half of decision-time validation; call inside the approval decision transaction. */
