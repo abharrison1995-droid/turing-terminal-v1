@@ -64,6 +64,8 @@ let calls: ProviderRunRequest[];
 type Behaviour = (request: ProviderRunRequest, profile: ProbeProfileName) => Promise<ReturnType<typeof done>>;
 let overrides: Partial<Record<ProbeProfileName, Behaviour>>;
 let gate: Promise<void> | null;
+// These real Git/SQLite/RunEngine cases use waitRun's 20s bound; keep CI headroom local to these tests.
+const ROUTE_PROBE_INTEGRATION_TIMEOUT_MS = 25_000;
 
 const goodBehaviour: Behaviour = async (request, profile) => {
   if (profile === 'broker-read') {
@@ -168,49 +170,53 @@ describe('POST /api/route-validations: request and exact identity', () => {
     expect(routeProbeRequestSchema.safeParse(probeBody(['implementer'])).success).toBe(true);
   });
 
-  it('answers 202 with bounded ids before the model completes and persists the exact server-captured identity', async () => {
-    h = await probeHarness();
-    let release!: () => void;
-    gate = new Promise<void>((resolve) => (release = resolve));
-    const response = await h.post(probeBody(['orchestrator', 'implementer']));
-    expect(response.statusCode).toBe(202);
-    expect(Object.keys(response.json).sort()).toEqual(['identityHash', 'probeId', 'profiles', 'runId']);
-    const { probeId, runId, identityHash, profiles } = response.json as {
-      probeId: string;
-      runId: string;
-      identityHash: string;
-      profiles: string[];
-    };
-    expect(profiles).toEqual(['orchestrator-json', 'broker-read', 'broker-edit']);
-    expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).not.toEqual({
-      status: 'completed',
-    });
+  it(
+    'answers 202 with bounded ids before the model completes and persists the exact server-captured identity',
+    async () => {
+      h = await probeHarness();
+      let release!: () => void;
+      gate = new Promise<void>((resolve) => (release = resolve));
+      const response = await h.post(probeBody(['orchestrator', 'implementer']));
+      expect(response.statusCode).toBe(202);
+      expect(Object.keys(response.json).sort()).toEqual(['identityHash', 'probeId', 'profiles', 'runId']);
+      const { probeId, runId, identityHash, profiles } = response.json as {
+        probeId: string;
+        runId: string;
+        identityHash: string;
+        profiles: string[];
+      };
+      expect(profiles).toEqual(['orchestrator-json', 'broker-read', 'broker-edit']);
+      expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(runId)).not.toEqual({
+        status: 'completed',
+      });
 
-    // The identity is the one the server computes from its own observation, never one the caller supplied.
-    const snapshot: RouteSnapshot = { providers: [claude()], profiles: [] };
-    const expected = computeRouteIdentity(
-      { configuration: ROUTE, freshnessClass: 'stable-subscription' },
-      snapshot,
-    );
-    if (!expected.ok) throw new Error('fixture');
-    expect(identityHash).toBe(expected.value.identityHash);
-    const row = probeRow(probeId);
-    expect(row).toMatchObject({
-      run_id: runId,
-      identity_hash: identityHash,
-      status: 'pending',
-      failure_code: null,
-      freshness_class: 'stable-subscription',
-      fixture_commit: FIXTURE_COMMIT_SHA,
-    });
-    expect(row.identity_json).toBe(canonicalJson(expected.value.identity));
-    expect(sha256(row.identity_json as string)).toBe(identityHash);
-    expect(JSON.parse(row.profiles_json as string)).toEqual(profiles);
-    // No credential, provider text or output is stored on the probe.
-    expect(JSON.stringify(row)).not.toMatch(/token|secret|credential|password/i);
-    release();
-    await h.waitRun(runId, 'completed');
-  });
+      // The identity is the one the server computes from its own observation, never one the caller supplied.
+      const snapshot: RouteSnapshot = { providers: [claude()], profiles: [] };
+      const expected = computeRouteIdentity(
+        { configuration: ROUTE, freshnessClass: 'stable-subscription' },
+        snapshot,
+      );
+      if (!expected.ok) throw new Error('fixture');
+      expect(identityHash).toBe(expected.value.identityHash);
+      const row = probeRow(probeId);
+      expect(row).toMatchObject({
+        run_id: runId,
+        identity_hash: identityHash,
+        status: 'pending',
+        failure_code: null,
+        freshness_class: 'stable-subscription',
+        fixture_commit: FIXTURE_COMMIT_SHA,
+      });
+      expect(row.identity_json).toBe(canonicalJson(expected.value.identity));
+      expect(sha256(row.identity_json as string)).toBe(identityHash);
+      expect(JSON.parse(row.profiles_json as string)).toEqual(profiles);
+      // No credential, provider text or output is stored on the probe.
+      expect(JSON.stringify(row)).not.toMatch(/token|secret|credential|password/i);
+      release();
+      await h.waitRun(runId, 'completed');
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it('pins the route exactly on the enabled stages, applies no fallback, and skips profiles that were not requested', async () => {
     h = await probeHarness();
@@ -402,55 +408,61 @@ const checksOf = (row: Record<string, unknown>) =>
   JSON.parse(row.checks_json as string) as { schema: number; checks: Array<{ code: string; ok: boolean }> };
 
 describe('probe lifecycle and the validation record writer', () => {
-  it('writes one authenticated pass record per profile that the 5A.1 reader accepts, and consumes the probe once', async () => {
-    h = await probeHarness();
-    const { probeId, runId, observed } = await runProbe();
-    expect(observed.state).toBe('consumed');
-    const rows = records(runId);
-    expect(rows.map((row) => row.profile).sort()).toEqual([
-      'broker-edit',
-      'broker-read',
-      'orchestrator-json',
-    ]);
-    for (const row of rows) {
-      expect(row).toMatchObject({ status: 'pass', provenance: 'turing_probe_run', evidence_run_id: runId });
-      expect(sha256(row.identity_json as string)).toBe(row.identity_hash);
-      const { schema, checks } = checksOf(row);
-      expect(schema).toBe(1);
-      expect(checks.length).toBeGreaterThan(0);
-      expect(checks.every((check) => check.ok && PROBE_CHECK_CODES.includes(check.code as never))).toBe(true);
-      expect(checks.map((check) => check.code).sort()).toEqual(
-        [...REQUIRED_CHECKS[row.profile as keyof typeof REQUIRED_CHECKS]].sort(),
-      );
-      expect(Object.keys(checks[0]!).sort()).toEqual(['code', 'ok']);
-      const identity = JSON.parse(row.identity_json as string) as Record<string, string>;
-      expect(row.adapter_version).toBe(identity.adapterVersion);
-      expect(row.capability_fingerprint).toBe(identity.capabilityFingerprint);
-      // stable-subscription lifetime is seven days.
-      expect(Date.parse(row.expires_at as string) - Date.parse(row.tested_at as string)).toBe(
-        7 * 24 * 3600_000,
-      );
-    }
-    expect(probeRow(probeId)).toMatchObject({ status: 'consumed', failure_code: null });
-    // Consumed once: a second reconcile is a no-op and adds nothing.
-    const again = await reconcileRouteProbe(h.db, probeId, h.startRun);
-    expect(again.state).toBe('consumed');
-    expect(records(runId)).toHaveLength(3);
+  it(
+    'writes one authenticated pass record per profile that the 5A.1 reader accepts, and consumes the probe once',
+    async () => {
+      h = await probeHarness();
+      const { probeId, runId, observed } = await runProbe();
+      expect(observed.state).toBe('consumed');
+      const rows = records(runId);
+      expect(rows.map((row) => row.profile).sort()).toEqual([
+        'broker-edit',
+        'broker-read',
+        'orchestrator-json',
+      ]);
+      for (const row of rows) {
+        expect(row).toMatchObject({ status: 'pass', provenance: 'turing_probe_run', evidence_run_id: runId });
+        expect(sha256(row.identity_json as string)).toBe(row.identity_hash);
+        const { schema, checks } = checksOf(row);
+        expect(schema).toBe(1);
+        expect(checks.length).toBeGreaterThan(0);
+        expect(checks.every((check) => check.ok && PROBE_CHECK_CODES.includes(check.code as never))).toBe(
+          true,
+        );
+        expect(checks.map((check) => check.code).sort()).toEqual(
+          [...REQUIRED_CHECKS[row.profile as keyof typeof REQUIRED_CHECKS]].sort(),
+        );
+        expect(Object.keys(checks[0]!).sort()).toEqual(['code', 'ok']);
+        const identity = JSON.parse(row.identity_json as string) as Record<string, string>;
+        expect(row.adapter_version).toBe(identity.adapterVersion);
+        expect(row.capability_fingerprint).toBe(identity.capabilityFingerprint);
+        // stable-subscription lifetime is seven days.
+        expect(Date.parse(row.expires_at as string) - Date.parse(row.tested_at as string)).toBe(
+          7 * 24 * 3600_000,
+        );
+      }
+      expect(probeRow(probeId)).toMatchObject({ status: 'consumed', failure_code: null });
+      // Consumed once: a second reconcile is a no-op and adds nothing.
+      const again = await reconcileRouteProbe(h.db, probeId, h.startRun);
+      expect(again.state).toBe('consumed');
+      expect(records(runId)).toHaveLength(3);
 
-    const hash = rows[0]!.identity_hash as string;
-    const all = readRouteValidations(h.db, [hash]);
-    expect(all).toHaveLength(3);
-    const set = freshValidationSet({
-      records: all,
-      identityHash: hash,
-      identity: JSON.parse(rows[0]!.identity_json as string),
-      role: 'implementer',
-      freshnessClass: 'stable-subscription',
-      now: new Date().toISOString(),
-    });
-    expect(set.available).toBe(true);
-    for (const record of all) expect(validationRecordConsistent(record)).toBe(true);
-  });
+      const hash = rows[0]!.identity_hash as string;
+      const all = readRouteValidations(h.db, [hash]);
+      expect(all).toHaveLength(3);
+      const set = freshValidationSet({
+        records: all,
+        identityHash: hash,
+        identity: JSON.parse(rows[0]!.identity_json as string),
+        role: 'implementer',
+        freshnessClass: 'stable-subscription',
+        now: new Date().toISOString(),
+      });
+      expect(set.available).toBe(true);
+      for (const record of all) expect(validationRecordConsistent(record)).toBe(true);
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it('uses a 24-hour lifetime for an opportunity probe', async () => {
     h = await probeHarness();
@@ -521,30 +533,34 @@ describe('probe lifecycle and the validation record writer', () => {
     expect(row.status).toBe('fail');
   });
 
-  it('judges broker-edit by the audit and the worktree: no write, a forbidden path, or a dirty tree each fail', async () => {
-    h = await probeHarness();
-    overrides['broker-edit'] = async (request) => {
-      await h.broker(request.toolBroker.token, 'write_file', {
-        path: 'src/protected.txt',
-        content: 'changed\n',
-      });
-      return done('done');
-    };
-    const bad = await runProbe(['implementer']);
-    const row = records(bad.runId).find((r) => r.profile === 'broker-edit');
-    // Either the run finished and the edit is judged a fail, or nothing was meaningfully tested; never a pass.
-    if (row) {
-      expect(row.status).toBe('fail');
-      expect(checksOf(row).checks.some((check) => check.code === 'protected_untouched' && !check.ok)).toBe(
-        true,
-      );
-    }
-    expect(
-      records(bad.runId)
-        .filter((r) => r.profile === 'broker-edit')
-        .every((r) => r.status === 'fail'),
-    ).toBe(true);
-  });
+  it(
+    'judges broker-edit by the audit and the worktree: no write, a forbidden path, or a dirty tree each fail',
+    async () => {
+      h = await probeHarness();
+      overrides['broker-edit'] = async (request) => {
+        await h.broker(request.toolBroker.token, 'write_file', {
+          path: 'src/protected.txt',
+          content: 'changed\n',
+        });
+        return done('done');
+      };
+      const bad = await runProbe(['implementer']);
+      const row = records(bad.runId).find((r) => r.profile === 'broker-edit');
+      // Either the run finished and the edit is judged a fail, or nothing was meaningfully tested; never a pass.
+      if (row) {
+        expect(row.status).toBe('fail');
+        expect(checksOf(row).checks.some((check) => check.code === 'protected_untouched' && !check.ok)).toBe(
+          true,
+        );
+      }
+      expect(
+        records(bad.runId)
+          .filter((r) => r.profile === 'broker-edit')
+          .every((r) => r.status === 'fail'),
+      ).toBe(true);
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it('leaves no record for a profile that was never meaningfully tested (infrastructure failure)', async () => {
     h = await probeHarness();
@@ -639,32 +655,36 @@ describe('probe lifecycle and the validation record writer', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('resumes after a crash between two profile inserts without duplicating or rewriting a record', async () => {
-    h = await probeHarness();
-    const response = await h.post(probeBody(['orchestrator', 'implementer']));
-    const { probeId, runId } = response.json as { probeId: string; runId: string };
-    await h.waitRun(runId, 'completed');
-    const run = h.db.prepare('SELECT starting_commit, worktree_path FROM runs WHERE id = ?').get(runId) as {
-      starting_commit: string;
-      worktree_path: string;
-    };
-    const verdict = await judgeProfile(h.db, {
-      runId,
-      profile: 'orchestrator-json',
-      startingCommit: run.starting_commit,
-      worktreePath: run.worktree_path,
-    });
-    expect(verdict).not.toBeNull();
-    expect(writeProbeRecord(h.db, probeId, 'orchestrator-json', verdict!)).toBe(true);
-    const first = records(runId)[0]!;
-    // The "crash": only one profile was recorded. A rewrite is refused, then reconciliation finishes the rest.
-    expect(writeProbeRecord(h.db, probeId, 'orchestrator-json', verdict!)).toBe(false);
-    await reconcileRouteProbe(h.db, probeId, h.startRun);
-    const rows = records(runId);
-    expect(rows).toHaveLength(3);
-    expect(rows.find((row) => row.profile === 'orchestrator-json')).toEqual(first);
-    expect(probeRow(probeId).status).toBe('consumed');
-  });
+  it(
+    'resumes after a crash between two profile inserts without duplicating or rewriting a record',
+    async () => {
+      h = await probeHarness();
+      const response = await h.post(probeBody(['orchestrator', 'implementer']));
+      const { probeId, runId } = response.json as { probeId: string; runId: string };
+      await h.waitRun(runId, 'completed');
+      const run = h.db.prepare('SELECT starting_commit, worktree_path FROM runs WHERE id = ?').get(runId) as {
+        starting_commit: string;
+        worktree_path: string;
+      };
+      const verdict = await judgeProfile(h.db, {
+        runId,
+        profile: 'orchestrator-json',
+        startingCommit: run.starting_commit,
+        worktreePath: run.worktree_path,
+      });
+      expect(verdict).not.toBeNull();
+      expect(writeProbeRecord(h.db, probeId, 'orchestrator-json', verdict!)).toBe(true);
+      const first = records(runId)[0]!;
+      // The "crash": only one profile was recorded. A rewrite is refused, then reconciliation finishes the rest.
+      expect(writeProbeRecord(h.db, probeId, 'orchestrator-json', verdict!)).toBe(false);
+      await reconcileRouteProbe(h.db, probeId, h.startRun);
+      const rows = records(runId);
+      expect(rows).toHaveLength(3);
+      expect(rows.find((row) => row.profile === 'orchestrator-json')).toEqual(first);
+      expect(probeRow(probeId).status).toBe('consumed');
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it('never revalidates because a record expired: no code path but the POST route creates a probe', async () => {
     h = await probeHarness();
@@ -707,37 +727,48 @@ function probeRequest() {
 }
 
 describe('worktree retention and database invariants', () => {
-  it('prunes a clean consumed worktree conservatively, keeps the branch and leaves records unchanged', async () => {
-    h = await probeHarness();
-    const { probeId, runId } = await runProbe(['implementer']);
-    const before = JSON.stringify(records(runId));
-    const run = h.db.prepare('SELECT worktree_path, branch FROM runs WHERE id = ?').get(runId) as {
-      worktree_path: string;
-      branch: string;
-    };
-    expect(existsSync(run.worktree_path)).toBe(true);
-    const { pruneProbeWorktree } = await import('./routeProbe.js');
-    expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'pruned' });
-    expect(existsSync(run.worktree_path)).toBe(false);
-    expect(
-      execFileSync('git', ['-C', fixtureDirectory(), 'rev-parse', '--verify', run.branch]).length,
-    ).toBeGreaterThan(0);
-    expect(JSON.stringify(records(runId))).toBe(before);
-    expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'already_pruned' });
-  });
+  it(
+    'prunes a clean consumed worktree conservatively, keeps the branch and leaves records unchanged',
+    async () => {
+      h = await probeHarness();
+      const { probeId, runId } = await runProbe(['implementer']);
+      const before = JSON.stringify(records(runId));
+      const run = h.db.prepare('SELECT worktree_path, branch FROM runs WHERE id = ?').get(runId) as {
+        worktree_path: string;
+        branch: string;
+      };
+      expect(existsSync(run.worktree_path)).toBe(true);
+      const { pruneProbeWorktree } = await import('./routeProbe.js');
+      expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'pruned' });
+      expect(existsSync(run.worktree_path)).toBe(false);
+      expect(
+        execFileSync('git', ['-C', fixtureDirectory(), 'rev-parse', '--verify', run.branch]).length,
+      ).toBeGreaterThan(0);
+      expect(JSON.stringify(records(runId))).toBe(before);
+      expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'already_pruned' });
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
-  it('refuses to prune a dirty worktree or a probe that is not finished', async () => {
-    h = await probeHarness();
-    const { probeId, runId } = await runProbe(['implementer']);
-    const run = h.db.prepare('SELECT worktree_path FROM runs WHERE id = ?').get(runId) as {
-      worktree_path: string;
-    };
-    writeFileSync(join(run.worktree_path, 'scratch.txt'), 'x');
-    const { pruneProbeWorktree } = await import('./routeProbe.js');
-    expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'refused', reason: 'worktree_dirty' });
-    expect(existsSync(run.worktree_path)).toBe(true);
-    expect(await pruneProbeWorktree(h.db, 'no-such-probe')).toMatchObject({ status: 'refused' });
-  });
+  it(
+    'refuses to prune a dirty worktree or a probe that is not finished',
+    async () => {
+      h = await probeHarness();
+      const { probeId, runId } = await runProbe(['implementer']);
+      const run = h.db.prepare('SELECT worktree_path FROM runs WHERE id = ?').get(runId) as {
+        worktree_path: string;
+      };
+      writeFileSync(join(run.worktree_path, 'scratch.txt'), 'x');
+      const { pruneProbeWorktree } = await import('./routeProbe.js');
+      expect(await pruneProbeWorktree(h.db, probeId)).toEqual({
+        status: 'refused',
+        reason: 'worktree_dirty',
+      });
+      expect(existsSync(run.worktree_path)).toBe(true);
+      expect(await pruneProbeWorktree(h.db, 'no-such-probe')).toMatchObject({ status: 'refused' });
+    },
+    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+  );
 
   it('enforces migration 021: records are unique per run and profile, immutable, and bound to their pending probe', async () => {
     h = await probeHarness();
