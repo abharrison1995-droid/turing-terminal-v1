@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import { evaluateCompletion } from './completionEvaluation.js';
@@ -136,6 +137,114 @@ describe('guarded Goal final apply', () => {
             .get() as { n: number }
         ).n,
       ).toBe(1);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const relativeTarget = 'src/final-apply.txt';
+      const target = join(fx.repo, relativeTarget);
+      const originalBytes = 'USER-ORIGINAL-IGNORED-BYTES\n';
+      const approvedBytes = 'approved Goal content\n';
+      const excludePath = join(fx.repo, '.git', 'info', 'exclude');
+      const previousExclude = readFileSync(excludePath, 'utf8');
+      writeFileSync(excludePath, `${previousExclude}\n/${relativeTarget}\n`);
+
+      const wrapperDir = mkdtempSync(join(tmpdir(), 'turing-final-apply-git-boundary-'));
+      const wrapperPath = join(wrapperDir, 'git');
+      const commandLogMarker = join(wrapperDir, 'git-commands');
+      const statusMarker = join(wrapperDir, 'status-before-read-tree');
+      const exitMarker = join(wrapperDir, 'read-tree-exit');
+      const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+      const originalPath = process.env.PATH;
+      const envKeys = [
+        'TT_FINAL_APPLY_REAL_GIT',
+        'TT_FINAL_APPLY_REPO',
+        'TT_FINAL_APPLY_TARGET',
+        'TT_FINAL_APPLY_BYTES',
+        'TT_FINAL_APPLY_COMMAND_LOG',
+        'TT_FINAL_APPLY_STATUS_MARKER',
+        'TT_FINAL_APPLY_EXIT_MARKER',
+      ] as const;
+      const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+      const wrapper = `#!/usr/bin/env node
+const { spawnSync } = require('node:child_process');
+const { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
+const { dirname } = require('node:path');
+const args = process.argv.slice(2);
+const input = args.includes('--stdin') ? readFileSync(0) : undefined;
+appendFileSync(process.env.TT_FINAL_APPLY_COMMAND_LOG, JSON.stringify(args) + '\\n');
+if (args.includes('read-tree') && args.includes('-u') && !existsSync(process.env.TT_FINAL_APPLY_EXIT_MARKER)) {
+  mkdirSync(dirname(process.env.TT_FINAL_APPLY_TARGET), { recursive: true });
+  writeFileSync(process.env.TT_FINAL_APPLY_TARGET, process.env.TT_FINAL_APPLY_BYTES);
+  const status = spawnSync(process.env.TT_FINAL_APPLY_REAL_GIT, ['-C', process.env.TT_FINAL_APPLY_REPO, 'status', '--porcelain=v1', '--untracked-files=all'], { encoding: 'utf8' });
+  if (status.status !== 0) process.exit(status.status || 1);
+  writeFileSync(process.env.TT_FINAL_APPLY_STATUS_MARKER, status.stdout);
+  const result = spawnSync(process.env.TT_FINAL_APPLY_REAL_GIT, args, { encoding: 'utf8', env: process.env, input });
+  writeFileSync(process.env.TT_FINAL_APPLY_EXIT_MARKER, String(result.status));
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  process.exit(result.status || 0);
+}
+const result = spawnSync(process.env.TT_FINAL_APPLY_REAL_GIT, args, { encoding: 'utf8', env: process.env, input });
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
+process.exit(result.status || 0);
+`;
+      mkdirSync(wrapperDir, { recursive: true });
+      writeFileSync(wrapperPath, wrapper);
+      chmodSync(wrapperPath, 0o755);
+      process.env.TT_FINAL_APPLY_REAL_GIT = realGit;
+      process.env.TT_FINAL_APPLY_REPO = fx.repo;
+      process.env.TT_FINAL_APPLY_TARGET = target;
+      process.env.TT_FINAL_APPLY_BYTES = originalBytes;
+      process.env.TT_FINAL_APPLY_COMMAND_LOG = commandLogMarker;
+      process.env.TT_FINAL_APPLY_STATUS_MARKER = statusMarker;
+      process.env.TT_FINAL_APPLY_EXIT_MARKER = exitMarker;
+      process.env.PATH = [wrapperDir, originalPath].filter(Boolean).join(delimiter);
+
+      let result;
+      let statusBeforeReadTree = '';
+      let readTreeExit = '';
+      let commandLog = '';
+      try {
+        result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
+        commandLog = existsSync(commandLogMarker)
+          ? readFileSync(commandLogMarker, 'utf8')
+          : '<wrapper not invoked>';
+        if (result.outcome !== 'applied') {
+          const operation = fx.db
+            .prepare("SELECT status, recovery_json FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get();
+          throw new Error(JSON.stringify({ result, commandLog, operation }));
+        }
+        expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
+        statusBeforeReadTree = readFileSync(statusMarker, 'utf8');
+        readTreeExit = readFileSync(exitMarker, 'utf8');
+      } finally {
+        process.env.PATH = originalPath;
+        for (const key of envKeys) {
+          const value = originalEnv.get(key);
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        rmSync(wrapperDir, { recursive: true, force: true });
+      }
+
+      expect(statusBeforeReadTree.trimEnd()).toBe(`D  ${relativeTarget}`);
+      expect(readTreeExit).toBe('0');
+      expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
+      expect(readFileSync(target, 'utf8')).toBe(approvedBytes);
+      expect(readFileSync(target, 'utf8')).not.toBe(originalBytes);
+      expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: true,
+        basis: 'applied_by_turing',
+      });
     },
   );
 
