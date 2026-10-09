@@ -162,15 +162,29 @@ export async function probeHarness(): Promise<ProbeHarness> {
       });
       return { statusCode: response.statusCode, json: response.json() as Record<string, unknown> };
     },
-    waitRun: (runId: string, status: string) =>
-      vi.waitFor(
-        () =>
-          expectStatus(
-            (db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string }).status,
-            status,
-          ),
+    async waitRun(runId: string, status: string) {
+      const actual = await vi.waitFor(
+        () => {
+          const current = (
+            db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string }
+          ).status;
+          if (current === status || ['completed', 'failed', 'cancelled'].includes(current)) return current;
+          expectStatus(current, status);
+          return current;
+        },
         { timeout: 20_000, interval: 25 },
-      ),
+      );
+      if (actual !== status) {
+        const stages = db
+          .prepare(
+            'SELECT stage_key, kind, status, output_json FROM stages WHERE run_id = ? ORDER BY sequence',
+          )
+          .all(runId);
+        throw new Error(
+          `run status ${actual}, expected ${status}; stages: ${JSON.stringify(stages).slice(0, 4_000)}`,
+        );
+      }
+    },
     async close() {
       await harness.app.close();
       if (db.open) db.close();
