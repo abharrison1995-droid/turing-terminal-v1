@@ -527,6 +527,7 @@ function App() {
                 onInitialGoalConsumed={() => setInitialGoalId(null)}
                 onOpenProjects={() => navigate('projects')}
                 onUnsavedChange={setGoalsUnsaved}
+                navigationGuardActive={queuedNav !== null}
               />
             )}
             {page === 'runs' && snapshot && (

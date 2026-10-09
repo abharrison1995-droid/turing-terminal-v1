@@ -16,8 +16,8 @@ describe('Master event subscriptions', () => {
     hub.subscribeGoal('goal-b', (event) => b.push(event));
     hub.subscribeRun('run-a', (event) => run.push(event));
 
-    hub.publish('state_changed', { goalId: 'goal-a', to: 'running' });
-    hub.publish('run_updated', { runId: 'run-a', status: 'running' });
+    hub.publishGoal('state_changed', { goalId: 'goal-a', to: 'running' });
+    hub.publishRun('run_updated', { runId: 'run-a', status: 'running' });
 
     expect(a).toEqual(['state_changed']);
     expect(b).toEqual([]);
@@ -35,9 +35,45 @@ describe('Master event subscriptions', () => {
       throw new Error('push unavailable');
     });
 
-    expect(() => publish('state_changed', { goalId: 'goal-a', to: 'completed' })).not.toThrow();
+    expect(() => publish.publishGoal('state_changed', { goalId: 'goal-a', to: 'completed' })).not.toThrow();
     await Promise.resolve();
     expect(received).toEqual(['state_changed']);
+  });
+
+  it('routes by explicit event source when Goal and Run payloads contain both identities', () => {
+    const hub = new MasterEventHub();
+    const goalEvents: string[] = [];
+    const runEvents: string[] = [];
+    hub.subscribeGoal('goal-a', (event) => goalEvents.push(event));
+    hub.subscribeRun('run-a', (event) => runEvents.push(event));
+
+    hub.publishGoal('run_evidence_collected', {
+      goalId: 'goal-a',
+      runId: 'run-a',
+      cycleId: 'cycle-a',
+      definitionVersion: 1,
+      evidenceCount: 2,
+    });
+    expect(goalEvents).toEqual(['run_evidence_collected']);
+    expect(runEvents).toEqual([]);
+
+    hub.publishRun('run_updated', { runId: 'run-a', goalId: 'goal-a', status: 'running' });
+    expect(runEvents).toEqual(['run_updated']);
+    expect(goalEvents).toEqual(['run_evidence_collected']);
+  });
+
+  it('keeps Run and Goal events on the same Web Push delivery path', () => {
+    const hub = new MasterEventHub();
+    const delivered: Array<[string, Record<string, unknown>]> = [];
+    const publisher = createMasterEventPublisher(hub, (event, payload) => delivered.push([event, payload]));
+
+    publisher.publishRun('run_updated', { runId: 'run-a', status: 'running' });
+    publisher.publishGoal('state_changed', { goalId: 'goal-a', to: 'completed' });
+
+    expect(delivered).toEqual([
+      ['run_updated', { runId: 'run-a', status: 'running' }],
+      ['state_changed', { goalId: 'goal-a', to: 'completed' }],
+    ]);
   });
 
   it('requires exactly one known identity and streams both existing run and exact Goal events', async () => {
@@ -67,15 +103,33 @@ describe('Master event subscriptions', () => {
       expect((await app.inject('/api/events?goalId=missing')).statusCode).toBe(404);
 
       const goalStream = await openStream(`${base}/api/events?goalId=${encodeURIComponent(goalA)}`);
+      const runStream = await openStream(`${base}/api/events?runId=run-a`);
+      let goalFrames = '';
+      let runFrames = '';
+      goalStream.response.on('data', (chunk: Buffer) => {
+        goalFrames += chunk.toString('utf8');
+      });
+      runStream.response.on('data', (chunk: Buffer) => {
+        runFrames += chunk.toString('utf8');
+      });
       const goalData = nextData(goalStream.response);
-      hub.publish('state_changed', { goalId: goalA, to: 'running' });
-      expect(await goalData).toContain(`"goalId":"${goalA}"`);
+      hub.publishGoal('run_evidence_collected', {
+        goalId: goalA,
+        runId: 'run-a',
+        cycleId: 'cycle-a',
+        definitionVersion: 1,
+        evidenceCount: 1,
+      });
+      expect(await goalData).toContain('event: run_evidence_collected');
+      await flushSseTurns();
+      expect(runFrames).not.toContain('event: run_evidence_collected');
       expect(goalStream.response.statusCode).toBe(200);
 
-      const runStream = await openStream(`${base}/api/events?runId=run-a`);
       const runData = nextData(runStream.response);
-      hub.publish('run_updated', { runId: 'run-a', status: 'running' });
+      hub.publishRun('run_updated', { runId: 'run-a', goalId: goalA, status: 'running' });
       expect(await runData).toContain('event: run_updated');
+      await flushSseTurns();
+      expect(goalFrames).not.toContain('event: run_updated');
       expect(runStream.response.statusCode).toBe(200);
 
       expect(hub.subscriberCount).toBe(2);
@@ -95,6 +149,11 @@ async function openStream(url: string): Promise<{ request: ClientRequest; respon
     const request = get(url, (response) => resolve({ request, response }));
     request.once('error', reject);
   });
+}
+
+async function flushSseTurns(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
 function nextData(response: IncomingMessage): Promise<string> {

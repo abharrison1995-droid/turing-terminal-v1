@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { writeGoalEvent } from './goals/events.js';
 import { cleanupTestDatabases, freshDatabase, goalAt, seedProject } from './goals/testKit.js';
 import { GoalEventPublisher } from './goalEventPublisher.js';
+import { createMasterEventPublisher, MasterEventHub } from './masterEvents.js';
 
 afterEach(cleanupTestDatabases);
 
@@ -105,5 +106,30 @@ describe('committed Goal event publisher', () => {
     expect(committedCursor).toBeGreaterThan(0);
     expect(publisher.drainOnce()).toBe(0);
     expect(publisher.currentCursor).toBe(committedCursor);
+  });
+
+  it('publishes a persisted Goal event with runId only to Goal subscribers and the shared push path', () => {
+    const db = freshDatabase();
+    const goalId = goalAt(db, seedProject(db), 'ready');
+    const hub = new MasterEventHub();
+    const goalEvents: string[] = [];
+    const runEvents: string[] = [];
+    const pushEvents: string[] = [];
+    hub.subscribeGoal(goalId, (event) => goalEvents.push(event));
+    hub.subscribeRun('run-a', (event) => runEvents.push(event));
+    const sharedPublisher = createMasterEventPublisher(hub, (event) => pushEvents.push(event));
+    const publisher = new GoalEventPublisher(db, sharedPublisher.publishGoal);
+    publisher.initialize();
+
+    writeGoalEvent(db, goalId, 'run_evidence_collected', {
+      runId: 'run-a',
+      cycleId: 'cycle-a',
+      definitionVersion: 1,
+      evidenceCount: 1,
+    });
+    expect(publisher.drainOnce()).toBe(1);
+    expect(goalEvents).toEqual(['run_evidence_collected']);
+    expect(runEvents).toEqual([]);
+    expect(pushEvents).toEqual(['run_evidence_collected']);
   });
 });

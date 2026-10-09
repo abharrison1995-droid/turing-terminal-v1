@@ -3,9 +3,16 @@ import type { ServerResponse } from 'node:http';
 import type { Db } from './db.js';
 
 export type MasterEventHandler = (event: string, payload: Record<string, unknown>) => void;
+export type MasterEventSource = 'run' | 'goal';
+
+export type MasterEventPublisher = {
+  publishRun: MasterEventHandler;
+  publishGoal: MasterEventHandler;
+};
 
 type Subscription = {
-  matches: (payload: Record<string, unknown>) => boolean;
+  source: MasterEventSource;
+  identity: string;
   handler: MasterEventHandler;
 };
 
@@ -14,16 +21,25 @@ export class MasterEventHub {
   private readonly subscriptions = new Set<Subscription>();
 
   subscribeRun(runId: string, handler: MasterEventHandler): () => void {
-    return this.add((payload) => payload.runId === runId, handler);
+    return this.add('run', runId, handler);
   }
 
   subscribeGoal(goalId: string, handler: MasterEventHandler): () => void {
-    return this.add((payload) => payload.goalId === goalId, handler);
+    return this.add('goal', goalId, handler);
   }
 
-  publish(event: string, payload: Record<string, unknown>): void {
+  publishRun(event: string, payload: Record<string, unknown>): void {
+    this.publish('run', event, payload);
+  }
+
+  publishGoal(event: string, payload: Record<string, unknown>): void {
+    this.publish('goal', event, payload);
+  }
+
+  private publish(source: MasterEventSource, event: string, payload: Record<string, unknown>): void {
     for (const subscription of [...this.subscriptions]) {
-      if (!subscription.matches(payload)) continue;
+      const identity = source === 'run' ? payload.runId : payload.goalId;
+      if (subscription.source !== source || identity !== subscription.identity) continue;
       try {
         subscription.handler(event, payload);
       } catch {
@@ -36,8 +52,8 @@ export class MasterEventHub {
     return this.subscriptions.size;
   }
 
-  private add(matches: Subscription['matches'], handler: MasterEventHandler): () => void {
-    const subscription = { matches, handler };
+  private add(source: MasterEventSource, identity: string, handler: MasterEventHandler): () => void {
+    const subscription = { source, identity, handler };
     this.subscriptions.add(subscription);
     return () => this.subscriptions.delete(subscription);
   }
@@ -47,15 +63,18 @@ export class MasterEventHub {
 export function createMasterEventPublisher(
   events: MasterEventHub,
   deliverPush: MasterEventHandler,
-): MasterEventHandler {
-  return (event, payload) => {
-    events.publish(event, payload);
-    try {
-      void Promise.resolve(deliverPush(event, payload)).catch(() => undefined);
-    } catch {
-      // A synchronous Web Push failure is also isolated from the authoritative event producer.
-    }
-  };
+): MasterEventPublisher {
+  const publish =
+    (source: MasterEventSource): MasterEventHandler =>
+    (event, payload) => {
+      events[source === 'run' ? 'publishRun' : 'publishGoal'](event, payload);
+      try {
+        void Promise.resolve(deliverPush(event, payload)).catch(() => undefined);
+      } catch {
+        // A synchronous Web Push failure is also isolated from the authoritative event producer.
+      }
+    };
+  return { publishRun: publish('run'), publishGoal: publish('goal') };
 }
 
 /** The existing run stream and the Goal stream share this exact query contract and cleanup path. */

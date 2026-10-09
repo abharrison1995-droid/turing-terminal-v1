@@ -16,10 +16,10 @@ assertLoopbackHost(host);
 
 const database = openDatabase();
 const eventHub = new MasterEventHub();
-const publishMasterEvent = createMasterEventPublisher(eventHub, (event, payload) =>
+const masterEventPublisher = createMasterEventPublisher(eventHub, (event, payload) =>
   deliverPushNotice(database, event, payload),
 );
-const engine = new RunEngine(database, publishMasterEvent);
+const engine = new RunEngine(database, masterEventPublisher.publishRun);
 engine.reconcileInterruptedRuns();
 // Stage 3: the Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
 // route is ever reported ready and no child run or provider call can be started from a Goal.
@@ -43,7 +43,7 @@ const routeProbeReconciler = new RouteProbeReconciler(database, (runId) =>
 );
 await routeProbeReconciler.reconcile();
 // Establish the Goal event high-water mark only after startup reconciliation; these rows are history, not new notices.
-const goalEventPublisher = new GoalEventPublisher(database, publishMasterEvent);
+const goalEventPublisher = new GoalEventPublisher(database, masterEventPublisher.publishGoal);
 goalEventPublisher.initialize();
 const app = createApp({ database, engine, goalSupervisor });
 registerMasterEventRoute(app, database, eventHub);
