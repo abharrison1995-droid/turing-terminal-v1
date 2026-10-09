@@ -154,6 +154,18 @@ Proposed small stages, subject to independent review:
 
 No phase authorizes automatic base-ref movement. Any later proposal for a delivery ref or Turing-performed application requires a separate threat-model review and explicit operation authority.
 
+## Stage 7C.2B.3 implementation status
+
+Stage 7C.2B.3 turns the accepted Approach C decision into an internal backend contract. The implementation is pending independent review; it does not change the decision or make the Goal Engine release-ready.
+
+- `src/server/goals/manualHandoff.ts` provides a read-only snapshot builder, explicit SQLite persistence, fresh validation, and bounded projection. It does not call `preflightFinalApply()` or import `applyApprovedGoalToBase()`.
+- Migration 025 adds immutable `goal_result_handoffs`, unique per Goal/content digest, with same-Goal foreign keys to the definition, final acceptance, and final review. It adds no Git-operation row or Git-write authority.
+- A prepared handoff remains **ready for manual integration**, not applied. `evaluateCompletion()` remains unchanged and continues to report `final_apply_required`; there is no completion, attestation, route, UI action, or supervisor publication.
+- Git source/base identities and complete path/content safety are re-read before persistence and recomputed on retrieval. This is not a global Git lock; concurrent external processes can still make a record stale immediately after observation. The exact snapshot remains immutable and is not silently refreshed.
+- SHA-1 and SHA-256 service tests run against disposable repositories. Git non-mutation is compared across refs, HEAD, index, worktree bytes including ignored/untracked files, worktree registration, configuration, and reflogs. Windows remains unverified.
+
+See [GOAL_MANUAL_HANDOFF_CONTRACT.md](GOAL_MANUAL_HANDOFF_CONTRACT.md) for schema, digests, selection of evaluator evidence, constraints, eligibility, staleness, and remaining user action. The desktop review surface and any explicit external-attestation workflow remain later work. Stage 7C.2B.4 and 7C.3 have not started.
+
 ## Threat model and platform scope
 
 | Actor/condition                                                 | A: base-ref CAS                                                                                                              | B: delivery ref                                                                                                                                                                 | C: immutable handoff                                                                                                         |

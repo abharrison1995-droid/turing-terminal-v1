@@ -579,6 +579,7 @@ export function scanChangedContent(
   from: string,
   to: string,
   maxBytes = DEFAULT_MAX_SCAN_BYTES,
+  timeoutMs = 60_000,
 ): Promise<ScanResult> {
   return new Promise((resolvePromise) => {
     const child = spawn(
@@ -601,12 +602,18 @@ export function scanChangedContent(
     let scanned = 0;
     let settled = false;
     let stderr = '';
+    let timeout: ReturnType<typeof setTimeout>;
     const finish = (result: ScanResult) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       child.kill();
       resolvePromise(result);
     };
+    timeout = setTimeout(
+      () => finish({ ok: false, code: 'scan_failed', detail: 'scan timed out' }),
+      timeoutMs,
+    );
     const testLine = (line: string): boolean => line.startsWith('+') && hasSuspectedSecret(line.slice(1));
     child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8').slice(0, 2_000);

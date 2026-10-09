@@ -110,3 +110,16 @@ Additional disposable filesystem/Git characterization in `src/server/goals/final
 - **D — narrower ref-only architecture: recommended for separate design review, not implemented.** Consider CAS-updating the approved destination ref only when it is not checked out in any worktree, leaving checkout to a later explicit user operation. This changes preflight/intent binding and what completion means; existing approvals must not be silently rebound to it.
 
 No migration 025 or production writer changes were made. The existing SQLite planned-operation and recovery model remains necessary, but cannot recover bytes already overwritten by the candidate algorithm. Linux and Windows checked-out live-worktree application are therefore not safety-qualified. Production final apply remains unreachable and `DisabledGoalExecutor` remains in use. Stage 7C.2B.1 is blocked pending independent review of the narrower architecture; 7C.3 must not begin.
+
+## Stage 7C.2B.3 immutable manual handoff implementation candidate
+
+Stage 7C.2B.2 selected manual integration as the V1 boundary. Stage 7C.2B.3 implements that decision as an internal-only service, pending independent review. The historical 7C.2A prospective approval and rejected 7C.2B writer retain their original meanings.
+
+- `buildManualHandoffSnapshot()` uses `evaluateCompletion()` and only proceeds when its single failure remains `final_apply_required`; the current approved definition, actual user acceptance row, passing independent final review, evaluator-selected evidence, current Goal ref, recorded base ref, fast-forward ancestry, full changed paths, and complete relevant content scan are bound.
+- `prepareManualHandoff()` persists one canonical v1 record in SQLite migration 025. Equal content digests are deduplicated transactionally. Payload, approval/review links, source/base IDs and digest are immutable. A changed snapshot creates a new record.
+- `validateManualHandoff()` and `getManualHandoffProjection()` are read-only. They rebuild the current snapshot and report current/stale/unavailable/invalid without updating historical payloads. The bounded display gives only read-only `git show`/`git diff` commands and clearly says Turing did not apply the result.
+- The service does not use `preflightFinalApply()`, modify refs/HEAD/index/worktree/config/metadata, create approvals, add `goal_integration_ops`, attest external application, transition Goal state, or call providers. There is no new route, button, scheduler, or automatic publication.
+- Completion remains strict: a handoff does not change `finalApply.ok`, does not remove `final_apply_required`, and does not complete the Goal. Production still constructs `DisabledGoalExecutor`; the rejected `applyApprovedGoalToBase()` remains quarantined.
+- SQLite snapshot rechecks and fresh retrieval reduce stale presentation; they cannot reserve repository state from external Git processes. Linux SHA-1/SHA-256 characterization uses disposable repositories. Windows behavior is unverified.
+
+The contract is in [GOAL_MANUAL_HANDOFF_CONTRACT.md](GOAL_MANUAL_HANDOFF_CONTRACT.md). The Stage 7C.2B.3 checkpoint remains an implementation candidate until independently reviewed. The desktop handoff surface and external-attestation design are not included; 7C.2B.4 and 7C.3 have not begun.

@@ -25,6 +25,7 @@ import {
   requestFinalApplyApproval,
   validateFinalApplyAuthority,
 } from './finalApplyAuthority.js';
+import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
 import { cleanupRepoFixtures, milestone, reportOf, simpleDefinition } from './repoKit.js';
 import { passRecords } from './routingKit.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
@@ -504,6 +505,43 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
     expect(evaluation.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
     expect(evaluation.failures.map((failure) => failure.code)).toEqual(['final_apply_required']);
+
+    const preparedHandoff = await prepareManualHandoff(h.fx.db, h.fx.goalId);
+    expect(preparedHandoff.reused).toBe(false);
+    expect(preparedHandoff.record).toMatchObject({
+      goalId: h.fx.goalId,
+      definition: { version: 1, hash },
+      finalAcceptance: { approvalId: acceptance.id },
+      source: { goalRef: ref, commit: integratedHead, tree: integratedTree },
+      target: { baseRef: 'refs/heads/main', observedBaseCommit: base },
+      review: { finalReviewId: evaluation.finalReview.reviewId },
+      projection: { manualIntegrationRequired: true },
+    });
+    expect(await validateManualHandoff(h.fx.db, h.fx.goalId, preparedHandoff.record.handoffId)).toMatchObject(
+      {
+        state: 'current',
+        reason: null,
+      },
+    );
+    expect(
+      await getManualHandoffProjection(h.fx.db, h.fx.goalId, preparedHandoff.record.handoffId),
+    ).toMatchObject({
+      state: 'current',
+      label: 'Ready for manual integration',
+      actualApplication: 'not_performed_by_turing',
+      goalCompletion: 'not_completed_by_handoff',
+    });
+    expect(
+      h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(h.fx.goalId),
+    ).toEqual({ n: 1 });
+    expect(
+      h.fx.db
+        .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base'")
+        .get(h.fx.goalId),
+    ).toEqual({ n: 0 });
+    expect((await evaluateCompletion(h.fx.db, h.fx.goalId)).failures.map((failure) => failure.code)).toEqual([
+      'final_apply_required',
+    ]);
 
     const preflight = await preflightFinalApply(h.fx.db, h.fx.goalId);
     expect(preflight.status).toBe('ready_for_approved_apply');
@@ -987,6 +1025,11 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
       ok: false,
       code: 'completion_not_ready',
     });
+    expect(await validateManualHandoff(h.fx.db, h.fx.goalId, preparedHandoff.record.handoffId)).toMatchObject(
+      {
+        state: 'stale',
+      },
+    );
 
     const amendment = beginAmendment(h.fx.db, { goalId: h.fx.goalId, actor: 'user' });
     approveDefinition(h.fx.db, {
@@ -1002,6 +1045,12 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
       ok: false,
       code: 'completion_not_ready',
     });
+    expect(await validateManualHandoff(h.fx.db, h.fx.goalId, preparedHandoff.record.handoffId)).toMatchObject(
+      {
+        state: 'stale',
+        reason: { code: 'definition_not_approved' },
+      },
+    );
   }, 30_000);
 
   it('keeps a denied each-cycle gate closed through API decision and supervisor reconciliation', async () => {

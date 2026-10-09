@@ -229,7 +229,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -254,7 +254,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     db.close();
   });
 });
@@ -658,7 +658,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(
       db.prepare('SELECT id, status, recovery_json, approval_id FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -879,7 +879,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -887,7 +887,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -913,7 +913,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1357,7 +1357,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1365,11 +1365,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     again.close();
   });
 
@@ -1656,7 +1656,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1665,11 +1665,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
       again.close();
     }
   });
@@ -1868,7 +1868,7 @@ describe('migration 022_goal_review_run_identity', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.prepare('SELECT id, cycle_id, run_id, status FROM goal_reviews ORDER BY id').all()).toEqual([
       { id: 'legacy-1', cycle_id: null, run_id: null, status: 'pending' },
       { id: 'legacy-2', cycle_id: null, run_id: null, status: 'pending' },
@@ -1904,7 +1904,7 @@ describe('migration 023_goal_final_apply_authority', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 24 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
     expect(db.prepare("SELECT intent_digest FROM goal_approvals WHERE id = 'legacy-final'").get()).toEqual({
       intent_digest: null,
     });
@@ -2020,6 +2020,113 @@ describe('migration 024_goal_final_apply_operation_identity', () => {
     db.prepare("UPDATE goal_integration_ops SET status = 'aborted' WHERE id = 'apply-1'").run();
     insert('apply-retry');
     expect(() => insert('apply-third-attempt')).toThrow(/UNIQUE/);
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+});
+
+describe('migration 025_goal_result_handoffs', () => {
+  it('upgrades a 024 database without reinterpreting historical approvals or operations', () => {
+    const root = rc2Directory('025');
+    const historical = new Database(join(root, 'turing.sqlite'));
+    historical.pragma('foreign_keys = ON');
+    project(historical, 'handoff-project');
+    seedGoalWithDefinition(historical, 'handoff-goal', 'handoff-project');
+    const intentDigest = 'f'.repeat(64);
+    const approval = requestGoalApproval(historical, {
+      goalId: 'handoff-goal',
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'Historical v1 prospective final-apply authority.',
+      requestedBy: 'user',
+      detail: {
+        action: 'apply_to_base_intent',
+        intentDigest,
+        intent: { intentDigest },
+      },
+      intentDigest,
+    });
+    decideGoalApproval(historical, {
+      goalId: 'handoff-goal',
+      approvalId: approval.id,
+      decision: 'approved',
+      decidedBy: 'user',
+    });
+    const operation = JSON.stringify({
+      schemaVersion: 1,
+      kind: 'turing_goal_final_apply_operation',
+      operationId: 'historical-apply',
+      goalId: 'handoff-goal',
+      approvalId: approval.id,
+      intentDigest,
+      source: { integrationHead: SHA },
+      destination: { expectedBaseCommit: SHA },
+    });
+    historical
+      .prepare(
+        `INSERT INTO goal_integration_ops
+         (id, goal_id, approval_id, op, expected_old, new_commit, status, checks_json, created_at)
+         VALUES ('historical-apply', 'handoff-goal', ?, 'apply_to_base', ?, ?, 'planned', ?, ?)`,
+      )
+      .run(approval.id, SHA, SHA, operation, NOW);
+    historical.close();
+
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT name FROM schema_migrations WHERE name >= ? ORDER BY name').all('024')).toEqual(
+      [{ name: '024_goal_final_apply_operation_identity.sql' }, { name: '025_goal_result_handoffs.sql' }],
+    );
+    expect(
+      db
+        .prepare('SELECT id, status, checks_json FROM goal_integration_ops WHERE id = ?')
+        .get('historical-apply'),
+    ).toEqual({
+      id: 'historical-apply',
+      status: 'planned',
+      checks_json: operation,
+    });
+    expect(
+      db.prepare('SELECT id, gate, status, intent_digest FROM goal_approvals WHERE id = ?').get(approval.id),
+    ).toEqual({
+      id: approval.id,
+      gate: 'final_apply',
+      status: 'approved',
+      intent_digest: intentDigest,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs').get()).toEqual({ n: 0 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('rejects malformed payloads and enforces immutable rows and current same-Goal authority references', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    db.exec('DROP TRIGGER trg_goal_result_handoff_insert_authority;');
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO goal_result_handoffs
+         (id, goal_id, schema_version, kind, handoff_digest, definition_version, final_acceptance_approval_id,
+          final_review_id, source_commit, source_tree, base_ref, observed_base_commit, payload_json, created_at)
+         VALUES ('h', 'g', 1, 'turing_goal_manual_integration_handoff', ?, 1, 'missing-approval', 'missing-review',
+                 ?, ?, 'refs/heads/main', ?, '{', ?)`,
+        )
+        .run('a'.repeat(64), SHA, SHA, SHA, NOW),
+    ).toThrow(/json_valid/);
+    expect(db.pragma('table_info(goal_result_handoffs)')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'handoff_digest' }),
+        expect.objectContaining({ name: 'payload_json' }),
+        expect.objectContaining({ name: 'final_review_id' }),
+      ]),
+    );
+    expect(db.pragma('foreign_key_list(goal_result_handoffs)')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ table: 'goal_approvals' }),
+        expect.objectContaining({ table: 'goal_reviews' }),
+        expect.objectContaining({ table: 'goal_definition_versions' }),
+      ]),
+    );
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
