@@ -213,7 +213,7 @@ const call = async (
     ...(payload === undefined ? {} : { payload }),
     headers,
   });
-  return { status: response.statusCode, body: response.json() as Record<string, any> };
+  return { status: response.statusCode, body: response.json() as Record<string, unknown> };
 };
 
 const runFor = (
@@ -264,8 +264,9 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
 
     const definitionView = await call('GET', `/api/goals/${h.fx.goalId}/definitions/1`);
     expect(definitionView.status).toBe(200);
-    expect(definitionView.body.definition.definitionHash).toBe(hash);
-    expect(definitionView.body.definition.validation).toMatchObject({ valid: true });
+    const shownDefinition = definitionView.body.definition as Record<string, unknown>;
+    expect(shownDefinition.definitionHash).toBe(hash);
+    expect(shownDefinition.validation).toMatchObject({ valid: true });
 
     const approved = await call(
       'POST',
