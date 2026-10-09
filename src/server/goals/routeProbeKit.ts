@@ -128,6 +128,15 @@ export async function probeHarness(): Promise<ProbeHarness> {
   const root = mkdtempSync(join(tmpdir(), 'turing-route-probe-'));
   const previous = process.env.TT_DATA_DIR;
   process.env.TT_DATA_DIR = join(root, 'data');
+  // Probe runs commit in their worktree; a CI runner has no global Git identity, so supply one for this process.
+  const identity = {
+    GIT_AUTHOR_NAME: 'Turing Test',
+    GIT_AUTHOR_EMAIL: 'test@example.com',
+    GIT_COMMITTER_NAME: 'Turing Test',
+    GIT_COMMITTER_EMAIL: 'test@example.com',
+  };
+  const priorIdentity = Object.fromEntries(Object.keys(identity).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(identity)) process.env[key] ??= value;
   const db = openDatabase(process.env.TT_DATA_DIR);
   const harness = {
     root,
@@ -190,6 +199,10 @@ export async function probeHarness(): Promise<ProbeHarness> {
       if (db.open) db.close();
       if (previous === undefined) delete process.env.TT_DATA_DIR;
       else process.env.TT_DATA_DIR = previous;
+      for (const [key, value] of Object.entries(priorIdentity)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       rmSync(root, { recursive: true, force: true });
     },
   });
