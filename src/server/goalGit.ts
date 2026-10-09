@@ -602,7 +602,6 @@ export function scanChangedContent(
     let scanned = 0;
     let settled = false;
     let stderr = '';
-    let timeout: ReturnType<typeof setTimeout>;
     const finish = (result: ScanResult) => {
       if (settled) return;
       settled = true;
@@ -610,7 +609,7 @@ export function scanChangedContent(
       child.kill();
       resolvePromise(result);
     };
-    timeout = setTimeout(
+    const timeout = setTimeout(
       () => finish({ ok: false, code: 'scan_failed', detail: 'scan timed out' }),
       timeoutMs,
     );
