@@ -7,7 +7,7 @@ const root = join(import.meta.dirname, '..', '..', '..');
 
 describe('repository test concurrency', () => {
   it('caps workers in vitest.config.ts so plain `npm test` uses the repository cap', () => {
-    expect(config.test?.maxWorkers).toBe(6);
+    expect(config.test?.maxWorkers).toBe(2);
     const scripts = (
       JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
         scripts: Record<string, string>;
