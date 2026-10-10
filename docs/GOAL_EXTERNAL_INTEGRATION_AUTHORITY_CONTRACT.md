@@ -63,3 +63,11 @@ The current local authentication model does not prove that a human clicked or di
 Deterministic tests use disposable registered repositories. They cover real fast-forward and `git merge -s ours --no-ff` histories, SHA-1/SHA-256, ancestry refusal, repeated-read ref movement, source/repository identity changes, immutable persistence, idempotent/concurrent retry, stale history and tamper refusal. The `ours` case proves both ancestry checks can pass while the accepted file is absent; the proof is therefore named `source_history_observed` and content preservation is explicitly not proven.
 
 Linux behavior is exercised on the available Linux/Git host. Windows and Git for Windows path/ref/common-directory behavior remain unverified. No user repository, live provider/model, subscription allowance, Git writer, public endpoint, UI action or Goal completion transition is used by this implementation.
+
+## Stage 7C.2B.5B.1 — timestamp and projection remediation candidate
+
+`observedAt` is server-owned evidence. `validateExternalIntegrationObservation()` now returns the freshly rebuilt server observation after the caller's Goal, handoff, Git identities, ancestry and authority have been matched. It does not return the caller's parsed timestamp. The action digest intentionally remains timestamp-independent so identical Git evidence retains one approval identity; the immutable record digest covers the actual authoritative observation timestamp.
+
+Persistence stores the timestamp from that fresh validation. A retry performs fresh Git verification, then returns the existing immutable record for the same action digest without rewriting its original `observedAt` or record digest. If the destination identity changes, the action digest changes and the prior approval cannot authorize the new observation.
+
+A parsed record alone is insufficient for a positive projection. Only a validated record with valid linked user approval and state `current` or `historical` carries `source_history_observed_at_recorded_time`. `invalid`, `stale`, `unavailable`, and `not_integrated` project `claim: not_verified`; invalid approval does not erase the parseable row or valid historical evidence from the database. No schema, migration, Git-write, approval-authority, or completion-policy change is made by this remediation.

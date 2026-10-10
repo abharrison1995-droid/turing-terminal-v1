@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   chmodSync,
@@ -25,12 +26,14 @@ import { applyReviewFindings } from './findings.js';
 import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
 import {
   buildExternalIntegrationObservation,
+  computeExternalIntegrationActionDigest,
   createExternalIntegrationApprovalDetail,
   getExternalIntegrationProjection,
   persistExternalIntegrationAttestation,
   validateExternalIntegrationAttestation,
   validateExternalIntegrationObservation,
 } from './externalIntegration.js';
+import { canonicalJson } from './definitionHash.js';
 import { closeReview, completeReview, createReview, getReview } from './reviews.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
@@ -1480,6 +1483,120 @@ describe('external integration attestation authority', () => {
     });
   });
 
+  it.each([
+    ['past', '1900-01-01T00:00:00.000Z'],
+    ['future', '2999-12-31T23:59:59.999Z'],
+  ])(
+    'uses a fresh server timestamp instead of a caller-supplied %s observation time',
+    async (_label, callerTimestamp) => {
+      const { fx, handoff, observation } = await integratedExternalFixture();
+      const substituted = { ...observation, observedAt: callerTimestamp };
+      const { actionDigest: _actionDigest, ...digestInput } = substituted;
+      void _actionDigest;
+      expect(computeExternalIntegrationActionDigest(digestInput)).toBe(observation.actionDigest);
+
+      const validationStartedAt = Date.now();
+      const validation = await validateExternalIntegrationObservation(
+        fx.db,
+        fx.goalId,
+        handoff.handoffId,
+        substituted,
+      );
+      const validationFinishedAt = Date.now();
+      expect(validation).toMatchObject({
+        state: 'valid',
+        observation: { actionDigest: observation.actionDigest },
+      });
+      if (validation.state !== 'valid') throw new Error('Expected fresh observation validation to pass.');
+      expect(validation.observation.observedAt).not.toBe(callerTimestamp);
+      expect(Date.parse(validation.observation.observedAt)).toBeGreaterThanOrEqual(validationStartedAt);
+      expect(Date.parse(validation.observation.observedAt)).toBeLessThanOrEqual(validationFinishedAt);
+
+      const approval = approveExternalObservation(fx, observation);
+      const persistenceStartedAt = Date.now();
+      const persisted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: substituted,
+        approvalId: approval.id,
+      });
+      const persistenceFinishedAt = Date.now();
+      expect(persisted.record.observedAt).not.toBe(callerTimestamp);
+      expect(Date.parse(persisted.record.observedAt)).toBeGreaterThanOrEqual(persistenceStartedAt);
+      expect(Date.parse(persisted.record.observedAt)).toBeLessThanOrEqual(persistenceFinishedAt);
+      expect(persisted.record.actionDigest).toBe(observation.actionDigest);
+
+      const { recordDigest, ...recordBody } = persisted.record;
+      const expectedRecordDigest = createHash('sha256')
+        .update(`turing-goal-external-integration-record-v1\n${canonicalJson(recordBody)}`, 'utf8')
+        .digest('hex');
+      expect(recordDigest).toBe(expectedRecordDigest);
+      const row = fx.db
+        .prepare(
+          'SELECT observed_at, record_digest, payload_json FROM goal_external_integration_attestations WHERE id = ?',
+        )
+        .get(persisted.record.attestationId) as {
+        observed_at: string;
+        record_digest: string;
+        payload_json: string;
+      };
+      expect(row.observed_at).toBe(persisted.record.observedAt);
+      expect(row.record_digest).toBe(recordDigest);
+      expect(JSON.parse(row.payload_json)).toMatchObject({
+        observedAt: persisted.record.observedAt,
+        recordDigest,
+      });
+      expect(
+        await validateExternalIntegrationAttestation(fx.db, fx.goalId, persisted.record.attestationId),
+      ).toMatchObject({
+        state: 'current',
+        record: { observedAt: persisted.record.observedAt, recordDigest },
+      });
+
+      const retry = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: substituted,
+        approvalId: approval.id,
+      });
+      expect(retry.reused).toBe(true);
+      expect(retry.record.observedAt).toBe(persisted.record.observedAt);
+      expect(retry.record.recordDigest).toBe(recordDigest);
+    },
+  );
+
+  it('fails closed when a parseable attestation record has invalid linked approval authority', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    const approval = approveExternalObservation(fx, observation);
+    const persisted = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    expect(
+      await getExternalIntegrationProjection(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({
+      state: 'current',
+      claim: 'source_history_observed_at_recorded_time',
+    });
+
+    // Deliberately invalidate approval authority without changing the parseable immutable attestation.
+    fx.db.exec('DROP TRIGGER trg_goal_approval_terminal;');
+    fx.db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(approval.id);
+
+    expect(
+      await validateExternalIntegrationAttestation(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({ state: 'invalid', record: { attestationId: persisted.record.attestationId } });
+    expect(
+      await getExternalIntegrationProjection(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({
+      state: 'invalid',
+      claim: 'not_verified',
+      reason: { code: 'approval_invalid' },
+    });
+  });
+
   it('distinguishes a strict ancestry refusal from invalid or unavailable Git evidence', async () => {
     const { fx, handoff, observation } = await integratedExternalFixture();
     const replacement = fx.git(
@@ -1629,6 +1746,12 @@ describe('external integration attestation authority', () => {
       record: { actionDigest: observation.actionDigest },
       reason: { code: 'destination_advanced_after_observation' },
     });
+    expect(
+      await getExternalIntegrationProjection(fx.db, fx.goalId, inserted.record.attestationId),
+    ).toMatchObject({
+      state: 'historical',
+      claim: 'source_history_observed_at_recorded_time',
+    });
     const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
     expect(newObservation.actionDigest).not.toBe(observation.actionDigest);
     await expect(
@@ -1649,6 +1772,77 @@ describe('external integration attestation authority', () => {
     expect(next.reused).toBe(false);
     expect(next.record.actionDigest).toBe(newObservation.actionDigest);
     expect(next.record.attestationId).not.toBe(inserted.record.attestationId);
+  });
+
+  it('does not make stale, unavailable, or not-integrated records positive claims', async () => {
+    const stale = await integratedExternalFixture();
+    const staleApproval = approveExternalObservation(stale.fx, stale.observation);
+    const staleRecord = await persistExternalIntegrationAttestation(stale.fx.db, {
+      goalId: stale.fx.goalId,
+      handoffId: stale.handoff.handoffId,
+      observation: stale.observation,
+      approvalId: staleApproval.id,
+    });
+    const changedSource = stale.fx.git(
+      'commit-tree',
+      stale.observation.source.tree,
+      '-p',
+      stale.observation.destination.expectedBaseCommit,
+      '-m',
+      'source identity changed after attestation',
+    );
+    stale.fx.git('update-ref', stale.handoff.source.goalRef, changedSource);
+    expect(
+      await getExternalIntegrationProjection(stale.fx.db, stale.fx.goalId, staleRecord.record.attestationId),
+    ).toMatchObject({ state: 'stale', claim: 'not_verified' });
+
+    const notIntegrated = await integratedExternalFixture();
+    const notIntegratedApproval = approveExternalObservation(notIntegrated.fx, notIntegrated.observation);
+    const notIntegratedRecord = await persistExternalIntegrationAttestation(notIntegrated.fx.db, {
+      goalId: notIntegrated.fx.goalId,
+      handoffId: notIntegrated.handoff.handoffId,
+      observation: notIntegrated.observation,
+      approvalId: notIntegratedApproval.id,
+    });
+    const destinationWithoutSource = notIntegrated.fx.git(
+      'commit-tree',
+      notIntegrated.observation.destination.expectedBaseTree,
+      '-p',
+      notIntegrated.observation.destination.expectedBaseCommit,
+      '-m',
+      'destination does not contain the accepted source',
+    );
+    notIntegrated.fx.git('update-ref', notIntegrated.handoff.target.baseRef, destinationWithoutSource);
+    expect(
+      await getExternalIntegrationProjection(
+        notIntegrated.fx.db,
+        notIntegrated.fx.goalId,
+        notIntegratedRecord.record.attestationId,
+      ),
+    ).toMatchObject({ state: 'not_integrated', claim: 'not_verified' });
+
+    const unavailable = await integratedExternalFixture();
+    const unavailableApproval = approveExternalObservation(unavailable.fx, unavailable.observation);
+    const unavailableRecord = await persistExternalIntegrationAttestation(unavailable.fx.db, {
+      goalId: unavailable.fx.goalId,
+      handoffId: unavailable.handoff.handoffId,
+      observation: unavailable.observation,
+      approvalId: unavailableApproval.id,
+    });
+    const gitDir = join(unavailable.fx.repo, '.git');
+    const hiddenGitDir = join(unavailable.fx.repo, '.git-hidden-for-unavailable-projection');
+    renameSync(gitDir, hiddenGitDir);
+    try {
+      expect(
+        await getExternalIntegrationProjection(
+          unavailable.fx.db,
+          unavailable.fx.goalId,
+          unavailableRecord.record.attestationId,
+        ),
+      ).toMatchObject({ state: 'unavailable', claim: 'not_verified' });
+    } finally {
+      renameSync(hiddenGitDir, gitDir);
+    }
   });
 
   it('detects a destination ref movement between repeated Git reads', async () => {

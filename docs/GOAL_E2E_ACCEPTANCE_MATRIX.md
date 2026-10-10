@@ -258,3 +258,14 @@ The 7C.2B.5A design is accepted. Its bounded 5B implementation candidate adds an
 | Completion and Git non-mutation            | Compare refs, HEAD, symbolic HEAD, index, files, worktrees, reflogs, repository config before/after service calls                                                 | No service Git writes, apply operation, completion proof, completion event or terminal Goal transition; `finalApply.ok` remains false          |
 
 The tests use only temporary registered repositories and service-created approvals/reviews/evidence. Migration upgrade coverage preserves a schema-025 handoff and historical v1 approval/operation without conversion. The new evidence is Linux-only; Windows remains unverified. See [GOAL_EXTERNAL_INTEGRATION_AUTHORITY_CONTRACT.md](GOAL_EXTERNAL_INTEGRATION_AUTHORITY_CONTRACT.md) for the versioned schema, digest, migration, persistence and future completion blockers. There is no production attestation endpoint or UI action.
+
+### 7C.2B.5B.1 timestamp and projection regressions
+
+| Scenario                                                                                       | Expected result                                                                                      |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Caller substitutes past or future `observedAt` while retaining identical Git/action identities | Validation and persistence use a fresh server timestamp; action digest stays unchanged               |
+| Exact action is retried                                                                        | Git is revalidated and the same immutable record, original timestamp, and record digest are returned |
+| Destination commit changes                                                                     | New action digest; old approval is refused until a separate exact user decision exists               |
+| Parseable attestation has a denied/mismatched linked approval                                  | `state: invalid`, `claim: not_verified`                                                              |
+| Record is current or remains valid historical evidence                                         | Positive observation claim is retained with the current/historical state                             |
+| Record is stale, unavailable, or no longer ancestral                                           | `claim: not_verified`; no implication of current integration                                         |

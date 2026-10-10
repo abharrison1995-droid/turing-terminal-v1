@@ -766,7 +766,7 @@ export async function validateExternalIntegrationObservation(
       return { state: 'stale', code: 'observation_changed' };
     return {
       state: 'valid',
-      observation: parsed,
+      observation: fresh.observation,
       authorityFingerprint: fresh.authorityFingerprint,
       databaseFingerprint: fresh.databaseFingerprint,
     };
@@ -1202,7 +1202,10 @@ export async function getExternalIntegrationProjection(
     state: validation.state,
     record: validation.record,
     reason: validation.reason,
-    claim: validation.record ? 'source_history_observed_at_recorded_time' : 'not_verified',
+    claim:
+      validation.record && (validation.state === 'current' || validation.state === 'historical')
+        ? 'source_history_observed_at_recorded_time'
+        : 'not_verified',
     contentPreservation: 'not_proven',
     goalCompletion: 'not_completed_by_attestation',
   };
