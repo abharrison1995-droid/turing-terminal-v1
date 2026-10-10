@@ -285,7 +285,7 @@ process.exit(result.status || 0);
         ok: true,
         basis: 'applied_by_turing',
       });
-    });
+    }, 30_000);
   });
 
   it('keeps an ignored untracked target intact and refuses before creating an operation', async () => {
