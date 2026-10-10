@@ -648,6 +648,10 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     // Simulate the user's manual fast-forward in this disposable fixture. The HTTP workflow below must be Git-read-only.
     h.fx.git('merge', '--ff-only', ref);
     expect(h.fx.git('rev-parse', 'main')).toBe(integratedHead);
+    expect(await getManualHandoffProjection(h.fx.db, h.fx.goalId, handoffId)).toMatchObject({
+      state: 'stale',
+      reason: { code: 'base_diverged' },
+    });
     const afterManualIntegration = handoffGitState(h.fx.repo);
     const verified = await call('GET', `${externalPath}/verification`);
     expect(verified).toMatchObject({ status: 200, body: { verification: { state: 'verified' } } });
@@ -760,6 +764,37 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
         .get(h.fx.goalId, 'apply_to_base'),
     ).toEqual({ n: 0 });
     // Restore the fixture's base checkout so the legacy-authority regression below keeps its original setup.
+    h.fx.git('reset', '--hard', base);
+    expect(h.fx.git('rev-parse', 'main')).toBe(base);
+    expect(h.fx.git('status', '--porcelain')).toBe('');
+
+    // Characterize a normal merge as well: the user's unrelated destination commit remains in the merge parentage.
+    writeFileSync(join(h.fx.repo, 'manual-integration.txt'), 'user-owned destination change\n');
+    h.fx.git('add', 'manual-integration.txt');
+    h.fx.git('commit', '-m', 'user advances destination independently');
+    h.fx.git('merge', '--no-ff', '--no-edit', ref);
+    const ordinaryMergeHead = h.fx.git('rev-parse', 'main');
+    expect(ordinaryMergeHead).not.toBe(integratedHead);
+    expect(() => h!.fx.git('merge-base', '--is-ancestor', integratedHead, ordinaryMergeHead)).not.toThrow();
+    expect(await getManualHandoffProjection(h.fx.db, h.fx.goalId, handoffId)).toMatchObject({
+      state: 'stale',
+      reason: { code: 'base_diverged' },
+    });
+    const afterOrdinaryMerge = handoffGitState(h.fx.repo);
+    const mergeVerification = await call('GET', `${externalPath}/verification`);
+    expect(mergeVerification).toMatchObject({
+      status: 200,
+      body: {
+        verification: {
+          state: 'verified',
+          observation: {
+            source: { commit: integratedHead },
+            destination: { observedCommit: ordinaryMergeHead },
+          },
+        },
+      },
+    });
+    expect(handoffGitState(h.fx.repo)).toEqual(afterOrdinaryMerge);
     h.fx.git('reset', '--hard', base);
     expect(h.fx.git('rev-parse', 'main')).toBe(base);
     expect(h.fx.git('status', '--porcelain')).toBe('');

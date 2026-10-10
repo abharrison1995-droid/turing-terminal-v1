@@ -736,7 +736,6 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
                   goalId={goal.id}
                   goalTitle={goal.title}
                   handoff={projection.handoff}
-                  handoffCurrent={projection.state === 'current'}
                   refresh={`${refresh}:${localRefresh}`}
                 />
               )}

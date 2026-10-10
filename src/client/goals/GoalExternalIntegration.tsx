@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   GoalExternalIntegrationAttestationProjection,
   GoalExternalIntegrationObservation,
@@ -14,27 +14,165 @@ import { useLoad } from './useLoad';
 
 const PENDING_PREFIX = 'turing.goalExternalIntegration.v1:';
 const HASH = /^[0-9a-f]{64}$/;
+const volatilePendingDigests = new Map<string, string>();
+const volatilePendingKeys = new Set<string>();
+
+type RecoveryState =
+  | { state: 'idle' }
+  | { state: 'posting'; digest: string }
+  | { state: 'outcome_uncertain'; digest: string }
+  | { state: 'reconciling'; digest: string }
+  | { state: 'approved_orphan'; digest: string; approvalId: string; approvalStatus: 'pending' | 'approved' }
+  | {
+      state: 'attestation_validation_pending';
+      digest: string;
+      attestationId: string;
+      approvalId: string;
+    }
+  | { state: 'reconciled_success'; digest: string }
+  | { state: 'reconciled_absence'; digest: string }
+  | { state: 'refused'; digest: string; message: string };
 
 function pendingKey(goalId: string, handoffId: string) {
   return `${PENDING_PREFIX}${goalId}:${handoffId}`;
 }
 
 function readPendingDigest(goalId: string, handoffId: string): string | null {
+  const key = pendingKey(goalId, handoffId);
   try {
-    const value = window.sessionStorage.getItem(pendingKey(goalId, handoffId));
-    return value && HASH.test(value) ? value : null;
-  } catch {
+    const value = window.sessionStorage.getItem(key);
+    if (value && HASH.test(value)) return value;
+    if (volatilePendingKeys.has(key)) return volatilePendingDigests.get(key) ?? null;
+    volatilePendingDigests.delete(key);
+    volatilePendingKeys.delete(key);
     return null;
+  } catch {
+    return volatilePendingDigests.get(key) ?? null;
   }
 }
 
 function savePendingDigest(goalId: string, handoffId: string, digest: string | null) {
-  try {
-    if (digest) window.sessionStorage.setItem(pendingKey(goalId, handoffId), digest);
-    else window.sessionStorage.removeItem(pendingKey(goalId, handoffId));
-  } catch {
-    // Session storage only protects the current UI session; SQLite remains the durable recovery authority.
+  const key = pendingKey(goalId, handoffId);
+  if (digest) {
+    try {
+      window.sessionStorage.setItem(key, digest);
+      volatilePendingDigests.delete(key);
+      volatilePendingKeys.delete(key);
+    } catch {
+      volatilePendingDigests.set(key, digest);
+      volatilePendingKeys.add(key);
+    }
+    return;
   }
+  volatilePendingDigests.delete(key);
+  volatilePendingKeys.delete(key);
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // SQLite remains the durable recovery authority if browser storage is unavailable.
+  }
+}
+
+function recoveryDigest(state: RecoveryState): string | null {
+  switch (state.state) {
+    case 'outcome_uncertain':
+    case 'reconciling':
+    case 'posting':
+    case 'approved_orphan':
+    case 'attestation_validation_pending':
+      return state.digest;
+    case 'idle':
+    case 'reconciled_success':
+    case 'reconciled_absence':
+    case 'refused':
+      return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStoredStatusFor(
+  value: unknown,
+  goalId: string,
+  handoffId: string,
+): value is GoalExternalIntegrationStoredStatus {
+  if (
+    !isRecord(value) ||
+    value.goalId !== goalId ||
+    value.handoffId !== handoffId ||
+    typeof value.hasAttestation !== 'boolean' ||
+    typeof value.limit !== 'number' ||
+    !Number.isInteger(value.limit) ||
+    value.limit < 1 ||
+    !Array.isArray(value.attestations) ||
+    !Array.isArray(value.approvals) ||
+    typeof value.attestationsHaveMore !== 'boolean' ||
+    typeof value.approvalsHaveMore !== 'boolean'
+  )
+    return false;
+  return (
+    value.attestations.every(
+      (row) =>
+        isRecord(row) &&
+        typeof row.attestationId === 'string' &&
+        typeof row.approvalId === 'string' &&
+        typeof row.actionDigest === 'string' &&
+        HASH.test(row.actionDigest) &&
+        typeof row.recordDigest === 'string' &&
+        HASH.test(row.recordDigest) &&
+        typeof row.observedAt === 'string' &&
+        typeof row.decidedAt === 'string',
+    ) &&
+    value.approvals.every(
+      (row) =>
+        isRecord(row) &&
+        typeof row.approvalId === 'string' &&
+        typeof row.actionDigest === 'string' &&
+        HASH.test(row.actionDigest) &&
+        (row.status === 'pending' || row.status === 'approved' || row.status === 'denied') &&
+        (row.decidedBy === null || row.decidedBy === 'user') &&
+        typeof row.createdAt === 'string' &&
+        (row.respondedAt === null || typeof row.respondedAt === 'string') &&
+        (row.attestationId === null || typeof row.attestationId === 'string'),
+    )
+  );
+}
+
+function isAttestationProjectionFor(
+  value: unknown,
+  goalId: string,
+  handoffId: string,
+  attestationId: string,
+): value is GoalExternalIntegrationAttestationProjection {
+  if (!isRecord(value)) return false;
+  const states = ['current', 'historical', 'not_integrated', 'stale', 'unavailable', 'invalid'];
+  if (!states.includes(String(value.state))) return false;
+  if (value.record === null) return value.state !== 'current' && value.state !== 'historical';
+  if (!isRecord(value.record)) return false;
+  const record = value.record;
+  return (
+    value.state !== undefined &&
+    record.kind === 'turing_goal_external_integration_attestation' &&
+    record.goalId === goalId &&
+    record.attestationId === attestationId &&
+    record.actionDigest !== undefined &&
+    typeof record.actionDigest === 'string' &&
+    HASH.test(record.actionDigest) &&
+    typeof record.approvalId === 'string' &&
+    record.approvalId.length > 0 &&
+    isRecord(record.handoff) &&
+    record.handoff.id === handoffId &&
+    typeof record.handoff.digest === 'string' &&
+    HASH.test(record.handoff.digest) &&
+    typeof record.recordDigest === 'string' &&
+    HASH.test(record.recordDigest) &&
+    isRecord(record.decision) &&
+    record.decision.value === 'confirm_external_integration' &&
+    record.decision.decidedBy === 'user' &&
+    typeof record.decision.decidedAt === 'string'
+  );
 }
 
 function matchingAttestation(status: GoalExternalIntegrationStoredStatus, digest: string) {
@@ -99,23 +237,23 @@ export function GoalExternalIntegration({
   goalId,
   goalTitle,
   handoff,
-  handoffCurrent,
   refresh = 0,
 }: {
   goalId: string;
   goalTitle: string;
   handoff: GoalManualIntegrationHandoff;
-  handoffCurrent: boolean;
   refresh?: number | string;
 }) {
-  const [pendingDigest, setPendingDigest] = useState(() => readPendingDigest(goalId, handoff.handoffId));
+  const [recovery, setRecovery] = useState<RecoveryState>(() => {
+    const digest = readPendingDigest(goalId, handoff.handoffId);
+    return digest ? { state: 'outcome_uncertain', digest } : { state: 'idle' };
+  });
   const [verification, setVerification] = useState<GoalExternalIntegrationVerification | null>(null);
   const [checking, setChecking] = useState(false);
   const [verificationError, setVerificationError] = useState('');
   const [reviewedConfirmation, setReviewedConfirmation] = useState<GoalExternalIntegrationObservation | null>(
     null,
   );
-  const [submitting, setSubmitting] = useState(false);
   const [selectedAttestationId, setSelectedAttestationId] = useState<string | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const [announcement, setAnnouncement] = useState('');
@@ -124,6 +262,8 @@ export function GoalExternalIntegration({
   const [identityCopyFallback, setIdentityCopyFallback] = useState(false);
   const requestSequence = useRef(0);
   const submitInFlight = useRef(false);
+  const reconciliationInFlight = useRef(false);
+  const reconciliationSequence = useRef(0);
   const mounted = useRef(false);
   const verifiedOnce = useRef(false);
   const previousRefresh = useRef(refresh);
@@ -133,15 +273,30 @@ export function GoalExternalIntegration({
     digest: string;
     status: GoalExternalIntegrationStoredStatus | null;
   } | null>(null);
+  const pendingDigest = recoveryDigest(recovery);
+  const recoveryStateRef = useRef(recovery);
+  const recoveryDigestRef = useRef(pendingDigest);
+  const submitting = recovery.state === 'posting';
   const stored = useLoad(
-    () => goalsApi.externalIntegrationStatus(goalId, handoff.handoffId),
+    async () => {
+      const status: unknown = await goalsApi.externalIntegrationStatus(goalId, handoff.handoffId);
+      if (!isStoredStatusFor(status, goalId, handoff.handoffId))
+        throw new Error('Saved external-integration status did not match this Goal and handoff.');
+      return status;
+    },
     `${goalId}:${handoff.handoffId}:external-integration-status`,
     refresh,
   );
   const attestation = useLoad<GoalExternalIntegrationAttestationProjection | null>(
     () =>
       selectedAttestationId
-        ? goalsApi.externalIntegrationProjection(goalId, handoff.handoffId, selectedAttestationId)
+        ? goalsApi
+            .externalIntegrationProjection(goalId, handoff.handoffId, selectedAttestationId)
+            .then((projection) => {
+              if (!isAttestationProjectionFor(projection, goalId, handoff.handoffId, selectedAttestationId))
+                throw new Error('Saved attestation response did not match this Goal, handoff and record.');
+              return projection;
+            })
         : Promise.resolve(null),
     `${goalId}:${handoff.handoffId}:${selectedAttestationId ?? 'no-attestation'}`,
     refresh,
@@ -155,16 +310,30 @@ export function GoalExternalIntegration({
     };
   }, []);
 
-  const updatePendingDigest = (digest: string | null) => {
-    setPendingDigest(digest);
-    savePendingDigest(goalId, handoff.handoffId, digest);
-    if (digest === null) reconciliationBaseline.current = null;
-  };
+  const transitionRecovery = useCallback(
+    (next: RecoveryState) => {
+      recoveryStateRef.current = next;
+      recoveryDigestRef.current = recoveryDigest(next);
+      setRecovery(next);
+      savePendingDigest(goalId, handoff.handoffId, recoveryDigest(next));
+      if (recoveryDigest(next) === null) {
+        reconciliationBaseline.current = null;
+        reconciledDigest.current = null;
+      }
+    },
+    [goalId, handoff.handoffId],
+  );
 
   useEffect(() => {
     if (stored.result.state !== 'ready') return;
-    const status = stored.result.data;
-    if (status.goalId !== goalId || status.handoffId !== handoff.handoffId) return;
+    const status: unknown = stored.result.data;
+    if (!isStoredStatusFor(status, goalId, handoff.handoffId)) {
+      if (pendingDigest)
+        setRecoveryMessage(
+          'Saved recovery status was malformed or belonged to another handoff. The lock remains.',
+        );
+      return;
+    }
     if (selectedAttestationId === null && status.attestations[0])
       setSelectedAttestationId(status.attestations[0].attestationId);
     if (!pendingDigest || reconciledDigest.current === pendingDigest) return;
@@ -173,6 +342,12 @@ export function GoalExternalIntegration({
     const record = matchingAttestation(status, pendingDigest);
     if (record) {
       reconciledDigest.current = pendingDigest;
+      transitionRecovery({
+        state: 'attestation_validation_pending',
+        digest: pendingDigest,
+        attestationId: record.attestationId,
+        approvalId: record.approvalId,
+      });
       setSelectedAttestationId(record.attestationId);
       setRecoveryMessage(
         'The saved status contains the exact attestation. Its integrity and currentness are being revalidated.',
@@ -184,6 +359,12 @@ export function GoalExternalIntegration({
     if (approval) {
       reconciledDigest.current = pendingDigest;
       if (approval.attestationId) {
+        transitionRecovery({
+          state: 'attestation_validation_pending',
+          digest: pendingDigest,
+          attestationId: approval.attestationId,
+          approvalId: approval.approvalId,
+        });
         setSelectedAttestationId(approval.attestationId);
         setRecoveryMessage(
           'The exact approval links to an attestation. Its integrity and currentness are being revalidated.',
@@ -191,27 +372,44 @@ export function GoalExternalIntegration({
         setAnnouncement('A matching attestation was found. Validating its saved evidence now.');
         return;
       }
+      if (approval.status === 'denied') {
+        const message = 'The exact action was denied. This digest cannot be confirmed again.';
+        transitionRecovery({ state: 'refused', digest: pendingDigest, message });
+        setRefusal(message);
+        setAnnouncement('The exact action was denied. No attestation was recorded.');
+        return;
+      }
+      transitionRecovery({
+        state: 'approved_orphan',
+        digest: pendingDigest,
+        approvalId: approval.approvalId,
+        approvalStatus: approval.status,
+      });
       setRecoveryMessage(
-        approval.status === 'denied'
-          ? 'The exact action was denied. This digest cannot be confirmed again.'
-          : 'A matching user approval exists, but no attestation is stored. Review the same observation and explicitly confirm again to finish recording it.',
+        'A matching user approval exists, but no attestation is stored. Review the same observation and explicitly confirm again to finish recording it.',
       );
       setAnnouncement('Saved approval status was found. No Git action was performed.');
       return;
     }
     if (status.attestationsHaveMore || status.approvalsHaveMore) {
+      transitionRecovery({ state: 'outcome_uncertain', digest: pendingDigest });
       setRecoveryMessage(
         'The saved history is truncated and may omit this exact action. The uncertainty lock remains until the exact status can be established.',
       );
       return;
     }
-    reconciledDigest.current = pendingDigest;
-    updatePendingDigest(null);
     setRecoveryMessage(
-      'No matching approval or attestation is stored as of the latest successful status read. Verify again before any new confirmation.',
+      'This saved-status refresh found no matching action. The outcome remains locked until an explicit complete reconciliation establishes absence.',
     );
-    setAnnouncement('Recovery status was read. No confirmation was repeated automatically.');
-  }, [goalId, handoff.handoffId, pendingDigest, selectedAttestationId, stored.result]);
+  }, [
+    goalId,
+    handoff.handoffId,
+    pendingDigest,
+    recovery.state,
+    selectedAttestationId,
+    stored.result,
+    transitionRecovery,
+  ]);
 
   useEffect(() => {
     if (!pendingDigest || !selectedAttestationId || attestation.result.state !== 'ready') return;
@@ -223,11 +421,25 @@ export function GoalExternalIntegration({
       record.handoff.id !== handoff.handoffId ||
       record.attestationId !== selectedAttestationId ||
       record.actionDigest !== pendingDigest
-    )
+    ) {
+      setRecoveryMessage(
+        'The saved projection did not prove the pending Goal, handoff and action identity. The lock remains.',
+      );
       return;
+    }
+    if (
+      recovery.state === 'attestation_validation_pending' &&
+      recovery.digest === pendingDigest &&
+      (record.attestationId !== recovery.attestationId || record.approvalId !== recovery.approvalId)
+    ) {
+      setRecoveryMessage(
+        'The saved projection did not match the exact pending attestation and approval. The lock remains.',
+      );
+      return;
+    }
     if (projection.state === 'current' || projection.state === 'historical') {
       reconciledDigest.current = pendingDigest;
-      updatePendingDigest(null);
+      transitionRecovery({ state: 'reconciled_success', digest: pendingDigest });
       setRecoveryMessage('The exact immutable attestation was validated from saved server evidence.');
       setAnnouncement('The original confirmation was recorded and its attestation is valid.');
       return;
@@ -235,7 +447,15 @@ export function GoalExternalIntegration({
     setRecoveryMessage(
       `The exact attestation exists, but its validation state is ${projection.state}. The uncertainty lock remains.`,
     );
-  }, [attestation.result, goalId, handoff.handoffId, pendingDigest, selectedAttestationId]);
+  }, [
+    attestation.result,
+    goalId,
+    handoff.handoffId,
+    pendingDigest,
+    recovery.state,
+    selectedAttestationId,
+    transitionRecovery,
+  ]);
 
   const refreshVerification = async () => {
     verifiedOnce.current = true;
@@ -275,14 +495,28 @@ export function GoalExternalIntegration({
   }, [refresh]);
 
   const reconcile = async (digest: string) => {
-    if (!mounted.current) return;
+    if (!mounted.current || recoveryDigestRef.current !== digest || reconciliationInFlight.current) return;
+    reconciliationInFlight.current = true;
+    const sequence = ++reconciliationSequence.current;
+    const isLatest = () => mounted.current && sequence === reconciliationSequence.current;
+    transitionRecovery({ state: 'reconciling', digest });
     setRecoveryMessage('Checking saved approval and attestation records for this exact action digest…');
     try {
-      const status = await goalsApi.externalIntegrationStatus(goalId, handoff.handoffId);
-      if (!mounted.current || status.goalId !== goalId || status.handoffId !== handoff.handoffId) return;
+      const response: unknown = await goalsApi.externalIntegrationStatus(goalId, handoff.handoffId);
+      if (!isLatest()) return;
+      if (!isStoredStatusFor(response, goalId, handoff.handoffId))
+        throw new Error('Saved recovery status was malformed or belonged to another handoff.');
+      const status = response;
       stored.reload();
       const record = matchingAttestation(status, digest);
       if (record) {
+        reconciledDigest.current = digest;
+        transitionRecovery({
+          state: 'attestation_validation_pending',
+          digest,
+          attestationId: record.attestationId,
+          approvalId: record.approvalId,
+        });
         setSelectedAttestationId(record.attestationId);
         setRecoveryMessage(
           'The exact attestation exists. Its integrity and currentness are being revalidated.',
@@ -293,6 +527,13 @@ export function GoalExternalIntegration({
       const approval = matchingApproval(status, digest);
       if (approval) {
         if (approval.attestationId) {
+          reconciledDigest.current = digest;
+          transitionRecovery({
+            state: 'attestation_validation_pending',
+            digest,
+            attestationId: approval.attestationId,
+            approvalId: approval.approvalId,
+          });
           setSelectedAttestationId(approval.attestationId);
           setRecoveryMessage(
             'The exact approval links to an attestation. Its integrity and currentness are being revalidated.',
@@ -300,31 +541,53 @@ export function GoalExternalIntegration({
           setAnnouncement('A matching attestation was found. Validating its saved evidence now.');
           return;
         }
+        if (approval.status === 'denied') {
+          const message = 'The exact user approval was denied. The same action digest cannot be used again.';
+          transitionRecovery({ state: 'refused', digest, message });
+          setRecoveryMessage(message);
+          setRefusal(message);
+          setAnnouncement('The exact action was denied. No attestation was recorded.');
+          return;
+        }
+        transitionRecovery({
+          state: 'approved_orphan',
+          digest,
+          approvalId: approval.approvalId,
+          approvalStatus: approval.status,
+        });
         setRecoveryMessage(
-          approval.status === 'denied'
-            ? 'The exact user approval was denied. The same action digest cannot be used again.'
-            : 'A matching approval exists without an attestation. The result is not recorded as externally integrated. Review again and explicitly confirm to finish recording.',
+          'A matching approval exists without an attestation. The result is not recorded as externally integrated. Review the same verified action and explicitly confirm to finish recording.',
         );
-        setAnnouncement('An approval was found without a saved attestation.');
+        setAnnouncement(
+          'An approval was found without a saved attestation. A separate confirmation is required.',
+        );
         return;
       }
       if (status.attestationsHaveMore || status.approvalsHaveMore) {
+        transitionRecovery({ state: 'outcome_uncertain', digest });
         setRecoveryMessage(
           'The saved history is truncated and may omit this exact action. The uncertainty lock remains until the exact status can be established.',
         );
         setAnnouncement('Recovery is incomplete because the bounded history does not include every record.');
         return;
       }
-      updatePendingDigest(null);
+      transitionRecovery({ state: 'reconciled_absence', digest });
+      setVerification(null);
+      setVerificationError('');
       setRecoveryMessage(
-        'No matching approval or attestation is stored as of this successful status read. Verify again before any new confirmation.',
+        'No matching approval or attestation is stored as of this complete status read. Run a fresh Git verification before any new confirmation.',
       );
-      setAnnouncement('Recovery status is reconciled. No new approval or POST was created.');
+      setAnnouncement(
+        'Recovery status is reconciled. No new approval or POST was created. A fresh Git check is required.',
+      );
     } catch {
+      if (isLatest()) transitionRecovery({ state: 'outcome_uncertain', digest });
       setRecoveryMessage(
         'Saved status could not be read. The action remains locked until a complete reconciliation succeeds.',
       );
       setAnnouncement('Recovery remains incomplete. No automatic retry was sent.');
+    } finally {
+      if (sequence === reconciliationSequence.current) reconciliationInFlight.current = false;
     }
   };
 
@@ -337,13 +600,24 @@ export function GoalExternalIntegration({
       submitInFlight.current
     )
       return;
+    const currentRecovery = recoveryStateRef.current;
+    const reviewedApproval =
+      stored.result.state === 'ready' && isStoredStatusFor(stored.result.data, goalId, handoff.handoffId)
+        ? matchingApproval(stored.result.data, reviewed.actionDigest)
+        : null;
+    const exactOrphanApproval =
+      currentRecovery.state === 'approved_orphan' &&
+      currentRecovery.digest === reviewed.actionDigest &&
+      reviewedApproval?.approvalId === currentRecovery.approvalId &&
+      (reviewedApproval.status === 'pending' || reviewedApproval.status === 'approved') &&
+      reviewedApproval.attestationId === null;
+    if (recoveryDigestRef.current !== null && !exactOrphanApproval) return;
     reconciliationBaseline.current = {
       digest: reviewed.actionDigest,
       status: stored.result.state === 'ready' ? stored.result.data : null,
     };
     submitInFlight.current = true;
-    setSubmitting(true);
-    updatePendingDigest(reviewed.actionDigest);
+    transitionRecovery({ state: 'posting', digest: reviewed.actionDigest });
     setRefusal('');
     setAnnouncement(
       'Recording the exact reviewed user confirmation. Turing will not run Git or complete the Goal.',
@@ -355,10 +629,21 @@ export function GoalExternalIntegration({
         reviewed.actionDigest,
       );
       if (!mounted.current) return;
-      if (result.actionDigest !== reviewed.actionDigest)
+      if (
+        result.actionDigest !== reviewed.actionDigest ||
+        typeof result.attestationId !== 'string' ||
+        result.attestationId.length === 0 ||
+        typeof result.approvalId !== 'string' ||
+        result.approvalId.length === 0
+      )
         throw new Error('The saved response did not match the reviewed action digest.');
-      updatePendingDigest(null);
       reconciledDigest.current = reviewed.actionDigest;
+      transitionRecovery({
+        state: 'attestation_validation_pending',
+        digest: reviewed.actionDigest,
+        attestationId: result.attestationId,
+        approvalId: result.approvalId,
+      });
       setSelectedAttestationId(result.attestationId);
       setRecoveryMessage('');
       stored.reload();
@@ -372,19 +657,20 @@ export function GoalExternalIntegration({
       if (!mounted.current) return;
       setReviewedConfirmation(null);
       if (error instanceof ApiError && error.status === 412) {
-        updatePendingDigest(null);
-        reconciledDigest.current = null;
-        const changedEvidenceMessage =
+        const message =
           'The Git or Goal evidence changed since review. Nothing was approved for the new evidence. Review a fresh observation before confirming again.';
+        transitionRecovery({ state: 'refused', digest: reviewed.actionDigest, message });
+        reconciledDigest.current = null;
         setAnnouncement('Reviewed evidence changed. Refreshing the read-only observation.');
         await refreshVerification();
         if (mounted.current) {
-          setRefusal(changedEvidenceMessage);
+          setRefusal(message);
           setAnnouncement(
             'The reviewed evidence changed. A fresh read-only observation is shown; confirm it separately if it is correct.',
           );
         }
       } else {
+        transitionRecovery({ state: 'outcome_uncertain', digest: reviewed.actionDigest });
         setRecoveryMessage(
           'The request outcome is unknown. Further confirmation is locked until saved status is reconciled.',
         );
@@ -395,7 +681,6 @@ export function GoalExternalIntegration({
       }
     } finally {
       submitInFlight.current = false;
-      if (mounted.current) setSubmitting(false);
     }
   };
 
@@ -412,19 +697,21 @@ export function GoalExternalIntegration({
       ? matchingAttestation(stored.result.data, verification.observation.actionDigest)
       : null;
   const deniedExactAction = selectedApproval?.status === 'denied';
-  const canConfirm = Boolean(
+  const exactOrphanApproval =
+    recovery.state === 'approved_orphan' &&
     verificationIsCurrent &&
-    handoffCurrent &&
-    !deniedExactAction &&
-    (!pendingDigest || pendingDigest !== verification.observation.actionDigest || selectedApproval),
+    recovery.digest === verification.observation.actionDigest &&
+    selectedApproval?.approvalId === recovery.approvalId &&
+    selectedApproval.attestationId === null &&
+    selectedApproval.status !== 'denied';
+  const canConfirm = Boolean(
+    verificationIsCurrent && !deniedExactAction && (pendingDigest === null || exactOrphanApproval),
   );
   const currentProjection = attestation.result.state === 'ready' ? attestation.result.data : null;
   const projectionMatchesSelected =
     currentProjection === null ||
     currentProjection.record === null ||
-    (currentProjection.record.goalId === goalId &&
-      currentProjection.record.handoff.id === handoff.handoffId &&
-      currentProjection.record.attestationId === selectedAttestationId);
+    isAttestationProjectionFor(currentProjection, goalId, handoff.handoffId, selectedAttestationId ?? '');
   const copiedIdentityText = verificationIsCurrent ? exactGitIdentityText(verification.observation) : '';
   const copyGitIdentities = async () => {
     if (!verificationIsCurrent) return;
@@ -454,18 +741,17 @@ export function GoalExternalIntegration({
         Turing can inspect repository history after you integrate the handoff. It will not merge, change refs,
         check out branches, modify files, or complete this Goal.
       </p>
-      {!handoffCurrent && (
-        <p className="goal-handoff-reason" role="status">
-          This handoff is not current, so it cannot authorize a new external-integration confirmation. Saved
-          attestations remain available for historical review.
-        </p>
-      )}
+      <p className="goal-row-meta">
+        Ordinary handoff currentness checks the destination at preparation time and may become stale after
+        your integration. This separate read-only verifier rechecks the original handoff authority and current
+        Git ancestry; only a fresh verified result can offer confirmation.
+      </p>
       <div className="goal-handoff-actions">
         <button
           type="button"
           className="secondary-button"
           onClick={() => void refreshVerification()}
-          disabled={!handoffCurrent || submitting || checking}
+          disabled={submitting || checking}
         >
           {checking ? 'Checking Git history…' : 'Verify external integration'}
         </button>
@@ -475,7 +761,6 @@ export function GoalExternalIntegration({
           onClick={() => {
             stored.reload();
             if (selectedAttestationId) attestation.reload();
-            if (pendingDigest) void reconcile(pendingDigest);
           }}
           disabled={submitting || checking}
         >
@@ -706,14 +991,14 @@ export function GoalExternalIntegration({
               <button
                 type="button"
                 className="primary-button"
-                onClick={() =>
-                  setReviewedConfirmation(verificationIsCurrent ? verification.observation : null)
-                }
+                onClick={() => {
+                  if (canConfirm && verificationIsCurrent) setReviewedConfirmation(verification.observation);
+                }}
                 disabled={!canConfirm || submitting || selectedRecord !== null}
               >
                 {deniedExactAction
                   ? 'This action was denied'
-                  : selectedApproval && !selectedRecord
+                  : selectedApproval && !selectedRecord && (pendingDigest === null || exactOrphanApproval)
                     ? 'Resume attestation recording'
                     : 'Confirm external integration'}
               </button>
@@ -723,7 +1008,7 @@ export function GoalExternalIntegration({
       )}
 
       {pendingDigest && (
-        <div className="goal-external-recovery" role="status">
+        <section className="goal-external-recovery" aria-label="Confirmation recovery">
           <h4>Confirmation recovery</h4>
           <p>
             {recoveryMessage ||
@@ -735,7 +1020,17 @@ export function GoalExternalIntegration({
           {stored.result.state === 'error' && (
             <p>Refresh cannot clear this lock while saved status is unavailable.</p>
           )}
-        </div>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => void reconcile(pendingDigest)}
+            disabled={submitting || checking || recovery.state === 'reconciling'}
+          >
+            {recovery.state === 'reconciling'
+              ? 'Reconciling saved action…'
+              : 'Reconcile pending confirmation'}
+          </button>
+        </section>
       )}
       {refusal && (
         <p className="form-error" role="alert">

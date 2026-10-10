@@ -1,6 +1,6 @@
 # Goal external-integration attestation design
 
-Status: Stage 7C.2B.5A design and Git-characterization checkpoint. This document proposes a future authority contract. It does not implement external attestation, change completion, add a migration, or enable Git writes.
+Status: The opening sections preserve the original Stage 7C.2B.5A design record. Later implementation and remediation checkpoints are appended below; they do not change the completion boundary or permit Turing Git writes.
 
 ## 1. Executive decision
 
@@ -323,3 +323,11 @@ The UI shows exact repository, source, recorded base and observed destination id
 The actual trust boundary remains the existing app pre-handler: remote Tailscale requests require a Serve identity and paired device session; Tauri CORS now admits the strong `If-Match` header. Local loopback API callers are process-agnostic, and paired mobile clients can call the same endpoint. The UI is desktop-focused, but the server does not assert a desktop-only physical-human guarantee.
 
 Focused route/component tests and the extended fake-provider E2E use only disposable repositories. They prove GET creates no approval/attestation, exact confirmation creates one user-decided approval and immutable record, duplicate exact confirmation reuses it, changed review evidence is refused, app endpoints leave Git unchanged, later destination movement yields historical projection, and completion remains `final_apply_required`. Stage 7C.2B.5D, 7C.3, Windows qualification and independent acceptance remain outstanding. This candidate is not production-ready.
+
+## Stage 7C.2B.5C.1 — UI authority and recovery follow-up
+
+The ordinary handoff validator answers whether the snapshot remains ready for initial integration. A moved base can make it stale after the user integrates the accepted source. The desktop may still call the distinct read-only external verifier; stale status is neither a positive result nor a reason to bypass that verifier. Only its fresh exact-authority/source-and-base-ancestry result enables the separate explicit confirmation.
+
+Unknown-outcome recovery retains one exact pending action digest per Goal/handoff while later observations are displayed. A different digest cannot replace or bypass it. Exact saved attestations require projection validation; approved orphans require fresh same-digest verification plus another explicit confirmation; denials remain non-retryable; complete scoped absence requires a fresh Git verification before the next confirmation. Failed, malformed, truncated, mismatched or unavailable responses keep the lock. No automatic POST retry or Git write is introduced.
+
+The pending identity is stored in per-tab `sessionStorage` with a same-page in-memory fallback when storage writes fail. This cannot guarantee recovery across a reload with unavailable browser storage or across processes; server approvals and immutable attestations remain the durable authority. The service, migration 026, approval contract and completion evaluator are unchanged. Windows remains unverified; Stage 7C.2B.5D and 7C.3 have not begun.
