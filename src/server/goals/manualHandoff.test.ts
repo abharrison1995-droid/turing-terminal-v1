@@ -3378,4 +3378,189 @@ describe('external integration attestation corrections', () => {
     expect(approvalIdentityMatchesRow(approval, attestation)).toBe(true);
     expect(approvalIdentityMatchesRow({ ...approval!, goalId: randomUUID() }, attestation)).toBe(false);
   });
+  it('refuses a correction whose approved decision does not match the reviewed digest', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const dispute = requestCorrection(fx, attestation.attestationId);
+    const withdrawal = requestCorrection(fx, attestation.attestationId, {
+      correctionKind: 'withdraw',
+      explanation: 'I withdraw this claim.',
+    });
+    decideApproved(fx, dispute.approval.id);
+    expect(
+      errorCode(() =>
+        appendAttestationCorrection(fx.db, {
+          goalId: fx.goalId,
+          approvalId: dispute.approval.id,
+          expectedActionDigest: withdrawal.actionDigest,
+          explanation: 'The recorded observation is not what I confirmed.',
+        }),
+      ),
+    ).toBe('correction_action_mismatch');
+    expect(
+      errorCode(() =>
+        appendReviewed(
+          fx,
+          { approval: dispute.approval, actionDigest: '0'.repeat(64) },
+          'The recorded observation is not what I confirmed.',
+        ),
+      ),
+    ).toBe('correction_action_mismatch');
+    expect(listAttestationCorrectionHistory(fx.db, fx.goalId, attestation.attestationId)).toEqual([]);
+  });
+
+  it('refuses a denied correction approval and never appends it, including after a restart', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: reviewed.approval.id,
+      decision: 'denied',
+      decidedBy: 'user',
+    });
+    expect(
+      errorCode(() => appendReviewed(fx, reviewed, 'The recorded observation is not what I confirmed.')),
+    ).toBe('approval_required');
+    withReopenedDatabase(fx, (db) => {
+      expect(
+        errorCode(() =>
+          appendOn(db, fx.goalId, reviewed, 'The recorded observation is not what I confirmed.'),
+        ),
+      ).toBe('approval_required');
+      expect(listAttestationCorrectionHistory(db, fx.goalId, attestation.attestationId)).toEqual([]);
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'active_uncontested',
+        correctionCount: 0,
+      });
+    });
+  });
+
+  it('refuses a repeated dispute and any correction after a supersession', async () => {
+    const { fx, handoff, attestation } = await attestedFixture();
+    const disputed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, disputed.approval.id);
+    appendReviewed(fx, disputed, 'The recorded observation is not what I confirmed.');
+    expect(errorCode(() => requestCorrection(fx, attestation.attestationId))).toBe(
+      'correction_transition_not_allowed',
+    );
+
+    const later = fx.git(
+      'commit-tree',
+      attestation.destination.observedTree,
+      '-p',
+      attestation.destination.observedCommit,
+      '-m',
+      'later destination change for transition coverage',
+    );
+    fx.git('update-ref', handoff.target.baseRef, later);
+    const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+    const newApproval = approveExternalObservation(fx, newObservation);
+    const replacement = (
+      await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: newObservation,
+        approvalId: newApproval.id,
+      })
+    ).record;
+    const supersede = requestCorrection(fx, attestation.attestationId, {
+      correctionKind: 'supersede',
+      reasonCode: 'superseded_by_new_observation',
+      explanation: 'A newer exact observation replaces this one.',
+      replacementAttestationId: replacement.attestationId,
+    });
+    decideApproved(fx, supersede.approval.id);
+    appendReviewed(fx, supersede, 'A newer exact observation replaces this one.');
+
+    expect(
+      errorCode(() =>
+        requestCorrection(fx, attestation.attestationId, {
+          correctionKind: 'withdraw',
+          explanation: 'I withdraw this claim.',
+        }),
+      ),
+    ).toBe('correction_transition_not_allowed');
+    expect(errorCode(() => requestCorrection(fx, attestation.attestationId))).toBe(
+      'correction_transition_not_allowed',
+    );
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'superseded',
+    });
+  });
+
+  it('keeps an independent attestation eligible and leaves Git and Goal state untouched when another is withdrawn', async () => {
+    const { fx, handoff, attestation } = await attestedFixture();
+    const later = fx.git(
+      'commit-tree',
+      attestation.destination.observedTree,
+      '-p',
+      attestation.destination.observedCommit,
+      '-m',
+      'independent destination change',
+    );
+    fx.git('update-ref', handoff.target.baseRef, later);
+    const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+    const newApproval = approveExternalObservation(fx, newObservation);
+    const independent = (
+      await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: newObservation,
+        approvalId: newApproval.id,
+      })
+    ).record;
+
+    const gitState = () => ({
+      refs: fx.git('for-each-ref'),
+      head: fx.git('rev-parse', 'HEAD'),
+      status: fx.git('status', '--porcelain'),
+      staged: fx.git('diff', '--cached', '--name-only'),
+    });
+    const goalState = () =>
+      fx.db
+        .prepare(
+          `SELECT status, status_reason_code,
+            (SELECT COUNT(*) FROM goal_external_completion_proofs WHERE goal_id = goals.id) AS proofs
+           FROM goals WHERE id = ?`,
+        )
+        .get(fx.goalId);
+    const gitBefore = gitState();
+    const goalBefore = goalState();
+
+    const dispute = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, dispute.approval.id);
+    appendReviewed(fx, dispute, 'The recorded observation is not what I confirmed.');
+    const withdrawal = requestCorrection(fx, attestation.attestationId, {
+      correctionKind: 'withdraw',
+      explanation: 'I withdraw this claim.',
+    });
+    decideApproved(fx, withdrawal.approval.id);
+    appendReviewed(fx, withdrawal, 'I withdraw this claim.');
+
+    const withdrawnStanding = getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId);
+    const independentStanding = getAttestationCorrectionStanding(fx.db, fx.goalId, independent.attestationId);
+    expect(withdrawnStanding).toMatchObject({ standing: 'withdrawn' });
+    expect(attestationCorrectionStandingAllowsCompletion(withdrawnStanding.standing)).toBe(false);
+    expect(independentStanding).toMatchObject({ standing: 'active_uncontested', correctionCount: 0 });
+    expect(attestationCorrectionStandingAllowsCompletion(independentStanding.standing)).toBe(true);
+    expect(gitState()).toEqual(gitBefore);
+    expect(goalState()).toEqual(goalBefore);
+    expect(goalBefore).toMatchObject({ proofs: 0 });
+  });
+
+  it('serves another Goal’s correction route as not found for this attestation', async () => {
+    const { fx, handoff, attestation } = await attestedFixture();
+    const other = createGoalDraft(fx.db, {
+      projectId: fx.projectId,
+      title: 'Other Goal',
+      definition: simpleDefinition(),
+    });
+    app = goalApp(fx.db, disabledSupervisor(fx.db));
+    expect(
+      await call(
+        app,
+        'GET',
+        `/api/goals/${other.goalId}/handoffs/${handoff.handoffId}/external-integration/attestations/${attestation.attestationId}/corrections`,
+      ),
+    ).toMatchObject({ status: 404 });
+  });
 });

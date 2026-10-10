@@ -263,6 +263,7 @@ function loadCompatibleReplacement(
     throw correctionError('replacement_invalid', 'The replacement attestation does not exist for this Goal.');
   const replacement = loaded.record;
   if (
+    replacement.handoff.id !== original.handoff.id ||
     replacement.definition.version !== original.definition.version ||
     replacement.definition.hash !== original.definition.hash ||
     replacement.repository.identity !== original.repository.identity ||
