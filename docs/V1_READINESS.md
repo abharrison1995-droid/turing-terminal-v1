@@ -238,10 +238,19 @@ Independent review reproduced a downgrade-by-corruption gap: removing both v2 po
 
 The remediation verifies the recomputed current definition hash, user approval binding, and complete approved lineage before selecting any completion policy. It rejects corrupt content, malformed JSON, unsupported/partial v2 policy, mismatched approval hash, and a v2 ancestor whose altered content resembles legacy v1. `checkCompletionProof()` independently repeats definition/hash/lineage validation at the terminal transition boundary. Valid legacy v1 completion semantics and hashes remain covered by positive regression tests.
 
-The version-2 completion refusal remains inactive. No change was made to migration 027, proof/action digests, attestation backend, endpoint, UI, Goal executor, Git writer, provider, or billing behavior. The correction adds no proof issuance or completion transition. It is a remediation candidate pending independent review; the full gate and hosted CI for its final commit are recorded in the remediation checkpoint. Windows remains unverified, and V1 is not release-ready. Stages 7C.2B.5D.2, D.3, D.4, and 7C.3 have not started.
+The version-2 completion refusal remains inactive. No change was made to migration 027, proof/action digests, attestation backend, endpoint, UI, Goal executor, Git writer, provider, or billing behavior. The correction adds no proof issuance or completion transition. It is a remediation candidate pending independent review; the full gate and hosted CI for its final commit are recorded in the remediation checkpoint. Windows remains unverified, and V1 is not release-ready. Stage 7C.2B.5D.2 is a candidate pending full-stage acceptance; D.3, D.4, and 7C.3 have not started.
 
-## Stage 7C.2B.5D.2 correction authority — reviewed candidate
+## Stage 7C.2B.5D.2 correction authority — candidate pending acceptance
 
 Stage 7C.2B.5D.2 adds append-only per-attestation correction authority (migration 028) with a read-only history route, service-level dispute, withdrawal and supersession, correction events, and restart, rollback, migration-upgrade and SHA-1/SHA-256 coverage. Details and deferred items are in [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md).
 
 This is not a V1 release claim. There is no correction write route, desktop correction UI, completion-standing projection, or v2 completion. Production still uses `DisabledGoalExecutor`. Windows is unverified for this stage, and no physical or live acceptance was exercised.
+
+Known limits and prerequisites recorded from the full-stage D.2 review (not release blockers for this candidate):
+
+- **D.4 prerequisite:** `decideGoalApprovalAsUser` refuses a pending approval on a terminal Goal with `goal_terminal`. A correction approval therefore cannot be user-decided after completion through the command or HTTP route, although design section 6 contemplates post-completion corrections. D.4 must add a deliberate, narrow exemption for correction approvals and test it.
+- **D.3 prerequisite:** `getAttestationCorrectionStanding` lets `loadOriginalAttestation` throw for a missing or invalid original rather than returning `standing: 'invalid'`. The route maps this to 409. D.3 must handle the throw explicitly.
+- **Replacement lineage:** the replacement must share the original's handoff, definition version and hash, and repository identity and project. The handoff check is enforced at write time only. The read path re-checks approval identity but not handoff, definition or repository. No test builds a replacement from a different handoff, because the fixtures do not construct a second handoff in one Goal.
+- **Evidence guard:** the `attestationCorrectionActionDigest` refusal in `recordUserConfirmationEvidence` is defence in depth. The criterion-key check refuses the same approval first, and the 19-key trigger prevents a correction approval from carrying those keys.
+- **"Crash" in tests** means an injected SQLite abort inside a transaction, or closing and reopening the database handle. It is not an operating-system process kill. Real multi-process CAS races are not tested.
+- **Fabricated digests:** the 026→028 migration test uses historical-shaped fabricated digests. It shows the rows survive, but not that real chain validation passes for a historical attestation.

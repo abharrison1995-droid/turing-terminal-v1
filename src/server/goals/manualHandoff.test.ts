@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { call, disabledSupervisor, goalApp } from './apiKit.js';
 import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
+import { decideGoalApprovalAsUser } from './goalCommands.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { beginAmendment, approveDefinition, createGoalDraft, loadDefinitionVersion } from './definitions.js';
 import { recordEvidence } from './evidence.js';
@@ -3562,5 +3563,34 @@ describe('external integration attestation corrections', () => {
         `/api/goals/${other.goalId}/handoffs/${handoff.handoffId}/external-integration/attestations/${attestation.attestationId}/corrections`,
       ),
     ).toMatchObject({ status: 404 });
+  });
+  it('appends a correction to a completed Goal without changing its status or reopening it', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    fx.db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?").run(fx.goalId);
+    const goalBefore = fx.db
+      .prepare('SELECT status, status_reason_code FROM goals WHERE id = ?')
+      .get(fx.goalId);
+    decideApproved(fx, reviewed.approval.id);
+    appendReviewed(fx, reviewed, 'The recorded observation is not what I confirmed.');
+    expect(fx.db.prepare('SELECT status, status_reason_code FROM goals WHERE id = ?').get(fx.goalId)).toEqual(
+      goalBefore,
+    );
+    expect(goalBefore).toMatchObject({ status: 'completed' });
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'disputed',
+      correctionCount: 1,
+    });
+  });
+
+  it('refuses a user decision on a correction approval for a terminal Goal through the command path', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    fx.db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?").run(fx.goalId);
+    await expect(
+      decideGoalApprovalAsUser(fx.db, { approvalId: reviewed.approval.id, decision: 'approved' }),
+    ).rejects.toMatchObject({ code: 'goal_terminal' });
+    expect(getGoalApproval(fx.db, reviewed.approval.id)).toMatchObject({ status: 'pending' });
+    expect(listAttestationCorrectionHistory(fx.db, fx.goalId, attestation.attestationId)).toEqual([]);
   });
 });
