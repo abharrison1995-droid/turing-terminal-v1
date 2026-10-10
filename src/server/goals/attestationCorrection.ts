@@ -209,7 +209,11 @@ function loadVerifiedChain(
       } catch {
         invalidChain('A stored replacement attestation failed integrity validation.');
       }
-      if (!replacement || replacement.record.recordDigest !== record.replacement.recordDigest)
+      if (
+        !replacement ||
+        replacement.record.recordDigest !== record.replacement.recordDigest ||
+        !approvalIdentityMatchesRow(getGoalApproval(db, replacement.record.approvalId), replacement.record)
+      )
         invalidChain('A stored replacement attestation binding does not match.');
     }
     records.push(record);

@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EvidenceVerdict, GoalDefinition } from '../../shared/goals.js';
 import { approveDefinition, beginAmendment } from './definitions.js';
+import { requestGoalApproval, decideGoalApproval } from './approvals.js';
+import {
+  ATTESTATION_CORRECTION_ACTION,
+  computeAttestationCorrectionActionDigest,
+} from './attestationCorrectionDetail.js';
 import { GoalEvidenceError, recordEvidence, recordUserConfirmationEvidence } from './evidence.js';
 import { listGoalEvents } from './events.js';
 import { evaluateCriteria } from './freshness.js';
@@ -576,6 +582,62 @@ describe('user confirmation evidence', () => {
     const fx = goalRepoFixture({ definition: definition() });
     await confirm(fx, 'ux-any', fx.approval('user_confirmation', detail(fx, 'ux-any'), 'denied'));
     expect(await state(fx, 'ux-any')).toBe('contradicted');
+  });
+
+  it('refuses a correction approval as user-confirmation evidence', async () => {
+    const fx = goalRepoFixture({ definition: definition() });
+    const fields = {
+      schemaVersion: 1 as const,
+      action: ATTESTATION_CORRECTION_ACTION,
+      goalId: fx.goalId,
+      handoffId: randomUUID(),
+      handoffDigest: 'a'.repeat(64),
+      attestationId: randomUUID(),
+      attestationActionDigest: 'b'.repeat(64),
+      attestationRecordDigest: 'c'.repeat(64),
+      attestationApprovalId: randomUUID(),
+      correctionKind: 'dispute' as const,
+      sequence: 1,
+      previousCorrectionDigest: null,
+      reasonCode: 'observation_error' as const,
+      explanationDigest: null,
+      replacementAttestationId: null,
+      replacementRecordDigest: null,
+      definitionVersion: 1,
+      definitionHash: fx.currentHash(),
+    };
+    const actionDigest = computeAttestationCorrectionActionDigest(fields);
+    const request = requestGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      gate: 'user_confirmation',
+      risk: 'high',
+      reason: 'correction approval must not become evidence',
+      requestedBy: 'user',
+      detail: { ...fields, actionDigest },
+      attestationCorrectionActionDigest: actionDigest,
+    });
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: request.id,
+      decision: 'approved',
+      decidedBy: 'user',
+    });
+    await expect(
+      recordUserConfirmationEvidence(fx.db, {
+        goalId: fx.goalId,
+        definitionVersion: 1,
+        criterionKey: 'ux-any',
+        verifierDigest: fx.digest('ux-any'),
+        approvalId: request.id,
+        actor: 'user',
+        now: at(),
+      }),
+    ).rejects.toMatchObject({ code: 'approval_invalid' });
+    expect(
+      fx.db.prepare("SELECT COUNT(*) AS n FROM goal_evidence WHERE kind = 'user_confirmation'").get(),
+    ).toEqual({
+      n: 0,
+    });
   });
 
   it('cannot be created by a model, the supervisor or the system, or without a bound user approval', async () => {

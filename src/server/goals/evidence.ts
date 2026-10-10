@@ -406,6 +406,7 @@ export async function recordUserConfirmationEvidence(
     approval.gate !== 'user_confirmation' ||
     approval.decidedBy !== 'user' ||
     approval.status === 'pending' ||
+    approval.attestationCorrectionActionDigest !== undefined ||
     approval.detail.criterionKey !== input.criterionKey ||
     approval.detail.verifierDigest !== input.verifierDigest ||
     approval.detail.definitionVersion !== input.definitionVersion ||

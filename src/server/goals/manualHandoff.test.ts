@@ -2682,6 +2682,46 @@ describe('external integration attestation corrections', () => {
     });
   });
 
+  it('reports a supersession as invalid when its replacement approval no longer matches the replacement', async () => {
+    const { fx, handoff, attestation } = await attestedFixture();
+    const later = fx.git(
+      'commit-tree',
+      attestation.destination.observedTree,
+      '-p',
+      attestation.destination.observedCommit,
+      '-m',
+      'later destination change for replacement tamper',
+    );
+    fx.git('update-ref', handoff.target.baseRef, later);
+    const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+    const newApproval = approveExternalObservation(fx, newObservation);
+    const replacement = (
+      await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: newObservation,
+        approvalId: newApproval.id,
+      })
+    ).record;
+    const supersede = requestCorrection(fx, attestation.attestationId, {
+      correctionKind: 'supersede',
+      reasonCode: 'superseded_by_new_observation',
+      explanation: 'A newer exact observation replaces this one.',
+      replacementAttestationId: replacement.attestationId,
+    });
+    decideApproved(fx, supersede.approval.id);
+    appendReviewed(fx, supersede, 'A newer exact observation replaces this one.');
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'superseded',
+    });
+
+    fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+    fx.db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(newApproval.id);
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'invalid',
+    });
+  });
+
   it('refuses supersession by a replacement that has already been corrected', async () => {
     const { fx, handoff, attestation } = await attestedFixture();
     const later = fx.git(
