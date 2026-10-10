@@ -12,7 +12,7 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { call, disabledSupervisor, goalApp } from './apiKit.js';
@@ -27,17 +27,20 @@ import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff
 import {
   buildExternalIntegrationObservation,
   computeExternalIntegrationActionDigest,
+  approvalIdentityMatchesRow,
   createExternalIntegrationApprovalDetail,
   getExternalIntegrationProjection,
   persistExternalIntegrationAttestation,
   validateExternalIntegrationAttestation,
   validateExternalIntegrationObservation,
 } from './externalIntegration.js';
+import { openDatabase, type Db } from '../db.js';
 import { canonicalJson } from './definitionHash.js';
 import {
   AttestationCorrectionError,
   appendAttestationCorrection,
   buildAttestationCorrectionAction,
+  attestationCorrectionStandingAllowsCompletion,
   getAttestationCorrectionStanding,
   listAttestationCorrectionHistory,
   requestAttestationCorrectionApproval,
@@ -3144,5 +3147,231 @@ describe('external integration attestation corrections', () => {
       standing: 'disputed',
       correctionCount: 1,
     });
+  });
+
+  function withReopenedDatabase<T>(fx: { db: Db }, run: (db: Db) => T): T {
+    const dataDir = dirname(fx.db.name);
+    fx.db.close();
+    const reopened = openDatabase(dataDir);
+    try {
+      return run(reopened);
+    } finally {
+      reopened.close();
+    }
+  }
+
+  function appendOn(
+    db: Db,
+    goalId: string,
+    reviewed: { approval: { id: string }; actionDigest: string },
+    explanation: string | null,
+  ) {
+    return appendAttestationCorrection(db, {
+      goalId,
+      approvalId: reviewed.approval.id,
+      expectedActionDigest: reviewed.actionDigest,
+      explanation,
+    });
+  }
+
+  it('keeps a committed correction across a fresh connection and returns the original on an exact retry', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    const explanation = 'The recorded observation is not what I confirmed.';
+    const first = appendReviewed(fx, reviewed, explanation);
+    const before = getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId);
+    expect(before).toMatchObject({ standing: 'disputed', correctionCount: 1 });
+
+    withReopenedDatabase(fx, (db) => {
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toEqual(before);
+      const retry = appendOn(db, fx.goalId, reviewed, explanation);
+      expect(retry.reused).toBe(true);
+      expect(retry.record.correctionDigest).toBe(first.record.correctionDigest);
+      expect(listAttestationCorrectionHistory(db, fx.goalId, attestation.attestationId)).toHaveLength(1);
+    });
+  });
+
+  it('leaves an unapproved correction request pending and uncontested after a restart', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const pending = requestCorrection(fx, attestation.attestationId);
+
+    withReopenedDatabase(fx, (db) => {
+      expect(getGoalApproval(db, pending.approval.id)).toMatchObject({ status: 'pending' });
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'active_uncontested',
+        correctionCount: 0,
+      });
+      expect(() =>
+        appendOn(db, fx.goalId, pending, 'The recorded observation is not what I confirmed.'),
+      ).toThrow();
+      expect(listAttestationCorrectionHistory(db, fx.goalId, attestation.attestationId)).toEqual([]);
+    });
+  });
+
+  it('does not treat a decided approval without an appended row as a correction after a restart', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+
+    withReopenedDatabase(fx, (db) => {
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'active_uncontested',
+        correctionCount: 0,
+      });
+      expect(listAttestationCorrectionHistory(db, fx.goalId, attestation.attestationId)).toEqual([]);
+      // The decided approval still authorizes exactly one append after the restart.
+      appendOn(db, fx.goalId, reviewed, 'The recorded observation is not what I confirmed.');
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'disputed',
+        correctionCount: 1,
+      });
+    });
+  });
+
+  it('rolls back the correction row when a later write inside the same transaction fails', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    const approvalBefore = getGoalApproval(fx.db, reviewed.approval.id);
+    const explanation = 'The recorded observation is not what I confirmed.';
+
+    // Fault after the correction row is inserted: the event write is the last statement in the transaction.
+    fx.db.exec(
+      "CREATE TRIGGER tt_fail_correction_event BEFORE INSERT ON goal_events WHEN NEW.type = 'external_integration_corrected' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END;",
+    );
+    expect(errorCode(() => appendReviewed(fx, reviewed, explanation))).toBe('persistence_failed');
+    fx.db.exec('DROP TRIGGER tt_fail_correction_event;');
+    expect(fx.db.prepare('SELECT COUNT(*) AS n FROM goal_attestation_corrections').get()).toEqual({ n: 0 });
+    expect(
+      fx.db
+        .prepare("SELECT COUNT(*) AS n FROM goal_events WHERE type = 'external_integration_corrected'")
+        .get(),
+    ).toEqual({ n: 0 });
+    expect(getGoalApproval(fx.db, reviewed.approval.id)).toEqual(approvalBefore);
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'active_uncontested',
+      correctionCount: 0,
+    });
+
+    // Fault at the row insert itself.
+    fx.db.exec(
+      "CREATE TRIGGER tt_fail_correction_insert BEFORE INSERT ON goal_attestation_corrections BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END;",
+    );
+    expect(errorCode(() => appendReviewed(fx, reviewed, explanation))).toBe('persistence_failed');
+    fx.db.exec('DROP TRIGGER tt_fail_correction_insert;');
+    expect(fx.db.prepare('SELECT COUNT(*) AS n FROM goal_attestation_corrections').get()).toEqual({ n: 0 });
+
+    // Positive control: the same approval appends once the fault is removed.
+    appendReviewed(fx, reviewed, explanation);
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'disputed',
+      correctionCount: 1,
+    });
+  });
+
+  it('fails closed after a restart when a stored correction was damaged', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    const explanation = 'The recorded observation is not what I confirmed.';
+    const appended = appendReviewed(fx, reviewed, explanation);
+    fx.db.exec('DROP TRIGGER trg_goal_attestation_correction_immutable;');
+    const row = fx.db
+      .prepare('SELECT payload_json FROM goal_attestation_corrections WHERE id = ?')
+      .get(appended.record.correctionId) as { payload_json: string };
+    const damagedText = 'A changed statement that was never approved.';
+    fx.db
+      .prepare('UPDATE goal_attestation_corrections SET payload_json = ?, explanation = ? WHERE id = ?')
+      .run(row.payload_json.replace(explanation, damagedText), damagedText, appended.record.correctionId);
+
+    withReopenedDatabase(fx, (db) => {
+      expect(getAttestationCorrectionStanding(db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'invalid',
+        invalidCode: 'correction_chain_invalid',
+      });
+      expect(errorCode(() => appendOn(db, fx.goalId, reviewed, explanation))).toBe(
+        'correction_chain_invalid',
+      );
+    });
+  });
+
+  it.each(['sha1', 'sha256'] as const)(
+    'withdraws a disputed attestation under %s and keeps the chain ordered',
+    async (objectFormat) => {
+      const { fx, attestation } = await attestedFixture(objectFormat);
+      const disputed = requestCorrection(fx, attestation.attestationId);
+      decideApproved(fx, disputed.approval.id);
+      appendReviewed(fx, disputed, 'The recorded observation is not what I confirmed.');
+      const withdrawal = requestCorrection(fx, attestation.attestationId, {
+        correctionKind: 'withdraw',
+        explanation: 'I withdraw this claim.',
+      });
+      decideApproved(fx, withdrawal.approval.id);
+      appendReviewed(fx, withdrawal, 'I withdraw this claim.');
+      expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'withdrawn',
+        correctionCount: 2,
+      });
+    },
+  );
+
+  it.each(['sha1', 'sha256'] as const)(
+    'supersedes an attestation with a same-repository replacement under %s without moving any ref',
+    async (objectFormat) => {
+      const { fx, handoff, attestation } = await attestedFixture(objectFormat);
+      const later = fx.git(
+        'commit-tree',
+        attestation.destination.observedTree,
+        '-p',
+        attestation.destination.observedCommit,
+        '-m',
+        'later destination change for format coverage',
+      );
+      fx.git('update-ref', handoff.target.baseRef, later);
+      const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+      const newApproval = approveExternalObservation(fx, newObservation);
+      const replacement = (
+        await persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation: newObservation,
+          approvalId: newApproval.id,
+        })
+      ).record;
+      const refsBefore = fx.git('for-each-ref', '--format=%(refname) %(objectname)');
+      const headBefore = fx.git('rev-parse', 'HEAD');
+
+      const supersede = requestCorrection(fx, attestation.attestationId, {
+        correctionKind: 'supersede',
+        reasonCode: 'superseded_by_new_observation',
+        explanation: 'A newer exact observation replaces this one.',
+        replacementAttestationId: replacement.attestationId,
+      });
+      decideApproved(fx, supersede.approval.id);
+      appendReviewed(fx, supersede, 'A newer exact observation replaces this one.');
+
+      expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+        standing: 'superseded',
+      });
+      expect(getAttestationCorrectionStanding(fx.db, fx.goalId, replacement.attestationId)).toMatchObject({
+        standing: 'active_uncontested',
+      });
+      expect(fx.git('for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore);
+      expect(fx.git('rev-parse', 'HEAD')).toBe(headBefore);
+    },
+  );
+
+  it('grants completion eligibility only to an uncontested correction standing', () => {
+    expect(attestationCorrectionStandingAllowsCompletion('active_uncontested')).toBe(true);
+    for (const standing of ['disputed', 'withdrawn', 'superseded', 'invalid'] as const)
+      expect(attestationCorrectionStandingAllowsCompletion(standing)).toBe(false);
+  });
+
+  it('refuses an otherwise identical approval that belongs to a different Goal', async () => {
+    const { fx, attestation } = await attestedFixture();
+    const approval = getGoalApproval(fx.db, attestation.approvalId);
+    expect(approvalIdentityMatchesRow(approval, attestation)).toBe(true);
+    expect(approvalIdentityMatchesRow({ ...approval!, goalId: randomUUID() }, attestation)).toBe(false);
   });
 });

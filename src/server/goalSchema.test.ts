@@ -2306,6 +2306,256 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
     db.close();
   });
 
+  it('upgrades a 026 database with a historical attestation without changing it or manufacturing corrections', () => {
+    const root = rc2Directory('027');
+    const historical = new Database(join(root, 'turing.sqlite'));
+    historical.pragma('foreign_keys = ON');
+    project(historical, 'att-project');
+    seedGoalWithDefinition(historical, 'att-goal', 'att-project');
+    const definitionApprovalId = (
+      historical
+        .prepare(
+          "SELECT approval_id AS id FROM goal_definition_versions WHERE goal_id = 'att-goal' AND version = 1",
+        )
+        .get() as { id: string }
+    ).id;
+    // Seeding bypasses the 026 insert-authority triggers only to model a historical row; they are restored unchanged.
+    const withTriggerSuspended = (name: string, seed: () => void) => {
+      const sql = (
+        historical.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as {
+          sql: string;
+        }
+      ).sql;
+      historical.exec(`DROP TRIGGER ${name};`);
+      try {
+        seed();
+      } finally {
+        historical.exec(sql);
+      }
+    };
+    const acceptanceId = 'att-acceptance';
+    historical
+      .prepare(
+        `INSERT INTO goal_approvals
+         (id, goal_id, gate, risk, reason, requested_by, detail_json, status, decided_by, created_at, responded_at)
+         VALUES (?, 'att-goal', 'final_acceptance', 'medium', 'Historical acceptance', 'user', ?, 'pending', NULL, ?, NULL)`,
+      )
+      .run(
+        acceptanceId,
+        JSON.stringify({
+          definitionVersion: 1,
+          definitionHash: 'hash',
+          integrationHead: SHA,
+          integrationTree: SHA,
+        }),
+        NOW,
+      );
+    historical
+      .prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = ?",
+      )
+      .run(NOW, acceptanceId);
+    historical
+      .prepare(
+        `INSERT INTO goal_reviews
+         (id, goal_id, definition_version, review_kind, status, reviewed_to_commit, reviewed_to_tree, created_at)
+         VALUES ('att-review', 'att-goal', 1, 'final', 'pending', ?, ?, ?)`,
+      )
+      .run(SHA, SHA, NOW);
+    historical
+      .prepare(
+        `UPDATE goal_reviews SET status = 'completed', verdict = 'pass', blocking = 0, report_json = '{}',
+          independence_json = '{}', completed_at = ? WHERE id = 'att-review'`,
+      )
+      .run(NOW);
+    const handoffDigest = 'b'.repeat(64);
+    const attestationDigest = 'c'.repeat(64);
+    withTriggerSuspended('trg_goal_result_handoff_insert_authority', () =>
+      historical
+        .prepare(
+          `INSERT INTO goal_result_handoffs
+           (id, goal_id, schema_version, kind, handoff_digest, definition_version, final_acceptance_approval_id,
+            final_review_id, source_commit, source_tree, base_ref, observed_base_commit, payload_json, created_at)
+           VALUES ('att-handoff', 'att-goal', 1, 'turing_goal_manual_integration_handoff', ?, 1, ?, 'att-review', ?, ?,
+                   'refs/heads/main', ?, ?, ?)`,
+        )
+        .run(
+          handoffDigest,
+          acceptanceId,
+          SHA,
+          SHA,
+          SHA,
+          JSON.stringify({
+            schemaVersion: 1,
+            kind: 'turing_goal_manual_integration_handoff',
+            handoffId: 'att-handoff',
+            goalId: 'att-goal',
+            handoffDigest,
+            definition: { version: 1, hash: 'hash', approvalId: definitionApprovalId },
+            finalAcceptance: { approvalId: acceptanceId },
+            review: { finalReviewId: 'att-review' },
+            source: { commit: SHA, tree: SHA },
+            target: { baseRef: 'refs/heads/main', observedBaseCommit: SHA, observedBaseTree: SHA },
+            repository: { objectFormat: 'sha1' },
+          }),
+          NOW,
+        ),
+    );
+    historical
+      .prepare(
+        `INSERT INTO goal_approvals
+         (id, goal_id, gate, risk, reason, requested_by, detail_json, status, decided_by, created_at, responded_at)
+         VALUES ('att-approval', 'att-goal', 'user_confirmation', 'high', 'Historical external confirmation', 'user',
+                 '{"historical":true}', 'pending', NULL, ?, NULL)`,
+      )
+      .run(NOW);
+    historical
+      .prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = 'att-approval'",
+      )
+      .run(NOW);
+    const attestationPayload = JSON.stringify({
+      schemaVersion: 1,
+      kind: 'turing_goal_external_integration_attestation',
+      attestationId: 'att-attestation',
+      goalId: 'att-goal',
+      approvalId: 'att-approval',
+      handoff: { id: 'att-handoff', digest: handoffDigest },
+      completionContractVersion: 2,
+      definition: { version: 1, hash: attestationDigest, approvalId: definitionApprovalId },
+      review: { finalReviewId: 'att-review', acceptanceApprovalId: acceptanceId },
+      repository: { projectId: 'att-project', identity: 'd'.repeat(64), scope: '', objectFormat: 'sha1' },
+      source: { ref: 'refs/heads/turing/goal/att-goal', commit: SHA, tree: SHA },
+      destination: {
+        ref: 'refs/heads/main',
+        expectedBaseCommit: SHA,
+        expectedBaseTree: SHA,
+        observedCommit: SHA,
+        observedTree: SHA,
+      },
+      proof: {
+        mode: 'source_history_observed',
+        sourceAncestor: true,
+        baseAncestor: true,
+        verifierVersion: 1,
+        evidenceDigest: attestationDigest,
+      },
+      decision: { value: 'confirm_external_integration', decidedBy: 'user', decidedAt: NOW },
+      observedAt: NOW,
+      actionDigest: attestationDigest,
+      recordDigest: attestationDigest,
+    });
+    withTriggerSuspended('trg_goal_external_attestation_insert_authority', () =>
+      historical
+        .prepare(
+          `INSERT INTO goal_external_integration_attestations (
+            id, goal_id, schema_version, kind, approval_id, handoff_id, handoff_digest,
+            completion_contract_version, definition_version, definition_hash, definition_approval_id,
+            final_review_id, acceptance_approval_id, repository_project_id, repository_identity,
+            repository_scope, object_format, source_ref, source_commit, source_tree, destination_ref,
+            expected_base_commit, expected_base_tree, observed_destination_commit, observed_destination_tree,
+            proof_mode, verifier_version, evidence_digest, action_digest, record_digest, observed_at,
+            decided_at, payload_json
+          ) VALUES (
+            'att-attestation', 'att-goal', 1, 'turing_goal_external_integration_attestation', 'att-approval',
+            'att-handoff', ?, 2, 1, ?, ?, 'att-review', ?, 'att-project', ?, '', 'sha1',
+            'refs/heads/turing/goal/att-goal', ?, ?, 'refs/heads/main', ?, ?, ?, ?,
+            'source_history_observed', 1, ?, ?, ?, ?, ?, ?
+          )`,
+        )
+        .run(
+          handoffDigest,
+          attestationDigest,
+          definitionApprovalId,
+          acceptanceId,
+          'd'.repeat(64),
+          SHA,
+          SHA,
+          SHA,
+          SHA,
+          SHA,
+          SHA,
+          attestationDigest,
+          attestationDigest,
+          attestationDigest,
+          NOW,
+          NOW,
+          attestationPayload,
+        ),
+    );
+    expect(historical.pragma('foreign_key_check')).toEqual([]);
+    const attestationBefore = historical
+      .prepare('SELECT * FROM goal_external_integration_attestations')
+      .all();
+    const approvalBefore = historical
+      .prepare("SELECT * FROM goal_approvals WHERE id = 'att-approval'")
+      .get() as Record<string, unknown>;
+    const handoffBefore = historical
+      .prepare("SELECT * FROM goal_result_handoffs WHERE id = 'att-handoff'")
+      .get();
+    historical.close();
+
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT * FROM goal_external_integration_attestations').all()).toEqual(
+      attestationBefore,
+    );
+    expect(
+      db
+        .prepare(
+          `SELECT ${Object.keys(approvalBefore).join(', ')} FROM goal_approvals WHERE id = 'att-approval'`,
+        )
+        .get(),
+    ).toEqual(approvalBefore);
+    expect(db.prepare("SELECT * FROM goal_result_handoffs WHERE id = 'att-handoff'").get()).toEqual(
+      handoffBefore,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_attestation_corrections').get()).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    expect(() =>
+      db.prepare('UPDATE goal_external_integration_attestations SET observed_at = ?').run(NOW),
+    ).toThrow(/immutable/);
+    expect(() => db.prepare('DELETE FROM goal_external_integration_attestations').run()).toThrow(
+      /cannot be deleted/,
+    );
+    expect(() =>
+      db
+        .prepare("UPDATE goal_approvals SET detail_json = '{\"changed\":true}' WHERE id = 'att-approval'")
+        .run(),
+    ).toThrow(/approval|identity|immutable/);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO goal_attestation_corrections (id, goal_id, schema_version, kind, handoff_id, handoff_digest,
+             attestation_id, attestation_action_digest, attestation_record_digest, approval_id, correction_kind,
+             sequence, previous_correction_digest, action_digest, correction_digest, reason_code, explanation,
+             explanation_digest, replacement_attestation_id, replacement_record_digest, definition_version,
+             definition_hash, decided_at, payload_json)
+           VALUES ('00000000-0000-4000-8000-0000000000c1', 'att-goal', 1, 'turing_goal_attestation_correction',
+             'att-handoff', ?, 'att-attestation', ?, ?, 'att-approval', 'dispute', 1, NULL, ?, ?, 'other', NULL,
+             NULL, NULL, NULL, 1, ?, ?, '{}')`,
+        )
+        .run(
+          handoffDigest,
+          attestationDigest,
+          attestationDigest,
+          attestationDigest,
+          attestationDigest,
+          attestationDigest,
+          NOW,
+        ),
+    ).toThrow(/lacks exact approved authority or chain position/);
+    db.close();
+
+    const reopened = openDatabase(root);
+    expect(reopened.prepare('SELECT COUNT(*) AS n FROM goal_attestation_corrections').get()).toEqual({
+      n: 0,
+    });
+    expect(reopened.pragma('foreign_key_check')).toEqual([]);
+    reopened.close();
+  });
+
   it('rejects malformed payloads and enforces immutable rows and current same-Goal authority references', () => {
     const db = fresh();
     project(db, 'p');

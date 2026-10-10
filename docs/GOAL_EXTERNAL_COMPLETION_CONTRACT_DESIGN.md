@@ -307,3 +307,9 @@ The legacy completion evaluator is retained for v1. For v2 it now fails closed w
 The implementation adds strict, domain-separated completion-action and immutable-proof schemas plus migration 027. The new approval digest is distinct from the external-integration and prospective-apply digests. The proof table binds same-Goal authorities, hashes the entire proof including timestamps, checks SHA-1/SHA-256 widths, rejects updates/deletes, and limits a Goal to one terminal proof. No production service issues the action approval or inserts a proof. The correction-chain member is a future identity field; D.1 has no correction ledger and does not establish its standing.
 
 Focused tests prove the legacy authority bypass before and after the evaluator guard, v1 hash compatibility, v2 opt-in/lineage/downgrade refusal, prior Turing-operation and migration-026 attestation isolation, supervisor refusal, migration-027 upgrade preservation, and schema integrity. See [GOAL_EXTERNAL_COMPLETION_PROOF_CONTRACT.md](GOAL_EXTERNAL_COMPLETION_PROOF_CONTRACT.md) for the exact implemented boundary. Windows remains unverified. No completion route, UI action, correction service, provider call, subscription use, Git writer, or positive v2 completion path is included. This checkpoint is pending independent review and does not establish release readiness; 7C.2B.5D.2, 7C.2B.5D.3, 7C.2B.5D.4, and 7C.3 have not started.
+
+## Stage 7C.2B.5D.2 correction authority status
+
+Stage 7C.2B.5D.2 implements append-only per-attestation correction authority (migration 028, service, read-only history route, correction events) as a reviewed candidate. It does not implement a correction write route, desktop correction UI, completion-standing projection, or any completion consumer; those are D.3/D.4 work.
+
+The v2 completion path remains inactive. No completion action, proof issuance, or supervisor completion was added in D.2, and the legacy evaluator is unchanged.

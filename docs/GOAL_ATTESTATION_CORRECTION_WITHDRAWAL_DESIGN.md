@@ -2,6 +2,8 @@
 
 Status: Stage 7C.2B.5D.0 correction/withdrawal design proposal only. Stage 7C.2B.5D.1 adds a versioned correction-chain identity to the future completion-action/proof schemas, but no correction route, approval, ledger, standing evaluator, Goal transition, or correction read-model behavior is implemented.
 
+**Implementation status (Stage 7C.2B.5D.2, reviewed candidate).** Stage 7C.2B.5D.2 implements append-only per-attestation correction authority (migration 028, service, read-only history route, correction events) as a reviewed candidate. It does not implement a correction write route, desktop correction UI, completion-standing projection, or any completion consumer; those are D.3/D.4 work. The sections below describe the contract; the implementation section at the end lists what exists and what is deferred.
+
 ## 1. Purpose and governing rules
 
 Migration-026 external-integration attestations are immutable evidence that an authenticated app user confirmed one exact observation. The observation proves only that the accepted Goal source commit and the handoff's recorded base commit were ancestors of a specific destination commit at a recorded time. It does not prove that accepted content survived or that the branch remains unchanged.
@@ -130,3 +132,24 @@ No correction, withdrawal, completion, migration, or endpoint is implemented in 
 ## Stage 7C.2B.5D.1 implementation boundary
 
 Migration 027's future proof shape carries a same-attestation correction-chain schema version, attestation ID, sequence, digest, and point-in-time `active_uncontested` standing. This is an identity slot for a later validated chain, not evidence that D.1 has checked current standing. D.1 creates no correction row, approval, event, endpoint, UI, or completion proof, and no code interprets the placeholder standing as authority. Proof issuance remains absent until a later stage can verify the correction chain and atomically bind it to completion. Later correction records must remain append-only and must not rewrite a historical proof or terminal Goal.
+
+## Stage 7C.2B.5D.2 implementation status
+
+Implemented and covered by focused tests:
+
+- Migration 028: additive `goal_attestation_corrections` table with composite same-Goal foreign keys, a typed `attestation_correction_action_digest` on approvals with immutable identity guard and unique index, and insert-authority, immutability, and no-delete triggers.
+- Service (`attestationCorrection.ts`): request approval, append under one immediate SQLite transaction with sequence and previous-digest CAS, exact-retry idempotency, standing and history reads that re-verify the full chain on every call.
+- Read-only route: `GET .../external-integration/attestations/:attestationId/corrections`. It performs no write and no Git observation.
+- Events: `external_integration_corrected` carries IDs and digests only.
+- Evidence: a correction approval cannot become user-confirmation evidence.
+- Recovery: a committed correction survives a fresh connection with its exact retry returning the original. A pending or decided-but-unappended approval is not a correction. A failure at the row insert or at the later event write rolls back everything. A damaged stored row fails closed after restart.
+- Migration: a 026 database with a seeded attestation, approval, handoff and review upgrades to 028 with those rows unchanged, zero correction rows, and immutable guards intact.
+- Git formats: withdraw and supersede run under SHA-1 and SHA-256. The correction service makes no Git writes; a test asserts the ref table and HEAD are unchanged across a supersession.
+
+Deliberately not implemented in D.2 (dependencies named):
+
+- Completion-standing projection in the Goal read model, and any completion consumer: D.3. `attestationCorrectionStandingAllowsCompletion()` returns true only for `active_uncontested` and is tested, but nothing calls it yet.
+- Correction write route and desktop correction UI: D.4. D.2 exposes service functions and a read-only route only.
+- Cross-format replacement refusal: a replacement must share the original's repository identity, and the Goal engine binds one repository per Goal, so a different-format replacement inside one Goal cannot be constructed. Cross-Goal replacement is refused. The identity comparison is covered by the existing replacement-compatibility check.
+
+Superseded semantics: a supersession is not re-evaluated when its replacement is later disputed or withdrawn. The original stays `superseded`, which is non-authoritative, and the replacement's own standing is evaluated independently. This is the fail-closed direction; no operation restores authority to a superseded attestation.

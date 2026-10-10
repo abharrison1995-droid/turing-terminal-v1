@@ -53,7 +53,7 @@ Its SHA-256 digest is computed over canonical JSON under `turing-goal-external-c
 
 The reserved immutable record has `kind: 'turing_goal_external_completion_proof'`, `schemaVersion: 1`, and `contractVersion: 2`. Its proof body binds the action decision, evaluation identities, all Git/repository identities, observation timestamp, proof limitations, and correction-chain identity. `proofDigest` covers the complete canonical body, including both observation and decision timestamps, under `turing-goal-external-completion-proof-v2` plus a NUL separator. Action and proof digests are separate identities.
 
-The correction-chain member records a sequence, digest, and `active_uncontested` standing at the eventual proof point. D.1 does not implement a correction ledger or prove this standing. The member is not an irrevocable assertion that no later correction can exist. A future correction stage must validate the chain and current standing; until then no proof can be issued.
+The correction-chain member records a sequence, digest, and `active_uncontested` standing at the eventual proof point. D.1 did not implement a correction ledger. Stage 7C.2B.5D.2 implements the append-only per-attestation ledger and a read-only standing read (see [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md)). No proof row binds that standing yet: proof issuance remains absent until D.3 validates the chain inside the completion transaction. The member is not an irrevocable assertion that no later correction can exist.
 
 ## Migration 027
 
@@ -73,10 +73,10 @@ The selected future completion stage must freshly verify repository/ref ancestry
 
 - Live v2 completion decision or approval creation.
 - Proof issuance or a qualifying proof insert service.
-- Correction/withdrawal ledger or verified correction standing.
+- Completion-time binding of correction standing into a v2 proof. The append-only ledger and read-only standing are implemented in D.2; the proof-time binding is D.3.
 - Fresh completion-time Git verification orchestration.
 - Atomic proof/event/terminal transition.
 - Completion API, desktop completion control, or automatic supervisor completion.
 - Windows production qualification.
 
-The rejected checked-out-worktree writer remains quarantined, production uses `DisabledGoalExecutor`, and V1 is not release-ready. Stage 7C.2B.5D.2 and later stages remain separate implementation and review gates.
+The rejected checked-out-worktree writer remains quarantined, production uses `DisabledGoalExecutor`, and V1 is not release-ready. Stage 7C.2B.5D.2 is a reviewed candidate for correction authority; D.3 and later stages remain separate gates.

@@ -239,3 +239,9 @@ Independent review reproduced a downgrade-by-corruption gap: removing both v2 po
 The remediation verifies the recomputed current definition hash, user approval binding, and complete approved lineage before selecting any completion policy. It rejects corrupt content, malformed JSON, unsupported/partial v2 policy, mismatched approval hash, and a v2 ancestor whose altered content resembles legacy v1. `checkCompletionProof()` independently repeats definition/hash/lineage validation at the terminal transition boundary. Valid legacy v1 completion semantics and hashes remain covered by positive regression tests.
 
 The version-2 completion refusal remains inactive. No change was made to migration 027, proof/action digests, attestation backend, endpoint, UI, Goal executor, Git writer, provider, or billing behavior. The correction adds no proof issuance or completion transition. It is a remediation candidate pending independent review; the full gate and hosted CI for its final commit are recorded in the remediation checkpoint. Windows remains unverified, and V1 is not release-ready. Stages 7C.2B.5D.2, D.3, D.4, and 7C.3 have not started.
+
+## Stage 7C.2B.5D.2 correction authority — reviewed candidate
+
+Stage 7C.2B.5D.2 adds append-only per-attestation correction authority (migration 028) with a read-only history route, service-level dispute, withdrawal and supersession, correction events, and restart, rollback, migration-upgrade and SHA-1/SHA-256 coverage. Details and deferred items are in [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md).
+
+This is not a V1 release claim. There is no correction write route, desktop correction UI, completion-standing projection, or v2 completion. Production still uses `DisabledGoalExecutor`. Windows is unverified for this stage, and no physical or live acceptance was exercised.
