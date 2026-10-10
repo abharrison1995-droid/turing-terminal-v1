@@ -43,6 +43,12 @@ export interface GoalEventPayloads {
     status: Exclude<GoalApprovalStatus, 'pending'>;
     decidedBy: 'user' | 'system';
   };
+  external_integration_corrected: {
+    correctionId: string;
+    attestationId: string;
+    correctionKind: 'dispute' | 'withdraw' | 'supersede';
+    correctionDigest: string;
+  };
   evidence_recorded: {
     evidenceId: string;
     criterionKey: string;

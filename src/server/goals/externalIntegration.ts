@@ -904,7 +904,7 @@ function recordFromObservation(
   return attestationSchema.parse({ ...body, recordDigest: recordDigestBody(body) });
 }
 
-function approvalIdentityMatchesRow(
+export function approvalIdentityMatchesRow(
   approval: GoalApproval | undefined,
   record: ExternalIntegrationAttestationV1,
 ): approval is GoalApproval {
@@ -924,7 +924,7 @@ function getAttestationRow(db: Db, goalId: string, attestationId: string): Attes
     .get(goalId, attestationId) as AttestationRow | undefined;
 }
 
-function loadValidatedRecord(
+export function loadValidatedRecord(
   db: Db,
   goalId: string,
   attestationId: string,

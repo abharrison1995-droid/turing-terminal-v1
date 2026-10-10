@@ -441,9 +441,12 @@ export interface GoalApproval {
   externalIntegrationActionDigest?: string;
   /** Present only for the future, separately approved version-2 Goal-completion decision. */
   externalCompletionActionDigest?: string;
+  /** Present only for a versioned, high-risk user decision that appends an attestation correction. */
+  attestationCorrectionActionDigest?: string;
 }
 
 export const GOAL_EVENT_TYPES = [
+  'external_integration_corrected',
   'goal_created',
   'definition_proposed',
   'definition_approved',

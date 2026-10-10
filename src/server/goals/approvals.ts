@@ -9,6 +9,10 @@ import {
 } from '../../shared/goals.js';
 import { writeGoalEvent } from './events.js';
 import { parseExternalIntegrationApprovalDetail } from './externalIntegrationApproval.js';
+import {
+  ATTESTATION_CORRECTION_ACTION,
+  parseAttestationCorrectionApprovalDetail,
+} from './attestationCorrectionDetail.js';
 
 export type GoalApprovalErrorCode =
   | 'goal_not_found'
@@ -19,7 +23,8 @@ export type GoalApprovalErrorCode =
   | 'goal_terminal'
   | 'manual_reconciliation_required'
   | 'invalid_intent_digest'
-  | 'invalid_external_integration_action_digest';
+  | 'invalid_external_integration_action_digest'
+  | 'invalid_attestation_correction_action_digest';
 
 export class GoalApprovalError extends Error {
   constructor(
@@ -47,6 +52,7 @@ interface Row {
   intent_digest: string | null;
   external_integration_action_digest: string | null;
   external_completion_action_digest: string | null;
+  attestation_correction_action_digest: string | null;
 }
 
 function toApproval(row: Row): GoalApproval {
@@ -69,6 +75,9 @@ function toApproval(row: Row): GoalApproval {
       : {}),
     ...(row.external_completion_action_digest
       ? { externalCompletionActionDigest: row.external_completion_action_digest }
+      : {}),
+    ...(row.attestation_correction_action_digest
+      ? { attestationCorrectionActionDigest: row.attestation_correction_action_digest }
       : {}),
   };
 }
@@ -100,6 +109,7 @@ export function requestGoalApproval(
     detail?: Record<string, unknown>;
     intentDigest?: string;
     externalIntegrationActionDigest?: string;
+    attestationCorrectionActionDigest?: string;
     now?: string;
   },
 ): GoalApproval {
@@ -143,6 +153,27 @@ export function requestGoalApproval(
       'invalid_intent_digest',
       'A prospective final-apply digest must match its final-apply approval detail.',
     );
+  const correctionAction =
+    input.attestationCorrectionActionDigest !== undefined ||
+    input.detail?.action === ATTESTATION_CORRECTION_ACTION;
+  const correctionDetail = parseAttestationCorrectionApprovalDetail(input.detail);
+  if (
+    correctionAction &&
+    (input.gate !== 'user_confirmation' ||
+      input.risk !== 'high' ||
+      input.requestedBy !== 'user' ||
+      input.intentDigest !== undefined ||
+      input.externalIntegrationActionDigest !== undefined ||
+      input.attestationCorrectionActionDigest === undefined ||
+      !/^[0-9a-f]{64}$/.test(input.attestationCorrectionActionDigest) ||
+      !correctionDetail ||
+      correctionDetail.goalId !== input.goalId ||
+      correctionDetail.actionDigest !== input.attestationCorrectionActionDigest)
+  )
+    throw new GoalApprovalError(
+      'invalid_attestation_correction_action_digest',
+      'An attestation correction digest must match its versioned high-risk user approval detail.',
+    );
   const now = input.now ?? new Date().toISOString();
   return db.transaction(() => {
     if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId))
@@ -151,8 +182,8 @@ export function requestGoalApproval(
     db.prepare(
       `INSERT INTO goal_approvals (
          id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
-         intent_digest, external_integration_action_digest
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+         intent_digest, external_integration_action_digest, attestation_correction_action_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
     ).run(
       id,
       input.goalId,
@@ -164,6 +195,7 @@ export function requestGoalApproval(
       now,
       input.intentDigest ?? null,
       input.externalIntegrationActionDigest ?? null,
+      input.attestationCorrectionActionDigest ?? null,
     );
     writeGoalEvent(
       db,
