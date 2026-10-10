@@ -229,7 +229,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -254,7 +254,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     db.close();
   });
 });
@@ -658,7 +658,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(
       db.prepare('SELECT id, status, recovery_json, approval_id FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -879,7 +879,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -887,7 +887,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -913,7 +913,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1357,7 +1357,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1365,11 +1365,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     again.close();
   });
 
@@ -1656,7 +1656,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1665,11 +1665,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
       again.close();
     }
   });
@@ -1868,7 +1868,7 @@ describe('migration 022_goal_review_run_identity', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.prepare('SELECT id, cycle_id, run_id, status FROM goal_reviews ORDER BY id').all()).toEqual([
       { id: 'legacy-1', cycle_id: null, run_id: null, status: 'pending' },
       { id: 'legacy-2', cycle_id: null, run_id: null, status: 'pending' },
@@ -1904,7 +1904,7 @@ describe('migration 023_goal_final_apply_authority', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 25 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
     expect(db.prepare("SELECT intent_digest FROM goal_approvals WHERE id = 'legacy-final'").get()).toEqual({
       intent_digest: null,
     });
@@ -2025,39 +2025,108 @@ describe('migration 024_goal_final_apply_operation_identity', () => {
   });
 });
 
-describe('migration 025_goal_result_handoffs', () => {
-  it('upgrades a 024 database without reinterpreting historical approvals or operations', () => {
-    const root = rc2Directory('025');
+describe('migration 025_goal_result_handoffs and migration 026 external integration authority', () => {
+  it('upgrades a 025 database without reinterpreting historical approvals, operations or handoffs', () => {
+    const root = rc2Directory('026');
     const historical = new Database(join(root, 'turing.sqlite'));
     historical.pragma('foreign_keys = ON');
     project(historical, 'handoff-project');
     seedGoalWithDefinition(historical, 'handoff-goal', 'handoff-project');
+    const finalAcceptanceId = 'historical-handoff-acceptance';
+    historical
+      .prepare(
+        `INSERT INTO goal_approvals
+         (id, goal_id, gate, risk, reason, requested_by, detail_json, status, decided_by, created_at, responded_at)
+         VALUES (?, 'handoff-goal', 'final_acceptance', 'medium', 'Historical acceptance', 'user', ?,
+                 'pending', NULL, ?, NULL)`,
+      )
+      .run(
+        finalAcceptanceId,
+        JSON.stringify({
+          definitionVersion: 1,
+          definitionHash: 'hash',
+          integrationHead: SHA,
+          integrationTree: SHA,
+        }),
+        NOW,
+      );
+    historical
+      .prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = ?",
+      )
+      .run(NOW, finalAcceptanceId);
+    historical
+      .prepare(
+        `INSERT INTO goal_reviews
+         (id, goal_id, definition_version, review_kind, status, reviewed_to_commit, reviewed_to_tree, created_at)
+         VALUES ('historical-handoff-review', 'handoff-goal', 1, 'final', 'pending', ?, ?, ?)`,
+      )
+      .run(SHA, SHA, NOW);
+    historical
+      .prepare(
+        `UPDATE goal_reviews SET status = 'completed', verdict = 'pass', blocking = 0, report_json = '{}',
+          independence_json = '{}', completed_at = ? WHERE id = 'historical-handoff-review'`,
+      )
+      .run(NOW);
+    const historicalHandoff = {
+      schemaVersion: 1,
+      kind: 'turing_goal_manual_integration_handoff',
+      handoffId: 'historical-handoff',
+      goalId: 'handoff-goal',
+      handoffDigest: 'b'.repeat(64),
+      definition: { version: 1, hash: 'hash', approvalId: 'appr-handoff-goal-1' },
+      finalAcceptance: { approvalId: finalAcceptanceId },
+      review: { finalReviewId: 'historical-handoff-review' },
+      source: { commit: SHA, tree: SHA },
+      target: { baseRef: 'refs/heads/main', observedBaseCommit: SHA, observedBaseTree: SHA },
+      repository: { objectFormat: 'sha1' },
+    };
+    historical.exec('DROP TRIGGER trg_goal_result_handoff_insert_authority;');
+    historical
+      .prepare(
+        `INSERT INTO goal_result_handoffs
+         (id, goal_id, schema_version, kind, handoff_digest, definition_version, final_acceptance_approval_id,
+          final_review_id, source_commit, source_tree, base_ref, observed_base_commit, payload_json, created_at)
+         VALUES (?, 'handoff-goal', 1, 'turing_goal_manual_integration_handoff', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        historicalHandoff.handoffId,
+        historicalHandoff.handoffDigest,
+        finalAcceptanceId,
+        'historical-handoff-review',
+        SHA,
+        SHA,
+        'refs/heads/main',
+        SHA,
+        JSON.stringify(historicalHandoff),
+        NOW,
+      );
     const intentDigest = 'f'.repeat(64);
-    const approval = requestGoalApproval(historical, {
-      goalId: 'handoff-goal',
-      gate: 'final_apply',
-      risk: 'high',
-      reason: 'Historical v1 prospective final-apply authority.',
-      requestedBy: 'user',
-      detail: {
-        action: 'apply_to_base_intent',
+    const approvalId = 'historical-apply-approval';
+    historical
+      .prepare(
+        `INSERT INTO goal_approvals
+         (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at, intent_digest)
+         VALUES (?, 'handoff-goal', 'final_apply', 'high', 'Historical v1 prospective final-apply authority.',
+                 'user', ?, 'pending', ?, ?)`,
+      )
+      .run(
+        approvalId,
+        JSON.stringify({ action: 'apply_to_base_intent', intentDigest, intent: { intentDigest } }),
+        NOW,
         intentDigest,
-        intent: { intentDigest },
-      },
-      intentDigest,
-    });
-    decideGoalApproval(historical, {
-      goalId: 'handoff-goal',
-      approvalId: approval.id,
-      decision: 'approved',
-      decidedBy: 'user',
-    });
+      );
+    historical
+      .prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = ?",
+      )
+      .run(NOW, approvalId);
     const operation = JSON.stringify({
       schemaVersion: 1,
       kind: 'turing_goal_final_apply_operation',
       operationId: 'historical-apply',
       goalId: 'handoff-goal',
-      approvalId: approval.id,
+      approvalId,
       intentDigest,
       source: { integrationHead: SHA },
       destination: { expectedBaseCommit: SHA },
@@ -2068,12 +2137,16 @@ describe('migration 025_goal_result_handoffs', () => {
          (id, goal_id, approval_id, op, expected_old, new_commit, status, checks_json, created_at)
          VALUES ('historical-apply', 'handoff-goal', ?, 'apply_to_base', ?, ?, 'planned', ?, ?)`,
       )
-      .run(approval.id, SHA, SHA, operation, NOW);
+      .run(approvalId, SHA, SHA, operation, NOW);
     historical.close();
 
     const db = openDatabase(root);
     expect(db.prepare('SELECT name FROM schema_migrations WHERE name >= ? ORDER BY name').all('024')).toEqual(
-      [{ name: '024_goal_final_apply_operation_identity.sql' }, { name: '025_goal_result_handoffs.sql' }],
+      [
+        { name: '024_goal_final_apply_operation_identity.sql' },
+        { name: '025_goal_result_handoffs.sql' },
+        { name: '026_goal_external_integration_attestations.sql' },
+      ],
     );
     expect(
       db
@@ -2085,14 +2158,30 @@ describe('migration 025_goal_result_handoffs', () => {
       checks_json: operation,
     });
     expect(
-      db.prepare('SELECT id, gate, status, intent_digest FROM goal_approvals WHERE id = ?').get(approval.id),
+      db.prepare('SELECT id, gate, status, intent_digest FROM goal_approvals WHERE id = ?').get(approvalId),
     ).toEqual({
-      id: approval.id,
+      id: approvalId,
       gate: 'final_apply',
       status: 'approved',
       intent_digest: intentDigest,
     });
-    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs').get()).toEqual({ n: 0 });
+    expect(
+      db
+        .prepare('SELECT id, handoff_digest, payload_json FROM goal_result_handoffs WHERE id = ?')
+        .get('historical-handoff'),
+    ).toEqual({
+      id: 'historical-handoff',
+      handoff_digest: 'b'.repeat(64),
+      payload_json: JSON.stringify(historicalHandoff),
+    });
+    expect(
+      db
+        .prepare('SELECT external_integration_action_digest FROM goal_approvals WHERE id = ?')
+        .get(approvalId),
+    ).toEqual({ external_integration_action_digest: null });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations').get()).toEqual({
+      n: 0,
+    });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -2128,6 +2217,189 @@ describe('migration 025_goal_result_handoffs', () => {
       ]),
     );
     expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+});
+
+describe('migration 026 external integration approval authority', () => {
+  it('stores a distinct strict user-action digest without changing the prospective apply contract', () => {
+    const db = fresh();
+    const projectId = '10000000-0000-4000-8000-000000000001';
+    const goalId = '20000000-0000-4000-8000-000000000001';
+    project(db, projectId);
+    seedGoalWithDefinition(db, goalId, projectId);
+    const actionDigest = 'c'.repeat(64);
+    const detail = {
+      schemaVersion: 2,
+      action: 'confirm_external_integration',
+      actionDigest,
+      goalId,
+      handoffId: '30000000-0000-4000-8000-000000000001',
+      handoffDigest: 'a'.repeat(64),
+      completionContractVersion: 2,
+      definitionVersion: 1,
+      definitionHash: 'b'.repeat(64),
+      definitionApprovalId: '40000000-0000-4000-8000-000000000001',
+      finalReviewId: '50000000-0000-4000-8000-000000000001',
+      acceptanceApprovalId: '60000000-0000-4000-8000-000000000001',
+      repositoryProjectId: projectId,
+      repositoryIdentity: 'd'.repeat(64),
+      repositoryScope: '',
+      objectFormat: 'sha1',
+      sourceRef: `refs/heads/turing/goal/${goalId}`,
+      sourceCommit: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+      destinationRef: 'refs/heads/main',
+      expectedBaseCommit: 'c'.repeat(40),
+      expectedBaseTree: 'd'.repeat(40),
+      observedDestinationCommit: 'e'.repeat(40),
+      observedDestinationTree: 'f'.repeat(40),
+      proofMode: 'source_history_observed',
+      verifierVersion: 1,
+      evidenceDigest: 'e'.repeat(64),
+    };
+    const approval = requestGoalApproval(db, {
+      goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'Confirm one exact external Git observation.',
+      requestedBy: 'user',
+      detail,
+      externalIntegrationActionDigest: actionDigest,
+    });
+    expect(approval).toMatchObject({
+      gate: 'final_apply',
+      risk: 'high',
+      requestedBy: 'user',
+      externalIntegrationActionDigest: actionDigest,
+    });
+    expect(approval.intentDigest).toBeUndefined();
+    expect(() =>
+      requestGoalApproval(db, {
+        goalId,
+        gate: 'final_apply',
+        risk: 'high',
+        reason: 'Duplicate exact action.',
+        requestedBy: 'user',
+        detail,
+        externalIntegrationActionDigest: actionDigest,
+      }),
+    ).toThrow(/UNIQUE/);
+    expect(() =>
+      requestGoalApproval(db, {
+        goalId,
+        gate: 'final_apply',
+        risk: 'medium',
+        reason: 'Wrong risk.',
+        requestedBy: 'user',
+        detail,
+        externalIntegrationActionDigest: actionDigest,
+      }),
+    ).toThrow(
+      'An external-integration action digest must match its versioned high-risk user approval detail.',
+    );
+    expect(() =>
+      requestGoalApproval(db, {
+        goalId,
+        gate: 'final_apply',
+        risk: 'high',
+        reason: 'Extra client-controlled authority field.',
+        requestedBy: 'user',
+        detail: { ...detail, clientDestination: 'refs/heads/other' },
+        externalIntegrationActionDigest: actionDigest,
+      }),
+    ).toThrow(
+      'An external-integration action digest must match its versioned high-risk user approval detail.',
+    );
+    expect(() =>
+      db
+        .prepare('UPDATE goal_approvals SET external_integration_action_digest = ? WHERE id = ?')
+        .run('d'.repeat(64), approval.id),
+    ).toThrow(/identity is immutable/);
+    expect(
+      db
+        .prepare('SELECT intent_digest, external_integration_action_digest FROM goal_approvals WHERE id = ?')
+        .get(approval.id),
+    ).toEqual({ intent_digest: null, external_integration_action_digest: actionDigest });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('rejects malformed new-attestation payloads and unsupported SHA-1 object-ID widths', () => {
+    const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_attestation_insert_authority;');
+    const insert = db.prepare(
+      `INSERT INTO goal_external_integration_attestations (
+        id, goal_id, schema_version, kind, approval_id, handoff_id, handoff_digest,
+        completion_contract_version, definition_version, definition_hash, definition_approval_id,
+        final_review_id, acceptance_approval_id, repository_project_id, repository_identity,
+        repository_scope, object_format, source_ref, source_commit, source_tree, destination_ref,
+        expected_base_commit, expected_base_tree, observed_destination_commit, observed_destination_tree,
+        proof_mode, verifier_version, evidence_digest, action_digest, record_digest, observed_at,
+        decided_at, payload_json
+      ) VALUES (
+        'attestation', 'missing-goal', 1, 'turing_goal_external_integration_attestation', 'approval', 'handoff', ?,
+        2, 1, ?, 'definition-approval', 'review', 'acceptance', 'project', ?, '', 'sha1',
+        'refs/heads/turing/goal/missing-goal', ?, ?, 'refs/heads/main', ?, ?, ?, ?,
+        'source_history_observed', 1, ?, ?, ?, ?, ?, ?
+      )`,
+    );
+    const hash = 'a'.repeat(64);
+    const sha = 'b'.repeat(40);
+    const payloadFor = (sourceCommit: string) =>
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: 'turing_goal_external_integration_attestation',
+        attestationId: 'attestation',
+        goalId: 'missing-goal',
+        approvalId: 'approval',
+        handoff: { id: 'handoff', digest: hash },
+        completionContractVersion: 2,
+        definition: { version: 1, hash, approvalId: 'definition-approval' },
+        review: { finalReviewId: 'review', acceptanceApprovalId: 'acceptance' },
+        repository: { projectId: 'project', identity: hash, scope: '', objectFormat: 'sha1' },
+        source: { ref: 'refs/heads/turing/goal/missing-goal', commit: sourceCommit, tree: sha },
+        destination: {
+          ref: 'refs/heads/main',
+          expectedBaseCommit: sha,
+          expectedBaseTree: sha,
+          observedCommit: sha,
+          observedTree: sha,
+        },
+        proof: {
+          mode: 'source_history_observed',
+          sourceAncestor: true,
+          baseAncestor: true,
+          verifierVersion: 1,
+          evidenceDigest: hash,
+        },
+        decision: { value: 'confirm_external_integration', decidedBy: 'user', decidedAt: NOW },
+        observedAt: NOW,
+        actionDigest: hash,
+        recordDigest: hash,
+      });
+    const bind = (sourceCommit: string, payload: string) => [
+      hash,
+      hash,
+      hash,
+      sourceCommit,
+      sha,
+      sha,
+      sha,
+      sha,
+      sha,
+      hash,
+      hash,
+      hash,
+      NOW,
+      NOW,
+      payload,
+    ];
+    expect(() => insert.run(...bind(sha, '{'))).toThrow(/json_valid/);
+    const malformedSha256Commit = 'e'.repeat(64);
+    expect(() => insert.run(...bind(malformedSha256Commit, payloadFor(malformedSha256Commit)))).toThrow(
+      /CHECK constraint failed/,
+    );
     db.close();
   });
 });

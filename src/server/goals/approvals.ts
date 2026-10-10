@@ -8,6 +8,7 @@ import {
   type GoalApprovalRequester,
 } from '../../shared/goals.js';
 import { writeGoalEvent } from './events.js';
+import { parseExternalIntegrationApprovalDetail } from './externalIntegrationApproval.js';
 
 export type GoalApprovalErrorCode =
   | 'goal_not_found'
@@ -17,7 +18,8 @@ export type GoalApprovalErrorCode =
   | 'already_decided'
   | 'goal_terminal'
   | 'manual_reconciliation_required'
-  | 'invalid_intent_digest';
+  | 'invalid_intent_digest'
+  | 'invalid_external_integration_action_digest';
 
 export class GoalApprovalError extends Error {
   constructor(
@@ -43,6 +45,7 @@ interface Row {
   created_at: string;
   responded_at: string | null;
   intent_digest: string | null;
+  external_integration_action_digest: string | null;
 }
 
 function toApproval(row: Row): GoalApproval {
@@ -60,6 +63,9 @@ function toApproval(row: Row): GoalApproval {
     createdAt: row.created_at,
     respondedAt: row.responded_at,
     ...(row.intent_digest ? { intentDigest: row.intent_digest } : {}),
+    ...(row.external_integration_action_digest
+      ? { externalIntegrationActionDigest: row.external_integration_action_digest }
+      : {}),
   };
 }
 
@@ -89,12 +95,37 @@ export function requestGoalApproval(
     requestedBy: GoalApprovalRequester;
     detail?: Record<string, unknown>;
     intentDigest?: string;
+    externalIntegrationActionDigest?: string;
     now?: string;
   },
 ): GoalApproval {
   if (!GOAL_APPROVAL_GATES.includes(input.gate))
     throw new GoalApprovalError('invalid_gate', `Unknown gate "${input.gate}".`);
+  const externalAction =
+    input.externalIntegrationActionDigest !== undefined ||
+    input.detail?.action === 'confirm_external_integration';
+  const externalDetail = parseExternalIntegrationApprovalDetail(input.detail);
   if (
+    externalAction &&
+    (input.gate !== 'final_apply' ||
+      input.risk !== 'high' ||
+      input.requestedBy !== 'user' ||
+      input.intentDigest !== undefined ||
+      input.detail?.schemaVersion !== 2 ||
+      input.detail?.action !== 'confirm_external_integration' ||
+      input.detail?.actionDigest !== input.externalIntegrationActionDigest ||
+      !externalDetail ||
+      externalDetail.goalId !== input.goalId ||
+      externalDetail.actionDigest !== input.externalIntegrationActionDigest ||
+      input.externalIntegrationActionDigest === undefined ||
+      !/^[0-9a-f]{64}$/.test(input.externalIntegrationActionDigest))
+  )
+    throw new GoalApprovalError(
+      'invalid_external_integration_action_digest',
+      'An external-integration action digest must match its versioned high-risk user approval detail.',
+    );
+  if (
+    !externalAction &&
     (input.intentDigest !== undefined || input.detail?.action === 'apply_to_base_intent') &&
     (input.gate !== 'final_apply' ||
       input.risk !== 'high' ||
@@ -114,8 +145,10 @@ export function requestGoalApproval(
       throw new GoalApprovalError('goal_not_found', 'The Goal does not exist.');
     const id = randomUUID();
     db.prepare(
-      `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at, intent_digest)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+      `INSERT INTO goal_approvals (
+         id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
+         intent_digest, external_integration_action_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
     ).run(
       id,
       input.goalId,
@@ -126,6 +159,7 @@ export function requestGoalApproval(
       JSON.stringify(input.detail ?? {}),
       now,
       input.intentDigest ?? null,
+      input.externalIntegrationActionDigest ?? null,
     );
     writeGoalEvent(
       db,

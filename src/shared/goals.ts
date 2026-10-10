@@ -433,6 +433,8 @@ export interface GoalApproval {
   respondedAt: string | null;
   /** Present only for a prospective final-apply authority record. */
   intentDigest?: string;
+  /** Present only for a versioned external-integration confirmation decision. */
+  externalIntegrationActionDigest?: string;
 }
 
 export const GOAL_EVENT_TYPES = [

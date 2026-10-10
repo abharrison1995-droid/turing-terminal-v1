@@ -515,7 +515,11 @@ function findingsIdentityDigest(db: Db, goalId: string): string {
   return digest(rows);
 }
 
-function databaseFingerprint(db: Db, goalId: string): string {
+function databaseFingerprint(
+  db: Db,
+  goalId: string,
+  options: { excludeExternalIntegrationApprovals?: boolean } = {},
+): string {
   const goal = db
     .prepare(
       `SELECT g.status, g.status_reason_code, g.status_detail_json, g.current_definition_version,
@@ -540,6 +544,7 @@ function databaseFingerprint(db: Db, goalId: string): string {
   const approvals = db
     .prepare(
       `SELECT * FROM goal_approvals WHERE goal_id = ? AND gate IN ('definition','amendment','final_acceptance','final_apply','milestone_complete')
+         ${options.excludeExternalIntegrationApprovals ? "AND json_extract(detail_json, '$.action') IS NOT 'confirm_external_integration'" : ''}
        ORDER BY gate, created_at, rowid`,
     )
     .all(goalId);
@@ -1173,6 +1178,15 @@ function readStoredHandoff(
   return { row, record };
 }
 
+/** Re-reads and verifies the canonical immutable handoff identity inside short persistence transactions. */
+export function readValidatedManualHandoff(
+  db: Db,
+  goalId: string,
+  handoffId: string,
+): ManualIntegrationHandoffV1 | null {
+  return readStoredHandoff(db, goalId, handoffId)?.record ?? null;
+}
+
 export interface PreparedManualHandoff {
   record: ManualIntegrationHandoffV1;
   reused: boolean;
@@ -1258,6 +1272,150 @@ function currentDefinitionMatchesRecord(db: Db, goalId: string, record: ManualIn
     lineage.approval.id === record.definition.approvalId &&
     digest(getApprovalIdentity(lineage.approval)) === record.definition.approvalIdentityDigest,
   );
+}
+
+export type ExternalHandoffAuthorityValidation =
+  | {
+      state: 'valid';
+      record: ManualIntegrationHandoffV1;
+      authorityFingerprint: string;
+      databaseFingerprint: string;
+    }
+  | {
+      state: 'stale' | 'unavailable' | 'invalid';
+      code: string;
+    };
+
+/**
+ * Verifies the immutable preparation authority without requiring the recorded base ref to remain at its original
+ * commit. A future external-integration verifier uses this after the user's Git operation; the ordinary handoff
+ * validator deliberately remains strict about base-ref currentness.
+ */
+export async function validateManualHandoffAuthorityForExternalIntegration(
+  db: Db,
+  goalId: string,
+  handoffId: string,
+): Promise<ExternalHandoffAuthorityValidation> {
+  let stored: ReturnType<typeof readStoredHandoff>;
+  try {
+    stored = readStoredHandoff(db, goalId, handoffId);
+  } catch {
+    return { state: 'invalid', code: 'handoff_invalid' };
+  }
+  if (!stored) return { state: 'invalid', code: 'handoff_not_found' };
+  const { record } = stored;
+  if (record.goalId !== goalId) return { state: 'invalid', code: 'handoff_goal_mismatch' };
+
+  try {
+    ensureNoActiveWork(db, goalId);
+    if (!currentDefinitionMatchesRecord(db, goalId, record))
+      return { state: 'stale', code: 'definition_not_approved' };
+
+    const goal = db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as
+      { current_definition_version: number | null } | undefined;
+    const version =
+      goal?.current_definition_version === null || goal?.current_definition_version === undefined
+        ? undefined
+        : loadDefinitionVersion(db, goalId, goal.current_definition_version);
+    if (
+      !version ||
+      version.version !== record.definition.version ||
+      version.definitionHash !== record.definition.hash
+    )
+      return { state: 'stale', code: 'definition_not_approved' };
+
+    const databaseBefore = databaseFingerprint(db, goalId, { excludeExternalIntegrationApprovals: true });
+    const context = loadContext(db, goalId);
+    const runtime = getRuntime(db, goalId);
+    if (
+      !runtime ||
+      runtime.integration_head !== record.source.commit ||
+      runtime.base_branch === null ||
+      `refs/heads/${runtime.base_branch}` !== record.target.baseRef ||
+      runtime.base_commit !== record.target.observedBaseCommit ||
+      context.projectId !== record.repository.projectId ||
+      context.scope !== record.repository.scope
+    )
+      return { state: 'stale', code: 'handoff_repository_or_source_changed' };
+    const format = await repositoryObjectFormat(context.repoRoot).catch(() => null);
+    if (!format) return { state: 'unavailable', code: 'repository_unavailable' };
+    if (format !== record.repository.objectFormat) return { state: 'stale', code: 'object_format_changed' };
+    const binding = await repositoryBinding(context).catch(() => null);
+    if (!binding) return { state: 'unavailable', code: 'repository_unavailable' };
+    if (binding.identity !== record.repository.identity)
+      return { state: 'stale', code: 'repository_identity_changed' };
+    const initialSourceRef = await readRefCommit(context, record.source.goalRef).catch(() => null);
+    if (!initialSourceRef) return { state: 'stale', code: 'source_ref_missing' };
+    if (initialSourceRef !== record.source.commit) return { state: 'stale', code: 'source_changed' };
+
+    const evaluation = await evaluateCompletion(db, goalId);
+    const authorities = ensureCompletionReady(db, goalId, evaluation, version);
+    if (
+      evaluation.finalReview.reviewId !== record.review.finalReviewId ||
+      evaluation.finalAcceptance.approvalId !== record.finalAcceptance.approvalId ||
+      digest(completionIdentity(evaluation)) !== record.completion.identityDigest ||
+      findingsIdentityDigest(db, goalId) !== record.completion.findingsIdentityDigest
+    )
+      return { state: 'stale', code: 'completion_authority_changed' };
+
+    const definitionApprovalIdentityDigest = digest(getApprovalIdentity(authorities.definitionApproval));
+    const acceptanceIdentityDigest = digest(getApprovalIdentity(authorities.acceptance));
+    const reviewIdentityDigest = digest(getReviewIdentity(authorities.review));
+    const selected = selectedEvidence(db, goalId, version.version, evaluation);
+    if (
+      definitionApprovalIdentityDigest !== record.definition.approvalIdentityDigest ||
+      acceptanceIdentityDigest !== record.finalAcceptance.identityDigest ||
+      reviewIdentityDigest !== record.review.reviewIdentityDigest ||
+      selected.evidenceIdentityDigest !== record.review.evidenceIdentityDigest ||
+      canonicalJson(selected.evidence) !== canonicalJson(record.review.evidence)
+    )
+      return { state: 'stale', code: 'handoff_authority_changed' };
+
+    const sourceRef = await readRefCommit(context, record.source.goalRef).catch(() => null);
+    if (!sourceRef) return { state: 'stale', code: 'source_ref_missing' };
+    if (sourceRef !== record.source.commit) return { state: 'stale', code: 'source_changed' };
+    const sourceTree = await readTree(context, record.source.commit, format).catch(() => null);
+    const baseTree = await readTree(context, record.target.observedBaseCommit, format).catch(() => null);
+    if (!sourceTree || !baseTree) return { state: 'unavailable', code: 'git_object_unavailable' };
+    if (sourceTree !== record.source.tree || baseTree !== record.target.observedBaseTree)
+      return { state: 'invalid', code: 'handoff_git_identity_invalid' };
+
+    ensureNoActiveWork(db, goalId);
+    const databaseAfter = databaseFingerprint(db, goalId, { excludeExternalIntegrationApprovals: true });
+    if (databaseBefore !== databaseAfter) return { state: 'stale', code: 'database_authority_changed' };
+    const authorityFingerprint = digest({
+      goalId,
+      handoffDigest: record.handoffDigest,
+      databaseFingerprint: databaseAfter,
+      completionIdentity: record.completion.identityDigest,
+      definitionApprovalIdentityDigest,
+      acceptanceIdentityDigest,
+      reviewIdentityDigest,
+      evidenceIdentityDigest: selected.evidenceIdentityDigest,
+      repositoryIdentity: binding.identity,
+      sourceCommit: record.source.commit,
+      sourceTree: record.source.tree,
+      baseRef: record.target.baseRef,
+      expectedBaseCommit: record.target.observedBaseCommit,
+      expectedBaseTree: record.target.observedBaseTree,
+    });
+    return { state: 'valid', record, authorityFingerprint, databaseFingerprint: databaseAfter };
+  } catch (error) {
+    if (error instanceof ManualHandoffError) {
+      const unavailable =
+        error.code === 'repository_unavailable' ||
+        error.code === 'git_unavailable' ||
+        error.code === 'source_tree_unavailable' ||
+        error.code === 'base_tree_unavailable';
+      return { state: unavailable ? 'unavailable' : 'stale', code: error.code };
+    }
+    return { state: 'unavailable', code: 'repository_unavailable' };
+  }
+}
+
+/** A short-transaction recheck; external-attestation approval rows are intentionally excluded. */
+export function manualHandoffAttestationDatabaseFingerprint(db: Db, goalId: string): string {
+  return databaseFingerprint(db, goalId, { excludeExternalIntegrationApprovals: true });
 }
 
 async function diagnoseStaleness(

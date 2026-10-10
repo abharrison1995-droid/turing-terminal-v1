@@ -139,6 +139,29 @@ describe('external integration Git characterization (disposable repositories onl
     expect(merged.ancestor(mergeBase, later)).toBe(true);
   });
 
+  it('shows git merge -s ours satisfies ancestry while dropping the accepted source content', () => {
+    const repo = createRepository();
+    repo.write('base.txt', 'base\n');
+    const base = repo.commit('base');
+    repo.git('switch', '--quiet', '-c', 'goal');
+    repo.write('accepted-result.txt', 'accepted result that must be reviewed\n');
+    const source = repo.commit('accepted Goal result');
+    repo.git('switch', '--quiet', 'main');
+    repo.write('destination-only.txt', 'independent destination content\n');
+    repo.commit('destination change');
+    const targetBeforeMerge = repo.head();
+
+    repo.git('merge', '--quiet', '--no-ff', '-s', 'ours', '-m', 'intentionally omit source tree', 'goal');
+    const destination = repo.head();
+
+    expect(repo.ancestor(base, destination)).toBe(true);
+    expect(repo.ancestor(source, destination)).toBe(true);
+    expect(repo.ancestor(targetBeforeMerge, destination)).toBe(true);
+    expect(repo.tree(source)).not.toBe(repo.tree(destination));
+    expect(repo.git('ls-tree', '-r', '--name-only', destination)).not.toContain('accepted-result.txt');
+    expect(repo.git('ls-tree', '-r', '--name-only', destination)).toContain('destination-only.txt');
+  });
+
   it('shows squash, cherry-pick and rebase create non-ancestral commit identities even when patches match', () => {
     for (const mode of ['squash', 'cherry-pick'] as const) {
       const repo = createRepository();

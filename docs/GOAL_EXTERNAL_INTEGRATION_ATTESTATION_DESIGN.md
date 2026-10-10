@@ -297,3 +297,13 @@ If V1 cannot accept the non-atomic observation and post-completion correction li
 - A post-completion withdrawal cannot reverse an immutable terminal transition without a new recovery design.
 
 At this checkpoint there is no external-attestation endpoint, table, migration, completion-policy change, production Git writer, Goal status transition, or UI action. `applyApprovedGoalToBase()` remains quarantined and production remains on `DisabledGoalExecutor`. Stage 7C.3 has not started. This document and its Git evidence await independent review.
+
+## Stage 7C.2B.5B implementation candidate
+
+The accepted 7C.2B.5A design is now represented by an internal-only backend candidate: migration 026, a distinct `confirm_external_integration` approval digest, the read-only external Git observation service, immutable attestation persistence, and bounded validation/projection. Details and exact service contracts are in [GOAL_EXTERNAL_INTEGRATION_AUTHORITY_CONTRACT.md](GOAL_EXTERNAL_INTEGRATION_AUTHORITY_CONTRACT.md). This checkpoint is pending independent review.
+
+The proof remains deliberately limited to `source_history_observed`: both the exact accepted source commit and recorded base commit are ancestors of the exact destination commit observed at a timestamp. A disposable `git merge -s ours --no-ff` test shows those ancestry checks succeed while the accepted file is absent. Projection therefore says `contentPreservation: not_proven`; neither ancestry nor the user assertion is a Goal completion proof.
+
+The verifier uses repeated source/destination reads, exact registered repository identity, full SHA-1/SHA-256 object IDs and bounded read-only Git subprocesses. A deterministic injected ref move between the relevant reads is refused. This detects sampled races but does not make Git and SQLite atomic or prevent a later external ref change. Attestation-specific validation re-parses the immutable handoff without weakening ordinary handoff staleness after base movement.
+
+Migration 026 is additive and preserves legacy v1 approvals, operations, recovery proofs, completion records and handoffs. No old record is converted. The new action digest is separate from `intent_digest`; only exact approved user decisions can persist an attestation. No endpoint, UI action, automatic approval, Git writer, completion-evaluator change, completion proof, Goal transition, provider call or subscription usage is added. Production remains on `DisabledGoalExecutor` and the rejected checkout writer remains quarantined. Windows behavior is unverified; Stage 7C.2B.5C/D and 7C.3 have not started.

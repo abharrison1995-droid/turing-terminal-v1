@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+  existsSync,
   chmodSync,
   lstatSync,
   mkdirSync,
@@ -22,6 +23,14 @@ import type { GoalDefinition } from '../../shared/goals.js';
 import { prepareFinalApplyIntent } from './finalApplyAuthority.js';
 import { applyReviewFindings } from './findings.js';
 import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
+import {
+  buildExternalIntegrationObservation,
+  createExternalIntegrationApprovalDetail,
+  getExternalIntegrationProjection,
+  persistExternalIntegrationAttestation,
+  validateExternalIntegrationAttestation,
+  validateExternalIntegrationObservation,
+} from './externalIntegration.js';
 import { closeReview, completeReview, createReview, getReview } from './reviews.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
@@ -260,6 +269,55 @@ async function acceptedFixture(
     expect(completion.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
   }
   return { fx, sourceCommit, sourceRef, acceptanceId, reviewId };
+}
+
+async function integratedExternalFixture(
+  objectFormat: 'sha1' | 'sha256' = 'sha1',
+  strategy: 'fast-forward' | 'ours' = 'fast-forward',
+) {
+  const accepted = await acceptedFixture(objectFormat);
+  const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
+  if (strategy === 'fast-forward') git(accepted.fx.repo, 'merge', '--ff-only', accepted.sourceRef);
+  else
+    git(
+      accepted.fx.repo,
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '-s',
+      'ours',
+      '-m',
+      'fixture discards accepted files',
+      accepted.sourceRef,
+    );
+  const observation = await buildExternalIntegrationObservation(
+    accepted.fx.db,
+    accepted.fx.goalId,
+    handoff.handoffId,
+  );
+  return { ...accepted, handoff, observation };
+}
+
+function approveExternalObservation(
+  fx: Awaited<ReturnType<typeof acceptedFixture>>['fx'],
+  observation: Awaited<ReturnType<typeof buildExternalIntegrationObservation>>,
+) {
+  const approval = requestGoalApproval(fx.db, {
+    goalId: fx.goalId,
+    gate: 'final_apply',
+    risk: 'high',
+    reason: 'Confirm this exact external Git observation.',
+    requestedBy: 'user',
+    detail: createExternalIntegrationApprovalDetail(observation),
+    externalIntegrationActionDigest: observation.actionDigest,
+  });
+  decideGoalApproval(fx.db, {
+    goalId: fx.goalId,
+    approvalId: approval.id,
+    decision: 'approved',
+    decidedBy: 'user',
+  });
+  return approval;
 }
 
 interface AmendedFixtureOptions {
@@ -1287,5 +1345,431 @@ describe('manual integration handoff', () => {
     walk(server);
     expect(offenders).toEqual([]);
     expect(readFileSync(join(server, 'index.ts'), 'utf8')).toContain('new DisabledGoalExecutor()');
+  });
+});
+
+describe('external integration attestation authority', () => {
+  it.each(['sha1', 'sha256'] as const)(
+    'persists an exact user-approved fast-forward observation read-only in %s',
+    async (objectFormat) => {
+      const { fx, handoff, observation } = await integratedExternalFixture(objectFormat);
+      const before = repositoryState(fx.repo);
+      expect(observation).toMatchObject({
+        schemaVersion: 1,
+        completionContractVersion: 2,
+        repository: { objectFormat },
+        handoff: { id: handoff.handoffId, digest: handoff.handoffDigest },
+        proof: { mode: 'source_history_observed', sourceAncestor: true, baseAncestor: true },
+      });
+      expect(observation.actionDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toMatchObject({ state: 'valid', observation: { actionDigest: observation.actionDigest } });
+
+      const approval = approveExternalObservation(fx, observation);
+      const eventCountBeforePersistence = (
+        fx.db.prepare('SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ?').get(fx.goalId) as {
+          n: number;
+        }
+      ).n;
+      const inserted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      expect(inserted.reused).toBe(false);
+      expect(inserted.record).toMatchObject({
+        kind: 'turing_goal_external_integration_attestation',
+        approvalId: approval.id,
+        decision: { value: 'confirm_external_integration', decidedBy: 'user' },
+        actionDigest: observation.actionDigest,
+        destination: {
+          ref: handoff.target.baseRef,
+          expectedBaseCommit: handoff.target.observedBaseCommit,
+          observedCommit: observation.destination.observedCommit,
+        },
+        proof: { mode: 'source_history_observed', sourceAncestor: true, baseAncestor: true },
+      });
+      expect(inserted.record.recordDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(
+        await validateExternalIntegrationAttestation(fx.db, fx.goalId, inserted.record.attestationId),
+      ).toMatchObject({
+        state: 'current',
+        record: { recordDigest: inserted.record.recordDigest },
+      });
+      expect(
+        await getExternalIntegrationProjection(fx.db, fx.goalId, inserted.record.attestationId),
+      ).toMatchObject({
+        state: 'current',
+        claim: 'source_history_observed_at_recorded_time',
+        contentPreservation: 'not_proven',
+        goalCompletion: 'not_completed_by_attestation',
+      });
+      const retry = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      expect(retry).toMatchObject({ reused: true, record: { attestationId: inserted.record.attestationId } });
+      const concurrentRetries = await Promise.all([
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation,
+          approvalId: approval.id,
+        }),
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation,
+          approvalId: approval.id,
+        }),
+      ]);
+      expect(concurrentRetries.every(({ reused }) => reused)).toBe(true);
+      expect(
+        concurrentRetries.every(({ record }) => record.attestationId === inserted.record.attestationId),
+      ).toBe(true);
+      expect(await evaluateCompletion(fx.db, fx.goalId)).toMatchObject({
+        finalApply: { required: true, ok: false, reason: 'not_applied' },
+        failures: [{ code: 'final_apply_required' }],
+      });
+      expect(
+        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get(),
+      ).toEqual({ n: 0 });
+      expect(fx.db.prepare('SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ?').get(fx.goalId)).toEqual(
+        { n: eventCountBeforePersistence },
+      );
+      expect(repositoryState(fx.repo)).toEqual(before);
+    },
+  );
+
+  it('classifies git merge -s ours as source-history inclusion and explicitly does not prove content preservation', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture('sha1', 'ours');
+    expect(observation.proof).toMatchObject({
+      mode: 'source_history_observed',
+      sourceAncestor: true,
+      baseAncestor: true,
+    });
+    expect(observation.destination.observedTree).toBe(observation.destination.expectedBaseTree);
+    expect(observation.source.tree).not.toBe(observation.destination.observedTree);
+    expect(() =>
+      execFileSync(
+        'git',
+        ['-C', fx.repo, 'show', `${observation.destination.observedCommit}:src/result.txt`],
+        {
+          stdio: 'ignore',
+        },
+      ),
+    ).toThrow();
+
+    const approval = approveExternalObservation(fx, observation);
+    const persisted = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    expect(
+      await getExternalIntegrationProjection(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({
+      state: 'current',
+      claim: 'source_history_observed_at_recorded_time',
+      contentPreservation: 'not_proven',
+    });
+  });
+
+  it('distinguishes a strict ancestry refusal from invalid or unavailable Git evidence', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    const replacement = fx.git(
+      'commit-tree',
+      observation.destination.expectedBaseTree,
+      '-p',
+      observation.destination.expectedBaseCommit,
+      '-m',
+      'destination omits the accepted source commit',
+    );
+    fx.git('update-ref', handoff.target.baseRef, replacement);
+    expect(
+      await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+    ).toMatchObject({ state: 'not_integrated', code: 'source_not_ancestor' });
+  });
+
+  it('fails closed when the Goal source ref moves or the registered repository identity changes', async () => {
+    const sourceMoved = await integratedExternalFixture();
+    const replacementSource = sourceMoved.fx.git(
+      'commit-tree',
+      sourceMoved.observation.source.tree,
+      '-p',
+      sourceMoved.handoff.target.observedBaseCommit,
+      '-m',
+      'different source commit with the same tree',
+    );
+    sourceMoved.fx.git('update-ref', sourceMoved.handoff.source.goalRef, replacementSource);
+    expect(
+      await validateExternalIntegrationObservation(
+        sourceMoved.fx.db,
+        sourceMoved.fx.goalId,
+        sourceMoved.handoff.handoffId,
+        sourceMoved.observation,
+      ),
+    ).toMatchObject({ state: 'stale', code: 'source_changed' });
+
+    const replacedRepository = await integratedExternalFixture();
+    const alternate = join(replacedRepository.fx.repo, 'unrelated-repository');
+    mkdirSync(alternate);
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main', alternate]);
+    replacedRepository.fx.db
+      .prepare('UPDATE projects SET path = ?, git_root = ? WHERE id = ?')
+      .run(alternate, alternate, replacedRepository.fx.projectId);
+    expect(
+      await validateExternalIntegrationObservation(
+        replacedRepository.fx.db,
+        replacedRepository.fx.goalId,
+        replacedRepository.handoff.handoffId,
+        replacedRepository.observation,
+      ),
+    ).toMatchObject({ state: 'stale', code: 'repository_identity_changed' });
+  });
+
+  it('refuses missing or pending user approval and never reuses a legacy apply intent', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: 'missing-approval',
+      }),
+    ).rejects.toMatchObject({ code: 'approval_mismatch' });
+    const pending = requestGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'Pending exact external integration decision.',
+      requestedBy: 'user',
+      detail: createExternalIntegrationApprovalDetail(observation),
+      externalIntegrationActionDigest: observation.actionDigest,
+    });
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: pending.id,
+      }),
+    ).rejects.toMatchObject({ code: 'user_attestation_approval_required' });
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: pending.id,
+      decision: 'denied',
+      decidedBy: 'user',
+    });
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: pending.id,
+      }),
+    ).rejects.toMatchObject({ code: 'user_attestation_approval_required' });
+
+    const legacyDigest = 'f'.repeat(64);
+    const legacy = requestGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'Historical prospective apply authority.',
+      requestedBy: 'user',
+      intentDigest: legacyDigest,
+      detail: { action: 'apply_to_base_intent', intentDigest: legacyDigest },
+    });
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: legacy.id,
+      decision: 'approved',
+      decidedBy: 'user',
+    });
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: legacy.id,
+      }),
+    ).rejects.toMatchObject({ code: 'approval_mismatch' });
+    expect(fx.db.prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations').get()).toEqual({
+      n: 0,
+    });
+  });
+
+  it('returns a valid historical record after the destination advances and requires a new digest for new authority', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    const approval = approveExternalObservation(fx, observation);
+    const inserted = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    const later = fx.git(
+      'commit-tree',
+      observation.destination.observedTree,
+      '-p',
+      observation.destination.observedCommit,
+      '-m',
+      'later destination change',
+    );
+    fx.git('update-ref', handoff.target.baseRef, later);
+    expect(
+      await validateExternalIntegrationAttestation(fx.db, fx.goalId, inserted.record.attestationId),
+    ).toMatchObject({
+      state: 'historical',
+      record: { actionDigest: observation.actionDigest },
+      reason: { code: 'destination_advanced_after_observation' },
+    });
+    const newObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+    expect(newObservation.actionDigest).not.toBe(observation.actionDigest);
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation: newObservation,
+        approvalId: approval.id,
+      }),
+    ).rejects.toMatchObject({ code: 'approval_mismatch' });
+    const newApproval = approveExternalObservation(fx, newObservation);
+    const next = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation: newObservation,
+      approvalId: newApproval.id,
+    });
+    expect(next.reused).toBe(false);
+    expect(next.record.actionDigest).toBe(newObservation.actionDigest);
+    expect(next.record.attestationId).not.toBe(inserted.record.attestationId);
+  });
+
+  it('detects a destination ref movement between repeated Git reads', async () => {
+    const { fx, handoff } = await integratedExternalFixture();
+    const base = handoff.target.observedBaseCommit;
+    const destinationBefore = git(fx.repo, 'rev-parse', handoff.target.baseRef);
+    const replacement = fx.git(
+      'commit-tree',
+      handoff.target.observedBaseTree,
+      '-p',
+      destinationBefore,
+      '-m',
+      'concurrent destination ref movement',
+    );
+    const wrapperDirectory = join(fx.repo, '.external-integration-race-bin');
+    mkdirSync(wrapperDirectory);
+    const wrapper = join(wrapperDirectory, 'git');
+    const counter = join(wrapperDirectory, 'counter');
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const marker = join(wrapperDirectory, 'injected');
+    writeFileSync(
+      wrapper,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "for-each-ref" ] && [ "$2" = "--format=%(refname)%00%(objectname)" ]; then',
+        '  count=0',
+        '  if [ -f "$EXT_GIT_COUNTER" ]; then count=$(cat "$EXT_GIT_COUNTER"); fi',
+        '  count=$((count + 1))',
+        '  printf "%s" "$count" > "$EXT_GIT_COUNTER"',
+        '  "$EXT_GIT_REAL" "$@"',
+        '  status=$?',
+        '  if [ "$count" -eq 3 ]; then "$EXT_GIT_REAL" update-ref "$EXT_RACE_REF" "$EXT_RACE_TO"; : > "$EXT_RACE_MARKER"; fi',
+        '  exit "$status"',
+        'fi',
+        'exec "$EXT_GIT_REAL" "$@"',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(wrapper, 0o700);
+    const originalPath = process.env.PATH;
+    const originalEnvironment = {
+      real: process.env.EXT_GIT_REAL,
+      counter: process.env.EXT_GIT_COUNTER,
+      ref: process.env.EXT_RACE_REF,
+      to: process.env.EXT_RACE_TO,
+      marker: process.env.EXT_RACE_MARKER,
+    };
+    process.env.PATH = `${wrapperDirectory}:${originalPath ?? ''}`;
+    process.env.EXT_GIT_REAL = realGit;
+    process.env.EXT_GIT_COUNTER = counter;
+    process.env.EXT_RACE_REF = handoff.target.baseRef;
+    process.env.EXT_RACE_TO = replacement;
+    process.env.EXT_RACE_MARKER = marker;
+    try {
+      let observedError: unknown;
+      try {
+        await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+      } catch (error) {
+        observedError = error;
+      }
+      expect(existsSync(marker)).toBe(true);
+      expect(observedError).toMatchObject({ code: 'observation_changed' });
+      expect(git(fx.repo, 'rev-parse', handoff.target.baseRef)).toBe(replacement);
+      expect(replacement).not.toBe(base);
+    } finally {
+      process.env.PATH = originalPath;
+      for (const [key, value] of Object.entries({
+        EXT_GIT_REAL: originalEnvironment.real,
+        EXT_GIT_COUNTER: originalEnvironment.counter,
+        EXT_RACE_REF: originalEnvironment.ref,
+        EXT_RACE_TO: originalEnvironment.to,
+        EXT_RACE_MARKER: originalEnvironment.marker,
+      })) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      rmSync(wrapperDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects tampered immutable records and never lets them produce a positive projection', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    const approval = approveExternalObservation(fx, observation);
+    const persisted = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    expect(() =>
+      fx.db
+        .prepare('UPDATE goal_external_integration_attestations SET record_digest = ? WHERE id = ?')
+        .run('0'.repeat(64), persisted.record.attestationId),
+    ).toThrow(/immutable/);
+    expect(() =>
+      fx.db
+        .prepare('DELETE FROM goal_external_integration_attestations WHERE id = ?')
+        .run(persisted.record.attestationId),
+    ).toThrow(/cannot be deleted/);
+    fx.db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+    const row = fx.db
+      .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+      .get(persisted.record.attestationId) as { payload_json: string };
+    const damaged = row.payload_json.replace(
+      persisted.record.destination.observedCommit,
+      '0'.repeat(persisted.record.destination.observedCommit.length),
+    );
+    fx.db
+      .prepare(
+        'UPDATE goal_external_integration_attestations SET payload_json = ?, observed_destination_commit = ? WHERE id = ?',
+      )
+      .run(
+        damaged,
+        '0'.repeat(persisted.record.destination.observedCommit.length),
+        persisted.record.attestationId,
+      );
+    expect(
+      await getExternalIntegrationProjection(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({
+      state: 'invalid',
+      claim: 'not_verified',
+    });
   });
 });
