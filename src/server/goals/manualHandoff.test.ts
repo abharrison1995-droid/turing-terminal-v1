@@ -12,14 +12,15 @@ import {
 } from 'node:fs';
 import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { decideGoalApproval, requestGoalApproval } from './approvals.js';
+import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
-import { beginAmendment, approveDefinition } from './definitions.js';
+import { beginAmendment, approveDefinition, createGoalDraft, loadDefinitionVersion } from './definitions.js';
 import { recordEvidence } from './evidence.js';
+import type { GoalDefinition } from '../../shared/goals.js';
 import { prepareFinalApplyIntent } from './finalApplyAuthority.js';
 import { applyReviewFindings } from './findings.js';
 import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
-import { closeReview, completeReview, createReview } from './reviews.js';
+import { closeReview, completeReview, createReview, getReview } from './reviews.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
 import { transitionGoal } from './stateMachine.js';
@@ -254,7 +255,416 @@ async function acceptedFixture(
   return { fx, sourceCommit, sourceRef, acceptanceId, reviewId };
 }
 
+interface AmendedFixtureOptions {
+  includeVersion2Evidence?: boolean;
+  includeVersion2Review?: boolean;
+  includeVersion2Acceptance?: boolean;
+}
+
+function revisedTestDefinition(definition: GoalDefinition): GoalDefinition {
+  const revised = structuredClone(definition);
+  revised.contract.outcome = 'The same reviewed result under an amended Goal contract.';
+  const criterion = revised.contract.successCriteria.find(({ key }) => key === 'deliverable')!;
+  criterion.verification = [{ kind: 'file_exists', path: 'src/parser.ts' }];
+  return revised;
+}
+
+async function amendedAcceptedFixture(options: AmendedFixtureOptions = {}) {
+  const original = await acceptedFixture();
+  const { fx, sourceCommit } = original;
+  const version1Handoff = (await prepareManualHandoff(fx.db, fx.goalId)).record;
+  const v1Definition = loadDefinitionVersion(fx.db, fx.goalId, 1)!;
+  const revised = revisedTestDefinition(fx.definition);
+  const proposal = beginAmendment(fx.db, {
+    goalId: fx.goalId,
+    actor: 'user',
+    changeSummary: 'Amend the accepted Goal definition.',
+    definition: revised,
+  });
+  const approved = approveDefinition(fx.db, {
+    goalId: fx.goalId,
+    version: proposal.version,
+    expectedDefinitionHash: proposal.definitionHash,
+    actor: 'user',
+  });
+  const version2 = loadDefinitionVersion(fx.db, fx.goalId, proposal.version)!;
+  const version1AfterAmendment = loadDefinitionVersion(fx.db, fx.goalId, 1)!;
+  const version2Approval = getGoalApproval(fx.db, approved.approvalId);
+
+  if (options.includeVersion2Evidence !== false)
+    await recordEvidence(fx.db, {
+      goalId: fx.goalId,
+      definitionVersion: proposal.version,
+      criterionKey: 'deliverable',
+      verifierDigest: fx.digest('deliverable', 0, proposal.version),
+      kind: 'artifact',
+      milestoneId: fx.milestoneId('m1'),
+    });
+
+  let version2ReviewId: string | null = null;
+  if (options.includeVersion2Review !== false) {
+    const pendingReview = await createReview(fx.db, {
+      goalId: fx.goalId,
+      definitionVersion: proposal.version,
+      reviewKind: 'final',
+    });
+    version2ReviewId = pendingReview.id;
+    completeReview(fx.db, {
+      reviewId: pendingReview.id,
+      report: passingReport,
+      independence: {
+        established: true,
+        policy: 'different-family',
+        detail: { fixture: 'service-recorded-amendment' },
+      },
+    });
+  }
+
+  let version2AcceptanceId: string | null = null;
+  if (options.includeVersion2Acceptance !== false) {
+    const acceptance = requestGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      gate: 'final_acceptance',
+      risk: 'medium',
+      reason: 'Accept the amended Goal result.',
+      requestedBy: 'user',
+      detail: {
+        definitionVersion: proposal.version,
+        definitionHash: proposal.definitionHash,
+        integrationHead: sourceCommit,
+        integrationTree: fx.tree(sourceCommit),
+      },
+    });
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: acceptance.id,
+      decision: 'approved',
+      decidedBy: 'user',
+    });
+    version2AcceptanceId = acceptance.id;
+  }
+
+  const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+  return {
+    ...original,
+    version1Handoff,
+    v1Definition,
+    proposal,
+    approved,
+    version2,
+    version1AfterAmendment,
+    version2Approval,
+    version2ReviewId,
+    version2AcceptanceId,
+    evaluation,
+  };
+}
+
+function dropApprovalIdentityTriggers(db: Awaited<ReturnType<typeof acceptedFixture>>['fx']['db']): void {
+  db.exec(
+    'DROP TRIGGER IF EXISTS trg_goal_approval_identity; DROP TRIGGER IF EXISTS trg_goal_approval_terminal;',
+  );
+}
+
+function dropDefinitionImmutabilityTrigger(
+  db: Awaited<ReturnType<typeof acceptedFixture>>['fx']['db'],
+): void {
+  db.exec('DROP TRIGGER IF EXISTS trg_goal_definition_immutable;');
+}
+
+function otherGoalAmendmentApprovalId(fx: Awaited<ReturnType<typeof acceptedFixture>>['fx']): string {
+  const other = createGoalDraft(fx.db, {
+    projectId: fx.projectId,
+    title: 'A separate amended Goal',
+    definition: structuredClone(fx.definition),
+  });
+  approveDefinition(fx.db, { goalId: other.goalId, version: 1, actor: 'user' });
+  const revised = revisedTestDefinition(fx.definition);
+  const proposal = beginAmendment(fx.db, {
+    goalId: other.goalId,
+    actor: 'user',
+    definition: revised,
+  });
+  return approveDefinition(fx.db, {
+    goalId: other.goalId,
+    version: proposal.version,
+    expectedDefinitionHash: proposal.definitionHash,
+    actor: 'user',
+  }).approvalId;
+}
+
 describe('manual integration handoff', () => {
+  it('prepares a legitimate amended definition handoff after every v2 prerequisite is satisfied', async () => {
+    const amended = await amendedAcceptedFixture();
+    expect(amended.v1Definition).toMatchObject({
+      version: 1,
+      parentVersion: null,
+      status: 'approved',
+      approvalId: expect.any(String),
+      approvedBy: 'user',
+    });
+    expect(amended.version1AfterAmendment).toMatchObject({
+      version: 1,
+      parentVersion: null,
+      status: 'superseded',
+      approvalId: amended.v1Definition.approvalId,
+      approvedBy: 'user',
+    });
+    expect(amended.version2).toMatchObject({
+      version: 2,
+      parentVersion: 1,
+      status: 'approved',
+      approvalId: amended.approved.approvalId,
+      approvedBy: 'user',
+      definitionHash: amended.proposal.definitionHash,
+    });
+    expect(amended.version2Approval).toMatchObject({
+      id: amended.approved.approvalId,
+      goalId: amended.fx.goalId,
+      gate: 'amendment',
+      status: 'approved',
+      decidedBy: 'user',
+      detail: { version: 2, definitionHash: amended.proposal.definitionHash },
+    });
+    expect(getReview(amended.fx.db, amended.version2ReviewId!)).toMatchObject({
+      goalId: amended.fx.goalId,
+      definitionVersion: 2,
+      reviewKind: 'final',
+      status: 'completed',
+      reviewedToCommit: amended.sourceCommit,
+      reviewedToTree: amended.fx.tree(amended.sourceCommit),
+      verdict: 'pass',
+      blocking: false,
+      independence: { established: true, policy: 'different-family' },
+    });
+    expect(getGoalApproval(amended.fx.db, amended.version2AcceptanceId!)).toMatchObject({
+      goalId: amended.fx.goalId,
+      gate: 'final_acceptance',
+      status: 'approved',
+      decidedBy: 'user',
+      detail: {
+        definitionVersion: 2,
+        definitionHash: amended.proposal.definitionHash,
+        integrationHead: amended.sourceCommit,
+        integrationTree: amended.fx.tree(amended.sourceCommit),
+      },
+    });
+    expect(amended.evaluation.failures.map(({ code }) => code)).toEqual(['final_apply_required']);
+    expect(amended.evaluation.criteria.every((criterion) => criterion.state === 'satisfied')).toBe(true);
+    expect(amended.evaluation.milestones.every((milestone) => milestone.state === 'satisfied')).toBe(true);
+    expect(amended.evaluation.finalReview).toMatchObject({ required: true, ok: true });
+    expect(amended.evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
+    expect(amended.evaluation.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
+
+    const before = repositoryState(amended.fx.repo);
+    const prepared = await prepareManualHandoff(amended.fx.db, amended.fx.goalId);
+    expect(prepared.record).toMatchObject({
+      definition: {
+        version: 2,
+        hash: amended.proposal.definitionHash,
+        approvalId: amended.approved.approvalId,
+        approvalIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+      finalAcceptance: { approvalId: amended.version2AcceptanceId },
+      review: { finalReviewId: amended.version2ReviewId },
+      source: { commit: amended.sourceCommit, tree: amended.fx.tree(amended.sourceCommit) },
+      target: {
+        baseRef: 'refs/heads/main',
+        observedBaseCommit: amended.fx.baseCommit,
+        observedBaseTree: amended.fx.tree(amended.fx.baseCommit),
+      },
+    });
+    expect(prepared.record.handoffId).not.toBe(amended.version1Handoff.handoffId);
+    expect(prepared.record.handoffDigest).not.toBe(amended.version1Handoff.handoffDigest);
+    expect(prepared.record.source.commit).toBe(amended.version1Handoff.source.commit);
+    expect(prepared.record.review.evidence.map(({ evidenceId }) => evidenceId)).toContain(
+      amended.fx.db
+        .prepare(
+          "SELECT id FROM goal_evidence WHERE goal_id = ? AND definition_version = 2 AND criterion_key = 'deliverable'",
+        )
+        .get(amended.fx.goalId)?.id,
+    );
+    const originalPayload = JSON.stringify(amended.version1Handoff);
+    expect(
+      JSON.parse(
+        (
+          amended.fx.db
+            .prepare('SELECT payload_json FROM goal_result_handoffs WHERE id = ?')
+            .get(amended.version1Handoff.handoffId) as { payload_json: string }
+        ).payload_json,
+      ),
+    ).toEqual(JSON.parse(originalPayload));
+    expect(
+      await validateManualHandoff(amended.fx.db, amended.fx.goalId, amended.version1Handoff.handoffId),
+    ).toMatchObject({
+      state: 'stale',
+      reason: { code: 'definition_not_approved' },
+      record: { handoffId: amended.version1Handoff.handoffId },
+    });
+    expect(
+      await validateManualHandoff(amended.fx.db, amended.fx.goalId, prepared.record.handoffId),
+    ).toMatchObject({
+      state: 'current',
+      record: { handoffId: prepared.record.handoffId },
+    });
+    expect(await prepareManualHandoff(amended.fx.db, amended.fx.goalId)).toMatchObject({
+      reused: true,
+      record: { handoffId: prepared.record.handoffId },
+    });
+    expect(repositoryState(amended.fx.repo)).toEqual(before);
+    expect(await evaluateCompletion(amended.fx.db, amended.fx.goalId)).toMatchObject({
+      finalApply: { required: true, ok: false, reason: 'not_applied' },
+      failures: [{ code: 'final_apply_required' }],
+    });
+    expect(amended.fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(amended.fx.goalId)).toEqual({
+      status: 'ready',
+    });
+    expect(
+      amended.fx.db
+        .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base'")
+        .get(amended.fx.goalId),
+    ).toEqual({ n: 0 });
+  });
+
+  const amendedApprovalCorruptions = [
+    { label: 'a version 1 approval is reused', kind: 'version1' },
+    { label: 'the approval belongs to another Goal', kind: 'wrong_goal' },
+    { label: 'the approval names another definition version', kind: 'wrong_version' },
+    { label: 'the approval carries another definition hash', kind: 'wrong_hash' },
+    { label: 'the approval is still pending', kind: 'pending' },
+    { label: 'the approval was denied', kind: 'denied' },
+    { label: 'the decision actor is system', kind: 'system' },
+    { label: 'the amendment uses the initial-definition gate', kind: 'wrong_gate' },
+    { label: 'the parent-definition lineage is missing', kind: 'invalid_lineage' },
+    { label: 'the approval uses an unsupported gate', kind: 'unsupported_gate' },
+  ] as const;
+
+  it.each(amendedApprovalCorruptions)('refuses an amended handoff when $label', async ({ kind }) => {
+    const amended = await amendedAcceptedFixture();
+    expect(amended.evaluation.failures.map(({ code }) => code)).toEqual(['final_apply_required']);
+    const approvalId = amended.approved.approvalId;
+
+    // These authority-corruption fixtures bypass SQLite immutability only to verify that handoff preparation
+    // revalidates the lineage and actual approval row instead of trusting an approved version flag.
+    if (kind === 'version1') {
+      dropDefinitionImmutabilityTrigger(amended.fx.db);
+      amended.fx.db
+        .prepare('UPDATE goal_definition_versions SET approval_id = ? WHERE goal_id = ? AND version = 2')
+        .run(amended.v1Definition.approvalId, amended.fx.goalId);
+    } else if (kind === 'wrong_goal') {
+      dropDefinitionImmutabilityTrigger(amended.fx.db);
+      amended.fx.db
+        .prepare('UPDATE goal_definition_versions SET approval_id = ? WHERE goal_id = ? AND version = 2')
+        .run(otherGoalAmendmentApprovalId(amended.fx), amended.fx.goalId);
+    } else if (kind === 'invalid_lineage') {
+      dropDefinitionImmutabilityTrigger(amended.fx.db);
+      amended.fx.db
+        .prepare('UPDATE goal_definition_versions SET parent_version = 99 WHERE goal_id = ? AND version = 2')
+        .run(amended.fx.goalId);
+    } else {
+      dropApprovalIdentityTriggers(amended.fx.db);
+      const approval = getGoalApproval(amended.fx.db, approvalId)!;
+      if (kind === 'wrong_version' || kind === 'wrong_hash') {
+        const detail = { ...approval.detail };
+        if (kind === 'wrong_version') detail.version = 1;
+        else detail.definitionHash = 'f'.repeat(64);
+        amended.fx.db
+          .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+          .run(JSON.stringify(detail), approvalId);
+      } else if (kind === 'pending') {
+        amended.fx.db
+          .prepare(
+            "UPDATE goal_approvals SET status = 'pending', decided_by = NULL, responded_at = NULL WHERE id = ?",
+          )
+          .run(approvalId);
+      } else if (kind === 'denied') {
+        amended.fx.db
+          .prepare(
+            "UPDATE goal_approvals SET status = 'denied', decided_by = 'user', responded_at = ? WHERE id = ?",
+          )
+          .run(new Date().toISOString(), approvalId);
+      } else if (kind === 'system') {
+        amended.fx.db.exec('PRAGMA ignore_check_constraints = ON;');
+        try {
+          amended.fx.db
+            .prepare(
+              "UPDATE goal_approvals SET status = 'approved', decided_by = 'system', responded_at = ? WHERE id = ?",
+            )
+            .run(new Date().toISOString(), approvalId);
+        } finally {
+          amended.fx.db.exec('PRAGMA ignore_check_constraints = OFF;');
+        }
+      } else {
+        const gate = kind === 'wrong_gate' ? 'definition' : 'final_acceptance';
+        amended.fx.db.prepare('UPDATE goal_approvals SET gate = ? WHERE id = ?').run(gate, approvalId);
+      }
+    }
+
+    await expect(prepareManualHandoff(amended.fx.db, amended.fx.goalId)).rejects.toMatchObject({
+      code: 'definition_not_approved',
+    });
+  });
+
+  it('refuses an amendment gate forged onto a non-amended definition', async () => {
+    const accepted = await acceptedFixture();
+    const version = loadDefinitionVersion(accepted.fx.db, accepted.fx.goalId, 1)!;
+    // Explicit corruption fixture: normal definition and approval services cannot change this immutable identity.
+    dropApprovalIdentityTriggers(accepted.fx.db);
+    accepted.fx.db
+      .prepare('UPDATE goal_approvals SET gate = ? WHERE id = ?')
+      .run('amendment', version.approvalId);
+    await expect(prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).rejects.toMatchObject({
+      code: 'definition_not_approved',
+    });
+  });
+
+  it('refuses an amended result whose final review still references version 1', async () => {
+    const amended = await amendedAcceptedFixture({ includeVersion2Review: false });
+    expect(amended.evaluation.finalReview).toMatchObject({
+      required: true,
+      ok: false,
+      reason: 'final_review_stale',
+    });
+    expect(amended.evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
+    await expect(prepareManualHandoff(amended.fx.db, amended.fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
+  });
+
+  it('refuses an amended result whose final acceptance still references version 1', async () => {
+    const amended = await amendedAcceptedFixture({ includeVersion2Acceptance: false });
+    expect(amended.evaluation.finalReview).toMatchObject({ required: true, ok: true });
+    expect(amended.evaluation.finalAcceptance).toMatchObject({
+      required: true,
+      ok: false,
+      reason: 'bound_to_other_definition_or_tree',
+    });
+    await expect(prepareManualHandoff(amended.fx.db, amended.fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
+  });
+
+  it('refuses an amended result with stale version 2 verification evidence', async () => {
+    const amended = await amendedAcceptedFixture();
+    const evidence = amended.fx.db
+      .prepare(
+        "SELECT id FROM goal_evidence WHERE goal_id = ? AND definition_version = 2 AND criterion_key = 'deliverable'",
+      )
+      .get(amended.fx.goalId) as { id: string };
+    // Explicit corruption case: the evidence row is immutable in normal operation.
+    amended.fx.db.exec('DROP TRIGGER trg_goal_evidence_immutable;');
+    amended.fx.db
+      .prepare('UPDATE goal_evidence SET subject_blob = ? WHERE id = ?')
+      .run('f'.repeat(64), evidence.id);
+    const evaluation = await evaluateCompletion(amended.fx.db, amended.fx.goalId);
+    expect(evaluation.finalReview).toMatchObject({ required: true, ok: true });
+    expect(evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
+    expect(evaluation.criteria.find(({ key }) => key === 'deliverable')?.state).not.toBe('satisfied');
+    await expect(prepareManualHandoff(amended.fx.db, amended.fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
+  });
+
   it.each(['sha1', 'sha256'] as const)(
     'prepares, reuses, and revalidates an immutable %s handoff without mutating Git',
     async (objectFormat) => {

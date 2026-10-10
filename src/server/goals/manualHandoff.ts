@@ -318,6 +318,76 @@ function assert(condition: unknown, code: ManualHandoffErrorCode): asserts condi
   if (!condition) throw new ManualHandoffError(code);
 }
 
+interface DefinitionApprovalLineage {
+  gate: 'definition' | 'amendment';
+  approval: GoalApproval;
+}
+
+/**
+ * Re-proves the approved definition chain using the same parent-version rule as approveDefinition() and migration
+ * 018: a root version 1 uses `definition`; every linked child version uses `amendment`. The current version must be
+ * the Goal pointer, and every ancestor must be a user-approved, hash-valid superseded version with its own matching
+ * persisted approval. This also fails closed for pre-migration or corrupted rows that the status trigger did not
+ * revalidate.
+ */
+function definitionApprovalLineage(
+  db: Db,
+  goalId: string,
+  version: NonNullable<ReturnType<typeof loadDefinitionVersion>>,
+): DefinitionApprovalLineage | null {
+  try {
+    const goal = db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as
+      { current_definition_version: number | null } | undefined;
+    if (!goal || goal.current_definition_version !== version.version) return null;
+
+    let candidate = version;
+    let isCurrent = true;
+    let targetProof: DefinitionApprovalLineage | null = null;
+    const visited = new Set<number>();
+    for (;;) {
+      if (visited.has(candidate.version)) return null;
+      visited.add(candidate.version);
+      const gate =
+        candidate.parentVersion === null ? (candidate.version === 1 ? 'definition' : null) : 'amendment';
+      if (
+        !gate ||
+        candidate.status !== (isCurrent ? 'approved' : 'superseded') ||
+        candidate.approvedBy !== 'user' ||
+        !candidate.approvalId ||
+        !verifyDefinitionHash(candidate)
+      )
+        return null;
+
+      const approval = getGoalApproval(db, candidate.approvalId);
+      if (
+        !approval ||
+        approval.goalId !== goalId ||
+        approval.gate !== gate ||
+        approval.status !== 'approved' ||
+        approval.decidedBy !== 'user' ||
+        approval.detail.version !== candidate.version ||
+        approval.detail.definitionHash !== candidate.definitionHash
+      )
+        return null;
+      if (isCurrent) targetProof = { gate, approval };
+
+      if (candidate.parentVersion === null) return candidate.version === 1 ? targetProof : null;
+      if (
+        !Number.isSafeInteger(candidate.parentVersion) ||
+        candidate.parentVersion < 1 ||
+        candidate.parentVersion >= candidate.version
+      )
+        return null;
+      const parent = loadDefinitionVersion(db, goalId, candidate.parentVersion);
+      if (!parent) return null;
+      candidate = parent;
+      isCurrent = false;
+    }
+  } catch {
+    return null;
+  }
+}
+
 function getRuntime(db: Db, goalId: string): RuntimeRow | undefined {
   return db
     .prepare('SELECT integration_head, base_branch, base_commit FROM goal_runtime WHERE goal_id = ?')
@@ -562,17 +632,9 @@ function ensureCompletionReady(
     evaluation.finalReview.required && evaluation.finalReview.ok && evaluation.finalReview.reviewId,
     'completion_not_ready',
   );
-  const definitionApproval = version.approvalId ? getGoalApproval(db, version.approvalId) : undefined;
-  assert(
-    definitionApproval &&
-      definitionApproval.goalId === goalId &&
-      definitionApproval.gate === 'definition' &&
-      definitionApproval.status === 'approved' &&
-      definitionApproval.decidedBy === 'user' &&
-      definitionApproval.detail.version === version.version &&
-      definitionApproval.detail.definitionHash === version.definitionHash,
-    'definition_not_approved',
-  );
+  const definitionProof = definitionApprovalLineage(db, goalId, version);
+  assert(definitionProof, 'definition_not_approved');
+  const definitionApproval = definitionProof.approval;
   const acceptance = getGoalApproval(db, evaluation.finalAcceptance.approvalId);
   assert(
     acceptance &&
@@ -1189,12 +1251,12 @@ function currentDefinitionMatchesRecord(db: Db, goalId: string, record: ManualIn
     !verifyDefinitionHash(version)
   )
     return false;
-  const approval = version.approvalId ? getGoalApproval(db, version.approvalId) : undefined;
+  const lineage = definitionApprovalLineage(db, goalId, version);
   return Boolean(
-    approval &&
-    approval.status === 'approved' &&
-    approval.decidedBy === 'user' &&
-    digest(getApprovalIdentity(approval)) === record.definition.approvalIdentityDigest,
+    lineage &&
+    lineage.gate === (version.parentVersion === null ? 'definition' : 'amendment') &&
+    lineage.approval.id === record.definition.approvalId &&
+    digest(getApprovalIdentity(lineage.approval)) === record.definition.approvalIdentityDigest,
   );
 }
 
