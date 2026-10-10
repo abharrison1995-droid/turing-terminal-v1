@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type {
   GoalDetail,
+  GoalManualHandoffListResponse,
   GoalManualHandoffProjection,
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
@@ -10,6 +11,62 @@ import { goalsApi } from './api';
 import { Empty } from './parts';
 import { formatTime, shortHash } from './presentation';
 import { useLoad } from './useLoad';
+
+type PreparationState =
+  | { state: 'idle' }
+  | { state: 'pending' }
+  | { state: 'confirmed'; handoffId: string }
+  | { state: 'refused'; message: string }
+  | { state: 'uncertain' }
+  | { state: 'reconciling' }
+  | { state: 'reconciliation_failed'; message: string }
+  | { state: 'reconciled'; message: string };
+
+const HANDOFF_HISTORY_LIMIT = 50;
+const MAX_RECONCILIATION_PAGES = 100;
+const HANDOFF_UI_MEMORY_PREFIX = 'turing.goalHandoff.ui.v1:';
+
+interface HandoffUiMemory {
+  selectedId: string | null;
+  historyOffset: number;
+  uncertainOutcome: boolean;
+}
+
+function readHandoffUiMemory(goalId: string): HandoffUiMemory | null {
+  try {
+    const raw = window.sessionStorage.getItem(`${HANDOFF_UI_MEMORY_PREFIX}${goalId}`);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (typeof value !== 'object' || value === null) return null;
+    const record = value as Partial<HandoffUiMemory>;
+    return {
+      selectedId: typeof record.selectedId === 'string' ? record.selectedId : null,
+      historyOffset:
+        Number.isSafeInteger(record.historyOffset) && (record.historyOffset ?? -1) >= 0
+          ? record.historyOffset!
+          : 0,
+      uncertainOutcome: record.uncertainOutcome === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function updateHandoffUiMemory(goalId: string, update: Partial<HandoffUiMemory>) {
+  try {
+    const previous = readHandoffUiMemory(goalId) ?? {
+      selectedId: null,
+      historyOffset: 0,
+      uncertainOutcome: false,
+    };
+    window.sessionStorage.setItem(
+      `${HANDOFF_UI_MEMORY_PREFIX}${goalId}`,
+      JSON.stringify({ ...previous, ...update }),
+    );
+  } catch {
+    // Session storage is only a navigation/reload safeguard; the in-memory UI remains usable if it is unavailable.
+  }
+}
 
 function FullIdentity({ label, value }: { label: string; value: string | null }) {
   return (
@@ -267,15 +324,30 @@ function InspectionCommands({ record, enabled }: { record: GoalManualIntegration
 }
 
 export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: number }) {
+  const [savedUi] = useState(() => readHandoffUiMemory(goal.id));
   const [localRefresh, setLocalRefresh] = useState(0);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [historyOffset, setHistoryOffset] = useState(0);
+  const [reconciledListPage, setReconciledListPage] = useState<{
+    goalId: string;
+    offset: number;
+    data: GoalManualHandoffListResponse;
+  } | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(savedUi?.selectedId ?? null);
+  const [historyOffset, setHistoryOffset] = useState(savedUi?.historyOffset ?? 0);
   const [confirming, setConfirming] = useState(false);
-  const [preparing, setPreparing] = useState(false);
+  const [preparation, setPreparation] = useState<PreparationState>(
+    savedUi?.uncertainOutcome ? { state: 'uncertain' } : { state: 'idle' },
+  );
   const preparingRef = useRef(false);
-  const [unknownOutcome, setUnknownOutcome] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const [refusal, setRefusal] = useState('');
+  const mountedRef = useRef(true);
+  const reconciliationInFlightRef = useRef(false);
+  const reconciliationGenerationRef = useRef(0);
+  const preparing = preparation.state === 'pending';
+  const preparationLocked =
+    preparation.state === 'uncertain' ||
+    preparation.state === 'reconciling' ||
+    preparation.state === 'reconciliation_failed';
   const list = useLoad(
     () => goalsApi.manualHandoffs(goal.id, { limit: 50, offset: historyOffset }),
     `${goal.id}:handoffs:${historyOffset}`,
@@ -286,25 +358,136 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
     `${goal.id}:${selectedId ?? 'none'}`,
     `${refresh}:${localRefresh}`,
   );
+  const historyResult =
+    reconciledListPage?.goalId === goal.id && reconciledListPage.offset === historyOffset
+      ? { state: 'ready' as const, data: reconciledListPage.data }
+      : list.result;
 
   useEffect(() => {
-    if (list.result.state !== 'ready') return;
-    if (selectedId && list.result.data.handoffs.some((row) => row.handoffId === selectedId)) return;
-    setSelectedId(list.result.data.handoffs[0]?.handoffId ?? null);
-  }, [list.result, selectedId]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      reconciliationGenerationRef.current += 1;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (historyResult.state !== 'ready') return;
+    // Only initialize from history when the user has no stronger selection intent. A selected ID may
+    // legitimately be absent from a cached page while a new handoff's projection/history is loading.
+    if (selectedId === null) {
+      const initialId = historyResult.data.handoffs[0]?.handoffId ?? null;
+      if (initialId !== null) {
+        updateHandoffUiMemory(goal.id, { selectedId: initialId });
+        setSelectedId(initialId);
+      }
+    }
+  }, [goal.id, historyResult, selectedId]);
+
+  useEffect(() => {
+    setReconciledListPage(null);
+  }, [goal.id, historyOffset, localRefresh, refresh]);
+
+  const reconcileUnknownOutcome = async () => {
+    if (reconciliationInFlightRef.current) return;
+    const goalId = goal.id;
+    const requestId = ++reconciliationGenerationRef.current;
+    reconciliationInFlightRef.current = true;
+    setPreparation({ state: 'reconciling' });
+    setRefusal('');
+    try {
+      // A page with nextOffset cannot establish that the full scoped history was observed. Walk the
+      // bounded metadata pages in order; if the configured bound is exceeded, keep preparation locked.
+      let offset = 0;
+      let pageCount = 0;
+      let displayedPage: GoalManualHandoffListResponse | null = null;
+      const seenHandoffIds = new Set<string>();
+      for (;;) {
+        if (!mountedRef.current || goal.id !== goalId || requestId !== reconciliationGenerationRef.current)
+          return;
+        const page = await goalsApi.manualHandoffs(goalId, {
+          limit: HANDOFF_HISTORY_LIMIT,
+          offset,
+        });
+        if (!mountedRef.current || goal.id !== goalId || requestId !== reconciliationGenerationRef.current)
+          return;
+        pageCount += 1;
+        if (page.limit !== HANDOFF_HISTORY_LIMIT || page.handoffs.length > HANDOFF_HISTORY_LIMIT) {
+          throw new Error('The saved handoff history response exceeded its page bound.');
+        }
+        for (const row of page.handoffs) {
+          if (
+            typeof row.handoffId !== 'string' ||
+            row.handoffId.length === 0 ||
+            seenHandoffIds.has(row.handoffId)
+          ) {
+            throw new Error('The saved handoff history changed or repeated an ID during pagination.');
+          }
+          seenHandoffIds.add(row.handoffId);
+        }
+        if (offset === historyOffset) displayedPage = page;
+        if (page.nextOffset === null) break;
+        if (
+          pageCount >= MAX_RECONCILIATION_PAGES ||
+          !Number.isSafeInteger(page.nextOffset) ||
+          page.nextOffset !== offset + HANDOFF_HISTORY_LIMIT ||
+          page.nextOffset > 100_000
+        ) {
+          throw new Error('The saved handoff history is too large to reconcile completely.');
+        }
+        offset = page.nextOffset;
+      }
+      if (!mountedRef.current || goal.id !== goalId || requestId !== reconciliationGenerationRef.current)
+        return;
+      if (!displayedPage) {
+        throw new Error('The displayed history page was not included in the completed reconciliation read.');
+      }
+      setReconciledListPage({ goalId, offset: historyOffset, data: displayedPage });
+      const message =
+        'The bounded saved-handoff history was freshly read across all pages. This does not identify whether the failed request persisted. Review the refreshed list; any further preparation still requires confirmation and identical content is reused by the server.';
+      setPreparation({
+        state: 'reconciled',
+        message,
+      });
+      updateHandoffUiMemory(goalId, { uncertainOutcome: false });
+      setAnnouncement(message);
+      selected.reload();
+    } catch (error) {
+      if (!mountedRef.current || goal.id !== goalId || requestId !== reconciliationGenerationRef.current)
+        return;
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'The saved handoff history could not establish a complete recovery state.';
+      setPreparation({ state: 'reconciliation_failed', message });
+      updateHandoffUiMemory(goalId, { uncertainOutcome: true });
+      setRefusal(
+        `Preparation remains paused because a fresh, complete handoff-history read could not verify the outcome. ${message}`,
+      );
+    } finally {
+      if (requestId === reconciliationGenerationRef.current) reconciliationInFlightRef.current = false;
+    }
+  };
 
   const refreshAll = () => {
-    setUnknownOutcome(false);
     setLocalRefresh((value) => value + 1);
+    if (preparation.state === 'uncertain' || preparation.state === 'reconciliation_failed') {
+      void reconcileUnknownOutcome();
+    }
   };
   const prepare = async () => {
-    if (preparingRef.current) return;
+    if (preparingRef.current || preparationLocked) return;
     preparingRef.current = true;
-    setPreparing(true);
+    setPreparation({ state: 'pending' });
+    // If this tab unmounts while the request is in flight, reopening it must start locked and reconcile.
+    updateHandoffUiMemory(goal.id, { uncertainOutcome: true });
     setRefusal('');
     setAnnouncement('');
     try {
       const response = await goalsApi.prepareManualHandoff(goal.id);
+      if (!mountedRef.current) return;
+      setPreparation({ state: 'confirmed', handoffId: response.handoffId });
+      updateHandoffUiMemory(goal.id, { selectedId: response.handoffId, uncertainOutcome: false });
       setSelectedId(response.handoffId);
       setLocalRefresh((value) => value + 1);
       setConfirming(false);
@@ -314,28 +497,32 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
           : 'Handoff record saved. Checking currentness now.',
       );
     } catch (error) {
+      if (!mountedRef.current) return;
       setConfirming(false);
       if (error instanceof ApiError && error.status < 500) {
-        setRefusal(`${error.message}${error.code ? ` (${error.code})` : ''}`);
+        const message = `${error.message}${error.code ? ` (${error.code})` : ''}`;
+        setPreparation({ state: 'refused', message });
+        updateHandoffUiMemory(goal.id, { uncertainOutcome: false });
+        setRefusal(message);
       } else {
+        setPreparation({ state: 'uncertain' });
+        updateHandoffUiMemory(goal.id, { uncertainOutcome: true });
         setAnnouncement(
-          'The request outcome was unknown. Reloading saved handoffs before enabling another preparation attempt.',
+          'The request outcome is unknown. Reading the complete saved-handoff history before allowing another preparation attempt.',
         );
-        try {
-          await goalsApi.manualHandoffs(goal.id);
-          setLocalRefresh((value) => value + 1);
-          setUnknownOutcome(false);
-        } catch {
-          setUnknownOutcome(true);
-          setRefusal('Saved handoffs could not be reloaded. Refresh the list before trying again.');
-        }
+        await reconcileUnknownOutcome();
       }
     } finally {
       preparingRef.current = false;
-      setPreparing(false);
     }
   };
 
+  const projection = selected.result.state === 'ready' ? selected.result.data : null;
+  const projectionMatchesSelection =
+    projection !== null &&
+    (projection.handoff === null
+      ? projection.state === 'invalid'
+      : projection.handoff.goalId === goal.id && projection.handoff.handoffId === selectedId);
   return (
     <div className="goal-handoff" aria-busy={preparing}>
       <section className="surface-panel goal-handoff-intro" aria-label="Manual integration handoff">
@@ -356,15 +543,20 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
           your chosen workflow.
         </p>
         <div className="goal-handoff-actions">
-          <button type="button" className="secondary-button" onClick={refreshAll} disabled={preparing}>
-            Refresh currentness
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={refreshAll}
+            disabled={preparing || preparation.state === 'reconciling'}
+          >
+            {preparation.state === 'reconciling' ? 'Reconciling handoff history…' : 'Refresh currentness'}
           </button>
           {goal.nextAction.kind === 'final_apply' && (
             <button
               type="button"
               className="primary-button"
               onClick={() => setConfirming(true)}
-              disabled={preparing || unknownOutcome}
+              disabled={preparing || preparationLocked}
             >
               Prepare handoff
             </button>
@@ -376,9 +568,10 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
             The current Goal state does not offer preparation.
           </p>
         )}
-        {unknownOutcome && (
+        {preparation.state === 'uncertain' && (
           <p className="form-error" role="alert">
-            Preparation is paused until a successful handoff-list refresh confirms the saved state.
+            Preparation is paused until a fresh, complete, Goal-scoped handoff-history read establishes a safe
+            recovery state.
           </p>
         )}
         {refusal && (
@@ -427,28 +620,38 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
       <section className="surface-panel" aria-label="Saved handoffs">
         <div className="goal-handoff-heading-row">
           <h3>Saved handoffs</h3>
-          <button type="button" className="secondary-button" onClick={() => list.reload()}>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => {
+              setReconciledListPage(null);
+              list.reload();
+            }}
+          >
             Refresh list
           </button>
         </div>
-        {list.result.state === 'loading' && <p role="status">Loading saved handoffs…</p>}
-        {list.result.state === 'error' && (
+        {historyResult.state === 'loading' && <p role="status">Loading saved handoffs…</p>}
+        {historyResult.state === 'error' && (
           <p className="form-error" role="alert">
-            Saved handoffs could not be loaded. {list.result.message}
+            Saved handoffs could not be loaded. {historyResult.message}
           </p>
         )}
-        {list.result.state === 'ready' && list.result.data.handoffs.length === 0 && (
+        {historyResult.state === 'ready' && historyResult.data.handoffs.length === 0 && (
           <Empty>No handoffs have been prepared for this Goal.</Empty>
         )}
-        {list.result.state === 'ready' && list.result.data.handoffs.length > 0 && (
+        {historyResult.state === 'ready' && historyResult.data.handoffs.length > 0 && (
           <ul className="goal-plain-list goal-handoff-history">
-            {list.result.data.handoffs.map((row) => (
+            {historyResult.data.handoffs.map((row) => (
               <li key={row.handoffId}>
                 <button
                   type="button"
                   className="goal-version"
                   aria-pressed={selectedId === row.handoffId}
-                  onClick={() => setSelectedId(row.handoffId)}
+                  onClick={() => {
+                    updateHandoffUiMemory(goal.id, { selectedId: row.handoffId });
+                    setSelectedId(row.handoffId);
+                  }}
                 >
                   <span>
                     v{row.definitionVersion} · {formatTime(row.createdAt)}
@@ -466,22 +669,30 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
             ))}
           </ul>
         )}
-        {list.result.state === 'ready' && (
+        {historyResult.state === 'ready' && (
           <div className="goal-handoff-actions">
             {historyOffset > 0 && (
               <button
                 type="button"
                 className="secondary-button"
-                onClick={() => setHistoryOffset(Math.max(0, historyOffset - 50))}
+                onClick={() => {
+                  const nextOffset = Math.max(0, historyOffset - HANDOFF_HISTORY_LIMIT);
+                  updateHandoffUiMemory(goal.id, { historyOffset: nextOffset });
+                  setHistoryOffset(nextOffset);
+                }}
               >
                 Newer handoffs
               </button>
             )}
-            {list.result.data.nextOffset !== null && (
+            {historyResult.data.nextOffset !== null && (
               <button
                 type="button"
                 className="secondary-button"
-                onClick={() => setHistoryOffset(historyOffset + 50)}
+                onClick={() => {
+                  const nextOffset = historyOffset + HANDOFF_HISTORY_LIMIT;
+                  updateHandoffUiMemory(goal.id, { historyOffset: nextOffset });
+                  setHistoryOffset(nextOffset);
+                }}
               >
                 Older handoffs
               </button>
@@ -493,16 +704,29 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
       {selectedId && (
         <section className="goal-handoff-projection" aria-label="Selected handoff review">
           {selected.result.state === 'loading' && (
-            <p role="status">Checking this handoff against the current Goal and Git identities…</p>
-          )}
-          {selected.result.state === 'error' && (
-            <p className="form-error" role="alert">
-              Currentness could not be verified. {selected.result.message}
+            <p role="status">
+              Handoff {shortHash(selectedId)} is selected. Checking it against the current Goal and Git
+              identities…
             </p>
           )}
-          {selected.result.state === 'ready' && selected.result.data && (
-            <HandoffDetail projection={selected.result.data} />
+          {selected.result.state === 'error' && (
+            <div>
+              <p className="form-error" role="alert">
+                Handoff {shortHash(selectedId)} remains selected, but currentness could not be verified.{' '}
+                {selected.result.message}
+              </p>
+              <button type="button" className="secondary-button" onClick={selected.reload}>
+                Retry currentness check
+              </button>
+            </div>
           )}
+          {selected.result.state === 'ready' && !projectionMatchesSelection && (
+            <p className="form-error" role="alert">
+              Handoff {shortHash(selectedId)} remains selected, but the response did not match this Goal and
+              handoff. Currentness cannot be verified.
+            </p>
+          )}
+          {projectionMatchesSelection && projection && <HandoffDetail projection={projection} />}
         </section>
       )}
     </div>

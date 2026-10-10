@@ -133,6 +133,7 @@ let originalClipboard: PropertyDescriptor | undefined;
 let originalWindowClipboard: PropertyDescriptor | undefined;
 beforeEach(() => {
   vi.unstubAllGlobals();
+  sessionStorage.clear();
   originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
   originalWindowClipboard = Object.getOwnPropertyDescriptor(window.navigator, 'clipboard');
 });
@@ -405,13 +406,345 @@ describe('desktop manual handoff review', () => {
     await screen.findByText('No handoffs have been prepared for this Goal.');
     await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
     await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
-    expect(
-      await screen.findByText('Saved handoffs could not be reloaded. Refresh the list before trying again.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/could not verify the outcome/)).toBeInTheDocument();
     expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
     expect(posts()).toHaveLength(1);
+  });
+
+  it('does not clear an unknown preparation outcome when refresh reconciliation fails repeatedly', async () => {
+    let listReads = 0;
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => {
+          listReads += 1;
+          if (listReads === 1) return history();
+          throw new Error(`network disconnected on read ${listReads}`);
+        },
+        'POST /api/goals/goal-1/handoffs': () => {
+          throw new Error('connection closed after request');
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await screen.findByText('No handoffs have been prepared for this Goal.');
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(await screen.findByText(/Preparation remains paused because/)).toBeInTheDocument();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const previousReadCount = listReads;
+      await user.click(screen.getByRole('button', { name: 'Refresh currentness' }));
+      await waitFor(() => expect(listReads).toBeGreaterThan(previousReadCount));
+      await waitFor(() =>
+        expect(screen.getAllByText(/Preparation remains paused/).length).toBeGreaterThan(0),
+      );
+      expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+    }
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('clears uncertainty only after a complete fresh paginated history read', async () => {
+    let initialRead = true;
+    const pageOffsets: number[] = [];
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => {
+          const request = calls.at(-1);
+          const offset = Number(request?.url.match(/[?&]offset=(\d+)/)?.[1] ?? 0);
+          pageOffsets.push(offset);
+          if (initialRead) {
+            initialRead = false;
+            return history();
+          }
+          if (offset === 0) return { handoffs: [], limit: 50, nextOffset: 50 };
+          return history();
+        },
+        'POST /api/goals/goal-1/handoffs': () => {
+          throw new Error('connection closed after request');
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await screen.findByText('No handoffs have been prepared for this Goal.');
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(
+      await screen.findByText(/bounded saved-handoff history was freshly read across all pages/i),
+    ).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(pageOffsets).toContain(0);
+    expect(pageOffsets).toContain(50);
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('does not treat an ordinary history refresh as reconciliation, then unlocks after a fresh complete read', async () => {
+    let listReads = 0;
+    const existing = handoff(1, 'handoff-v1');
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => {
+          listReads += 1;
+          if (listReads === 2) throw new Error('automatic reconciliation failed');
+          return history({ handoffId: existing.handoffId, definitionVersion: 1 });
+        },
+        [`/api/goals/goal-1/handoffs/${existing.handoffId}`]: () => ({
+          projection: projection('current', existing),
+        }),
+        'POST /api/goals/goal-1/handoffs': () => {
+          throw new Error('connection closed after request');
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await screen.findByRole('heading', { name: 'Ready for manual integration' });
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(await screen.findByText(/could not verify the outcome/)).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Refresh list' }));
+    await waitFor(() => expect(listReads).toBe(3));
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Refresh currentness' }));
+    expect(
+      await screen.findByText(/bounded saved-handoff history was freshly read across all pages/i),
+    ).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('keeps an in-flight preparation uncertain across tab and Goal unmounts without leaking to another Goal', async () => {
+    let rejectPreparation: (reason: Error) => void = () => undefined;
+    const pendingPreparation = new Promise<never>((_resolve, reject) => {
+      rejectPreparation = reject;
+    });
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals': () => ({
+          goals: [item(), item({ id: 'goal-2', title: 'Second Goal' })],
+          total: 2,
+          limit: 50,
+        }),
+        '/api/goals/goal-2': () => ({ goal: detail({ id: 'goal-2', title: 'Second Goal' }) }),
+        '/api/goals/goal-2/preview': () => ({ preview: { ...detail(), goalId: 'goal-2' } }),
+        '/api/goals/goal-1/handoffs': () => history(),
+        '/api/goals/goal-2/handoffs': () => history(),
+        'POST /api/goals/goal-1/handoffs': () => pendingPreparation,
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await screen.findByText('No handoffs have been prepared for this Goal.');
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
+    rejectPreparation(new Error('connection closed after request'));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    expect(screen.queryByText(/Preparation is paused until a fresh/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Prepare handoff' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    expect(await screen.findByText(/Preparation is paused until a fresh/)).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('keeps the exact newly prepared v2 handoff selected while v1 history is cached and refreshed', async () => {
+    const v1 = handoff(1, 'handoff-v1');
+    const v2 = handoff(2, 'handoff-v2');
+    let listReads = 0;
+    let releaseV2Projection: (value: { projection: GoalManualHandoffProjection }) => void = () => undefined;
+    const heldV2Projection = new Promise<{ projection: GoalManualHandoffProjection }>((resolve) => {
+      releaseV2Projection = resolve;
+    });
+    let releaseUpdatedHistory: (value: ReturnType<typeof history>) => void = () => undefined;
+    const updatedHistory = new Promise<ReturnType<typeof history>>((resolve) => {
+      releaseUpdatedHistory = resolve;
+    });
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => {
+          listReads += 1;
+          if (listReads === 1) return history({ handoffId: v1.handoffId, definitionVersion: 1 });
+          return updatedHistory;
+        },
+        [`/api/goals/goal-1/handoffs/${v1.handoffId}`]: () => ({
+          projection: projection('stale', v1),
+        }),
+        [`/api/goals/goal-1/handoffs/${v2.handoffId}`]: () => heldV2Projection,
+        'POST /api/goals/goal-1/handoffs': () => ({
+          handoffId: v2.handoffId,
+          handoffDigest: v2.handoffDigest,
+          reused: false,
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: /v1/ }));
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Handoff stale — review the updated Goal before preparing another',
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(await screen.findByText(/Handoff handoff-v2 is selected\. Checking it/)).toBeInTheDocument();
+    expect(await screen.findByText('Handoff record saved. Checking currentness now.')).toBeInTheDocument();
+    expect(screen.queryByText(v1.finalAcceptance.approvalId)).toBeNull();
+    releaseV2Projection({ projection: projection('current', v2) });
+    expect(await screen.findByText(v2.finalAcceptance.approvalId)).toBeInTheDocument();
+    expect(screen.getByText(`Version 2 · ${v2.definition.hash}`)).toBeInTheDocument();
+    expect(
+      (screen.getByRole('button', { name: /v1/ }) as HTMLButtonElement).getAttribute('aria-pressed'),
+    ).toBe('false');
+
+    releaseUpdatedHistory(
+      history(
+        { handoffId: v2.handoffId, definitionVersion: 2 },
+        { handoffId: v1.handoffId, definitionVersion: 1 },
+      ),
+    );
+    await waitFor(() => expect(screen.getByText(v2.finalAcceptance.approvalId)).toBeInTheDocument());
+    expect(
+      (screen.getByRole('button', { name: /v2/ }) as HTMLButtonElement).getAttribute('aria-pressed'),
+    ).toBe('true');
+    await user.click(screen.getByRole('button', { name: /v1/ }));
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Handoff stale — review the updated Goal before preparing another',
+      }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(v1.finalAcceptance.approvalId)).toBeInTheDocument();
+  });
+
+  it('keeps a prepared ID selected after projection failure and reports its later stale projection', async () => {
+    const v1 = handoff(1, 'handoff-v1');
+    const v2 = handoff(2, 'handoff-v2');
+    let v2Reads = 0;
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: v1.handoffId, definitionVersion: 1 }),
+        [`/api/goals/goal-1/handoffs/${v1.handoffId}`]: () => ({
+          projection: projection('stale', v1),
+        }),
+        [`/api/goals/goal-1/handoffs/${v2.handoffId}`]: () => {
+          v2Reads += 1;
+          if (v2Reads === 1) throw new Error('projection read unavailable');
+          return { projection: projection('stale', v2) };
+        },
+        'POST /api/goals/goal-1/handoffs': () => ({
+          handoffId: v2.handoffId,
+          handoffDigest: v2.handoffDigest,
+          reused: false,
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await screen.findByRole('heading', {
+      name: 'Handoff stale — review the updated Goal before preparing another',
+    });
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(
+      await screen.findByText(/Handoff handoff-v2 remains selected, but currentness could not be verified/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(v1.finalAcceptance.approvalId)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Retry currentness check' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Retry currentness check' }));
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Handoff stale — review the updated Goal before preparing another',
+      }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText(v2.finalAcceptance.approvalId)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Ready for manual integration' })).toBeNull();
+  });
+
+  it('keeps a prepared handoff selected when preparation starts from an older history page', async () => {
+    const v1 = handoff(1, 'handoff-v1');
+    const v2 = handoff(2, 'handoff-v2');
+    const newer = handoff(3, 'handoff-v3');
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => {
+          const offset = Number(calls.at(-1)?.url.match(/[?&]offset=(\d+)/)?.[1] ?? 0);
+          if (offset === 0) {
+            return {
+              ...history({ handoffId: newer.handoffId, definitionVersion: 3 }),
+              nextOffset: 50,
+            };
+          }
+          return history({ handoffId: v1.handoffId, definitionVersion: 1 });
+        },
+        [`/api/goals/goal-1/handoffs/${newer.handoffId}`]: () => ({
+          projection: projection('current', newer),
+        }),
+        [`/api/goals/goal-1/handoffs/${v1.handoffId}`]: () => ({
+          projection: projection('stale', v1),
+        }),
+        [`/api/goals/goal-1/handoffs/${v2.handoffId}`]: () => ({
+          projection: projection('current', v2),
+        }),
+        'POST /api/goals/goal-1/handoffs': () => ({
+          handoffId: v2.handoffId,
+          handoffDigest: v2.handoffDigest,
+          reused: false,
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Older handoffs' }));
+    await user.click(await screen.findByRole('button', { name: /v1/ }));
+    expect(
+      await screen.findByRole('heading', {
+        name: 'Handoff stale — review the updated Goal before preparing another',
+      }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    expect(await screen.findByText(v2.finalAcceptance.approvalId)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Newer handoffs' })).toBeInTheDocument();
+    expect(
+      (screen.getByRole('button', { name: /v1/ }) as HTMLButtonElement).getAttribute('aria-pressed'),
+    ).toBe('false');
   });
 
   it('does not show accepted-result wording when the current Goal is not eligible', async () => {
