@@ -1,6 +1,6 @@
 # Goal external-integration attestation correction and withdrawal design
 
-Status: Stage 7C.2B.5D.0 design proposal only. No correction route, approval, migration, Goal transition, or read-model behavior is implemented.
+Status: Stage 7C.2B.5D.0 correction/withdrawal design proposal only. Stage 7C.2B.5D.1 adds a versioned correction-chain identity to the future completion-action/proof schemas, but no correction route, approval, ledger, standing evaluator, Goal transition, or correction read-model behavior is implemented.
 
 ## 1. Purpose and governing rules
 
@@ -126,3 +126,7 @@ Future deterministic tests must cover: no correction; dispute/withdraw/supersede
 A local single-user product cannot establish legal identity. A user correction can be issued by any caller authorized by the existing local/Tailscale user-control boundary; there is no desktop-only principal. SQLite can serialize Turing writers but cannot make Git and database state atomic. A later correction records user accountability; it cannot establish what content was present at an earlier time. Windows remains unverified until exercised on Windows.
 
 No correction, withdrawal, completion, migration, or endpoint is implemented in Stage 7C.2B.5D.0.
+
+## Stage 7C.2B.5D.1 implementation boundary
+
+Migration 027's future proof shape carries a same-attestation correction-chain schema version, attestation ID, sequence, digest, and point-in-time `active_uncontested` standing. This is an identity slot for a later validated chain, not evidence that D.1 has checked current standing. D.1 creates no correction row, approval, event, endpoint, UI, or completion proof, and no code interprets the placeholder standing as authority. Proof issuance remains absent until a later stage can verify the correction chain and atomically bind it to completion. Later correction records must remain append-only and must not rewrite a historical proof or terminal Goal.

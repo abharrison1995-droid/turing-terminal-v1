@@ -405,7 +405,11 @@ const REVISE = new Set([
  * A pure, deterministic projection of what the user can do next. It reads persisted facts only and has no authority:
  * every action it names is still an explicit, separately validated user request.
  */
-const TERMINAL_USER_FAILURES = new Set(['final_acceptance_missing', 'final_apply_required']);
+const TERMINAL_USER_FAILURES = new Set([
+  'final_acceptance_missing',
+  'final_apply_required',
+  'external_completion_not_activated',
+]);
 
 /** The terminal completion actions: only meaningful when every remaining failure is a user action. */
 function terminalUserAction(
@@ -425,6 +429,10 @@ function terminalUserAction(
     );
     return { kind: 'final_acceptance', approvalId: match?.id ?? null };
   }
+  // A v2 Goal is intentionally blocked until its later completion stage. Never project that refusal as an
+  // instruction to run the legacy final-apply workflow.
+  if (completion.failures.some((failure) => failure.code === 'external_completion_not_activated'))
+    return null;
   return { kind: 'final_apply' };
 }
 

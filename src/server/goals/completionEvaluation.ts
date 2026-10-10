@@ -13,6 +13,7 @@ import { evaluateMilestones, userApprovals } from './milestones.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { listReviews } from './reviews.js';
 import { hasVerifiedAppliedFinalApplyOperation } from './finalApplyOperation.js';
+import { parseCompletionPolicy, validateApprovedCompletionPolicyLineage } from './completionPolicy.js';
 
 /**
  * Completion authority. This module is the only place a `CompletionEvaluation` can become proof: the registry below
@@ -127,6 +128,46 @@ export async function evaluateCompletion(
       }),
     );
   const { definition } = version;
+  const storedPolicy: unknown = definition.contract?.completionPolicy;
+  const parsedPolicy = parseCompletionPolicy(storedPolicy);
+  if (parsedPolicy.kind !== 'valid') {
+    const evaluation = blank(goalId, now, {
+      code: 'completion_policy_unsupported',
+      detail: 'The approved completion policy is malformed or unsupported.',
+    });
+    evaluation.definitionVersion = version.version;
+    evaluation.definitionHash = version.definitionHash;
+    const requiresApply =
+      !!storedPolicy &&
+      typeof storedPolicy === 'object' &&
+      !Array.isArray(storedPolicy) &&
+      (storedPolicy as Record<string, unknown>).applyToBase === 'required';
+    evaluation.finalApply = {
+      required: requiresApply,
+      ok: false,
+      basis: null,
+      reason: 'completion_policy_unsupported',
+    };
+    return issueCompletionProof(evaluation);
+  }
+  if (parsedPolicy.mode === 'external_user_attested_v2') {
+    const lineage = validateApprovedCompletionPolicyLineage(db, goalId, version.version);
+    if (lineage.kind !== 'valid' || lineage.mode !== 'external_user_attested_v2') {
+      const evaluation = blank(goalId, now, {
+        code: 'completion_policy_unsupported',
+        detail: 'The approved version 2 completion-policy lineage could not be verified.',
+      });
+      evaluation.definitionVersion = version.version;
+      evaluation.definitionHash = version.definitionHash;
+      evaluation.finalApply = {
+        required: true,
+        ok: false,
+        basis: null,
+        reason: 'completion_policy_unsupported',
+      };
+      return issueCompletionProof(evaluation);
+    }
+  }
   const resolved = await resolveGoalRepository(db, goalId);
   if (!resolved.ok) {
     const evaluation = blank(goalId, now, { code: 'goal_ref_unavailable', detail: resolved.detail });
@@ -225,7 +266,13 @@ export async function evaluateCompletion(
   }
 
   let finalApply: CompletionEvaluation['finalApply'];
-  if (policy.applyToBase !== 'required')
+  if (parsedPolicy.mode === 'external_user_attested_v2') {
+    finalApply = { required: true, ok: false, basis: null, reason: 'external_completion_not_activated' };
+    failures.push({
+      code: 'external_completion_not_activated',
+      detail: 'Version 2 external-integration completion is not activated.',
+    });
+  } else if (policy.applyToBase !== 'required')
     finalApply = { required: false, ok: true, basis: 'not_required', reason: null };
   else {
     const applied = await hasVerifiedAppliedFinalApplyOperation(db, goalId, state.head, state.tree);
@@ -269,7 +316,12 @@ export type CompletionProofCheck =
   | { ok: true }
   | {
       ok: false;
-      code: 'completion_proof_required' | 'completion_proof_failed' | 'completion_proof_stale';
+      code:
+        | 'completion_proof_required'
+        | 'completion_proof_failed'
+        | 'completion_proof_stale'
+        | 'external_completion_not_activated'
+        | 'completion_policy_unsupported';
       message: string;
     };
 
@@ -287,18 +339,51 @@ export function checkCompletionProof(db: Db, goalId: string, proof: unknown): Co
   const evaluation = proof as CompletionEvaluation;
   if (evaluation.goalId !== goalId)
     return { ok: false, code: 'completion_proof_required', message: 'The proof belongs to another Goal.' };
-  if (!evaluation.ok)
-    return { ok: false, code: 'completion_proof_failed', message: 'The completion evaluation did not pass.' };
   const row = db
     .prepare(
-      `SELECT g.current_definition_version AS version, d.definition_hash AS hash, d.status AS status, r.integration_head AS head
+      `SELECT g.current_definition_version AS version, d.definition_hash AS hash, d.status AS status,
+              d.contract_json AS contractJson, r.integration_head AS head
        FROM goals g
        LEFT JOIN goal_definition_versions d ON d.goal_id = g.id AND d.version = g.current_definition_version
        LEFT JOIN goal_runtime r ON r.goal_id = g.id
        WHERE g.id = ?`,
     )
     .get(goalId) as
-    { version: number | null; hash: string | null; status: string | null; head: string | null } | undefined;
+    | {
+        version: number | null;
+        hash: string | null;
+        status: string | null;
+        contractJson: string | null;
+        head: string | null;
+      }
+    | undefined;
+  if (row?.status === 'approved' && row.contractJson) {
+    let policy: unknown;
+    try {
+      policy = (JSON.parse(row.contractJson) as { completionPolicy?: unknown }).completionPolicy;
+    } catch {
+      return {
+        ok: false,
+        code: 'completion_policy_unsupported',
+        message: 'The current completion policy is malformed or unsupported.',
+      };
+    }
+    const parsedPolicy = parseCompletionPolicy(policy);
+    if (parsedPolicy.kind !== 'valid')
+      return {
+        ok: false,
+        code: 'completion_policy_unsupported',
+        message: 'The current completion policy is malformed or unsupported.',
+      };
+    if (parsedPolicy.mode === 'external_user_attested_v2')
+      return {
+        ok: false,
+        code: 'external_completion_not_activated',
+        message: 'Version 2 external-integration completion is not activated.',
+      };
+  }
+  if (!evaluation.ok)
+    return { ok: false, code: 'completion_proof_failed', message: 'The completion evaluation did not pass.' };
   if (
     !row ||
     row.status !== 'approved' ||

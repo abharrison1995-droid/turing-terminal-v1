@@ -18,6 +18,7 @@ import {
 } from './definitionValidation.js';
 import { writeGoalEvent } from './events.js';
 import { transitionGoal } from './stateMachine.js';
+import { validateCompletionPolicyTransition } from './completionPolicy.js';
 
 export type GoalDefinitionErrorCode =
   | 'project_not_found'
@@ -36,7 +37,33 @@ export type GoalDefinitionErrorCode =
   | 'gate_denial_not_settled'
   | 'approval_mismatch'
   | 'definition_precondition_required'
-  | 'definition_precondition_failed';
+  | 'definition_precondition_failed'
+  | 'completion_policy_downgrade'
+  | 'completion_policy_lineage_invalid';
+
+function assertCompletionPolicyTransition(
+  db: Db,
+  goalId: string,
+  parentVersion: number | null,
+  definition: GoalDefinition,
+): void {
+  const result = validateCompletionPolicyTransition(
+    db,
+    goalId,
+    parentVersion,
+    definition.contract.completionPolicy,
+  );
+  if (result.ok) return;
+  if (result.reasonCode === 'completion_policy_downgrade')
+    throw new GoalDefinitionError(
+      'completion_policy_downgrade',
+      'An approved version 2 completion policy cannot be downgraded by an amendment.',
+    );
+  throw new GoalDefinitionError(
+    'completion_policy_lineage_invalid',
+    'The approved completion-policy lineage is invalid or unsupported.',
+  );
+}
 
 /**
  * The optimistic-concurrency precondition for mutating an existing proposal: exactly one strong `If-Match` entity tag
@@ -313,6 +340,7 @@ export function editProposedDefinition(
         `A ${existing.status} definition cannot be edited.`,
       );
     assertReviewed(existing, input.expectedDefinitionHash);
+    assertCompletionPolicyTransition(db, input.goalId, existing.parentVersion, input.definition);
     const hash = hashOrThrow(input.definition);
     const json = serialise(input.definition);
     db.prepare(
@@ -459,11 +487,13 @@ export function beginAmendment(
           v: number;
         }
       ).v + 1;
+    const proposedDefinition = input.definition ?? base.definition;
+    assertCompletionPolicyTransition(db, input.goalId, current, proposedDefinition);
     const definitionHash = insertVersion(db, {
       goalId: input.goalId,
       version: next,
       parentVersion: current,
-      definition: input.definition ?? base.definition,
+      definition: proposedDefinition,
       changeSummary: input.changeSummary ?? 'Amendment',
       createdBy: input.createdBy ?? 'user',
       now,
@@ -591,6 +621,7 @@ export function approveDefinition(
         'definition_stale',
         'The proposal is not based on the current approved version.',
       );
+    assertCompletionPolicyTransition(db, input.goalId, proposed.parentVersion, proposed.definition);
     const amendment = goal.current_definition_version !== null;
     const reviseDraft = goal.status === 'draft';
     const amendInPlace = amendment && goal.status === 'needs_user';

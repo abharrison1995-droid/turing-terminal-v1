@@ -105,6 +105,10 @@ export type VerificationSpec =
 export type VerificationKind = VerificationSpec['kind'];
 
 export interface CompletionPolicy {
+  /** Absent on historical v1 definitions so their canonical hashes remain unchanged. */
+  completionContractVersion?: 2;
+  /** Required together with completionContractVersion: 2. */
+  integrationMode?: 'external_user_attested';
   requireFinalReview: boolean;
   requireUserAcceptance: boolean;
   applyToBase: 'required' | 'leave-on-goal-branch';
@@ -435,6 +439,8 @@ export interface GoalApproval {
   intentDigest?: string;
   /** Present only for a versioned external-integration confirmation decision. */
   externalIntegrationActionDigest?: string;
+  /** Present only for the future, separately approved version-2 Goal-completion decision. */
+  externalCompletionActionDigest?: string;
 }
 
 export const GOAL_EVENT_TYPES = [
@@ -565,7 +571,9 @@ export type CompletionFailureCode =
   | 'final_review_not_passing'
   | 'final_review_independence'
   | 'final_acceptance_missing'
-  | 'final_apply_required';
+  | 'final_apply_required'
+  | 'external_completion_not_activated'
+  | 'completion_policy_unsupported';
 
 export interface CompletionFailure {
   code: CompletionFailureCode;

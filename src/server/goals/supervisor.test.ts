@@ -5,12 +5,13 @@ import { advanceGoalRef } from '../goalGit.js';
 import { decideGoalApproval, pendingGoalApprovals } from './approvals.js';
 import { DisabledGoalExecutor } from './executor.js';
 import { listGoalEvents } from './events.js';
-import { cleanupRepoFixtures, milestone, passDeterministic, simpleDefinition } from './repoKit.js';
+import { cleanupRepoFixtures, milestone, passDeterministic, reportOf, simpleDefinition } from './repoKit.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 import { GoalSupervisor, TICK_ACTIONS, type TickAction } from './supervisor.js';
 import { listCycles } from './cycles.js';
 import { approveDefinition, beginAmendment } from './definitions.js';
 import { ActiveTimeTracker } from './activeTime.js';
+import { completeReview, createReview } from './reviews.js';
 
 afterEach(() => {
   cleanupRepoFixtures();
@@ -649,6 +650,53 @@ describe('completion authority', () => {
     expect(await h.tick()).toBe('completed');
     expect(h.status()).toEqual({ status: 'completed', reason: 'completion_verified' });
     expect(h.tracker.isCounting(h.fx.goalId)).toBe(false);
+  });
+
+  it('does not auto-complete a v2 Goal through legacy external-apply authority', async () => {
+    const definition = simpleDefinition({
+      milestones: [milestone('m1', ['build', 'tests'])],
+      policy: {
+        completionContractVersion: 2,
+        integrationMode: 'external_user_attested',
+        requireFinalReview: true,
+        requireUserAcceptance: true,
+        applyToBase: 'required',
+      },
+    });
+    definition.review.final = true;
+    const h = harness({ definition });
+    await passDeterministic(h.fx);
+    const review = await createReview(h.fx.db, {
+      goalId: h.fx.goalId,
+      definitionVersion: 1,
+      reviewKind: 'final',
+    });
+    completeReview(h.fx.db, {
+      reviewId: review.id,
+      report: reportOf(),
+      independence: {
+        established: true,
+        policy: h.fx.definition.routing.independence.finalReview,
+      },
+    });
+    h.fx.approval('final_acceptance', {
+      definitionVersion: 1,
+      definitionHash: h.fx.currentHash(),
+      integrationTree: h.fx.tree(),
+    });
+    h.fx.approval('final_apply', {
+      action: 'applied_externally',
+      definitionVersion: 1,
+      definitionHash: h.fx.currentHash(),
+      integrationHead: h.fx.head(),
+    });
+
+    await h.start();
+    expect(await h.tick()).toBe('completion_pending');
+    expect(h.status()).toEqual({ status: 'running', reason: 'user_start' });
+    expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({
+      n: 0,
+    });
   });
 
   it('never writes the completed status itself (static check of every supervisor module)', () => {

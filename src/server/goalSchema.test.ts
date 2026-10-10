@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase, type Db } from './db.js';
 import { decideGoalApproval, requestGoalApproval } from './goals/approvals.js';
+import { readExternalCompletionProof } from './goals/externalCompletionProof.js';
 
 // Each upgrade test replays every migration into a fresh database; that is I/O-bound and slow when the whole suite
 // runs in parallel on a busy disk, so these tests get a larger timeout than the 5s default (assertions unchanged).
@@ -185,6 +186,122 @@ function seedGoalWithDefinition(db: Db, goalId: string, projectId: string) {
   );
 }
 
+function externalCompletionProofRow(goalId = 'g', suffix = '1'): Record<string, string | number> {
+  const id = (part: string) => `30000000-0000-4000-8000-${part.padStart(12, '0')}`;
+  const hash = (letter: string) => letter.repeat(64);
+  const objectId = (letter: string) => letter.repeat(40);
+  const actionDigest = hash('a');
+  const proof = {
+    schemaVersion: 1,
+    kind: 'turing_goal_external_completion_proof',
+    contractVersion: 2,
+    goalId,
+    definition: { version: 1, hash: hash('b'), approvalId: id('1'), lineageDigest: hash('c') },
+    evaluation: {
+      integrationHead: objectId('d'),
+      integrationTree: objectId('e'),
+      verificationEvidenceDigest: hash('f'),
+      milestoneIdentityDigest: hash('1'),
+      findingIdentityDigest: hash('2'),
+      finalReviewId: id('2'),
+      finalAcceptanceApprovalId: id('3'),
+    },
+    handoff: { id: id('4'), digest: hash('3') },
+    attestation: { id: id('5'), actionDigest: hash('4'), recordDigest: hash('5'), approvalId: id('6') },
+    repository: { projectId: id('7'), identity: hash('6'), scope: '', objectFormat: 'sha1' },
+    source: { ref: `refs/heads/turing/goal/${goalId}`, commit: objectId('d'), tree: objectId('e') },
+    destination: {
+      ref: 'refs/heads/main',
+      recordedBaseCommit: objectId('7'),
+      recordedBaseTree: objectId('8'),
+      observedCommit: objectId('9'),
+      observedTree: objectId('a'),
+    },
+    gitProof: {
+      mode: 'source_history_observed',
+      sourceAncestor: true,
+      baseAncestor: true,
+      verifierVersion: 1,
+      evidenceDigest: hash('7'),
+      observedAt: NOW,
+    },
+    decision: {
+      approvalId: id('8'),
+      actionDigest,
+      decidedAt: NOW,
+      classification: 'user_confirmed_historical_external_integration',
+    },
+    proofLimitations: { contentPreservation: 'not_proven' },
+    correctionChain: {
+      schemaVersion: 1,
+      kind: 'turing_goal_external_integration_correction_chain',
+      attestationId: id('5'),
+      sequence: 0,
+      digest: hash('8'),
+      standing: 'active_uncontested',
+    },
+    userReviewedPreflightDigest: hash('9'),
+    proofDigest: hash('a'),
+  };
+  return {
+    id: id(suffix),
+    goal_id: goalId,
+    schema_version: 1,
+    kind: proof.kind,
+    contract_version: 2,
+    action_digest: actionDigest,
+    proof_digest: proof.proofDigest,
+    definition_version: proof.definition.version,
+    definition_hash: proof.definition.hash,
+    definition_approval_id: proof.definition.approvalId,
+    definition_lineage_digest: proof.definition.lineageDigest,
+    handoff_id: proof.handoff.id,
+    handoff_digest: proof.handoff.digest,
+    attestation_id: proof.attestation.id,
+    attestation_action_digest: proof.attestation.actionDigest,
+    attestation_record_digest: proof.attestation.recordDigest,
+    attestation_approval_id: proof.attestation.approvalId,
+    completion_approval_id: proof.decision.approvalId,
+    final_review_id: proof.evaluation.finalReviewId,
+    final_acceptance_approval_id: proof.evaluation.finalAcceptanceApprovalId,
+    verification_evidence_digest: proof.evaluation.verificationEvidenceDigest,
+    milestone_identity_digest: proof.evaluation.milestoneIdentityDigest,
+    finding_identity_digest: proof.evaluation.findingIdentityDigest,
+    repository_project_id: proof.repository.projectId,
+    repository_identity: proof.repository.identity,
+    repository_scope: proof.repository.scope,
+    object_format: proof.repository.objectFormat,
+    source_ref: proof.source.ref,
+    source_commit: proof.source.commit,
+    source_tree: proof.source.tree,
+    destination_ref: proof.destination.ref,
+    recorded_base_commit: proof.destination.recordedBaseCommit,
+    recorded_base_tree: proof.destination.recordedBaseTree,
+    observed_destination_commit: proof.destination.observedCommit,
+    observed_destination_tree: proof.destination.observedTree,
+    proof_mode: proof.gitProof.mode,
+    source_ancestor: 1,
+    base_ancestor: 1,
+    verifier_version: proof.gitProof.verifierVersion,
+    git_evidence_digest: proof.gitProof.evidenceDigest,
+    preflight_digest: proof.userReviewedPreflightDigest,
+    correction_chain_digest: proof.correctionChain.digest,
+    correction_sequence: proof.correctionChain.sequence,
+    correction_standing: proof.correctionChain.standing,
+    observed_at: proof.gitProof.observedAt,
+    decided_at: proof.decision.decidedAt,
+    payload_json: JSON.stringify(proof),
+  };
+}
+
+function insertExternalCompletionProof(db: Db, row: Record<string, string | number>): void {
+  const columns = Object.keys(row);
+  const statement = db.prepare(
+    `INSERT INTO goal_external_completion_proofs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+  );
+  statement.run(...Object.values(row));
+}
+
 const GOAL_TABLES = [
   'goals',
   'goal_definition_versions',
@@ -229,7 +346,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -254,7 +371,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     db.close();
   });
 });
@@ -658,7 +775,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(
       db.prepare('SELECT id, status, recovery_json, approval_id FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -879,7 +996,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -887,7 +1004,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -913,7 +1030,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1357,7 +1474,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1365,11 +1482,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     again.close();
   });
 
@@ -1656,7 +1773,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1665,11 +1782,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
       again.close();
     }
   });
@@ -1868,7 +1985,7 @@ describe('migration 022_goal_review_run_identity', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.prepare('SELECT id, cycle_id, run_id, status FROM goal_reviews ORDER BY id').all()).toEqual([
       { id: 'legacy-1', cycle_id: null, run_id: null, status: 'pending' },
       { id: 'legacy-2', cycle_id: null, run_id: null, status: 'pending' },
@@ -1904,7 +2021,7 @@ describe('migration 023_goal_final_apply_authority', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
     expect(db.prepare("SELECT intent_digest FROM goal_approvals WHERE id = 'legacy-final'").get()).toEqual({
       intent_digest: null,
     });
@@ -2146,6 +2263,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
         { name: '024_goal_final_apply_operation_identity.sql' },
         { name: '025_goal_result_handoffs.sql' },
         { name: '026_goal_external_integration_attestations.sql' },
+        { name: '027_goal_external_completion_proofs.sql' },
       ],
     );
     expect(
@@ -2182,6 +2300,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
     expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations').get()).toEqual({
       n: 0,
     });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -2400,6 +2519,200 @@ describe('migration 026 external integration approval authority', () => {
     expect(() => insert.run(...bind(malformedSha256Commit, payloadFor(malformedSha256Commit)))).toThrow(
       /CHECK constraint failed/,
     );
+    db.close();
+  });
+});
+
+describe('migration 027 immutable external-completion proof infrastructure', () => {
+  it('upgrades an exact 026 database and preserves legacy Goal approvals without creating proofs', () => {
+    const root = rc2Directory('027');
+    const historical = new Database(join(root, 'turing.sqlite'));
+    historical.pragma('foreign_keys = ON');
+    expect(historical.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 26 });
+    seedGoalWithDefinition(historical, 'legacy-completion-goal', 'p1');
+    historical
+      .prepare(
+        `INSERT INTO goal_approvals
+         (id, goal_id, gate, risk, reason, requested_by, detail_json, status, decided_by, created_at, responded_at)
+         VALUES ('legacy-external-approval', 'legacy-completion-goal', 'final_apply', 'high', 'Legacy audit row',
+           'user', ?, 'pending', NULL, ?, NULL)`,
+      )
+      .run(JSON.stringify({ action: 'applied_externally', definitionVersion: 1 }), NOW);
+    historical
+      .prepare(
+        "UPDATE goal_approvals SET status = 'approved', decided_by = 'user', responded_at = ? WHERE id = 'legacy-external-approval'",
+      )
+      .run(NOW);
+    historical.close();
+
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 27 });
+    expect(
+      db
+        .prepare(
+          "SELECT id, gate, status, external_completion_action_digest FROM goal_approvals WHERE id = 'legacy-external-approval'",
+        )
+        .get(),
+    ).toEqual({
+      id: 'legacy-external-approval',
+      gate: 'final_apply',
+      status: 'approved',
+      external_completion_action_digest: null,
+    });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('creates a separate proof table, immutable guards, object-format checks and no production insertion route', () => {
+    const db = fresh();
+    const table = db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goal_external_completion_proofs'",
+      )
+      .get() as { sql: string } | undefined;
+    expect(table?.sql).toContain('UNIQUE (goal_id, action_digest)');
+    expect(table?.sql).toContain("correction_standing = 'active_uncontested'");
+    expect(table?.sql).toContain("proof_mode = 'source_history_observed'");
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get('trg_goal_external_completion_proof_immutable'),
+    ).toBeTruthy();
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get('trg_goal_external_completion_proof_no_delete'),
+    ).toBeTruthy();
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get('trg_goal_external_completion_proof_insert_authority'),
+    ).toBeTruthy();
+
+    const projectId = '10000000-0000-4000-8000-000000000101';
+    const goalId = '20000000-0000-4000-8000-000000000101';
+    project(db, projectId);
+    seedGoalWithDefinition(db, goalId, projectId);
+    expect(() =>
+      requestGoalApproval(db, {
+        goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Must not create completion authority through a generic request.',
+        requestedBy: 'user',
+        detail: { schemaVersion: 1, action: 'complete_goal_external_integration_v2', goalId },
+      }),
+    ).toThrow(/external completion approval action digest is invalid/);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    expect(db.pragma('foreign_key_check')).toEqual([]);
+    db.close();
+  });
+
+  it('rejects proof insertion without the exact approved v2 completion action', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, 'g', 'p');
+    expect(() => insertExternalCompletionProof(db, externalCompletionProofRow())).toThrow(
+      /external completion proof lacks exact v2 user authority/,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('binds payload columns, bounds object IDs, and makes persisted proofs immutable', () => {
+    const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.pragma('foreign_keys = OFF');
+    const valid = externalCompletionProofRow();
+    insertExternalCompletionProof(db, valid);
+    expect(() =>
+      db
+        .prepare('UPDATE goal_external_completion_proofs SET proof_digest = ? WHERE id = ?')
+        .run('f'.repeat(64), valid.id),
+    ).toThrow(/external completion proofs are immutable/);
+    expect(() =>
+      db.prepare('DELETE FROM goal_external_completion_proofs WHERE id = ?').run(valid.id),
+    ).toThrow(/external completion proofs cannot be deleted/);
+
+    const invalidJson = externalCompletionProofRow('g', '2');
+    invalidJson.payload_json = '{';
+    expect(() => insertExternalCompletionProof(db, invalidJson)).toThrow(/json_valid/);
+
+    const payloadMismatch = externalCompletionProofRow('g', '3');
+    payloadMismatch.action_digest = 'c'.repeat(64);
+    expect(() => insertExternalCompletionProof(db, payloadMismatch)).toThrow(/CHECK constraint failed/);
+
+    const unsupportedVersion = externalCompletionProofRow('g', '4');
+    unsupportedVersion.schema_version = 2;
+    unsupportedVersion.payload_json = JSON.stringify({
+      ...(JSON.parse(unsupportedVersion.payload_json as string) as Record<string, unknown>),
+      schemaVersion: 2,
+    });
+    expect(() => insertExternalCompletionProof(db, unsupportedVersion)).toThrow(/CHECK constraint failed/);
+
+    const unsupportedObjectFormat = externalCompletionProofRow('g', '5');
+    unsupportedObjectFormat.object_format = 'sha512';
+    expect(() => insertExternalCompletionProof(db, unsupportedObjectFormat)).toThrow(
+      /CHECK constraint failed/,
+    );
+
+    const wrongSha1Width = externalCompletionProofRow('g', '6');
+    const wrongSha1Payload = JSON.parse(wrongSha1Width.payload_json as string) as {
+      source: { commit: string };
+      evaluation: { integrationHead: string };
+    };
+    wrongSha1Payload.source.commit = 'a'.repeat(64);
+    wrongSha1Payload.evaluation.integrationHead = 'a'.repeat(64);
+    wrongSha1Width.source_commit = wrongSha1Payload.source.commit;
+    wrongSha1Width.payload_json = JSON.stringify(wrongSha1Payload);
+    expect(() => insertExternalCompletionProof(db, wrongSha1Width)).toThrow(/CHECK constraint failed/);
+
+    const wrongSha256Width = externalCompletionProofRow('g', '7');
+    const wrongSha256Payload = JSON.parse(wrongSha256Width.payload_json as string) as {
+      repository: { objectFormat: string };
+    };
+    wrongSha256Payload.repository.objectFormat = 'sha256';
+    wrongSha256Width.object_format = 'sha256';
+    wrongSha256Width.payload_json = JSON.stringify(wrongSha256Payload);
+    expect(() => insertExternalCompletionProof(db, wrongSha256Width)).toThrow(/CHECK constraint failed/);
+
+    const duplicateAction = externalCompletionProofRow('g', '8');
+    expect(() => insertExternalCompletionProof(db, duplicateAction)).toThrow(/UNIQUE constraint failed/);
+
+    const secondTerminalProof = externalCompletionProofRow('g', '9');
+    secondTerminalProof.action_digest = 'b'.repeat(64);
+    secondTerminalProof.payload_json = JSON.stringify({
+      ...(JSON.parse(secondTerminalProof.payload_json as string) as Record<string, unknown>),
+      decision: {
+        ...(JSON.parse(secondTerminalProof.payload_json as string) as { decision: Record<string, unknown> })
+          .decision,
+        actionDigest: 'b'.repeat(64),
+      },
+    });
+    expect(() => insertExternalCompletionProof(db, secondTerminalProof)).toThrow(/UNIQUE constraint failed/);
+    db.close();
+  });
+
+  it('read-validates stored proof payloads and returns no record across an unknown Goal scope', () => {
+    const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.pragma('foreign_keys = OFF');
+    const malformed = externalCompletionProofRow();
+    malformed.payload_json = JSON.stringify({
+      ...(JSON.parse(malformed.payload_json as string) as Record<string, unknown>),
+      unexpectedAuthority: 'not part of the strict proof contract',
+    });
+    insertExternalCompletionProof(db, malformed);
+
+    expect(readExternalCompletionProof(db, 'g', malformed.id as string)).toEqual({
+      state: 'invalid',
+      reason: 'schema_invalid',
+    });
+    expect(readExternalCompletionProof(db, 'another-goal', malformed.id as string)).toEqual({
+      state: 'not_found',
+    });
+    expect(readExternalCompletionProof(db, 'g', 'missing-proof')).toEqual({ state: 'not_found' });
     db.close();
   });
 });

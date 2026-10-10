@@ -125,6 +125,8 @@ const goalDefinitionSchema = z.strictObject({
       }),
     ),
     completionPolicy: z.strictObject({
+      completionContractVersion: z.literal(2).optional(),
+      integrationMode: z.literal('external_user_attested').optional(),
       requireFinalReview: flag,
       requireUserAcceptance: flag,
       applyToBase: z.enum(['required', 'leave-on-goal-branch']),
@@ -430,6 +432,29 @@ export function validateGoalDefinition(input: unknown): DefinitionValidation {
   });
 
   const completion = contract.completionPolicy;
+  const hasCompletionVersion = Object.hasOwn(completion, 'completionContractVersion');
+  const hasIntegrationMode = Object.hasOwn(completion, 'integrationMode');
+  if (hasCompletionVersion !== hasIntegrationMode) {
+    error(
+      'completion.versioned_policy_incomplete',
+      'contract.completionPolicy',
+      'Version 2 completion requires both completionContractVersion and integrationMode.',
+    );
+  } else if (hasCompletionVersion) {
+    if (
+      completion.completionContractVersion !== 2 ||
+      completion.integrationMode !== 'external_user_attested' ||
+      completion.applyToBase !== 'required' ||
+      completion.requireFinalReview !== true ||
+      completion.requireUserAcceptance !== true
+    ) {
+      error(
+        'completion.versioned_policy_unsupported',
+        'contract.completionPolicy',
+        'Version 2 requires external_user_attested integration, base application, final review, and user acceptance.',
+      );
+    }
+  }
   if (completion.maxOpenFindings.medium !== undefined) {
     const medium = completion.maxOpenFindings.medium;
     if (!Number.isInteger(medium) || medium < 0 || medium > 100)

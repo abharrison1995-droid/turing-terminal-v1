@@ -488,6 +488,54 @@ describe('completeGoal and completion proofs', () => {
       completionProof: completionProof as CompletionEvaluation,
     });
 
+  it('does not let approved v2 policy inherit an applied_externally v1 approval', async () => {
+    const definition = simpleDefinition({
+      policy: {
+        completionContractVersion: 2,
+        integrationMode: 'external_user_attested',
+        requireFinalReview: true,
+        requireUserAcceptance: true,
+        applyToBase: 'required',
+      },
+    });
+    definition.review.final = true;
+    const fx = goalRepoFixture({ definition });
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    await passDeterministic(fx);
+    await finalReview(fx, 'pass', {
+      established: true,
+      policy: fx.definition.routing.independence.finalReview,
+    });
+    fx.approval('final_acceptance', {
+      definitionVersion: 1,
+      definitionHash: fx.currentHash(),
+      integrationTree: fx.tree(),
+    });
+    // This historical v1 decision has no version-2 action binding.
+    fx.approval('final_apply', {
+      action: 'applied_externally',
+      definitionVersion: 1,
+      definitionHash: fx.currentHash(),
+      integrationHead: fx.head(),
+    });
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation).toMatchObject({
+      ok: false,
+      finalReview: { ok: true },
+      finalAcceptance: { ok: true },
+      finalApply: { required: true, ok: false, reason: 'external_completion_not_activated' },
+      failures: [expect.objectContaining({ code: 'external_completion_not_activated' })],
+    });
+    const result = await completeGoal(fx.db, fx.goalId);
+    expect(result.completed).toBe(false);
+    expect(status(fx)).toBe('running');
+    expect(checkCompletionProof(fx.db, fx.goalId, evaluation)).toMatchObject({
+      ok: false,
+      code: 'external_completion_not_activated',
+    });
+  });
+
   it('refuses a proof when the integration head moved after the evaluation', async () => {
     const fx = running();
     const evaluation = await proof(fx);

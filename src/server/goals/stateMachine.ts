@@ -28,6 +28,8 @@ export type GoalStateErrorCode =
   | 'completion_proof_required'
   | 'completion_proof_failed'
   | 'completion_proof_stale'
+  | 'external_completion_not_activated'
+  | 'completion_policy_unsupported'
   | 'goal_work_in_flight';
 
 export class GoalStateError extends Error {

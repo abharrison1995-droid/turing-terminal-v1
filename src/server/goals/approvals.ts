@@ -46,6 +46,7 @@ interface Row {
   responded_at: string | null;
   intent_digest: string | null;
   external_integration_action_digest: string | null;
+  external_completion_action_digest: string | null;
 }
 
 function toApproval(row: Row): GoalApproval {
@@ -65,6 +66,9 @@ function toApproval(row: Row): GoalApproval {
     ...(row.intent_digest ? { intentDigest: row.intent_digest } : {}),
     ...(row.external_integration_action_digest
       ? { externalIntegrationActionDigest: row.external_integration_action_digest }
+      : {}),
+    ...(row.external_completion_action_digest
+      ? { externalCompletionActionDigest: row.external_completion_action_digest }
       : {}),
   };
 }

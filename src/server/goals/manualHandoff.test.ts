@@ -1822,6 +1822,41 @@ describe('external integration attestation authority', () => {
     },
   );
 
+  it('does not reuse a migration-026 attestation after a Goal explicitly opts into completion v2', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    const approval = approveExternalObservation(fx, observation);
+    const attestation = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    expect(attestation.record.completionContractVersion).toBe(2);
+
+    const version2 = structuredClone(fx.definition);
+    version2.contract.completionPolicy.completionContractVersion = 2;
+    version2.contract.completionPolicy.integrationMode = 'external_user_attested';
+    const amendment = beginAmendment(fx.db, {
+      goalId: fx.goalId,
+      actor: 'user',
+      definition: version2,
+      changeSummary: 'Explicitly opt into external-integration completion contract v2.',
+    });
+    approveDefinition(fx.db, { goalId: fx.goalId, version: amendment.version, actor: 'user' });
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.definitionVersion).toBe(amendment.version);
+    expect(evaluation.finalApply).toEqual({
+      required: true,
+      ok: false,
+      basis: null,
+      reason: 'external_completion_not_activated',
+    });
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'external_completion_not_activated' }),
+    );
+  });
+
   it('classifies git merge -s ours as source-history inclusion and explicitly does not prove content preservation', async () => {
     const { fx, handoff, observation } = await integratedExternalFixture('sha1', 'ours');
     expect(observation.proof).toMatchObject({

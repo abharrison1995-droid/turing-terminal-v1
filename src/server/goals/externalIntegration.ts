@@ -318,10 +318,10 @@ function parseObservation(value: unknown): ExternalIntegrationObservationV1 | nu
   return item;
 }
 
-function parseAttestation(raw: string): ExternalIntegrationAttestationV1 | null {
+export function parseExternalIntegrationAttestation(value: unknown): ExternalIntegrationAttestationV1 | null {
   try {
-    const parsed = attestationSchema.safeParse(JSON.parse(raw) as unknown);
-    if (!parsed.success || canonicalJson(parsed.data) !== raw) return null;
+    const parsed = attestationSchema.safeParse(value);
+    if (!parsed.success) return null;
     const record = parsed.data;
     const observation = parseObservation(toObservation(record));
     if (!observation || observation.actionDigest !== record.actionDigest) return null;
@@ -335,6 +335,15 @@ function parseAttestation(raw: string): ExternalIntegrationAttestationV1 | null 
     )
       return null;
     return record;
+  } catch {
+    return null;
+  }
+}
+
+function parseAttestation(raw: string): ExternalIntegrationAttestationV1 | null {
+  try {
+    const record = parseExternalIntegrationAttestation(JSON.parse(raw) as unknown);
+    return record && canonicalJson(record) === raw ? record : null;
   } catch {
     return null;
   }

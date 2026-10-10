@@ -10,10 +10,13 @@ import { decideGoalApprovalAsUser } from './goalCommands.js';
 import { requestFinalApplyApproval } from './finalApplyAuthority.js';
 import { requestGoalApproval } from './approvals.js';
 import { recoverIntegrationOps } from '../goalGit.js';
+import { completeReview, createReview } from './reviews.js';
+import { approveDefinition, beginAmendment } from './definitions.js';
 import {
   cleanupRepoFixtures,
   goalRepoFixture,
   passDeterministic,
+  reportOf,
   simpleDefinition,
   type GoalRepoFixture,
 } from './repoKit.js';
@@ -61,6 +64,52 @@ function mainReflog(fx: GoalRepoFixture): string {
 }
 
 describe('guarded Goal final apply', () => {
+  it('does not let a successful historical Turing apply operation satisfy v2 completion', async () => {
+    const { fx, approval } = await readyApplyFixture();
+    expect(
+      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+    ).toMatchObject({
+      outcome: 'applied',
+    });
+    const v2 = structuredClone(fx.definition);
+    v2.contract.completionPolicy.completionContractVersion = 2;
+    v2.contract.completionPolicy.integrationMode = 'external_user_attested';
+    v2.contract.completionPolicy.requireFinalReview = true;
+    v2.contract.completionPolicy.requireUserAcceptance = true;
+    v2.contract.completionPolicy.applyToBase = 'required';
+    v2.review.final = true;
+    const { version } = beginAmendment(fx.db, { goalId: fx.goalId, actor: 'user', definition: v2 });
+    approveDefinition(fx.db, { goalId: fx.goalId, version, actor: 'user' });
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    const { id: reviewId } = await createReview(fx.db, {
+      goalId: fx.goalId,
+      definitionVersion: version,
+      reviewKind: 'final',
+    });
+    completeReview(fx.db, {
+      reviewId,
+      report: reportOf({ verdict: 'pass' }),
+      independence: { established: true, policy: 'different-family' },
+    });
+    fx.approval('final_acceptance', {
+      definitionVersion: version,
+      definitionHash: fx.currentHash(),
+      integrationTree: fx.tree(),
+    });
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation).toMatchObject({
+      ok: false,
+      finalReview: { ok: true },
+      finalAcceptance: { ok: true },
+      finalApply: { required: true, ok: false, reason: 'external_completion_not_activated' },
+      failures: [expect.objectContaining({ code: 'external_completion_not_activated' })],
+    });
+    expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).toEqual({
+      status: 'running',
+    });
+  });
+
   it.each(['sha1', 'sha256'] as const)(
     'applies an exact approved fast-forward in a %s repository',
     async (format) => {

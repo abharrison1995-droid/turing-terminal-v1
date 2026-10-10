@@ -1,6 +1,6 @@
 # Goal external-completion contract design
 
-Status: Stage 7C.2B.5D.0 design checkpoint. This document proposes a future contract only. It does not change completion, Goal state, HTTP routes, approvals, database schema, or Git behavior. The design checkpoint is pending independent review and is not production qualification.
+Status: Stage 7C.2B.5D.0 design checkpoint accepted. Its proposal remains a future completion contract; Stage 7C.2B.5D.1 implements only the versioned policy boundary and proof infrastructure described in the implementation note at the end. Completion activation is still pending independent review and is not production qualification.
 
 ## 1. Recommendation
 
@@ -297,3 +297,13 @@ No characterization test is necessary to decide the policy: the accepted disposa
 - SHA-1 and SHA-256, Linux and Windows, immutable triggers, malformed digest, cross-Goal FKs, and database restart recovery are covered.
 
 Outstanding blockers are the missing v2 definition discriminator, mismatch between the attestation's hard-coded contract version and definition policy, absent durable completion proof, supervisor's automatic legacy completion caller, no final transactional recheck of the full evidence set, no correction ledger/standing model, no explicit completion action, and unverified Windows behavior. This checkpoint resolves design direction only; completion remains unimplemented and disabled.
+
+## Stage 7C.2B.5D.1 — policy and proof infrastructure implementation
+
+This implementation checkpoint adds strict legacy-v1 versus explicit external-integration-v2 parsing, preserves absent v1 discriminator fields and the golden legacy definition hash, and allows v2 only through normal hash-bound definition approval. The approved parent chain is checked root-to-current and v2 cannot be downgraded by an amendment. Policy projection remains read-only and always reports v2 completion disabled.
+
+The legacy completion evaluator is retained for v1. For v2 it now fails closed with `external_completion_not_activated`; legacy `applied_externally` approval and historical Turing apply evidence cannot satisfy it. The same boundary is checked by `checkCompletionProof()`, and a supervisor regression with passing criteria, review, acceptance, and legacy external authority remains pending. Existing migration-026 attestations are not definition opt-ins and cannot be reused after v2 approval.
+
+The implementation adds strict, domain-separated completion-action and immutable-proof schemas plus migration 027. The new approval digest is distinct from the external-integration and prospective-apply digests. The proof table binds same-Goal authorities, hashes the entire proof including timestamps, checks SHA-1/SHA-256 widths, rejects updates/deletes, and limits a Goal to one terminal proof. No production service issues the action approval or inserts a proof. The correction-chain member is a future identity field; D.1 has no correction ledger and does not establish its standing.
+
+Focused tests prove the legacy authority bypass before and after the evaluator guard, v1 hash compatibility, v2 opt-in/lineage/downgrade refusal, prior Turing-operation and migration-026 attestation isolation, supervisor refusal, migration-027 upgrade preservation, and schema integrity. See [GOAL_EXTERNAL_COMPLETION_PROOF_CONTRACT.md](GOAL_EXTERNAL_COMPLETION_PROOF_CONTRACT.md) for the exact implemented boundary. Windows remains unverified. No completion route, UI action, correction service, provider call, subscription use, Git writer, or positive v2 completion path is included. This checkpoint is pending independent review and does not establish release readiness; 7C.2B.5D.2, 7C.2B.5D.3, 7C.2B.5D.4, and 7C.3 have not started.
