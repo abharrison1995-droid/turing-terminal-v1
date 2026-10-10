@@ -2,7 +2,7 @@
 
 ## Status
 
-Stage 7C.2B.5D.1 adds versioned policy and immutable proof infrastructure. It does **not** activate version-2 Goal completion. No production service can create the version-2 completion approval or proof, no endpoint or desktop action exists, and no Goal can become completed through this contract. The document describes the implemented boundary plus the records reserved for a later stage.
+Stage 7C.2B.5D.1 adds versioned policy and immutable proof infrastructure. Stage 7C.2B.5D.1a adds fail-closed validation of approved definition content and approval lineage before completion evaluation and terminal proof acceptance. Neither stage activates version-2 Goal completion. No production service can create the version-2 completion approval or proof, no endpoint or desktop action exists, and no Goal can become completed through this contract. The document describes the implemented boundary plus the records reserved for a later stage.
 
 ## Definition policy
 
@@ -19,9 +19,21 @@ V2 takes effect only when a user approves the exact definition version and hash 
 
 ## Legacy authority isolation
 
-For v1, completion keeps the existing behavior. For v2, the evaluator reports `finalApply.ok: false` with `external_completion_not_activated`; it does not accept a legacy `applied_externally` approval or a historical Turing apply operation. A migration-026 attestation whose payload says `completionContractVersion: 2` is not a definition opt-in and cannot be reused after a v2 definition is approved. New definition-bound review, acceptance, handoff, and attestation evidence would be required by a future activation stage.
+For a valid, hash- and approval-bound v1 definition, completion keeps the existing behavior, including legacy `applied_externally` and verified historical Turing apply semantics. Before evaluating completion, the application recomputes the approved definition hash and verifies the user approval and full approved ancestor chain. Corrupt, malformed, unsupported, or unapproved definition authority fails closed, even if the changed JSON parses as legacy v1. This prevents a v2 policy whose discriminator was removed from selecting legacy final-apply authority without changing legitimate v1 semantics.
+
+For v2, the evaluator reports `finalApply.ok: false` with `external_completion_not_activated`; it does not accept a legacy `applied_externally` approval or a historical Turing apply operation. A migration-026 attestation whose payload says `completionContractVersion: 2` is not a definition opt-in and cannot be reused after a v2 definition is approved. New definition-bound review, acceptance, handoff, and attestation evidence would be required by a future activation stage.
 
 `completeGoal()` cannot complete a v2 Goal. `checkCompletionProof()` refuses an earlier proof against a current v2 policy. A supervisor tick with all ordinary evidence and legacy external-apply authority remains `completion_pending`. No v2 completion event, proof row, or terminal transition is created.
+
+## Approved-definition integrity revalidation (Stage 7C.2B.5D.1a)
+
+Independent review found that `evaluateCompletion()` previously selected the legacy path from the parsed current policy without first checking that the stored JSON still matched the approved hash. Removing both v2 discriminator fields from otherwise intact v2 policy JSON made it parse as legacy v1; with matching legacy-shaped final-apply approval, the evaluator returned `ok: true`.
+
+The evaluator now validates the full current definition approval lineage before using any completion policy, then independently verifies the loaded definition hash and mode. The lineage check binds each definition version to its user approval, hash, and parent; it also rejects a v2 ancestor followed by a legacy-looking descendant. Malformed JSON is converted to a bounded refusal rather than escaping as an exception. `checkCompletionProof()` repeats the lineage, hash, and policy checks immediately before accepting a terminal transition. A successful older in-memory proof therefore cannot bypass definition or approval corruption that occurs after evaluation.
+
+The regression fixture drops the immutability trigger only in its disposable test database, removes both v2 discriminator fields, and leaves the approved hash, version, approval, and integration head unchanged. It proves the modified JSON parses as legacy and hashes differently from the stored approved digest. The corrected path rejects evaluation, proof validation, `completeGoal()`, direct `transitionGoal(..., 'completed')`, and supervisor-driven completion. Additional tests cover a single missing discriminator, unsupported version, a corrupted v2 ancestor, legacy v1 content/hash mismatch, approval/hash mismatch, malformed JSON, and stale proof after successful legacy evaluation. Existing valid legacy completion remains covered.
+
+This remediation does not change migration 027, action/proof identities or digests, legacy approval records, completion activation, endpoints, UI, Git behavior, or `DisabledGoalExecutor`. It creates no proof or completion authority.
 
 ## Future action identity
 
@@ -57,7 +69,7 @@ The policy projection can report `external_user_attested_v2`, but always reports
 
 The selected future completion stage must freshly verify repository/ref ancestry, correction standing and current Goal authority, then commit the completion approval, immutable proof, event, and terminal transition atomically in SQLite. Recovery must inspect persisted authority and remain observation-only; it must never infer completion from a proof row without the matching committed terminal event/state. External Git observation and SQLite cannot form one transaction, so the proof will remain point-in-time evidence and cannot prove content preservation or prevent later ref movement.
 
-## Not implemented in D.1
+## Not implemented in D.1 / D.1a
 
 - Live v2 completion decision or approval creation.
 - Proof issuance or a qualifying proof insert service.

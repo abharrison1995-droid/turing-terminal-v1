@@ -652,7 +652,7 @@ describe('completion authority', () => {
     expect(h.tracker.isCounting(h.fx.goalId)).toBe(false);
   });
 
-  it('does not auto-complete a v2 Goal through legacy external-apply authority', async () => {
+  it('does not auto-complete v2 through legacy authority or a corrupted v1-looking definition', async () => {
     const definition = simpleDefinition({
       milestones: [milestone('m1', ['build', 'tests'])],
       policy: {
@@ -693,7 +693,29 @@ describe('completion authority', () => {
 
     await h.start();
     expect(await h.tick()).toBe('completion_pending');
+
+    // Deliberate test-only SQL corruption after a normal v2 refusal. The complete legacy-shaped authority remains
+    // present, but the approved v2 definition hash and approval are unchanged.
+    const stored = h.fx.db
+      .prepare('SELECT contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = 1')
+      .get(h.fx.goalId) as { contract_json: string };
+    const contract = JSON.parse(stored.contract_json) as {
+      completionPolicy: Record<string, unknown>;
+    };
+    delete contract.completionPolicy.completionContractVersion;
+    delete contract.completionPolicy.integrationMode;
+    h.fx.db.exec('DROP TRIGGER trg_goal_definition_immutable;');
+    h.fx.db
+      .prepare('UPDATE goal_definition_versions SET contract_json = ? WHERE goal_id = ? AND version = 1')
+      .run(JSON.stringify(contract), h.fx.goalId);
+
+    expect(await h.tick()).toBe('completion_pending');
     expect(h.status()).toEqual({ status: 'running', reason: 'user_start' });
+    expect(
+      listGoalEvents(h.fx.db, h.fx.goalId).some(
+        (event) => event.type === 'state_changed' && event.payload.to === 'completed',
+      ),
+    ).toBe(false);
     expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({
       n: 0,
     });

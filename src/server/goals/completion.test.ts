@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CompletionEvaluation, GoalDefinition } from '../../shared/goals.js';
 import { checkCompletionProof, evaluateCompletion } from './completionEvaluation.js';
 import { completeGoal } from './completion.js';
+import { hashGoalDefinition } from './definitionHash.js';
+import { loadDefinitionVersion } from './definitions.js';
 import { listGoalEvents } from './events.js';
 import { applyReviewFindings, decideFinding } from './findings.js';
 import { evaluateMilestones, syncMilestoneRuntime } from './milestones.js';
@@ -18,6 +20,7 @@ import {
 } from './repoKit.js';
 import { completeReview, createReview } from './reviews.js';
 import { transitionGoal } from './stateMachine.js';
+import { parseCompletionPolicy } from './completionPolicy.js';
 
 afterEach(cleanupRepoFixtures);
 
@@ -534,6 +537,132 @@ describe('completeGoal and completion proofs', () => {
       ok: false,
       code: 'external_completion_not_activated',
     });
+  });
+
+  it('does not treat a corrupted approved v2 definition as legacy completion authority', async () => {
+    const definition = simpleDefinition({
+      policy: {
+        completionContractVersion: 2,
+        integrationMode: 'external_user_attested',
+        requireFinalReview: true,
+        requireUserAcceptance: true,
+        applyToBase: 'required',
+      },
+    });
+    definition.review.final = true;
+    const fx = goalRepoFixture({ definition });
+    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+    await passDeterministic(fx);
+    await finalReview(fx, 'pass', {
+      established: true,
+      policy: fx.definition.routing.independence.finalReview,
+    });
+    fx.approval('final_acceptance', {
+      definitionVersion: 1,
+      definitionHash: fx.currentHash(),
+      integrationTree: fx.tree(),
+    });
+    const approvedHash = fx.currentHash();
+    const legacyApplyApprovalId = fx.approval('final_apply', {
+      action: 'applied_externally',
+      definitionVersion: 1,
+      definitionHash: approvedHash,
+      integrationHead: fx.head(),
+    });
+
+    const intact = await evaluateCompletion(fx.db, fx.goalId);
+    expect(intact.ok).toBe(false);
+    expect(codes(intact)).toContain('external_completion_not_activated');
+
+    // Deliberate corruption fixture: bypass only the SQL immutability guard so the test models damaged storage.
+    const stored = fx.db
+      .prepare('SELECT contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = 1')
+      .get(fx.goalId) as { contract_json: string };
+    const contract = JSON.parse(stored.contract_json) as {
+      completionPolicy: Record<string, unknown>;
+    };
+    delete contract.completionPolicy.completionContractVersion;
+    delete contract.completionPolicy.integrationMode;
+    fx.db.exec('DROP TRIGGER trg_goal_definition_immutable;');
+    fx.db
+      .prepare('UPDATE goal_definition_versions SET contract_json = ? WHERE goal_id = ? AND version = 1')
+      .run(JSON.stringify(contract), fx.goalId);
+
+    const altered = loadDefinitionVersion(fx.db, fx.goalId, 1)!;
+    const legacyApplyApproval = fx.db
+      .prepare('SELECT detail_json FROM goal_approvals WHERE id = ?')
+      .get(legacyApplyApprovalId) as { detail_json: string };
+    expect(altered.definitionHash).toBe(approvedHash);
+    expect((JSON.parse(legacyApplyApproval.detail_json) as { definitionHash: string }).definitionHash).toBe(
+      approvedHash,
+    );
+    expect(parseCompletionPolicy(altered.definition.contract.completionPolicy)).toEqual({
+      kind: 'valid',
+      mode: 'legacy_v1',
+    });
+    expect(hashGoalDefinition(altered.definition)).not.toBe(altered.definitionHash);
+
+    const corrupted = await evaluateCompletion(fx.db, fx.goalId);
+    expect(corrupted.ok).toBe(false);
+    expect(codes(corrupted)).toContain('completion_policy_unsupported');
+    expect(corrupted.finalApply).toMatchObject({ ok: false, reason: 'completion_policy_unsupported' });
+    expect(checkCompletionProof(fx.db, fx.goalId, corrupted)).toMatchObject({
+      ok: false,
+      code: 'completion_policy_unsupported',
+    });
+    expect((await completeGoal(fx.db, fx.goalId)).completed).toBe(false);
+    expect(() => transition(fx, corrupted)).toThrow(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+    expect(status(fx)).toBe('running');
+    expect(
+      listGoalEvents(fx.db, fx.goalId).some(
+        (event) => event.type === 'state_changed' && event.payload.to === 'completed',
+      ),
+    ).toBe(false);
+    expect(fx.db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({
+      n: 0,
+    });
+  });
+
+  it('revalidates v1 definition and approval integrity after evaluation and before the terminal transition', async () => {
+    const fx = running({ policy: { applyToBase: 'required' } });
+    await passDeterministic(fx);
+    fx.approval('final_apply', {
+      action: 'applied_externally',
+      definitionVersion: 1,
+      definitionHash: fx.currentHash(),
+      integrationHead: fx.head(),
+    });
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(true);
+
+    // Deliberate corruption after successful evaluation: the payload remains valid v1, but no longer matches its
+    // approved content hash or the hash bound by the user's approval.
+    const stored = fx.db
+      .prepare('SELECT contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = 1')
+      .get(fx.goalId) as { contract_json: string };
+    const contract = JSON.parse(stored.contract_json) as {
+      completionPolicy: Record<string, unknown>;
+    };
+    contract.completionPolicy.applyToBase = 'leave-on-goal-branch';
+    fx.db.exec('DROP TRIGGER trg_goal_definition_immutable;');
+    fx.db
+      .prepare('UPDATE goal_definition_versions SET contract_json = ? WHERE goal_id = ? AND version = 1')
+      .run(JSON.stringify(contract), fx.goalId);
+
+    const corruptedEvaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(corruptedEvaluation.ok).toBe(false);
+    expect(codes(corruptedEvaluation)).toContain('completion_policy_unsupported');
+    expect(checkCompletionProof(fx.db, fx.goalId, evaluation)).toMatchObject({
+      ok: false,
+      code: 'completion_policy_unsupported',
+    });
+    expect((await completeGoal(fx.db, fx.goalId)).completed).toBe(false);
+    expect(() => transition(fx, evaluation)).toThrow(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+    expect(status(fx)).toBe('running');
   });
 
   it('refuses a proof when the integration head moved after the evaluation', async () => {

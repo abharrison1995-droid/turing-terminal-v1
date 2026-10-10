@@ -6,7 +6,7 @@ import {
   validateApprovedCompletionPolicyLineage,
 } from './completionPolicy.js';
 import { approveDefinition, beginAmendment, editProposedDefinition } from './definitions.js';
-import { cleanupRepoFixtures, goalRepoFixture, simpleDefinition } from './repoKit.js';
+import { cleanupRepoFixtures, goalRepoFixture, passDeterministic, simpleDefinition } from './repoKit.js';
 import { validateGoalDefinition } from './definitionValidation.js';
 import { validDefinition } from './testKit.js';
 import { checkCompletionProof, evaluateCompletion } from './completionEvaluation.js';
@@ -25,6 +25,23 @@ function v2Definition() {
   });
   definition.review.final = true;
   return definition;
+}
+
+function rewriteApprovedContract(
+  fx: ReturnType<typeof goalRepoFixture>,
+  version: number,
+  mutate: (contract: Record<string, unknown>) => void,
+) {
+  const row = fx.db
+    .prepare('SELECT contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = ?')
+    .get(fx.goalId, version) as { contract_json: string };
+  const contract = JSON.parse(row.contract_json) as Record<string, unknown>;
+  mutate(contract);
+  // These explicit test-only SQL changes model storage corruption; production immutability triggers stay untouched.
+  fx.db.exec('DROP TRIGGER trg_goal_definition_immutable;');
+  fx.db
+    .prepare('UPDATE goal_definition_versions SET contract_json = ? WHERE goal_id = ? AND version = ?')
+    .run(JSON.stringify(contract), fx.goalId, version);
 }
 
 describe('versioned completion policy', () => {
@@ -93,6 +110,137 @@ describe('versioned completion policy', () => {
       expect.objectContaining({ code: 'completion_policy_unsupported' }),
     );
     expect(evaluation.finalApply.reason).toBe('completion_policy_unsupported');
+    expect(checkCompletionProof(fx.db, fx.goalId, earlier)).toMatchObject({
+      ok: false,
+      code: 'completion_policy_unsupported',
+    });
+  });
+
+  it.each([
+    {
+      label: 'missing version discriminator',
+      mutate: (policy: Record<string, unknown>) => {
+        delete policy.completionContractVersion;
+      },
+    },
+    {
+      label: 'missing integration discriminator',
+      mutate: (policy: Record<string, unknown>) => {
+        delete policy.integrationMode;
+      },
+    },
+    {
+      label: 'unsupported version',
+      mutate: (policy: Record<string, unknown>) => {
+        policy.completionContractVersion = 9;
+      },
+    },
+  ])('fails closed on an approved v2 policy with $label', async ({ mutate }) => {
+    const fx = goalRepoFixture({ definition: v2Definition() });
+    const earlier = await evaluateCompletion(fx.db, fx.goalId);
+    rewriteApprovedContract(fx, 1, (contract) => {
+      mutate((contract.completionPolicy ?? {}) as Record<string, unknown>);
+    });
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+    expect(checkCompletionProof(fx.db, fx.goalId, earlier)).toMatchObject({
+      ok: false,
+      code: 'completion_policy_unsupported',
+    });
+  });
+
+  it('rejects a v2 child when its approved v2 ancestor has been corrupted to resemble v1', async () => {
+    const fx = goalRepoFixture();
+    const second = beginAmendment(fx.db, {
+      goalId: fx.goalId,
+      actor: 'user',
+      definition: v2Definition(),
+    });
+    approveDefinition(fx.db, { goalId: fx.goalId, version: second.version, actor: 'user' });
+    const thirdDefinition = v2Definition();
+    thirdDefinition.limits.maxExecutionCycles += 1;
+    const third = beginAmendment(fx.db, {
+      goalId: fx.goalId,
+      actor: 'user',
+      definition: thirdDefinition,
+    });
+    approveDefinition(fx.db, { goalId: fx.goalId, version: third.version, actor: 'user' });
+
+    rewriteApprovedContract(fx, second.version, (contract) => {
+      const policy = contract.completionPolicy as Record<string, unknown>;
+      delete policy.completionContractVersion;
+      delete policy.integrationMode;
+    });
+
+    expect(validateApprovedCompletionPolicyLineage(fx.db, fx.goalId)).toMatchObject({ kind: 'invalid' });
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+  });
+
+  it('rejects a legacy v1 definition whose content no longer matches its approved hash', async () => {
+    const fx = goalRepoFixture();
+    const earlier = await evaluateCompletion(fx.db, fx.goalId);
+    rewriteApprovedContract(fx, 1, (contract) => {
+      (contract.completionPolicy as Record<string, unknown>).applyToBase = 'required';
+    });
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+    expect(checkCompletionProof(fx.db, fx.goalId, earlier)).toMatchObject({
+      ok: false,
+      code: 'completion_policy_unsupported',
+    });
+  });
+
+  it('rejects a legacy v1 definition whose user approval is bound to another hash', async () => {
+    const fx = goalRepoFixture();
+    const version = fx.db
+      .prepare('SELECT approval_id FROM goal_definition_versions WHERE goal_id = ? AND version = 1')
+      .get(fx.goalId) as { approval_id: string };
+    const approval = fx.db
+      .prepare('SELECT detail_json FROM goal_approvals WHERE id = ?')
+      .get(version.approval_id) as { detail_json: string };
+    const detail = JSON.parse(approval.detail_json) as Record<string, unknown>;
+    detail.definitionHash = 'f'.repeat(64);
+    // Test-only corruption of the immutable approval row, isolated to this temporary database.
+    fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+    fx.db
+      .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+      .run(JSON.stringify(detail), version.approval_id);
+
+    expect(validateApprovedCompletionPolicyLineage(fx.db, fx.goalId)).toMatchObject({ kind: 'invalid' });
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
+  });
+
+  it('fails closed on malformed approved definition JSON without throwing', async () => {
+    const fx = goalRepoFixture();
+    await passDeterministic(fx);
+    const earlier = await evaluateCompletion(fx.db, fx.goalId);
+    expect(earlier.ok).toBe(true);
+    fx.db.exec('DROP TRIGGER trg_goal_definition_immutable;');
+    fx.db
+      .prepare('UPDATE goal_definition_versions SET contract_json = ? WHERE goal_id = ? AND version = 1')
+      .run('{ malformed', fx.goalId);
+
+    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+    expect(evaluation.ok).toBe(false);
+    expect(evaluation.failures).toContainEqual(
+      expect.objectContaining({ code: 'completion_policy_unsupported' }),
+    );
     expect(checkCompletionProof(fx.db, fx.goalId, earlier)).toMatchObject({
       ok: false,
       code: 'completion_policy_unsupported',

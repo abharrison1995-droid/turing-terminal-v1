@@ -6,7 +6,7 @@ import type {
   MilestoneEvaluation,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
-import { loadDefinitionVersion } from './definitions.js';
+import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { allowedOpenFindings, openFindingCounts } from './findings.js';
 import { evaluateCriteria } from './freshness.js';
 import { evaluateMilestones, userApprovals } from './milestones.js';
@@ -57,6 +57,69 @@ function blank(goalId: string, now: string, failure: CompletionFailure): Complet
     finalApply: { required: false, ok: false, basis: null, reason: null },
     failures: [failure],
   };
+}
+
+type ApprovedCompletionAuthority =
+  | { kind: 'not_approved' }
+  | { kind: 'invalid' }
+  | {
+      kind: 'valid';
+      version: NonNullable<ReturnType<typeof loadDefinitionVersion>>;
+      lineage: Extract<ReturnType<typeof validateApprovedCompletionPolicyLineage>, { kind: 'valid' }>;
+      parsedPolicy: Extract<ReturnType<typeof parseCompletionPolicy>, { kind: 'valid' }>;
+    };
+
+/** Rechecks the approved content, user approval binding, and entire parent lineage from one database snapshot. */
+function readApprovedCompletionAuthority(
+  db: Db,
+  goalId: string,
+  expectedVersion?: number,
+): ApprovedCompletionAuthority {
+  try {
+    return db.transaction((): ApprovedCompletionAuthority => {
+      const goal = db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as
+        { current_definition_version: number | null } | undefined;
+      if (!goal || goal.current_definition_version === null) return { kind: 'not_approved' };
+      if (expectedVersion !== undefined && goal.current_definition_version !== expectedVersion)
+        return { kind: 'invalid' };
+      const status = db
+        .prepare('SELECT status FROM goal_definition_versions WHERE goal_id = ? AND version = ?')
+        .get(goalId, goal.current_definition_version) as { status: string } | undefined;
+      if (!status || status.status !== 'approved') return { kind: 'not_approved' };
+
+      const lineage = validateApprovedCompletionPolicyLineage(db, goalId, goal.current_definition_version);
+      if (lineage.kind !== 'valid') return { kind: 'invalid' };
+      const version = loadDefinitionVersion(db, goalId, goal.current_definition_version);
+      if (
+        !version ||
+        version.status !== 'approved' ||
+        version.version !== lineage.currentVersion ||
+        version.definitionHash !== lineage.currentHash ||
+        !verifyDefinitionHash(version)
+      )
+        return { kind: 'invalid' };
+      const parsedPolicy = parseCompletionPolicy(version.definition.contract?.completionPolicy);
+      if (parsedPolicy.kind !== 'valid' || parsedPolicy.mode !== lineage.mode) return { kind: 'invalid' };
+      return { kind: 'valid', version, lineage, parsedPolicy };
+    })();
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
+
+function invalidCompletionAuthority(goalId: string, now: string, version: number): CompletionEvaluation {
+  const evaluation = blank(goalId, now, {
+    code: 'completion_policy_unsupported',
+    detail: 'The approved definition integrity or completion-policy lineage could not be verified.',
+  });
+  evaluation.definitionVersion = version;
+  evaluation.finalApply = {
+    required: false,
+    ok: false,
+    basis: null,
+    reason: 'completion_policy_unsupported',
+  };
+  return issueCompletionProof(evaluation);
 }
 
 function finalReview(
@@ -116,46 +179,34 @@ export async function evaluateCompletion(
     return issueCompletionProof(
       blank(goalId, now, { code: 'goal_not_found', detail: 'The Goal does not exist.' }),
     );
-  const version =
-    goal.current_definition_version === null
-      ? undefined
-      : loadDefinitionVersion(db, goalId, goal.current_definition_version);
-  if (!version || version.status !== 'approved')
+  if (goal.current_definition_version === null)
     return issueCompletionProof(
       blank(goalId, now, {
         code: 'definition_not_approved',
         detail: 'The Goal has no approved current definition.',
       }),
     );
-  const { definition } = version;
-  const storedPolicy: unknown = definition.contract?.completionPolicy;
-  const parsedPolicy = parseCompletionPolicy(storedPolicy);
-  if (parsedPolicy.kind !== 'valid') {
-    const evaluation = blank(goalId, now, {
-      code: 'completion_policy_unsupported',
-      detail: 'The approved completion policy is malformed or unsupported.',
-    });
-    evaluation.definitionVersion = version.version;
-    evaluation.definitionHash = version.definitionHash;
-    const requiresApply =
-      !!storedPolicy &&
-      typeof storedPolicy === 'object' &&
-      !Array.isArray(storedPolicy) &&
-      (storedPolicy as Record<string, unknown>).applyToBase === 'required';
-    evaluation.finalApply = {
-      required: requiresApply,
-      ok: false,
-      basis: null,
-      reason: 'completion_policy_unsupported',
-    };
-    return issueCompletionProof(evaluation);
+
+  // Do not classify a row as legacy until its approved hash and user-approval lineage have been re-proved. The
+  // policy discriminator is part of approved content, not authority that can be trusted independently of its hash.
+  const approvedAuthority = readApprovedCompletionAuthority(db, goalId, goal.current_definition_version);
+  if (approvedAuthority.kind === 'not_approved')
+    return issueCompletionProof(
+      blank(goalId, now, {
+        code: 'definition_not_approved',
+        detail: 'The Goal has no approved current definition.',
+      }),
+    );
+  if (approvedAuthority.kind === 'invalid') {
+    return invalidCompletionAuthority(goalId, now, goal.current_definition_version);
   }
+  const { version, lineage, parsedPolicy } = approvedAuthority;
+  const { definition } = version;
   if (parsedPolicy.mode === 'external_user_attested_v2') {
-    const lineage = validateApprovedCompletionPolicyLineage(db, goalId, version.version);
-    if (lineage.kind !== 'valid' || lineage.mode !== 'external_user_attested_v2') {
+    if (lineage.mode !== 'external_user_attested_v2') {
       const evaluation = blank(goalId, now, {
         code: 'completion_policy_unsupported',
-        detail: 'The approved version 2 completion-policy lineage could not be verified.',
+        detail: 'The approved completion-policy lineage could not be verified.',
       });
       evaluation.definitionVersion = version.version;
       evaluation.definitionHash = version.definitionHash;
@@ -294,6 +345,20 @@ export async function evaluateCompletion(
     }
   }
 
+  if (failures.length === 0) {
+    // Evidence and Git reads above may take time. Re-prove authority immediately before minting a positive in-memory
+    // completion proof so changes made during evaluation cannot make that proof usable.
+    const currentAuthority = readApprovedCompletionAuthority(db, goalId, version.version);
+    if (
+      currentAuthority.kind !== 'valid' ||
+      currentAuthority.lineage.currentHash !== lineage.currentHash ||
+      currentAuthority.lineage.currentApprovalId !== lineage.currentApprovalId ||
+      currentAuthority.lineage.lineageDigest !== lineage.lineageDigest ||
+      currentAuthority.lineage.mode !== lineage.mode
+    )
+      return invalidCompletionAuthority(goalId, now, version.version);
+  }
+
   return issueCompletionProof({
     ok: failures.length === 0,
     goalId,
@@ -342,7 +407,7 @@ export function checkCompletionProof(db: Db, goalId: string, proof: unknown): Co
   const row = db
     .prepare(
       `SELECT g.current_definition_version AS version, d.definition_hash AS hash, d.status AS status,
-              d.contract_json AS contractJson, r.integration_head AS head
+              r.integration_head AS head
        FROM goals g
        LEFT JOIN goal_definition_versions d ON d.goal_id = g.id AND d.version = g.current_definition_version
        LEFT JOIN goal_runtime r ON r.goal_id = g.id
@@ -353,29 +418,30 @@ export function checkCompletionProof(db: Db, goalId: string, proof: unknown): Co
         version: number | null;
         hash: string | null;
         status: string | null;
-        contractJson: string | null;
         head: string | null;
       }
     | undefined;
-  if (row?.status === 'approved' && row.contractJson) {
-    let policy: unknown;
-    try {
-      policy = (JSON.parse(row.contractJson) as { completionPolicy?: unknown }).completionPolicy;
-    } catch {
+  if (row?.status === 'approved' && row.version !== null) {
+    const currentAuthority = readApprovedCompletionAuthority(db, goalId, row.version);
+    if (currentAuthority.kind === 'invalid')
       return {
         ok: false,
         code: 'completion_policy_unsupported',
-        message: 'The current completion policy is malformed or unsupported.',
+        message: 'The approved definition integrity or completion-policy lineage could not be verified.',
       };
-    }
-    const parsedPolicy = parseCompletionPolicy(policy);
-    if (parsedPolicy.kind !== 'valid')
+    if (currentAuthority.kind === 'not_approved')
+      return {
+        ok: false,
+        code: 'completion_proof_stale',
+        message: 'The Goal no longer has the approved definition used by this evaluation.',
+      };
+    if (currentAuthority.lineage.currentHash !== row.hash)
       return {
         ok: false,
         code: 'completion_policy_unsupported',
-        message: 'The current completion policy is malformed or unsupported.',
+        message: 'The approved definition integrity or completion-policy lineage could not be verified.',
       };
-    if (parsedPolicy.mode === 'external_user_attested_v2')
+    if (currentAuthority.lineage.mode === 'external_user_attested_v2')
       return {
         ok: false,
         code: 'external_completion_not_activated',
