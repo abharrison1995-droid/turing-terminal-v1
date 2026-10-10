@@ -350,6 +350,30 @@ describe('Definition editor (7B.2B)', () => {
     expect(posts()).toEqual([]);
   });
 
+  it('keeps unsaved definition text guarded when navigating to Handoff', async () => {
+    const world: World = {
+      goal: goalWith('draft', { kind: 'approve_definition', version: 1 }, null, null),
+      defs: [proposed(1)],
+    };
+    const user = await openDefinitions(world, {
+      '/api/goals/goal-1/handoffs': () => ({ handoffs: [], limit: 50, nextOffset: null }),
+    });
+    await screen.findByLabelText('Definition JSON');
+    const unsaved = JSON.stringify(OK_DOC('keep while moving to handoff'));
+    edit(unsaved);
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    const prompt = await screen.findByRole('alertdialog', { name: 'Discard unsaved definition changes?' });
+    expect(screen.getByLabelText('Definition JSON')).toBeInTheDocument();
+    await user.click(within(prompt).getByRole('button', { name: 'Keep editing' }));
+    expect(editor().value).toBe(unsaved);
+    expect(calls.some((call) => call.path.endsWith('/handoffs'))).toBe(false);
+
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Discard and leave' }));
+    expect(await screen.findByText('No handoffs have been prepared for this Goal.')).toBeInTheDocument();
+    expect(posts()).toEqual([]);
+  });
+
   it('a persisted change under unsaved text disables Save and offers Reset', async () => {
     const world = draftWorld();
     const user = await openDefinitions(world);

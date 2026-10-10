@@ -135,7 +135,8 @@ describe('Goal cockpit', () => {
       'manual_reconciliation',
     ]);
     expect(describeNextAction({ kind: 'wait_for_turing' }).summary).toMatch(/Nothing is needed/);
-    expect(describeNextAction({ kind: 'final_apply' }).summary).toMatch(/separate step/);
+    expect(describeNextAction({ kind: 'final_apply' }).summary).toMatch(/immutable handoff/);
+    expect(describeNextAction({ kind: 'final_apply' }).tone).toBe('attention');
     expect(describeNextAction({ kind: 'final_acceptance', approvalId: null }).summary).toMatch(
       /does not change your branch/,
     );
@@ -199,12 +200,12 @@ describe('Goal cockpit', () => {
     await user.keyboard('{Home}');
     expect(document.activeElement).toBe(overview);
     await user.keyboard('{End}');
-    const usage = screen.getByRole('tab', { name: 'Usage' });
-    expect(document.activeElement).toBe(usage);
+    const handoff = screen.getByRole('tab', { name: 'Handoff' });
+    expect(document.activeElement).toBe(handoff);
     await user.keyboard('{ArrowRight}');
     expect(document.activeElement).toBe(overview);
     await user.keyboard('{ArrowLeft}');
-    expect(document.activeElement).toBe(usage);
+    expect(document.activeElement).toBe(handoff);
     expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
   });
 
@@ -220,30 +221,7 @@ describe('Goal cockpit', () => {
       finalAcceptance: { required: true, ok: true, approvalId: 'a1', reason: null },
       finalApply: { required: true, ok: false, basis: null, reason: 'final_apply_required' },
     };
-    serve(
-      detailRoutes(detail({ nextAction: { kind: 'final_apply' }, completion }), {
-        '/api/goals/goal-1/final-apply/preflight': () => ({
-          preflight: {
-            status: 'ready',
-            recordedBaseBranch: 'main',
-            recordedBaseCommit: 'x',
-            currentBranch: 'main',
-            currentHead: 'x',
-            dirty: false,
-            integrationHead: 'abc',
-            goalRef: 'ref',
-            fastForwardPossible: true,
-            ahead: 1,
-            behind: 0,
-            changedPathCount: 2,
-            changedPaths: ['a', 'b'],
-            safety: { ok: true, violationCount: 0 },
-            appliedExternallySupported: false,
-            manualReconciliationRequired: false,
-          },
-        }),
-      }),
-    );
+    serve(detailRoutes(detail({ nextAction: { kind: 'final_apply' }, completion }), {}));
     const user = userEvent.setup();
     render(<GoalsPage />);
     await openGoal(user);
@@ -255,11 +233,10 @@ describe('Goal cockpit', () => {
     ).toHaveAttribute('data-gate-state', 'met');
     expect(
       within(gates)
-        .getByText(/Final apply \(separate step\)/)
+        .getByText(/Manual integration \(separate user step\)/)
         .closest('li'),
     ).toHaveAttribute('data-gate-state', 'unmet');
-    const preflight = await screen.findByLabelText('Final apply preflight');
-    expect(preflight).toHaveTextContent('cannot apply it');
+    expect(screen.queryByLabelText('Final apply preflight')).toBeNull();
     expect(screen.queryByRole('button', { name: /apply/i })).toBeNull();
   });
 
@@ -519,43 +496,23 @@ describe('Goal cockpit read-state correctness (7B.1A)', () => {
     expect(calls.some((call) => call.url.includes('final-apply'))).toBe(false);
   });
 
-  it('shows the read-only preflight, with a GET and no apply control, when nextAction is final_apply', async () => {
+  it('keeps the legacy preflight out of the ordinary overview and offers manual handoff review', async () => {
     serve(
       detailRoutes(
         detail({ nextAction: { kind: 'final_apply' }, completion: { ...unmet, ok: true, failures: [] } }),
-        {
-          '/api/goals/goal-1/final-apply/preflight': () => ({
-            preflight: {
-              status: 'ready_for_approved_apply',
-              recordedBaseBranch: 'main',
-              recordedBaseCommit: 'x',
-              currentBranch: 'main',
-              currentHead: 'x',
-              dirty: false,
-              integrationHead: 'abc',
-              goalRef: 'ref',
-              fastForwardPossible: true,
-              ahead: 1,
-              behind: 0,
-              changedPathCount: 1,
-              changedPaths: ['a'],
-              safety: { ok: true, violationCount: 0 },
-              appliedExternallySupported: false,
-              manualReconciliationRequired: false,
-            },
-          }),
-        },
       ),
     );
     const user = userEvent.setup();
     render(<GoalsPage />);
     await openGoal(user);
-    expect(await screen.findByLabelText('Final apply preflight')).toBeInTheDocument();
-    await screen.findByText(/Ready for approved apply/);
-    const preflightCalls = calls.filter((call) => call.url.includes('final-apply/preflight'));
-    expect(preflightCalls).toHaveLength(1);
-    expect(preflightCalls[0]!.method).toBe('GET');
-    expect(screen.queryByRole('button', { name: /apply/i })).toBeNull();
-    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+    expect(await screen.findByLabelText('Completion')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Final apply preflight')).toBeNull();
+    expect(calls.some((call) => call.url.includes('final-apply'))).toBe(false);
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    expect(await screen.findByText(/Turing can prepare an immutable record/)).toBeInTheDocument();
+    expect((screen.getByRole('button', { name: 'Prepare handoff' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    expect(calls.filter((call) => call.method === 'POST')).toHaveLength(0);
   });
 });

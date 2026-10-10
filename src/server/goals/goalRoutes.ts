@@ -1,7 +1,13 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { GoalDefinition } from '../../shared/goals.js';
-import type { GoalApiError, GoalFinalApplyPreflightView } from '../../shared/goalApi.js';
+import type {
+  GoalApiError,
+  GoalFinalApplyPreflightView,
+  GoalManualHandoffListResponse,
+  GoalManualHandoffPrepared,
+  GoalManualHandoffProjection,
+} from '../../shared/goalApi.js';
 import { GOAL_RESUME_REASONS } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
@@ -18,6 +24,7 @@ import {
   rejectDefinition,
 } from './definitions.js';
 import { GoalFindingError } from './findings.js';
+import { getManualHandoffProjection, ManualHandoffError, prepareManualHandoff } from './manualHandoff.js';
 import { abandonGoal, decideFindingAsUser, decideGoalApprovalAsUser, pauseGoal } from './goalCommands.js';
 import { previewGoal } from './preview.js';
 import {
@@ -69,6 +76,17 @@ const NOT_FOUND = new Set([
 
 /** Maps a thrown domain error to a response; rethrows anything that is not a known domain refusal. */
 function domainError(error: unknown, reply: FastifyReply) {
+  if (error instanceof ManualHandoffError) {
+    const status =
+      error.code === 'goal_not_found'
+        ? 404
+        : error.code === 'repository_unavailable' || error.code === 'git_unavailable'
+          ? 503
+          : error.code === 'unsafe_changes'
+            ? 422
+            : 409;
+    return send(reply, status, { error: error.message, code: error.code });
+  }
   if (error instanceof FinalApplyAuthorityError)
     return send(reply, error.code === 'approval_not_found' ? 404 : 409, {
       error: error.message,
@@ -180,6 +198,12 @@ const approvalsQuery = z.strictObject({
   limit: limitQuery,
 });
 const versionParam = z.coerce.number().int().min(1);
+const goalIdParams = z.strictObject({ goalId: z.string().uuid() });
+const handoffParams = z.strictObject({ goalId: z.string().uuid(), handoffId: z.string().uuid() });
+const handoffListQuery = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).optional(),
+});
 
 export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): void {
   const { db } = deps;
@@ -324,6 +348,100 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       return { preflight: view };
     } catch (error) {
       return domainError(error, reply);
+    }
+  });
+
+  // --- Immutable manual-integration handoffs ----------------------------------------------------------------------
+
+  app.get('/api/goals/:goalId/handoffs', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    const query = handoffListQuery.safeParse(request.query);
+    if (!params.success || !query.success)
+      return send(reply, 400, { error: 'Invalid Goal handoff list request.', code: 'invalid_request' });
+    const goalId = params.data.goalId;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    const limit = query.data.limit ?? 25;
+    const offset = query.data.offset ?? 0;
+    // Metadata only: do not load historical payloads or run a Git scan for each row in the list.
+    const rows = db
+      .prepare(
+        `SELECT id, created_at, definition_version, source_commit, handoff_digest
+         FROM goal_result_handoffs WHERE goal_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(goalId, limit + 1, offset) as Array<{
+      id: string;
+      created_at: string;
+      definition_version: number;
+      source_commit: string;
+      handoff_digest: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const response: GoalManualHandoffListResponse = {
+      handoffs: rows.slice(0, limit).map((row) => ({
+        handoffId: row.id,
+        createdAt: row.created_at,
+        definitionVersion: row.definition_version,
+        sourceCommit: row.source_commit,
+        handoffDigest: row.handoff_digest,
+      })),
+      limit,
+      nextOffset: hasMore ? offset + limit : null,
+    };
+    return response;
+  });
+
+  app.get('/api/goals/:goalId/handoffs/:handoffId', async (request, reply) => {
+    const params = handoffParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal handoff identity.', code: 'invalid_request' });
+    const { goalId, handoffId } = params.data;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    // Keep unknown and cross-Goal IDs indistinguishable. The projection service receives only a scoped identity.
+    if (!db.prepare('SELECT 1 FROM goal_result_handoffs WHERE goal_id = ? AND id = ?').get(goalId, handoffId))
+      return send(reply, 404, {
+        error: 'The handoff does not exist for this Goal.',
+        code: 'handoff_not_found',
+      });
+    try {
+      const projection: GoalManualHandoffProjection = await getManualHandoffProjection(db, goalId, handoffId);
+      return { projection };
+    } catch {
+      return send(reply, 503, {
+        error: 'The handoff could not be validated safely. Refresh and try again.',
+        code: 'handoff_validation_unavailable',
+      });
+    }
+  });
+
+  app.post('/api/goals/:goalId/handoffs', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
+    // Only an empty object (or no body) is accepted. In particular, no caller-supplied refs, commits,
+    // approvals, evidence, reviews, project identity, or authority metadata can reach the service.
+    const body = empty.safeParse(request.body === undefined ? {} : request.body);
+    if (!body.success)
+      return send(reply, 400, {
+        error: 'Handoff preparation accepts an empty object only.',
+        code: 'invalid_request',
+      });
+    try {
+      const prepared = await prepareManualHandoff(db, params.data.goalId);
+      const response: GoalManualHandoffPrepared = {
+        handoffId: prepared.record.handoffId,
+        handoffDigest: prepared.record.handoffDigest,
+        reused: prepared.reused,
+      };
+      return reply.code(prepared.reused ? 200 : 201).send(response);
+    } catch (error) {
+      if (error instanceof ManualHandoffError) return domainError(error, reply);
+      return send(reply, 503, {
+        error: 'The handoff could not be prepared safely. Refresh the Goal before trying again.',
+        code: 'handoff_preparation_unavailable',
+      });
     }
   });
 

@@ -372,7 +372,7 @@ describe('phone Goal cockpit', () => {
     ],
     [
       detail({ status: 'completed', nextAction: { kind: 'final_apply' } }),
-      'The Goal is ready for final apply. Final apply requires the desktop interface.',
+      'This Goal is ready for manual-integration review. Open Turing Terminal on desktop to prepare and inspect the handoff. Your Git branch will not be changed automatically.',
     ],
   ])('shows a truthful desktop-only explanation for %s', async (goal, explanation) => {
     setCompact(true);

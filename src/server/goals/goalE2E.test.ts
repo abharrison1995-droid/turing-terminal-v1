@@ -1,7 +1,9 @@
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalDefinition, GoalRole, RouteMember } from '../../shared/goals.js';
+import type { GoalManualHandoffProjection } from '../../shared/goalApi.js';
 import type { ProviderCapabilities, ProviderStatus, WorkflowDefinition } from '../../shared/types.js';
 
 vi.mock('../providers.js', () => ({
@@ -18,14 +20,14 @@ import { preflightFinalApply } from '../goalGit.js';
 import { buildPreview, createRun } from '../runLauncher.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
-import { approveDefinition, beginAmendment } from './definitions.js';
+import { approveDefinition, beginAmendment, createGoalDraft } from './definitions.js';
 import {
   computeFinalApplyIntentDigest,
   prepareFinalApplyIntent,
   requestFinalApplyApproval,
   validateFinalApplyAuthority,
 } from './finalApplyAuthority.js';
-import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
+import { getManualHandoffProjection, validateManualHandoff } from './manualHandoff.js';
 import { cleanupRepoFixtures, milestone, reportOf, simpleDefinition } from './repoKit.js';
 import { passRecords } from './routingKit.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
@@ -224,6 +226,43 @@ const call = async (
   });
   return { status: response.statusCode, body: response.json() as Record<string, unknown> };
 };
+
+function handoffGitState(repo: string): unknown {
+  const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+  const gitBytes = (...args: string[]) => execFileSync('git', ['-C', repo, ...args]);
+  const paths = new Set(
+    [
+      ...gitBytes('ls-files', '-z', '--cached', '--others', '--exclude-standard')
+        .toString('utf8')
+        .split('\0'),
+      ...gitBytes('ls-files', '-z', '--others', '--ignored', '--exclude-standard')
+        .toString('utf8')
+        .split('\0'),
+    ].filter(Boolean),
+  );
+  const files = [...paths].sort().map((path) => {
+    const fullPath = join(repo, path);
+    const stat = lstatSync(fullPath);
+    return [
+      path,
+      stat.isSymbolicLink() ? `symlink:${readlinkSync(fullPath)}` : readFileSync(fullPath).toString('base64'),
+    ];
+  });
+  const optionalFile = (path: string) =>
+    existsSync(join(repo, path)) ? readFileSync(join(repo, path)).toString('base64') : null;
+  return {
+    refs: git('for-each-ref', '--format=%(refname) %(objectname)'),
+    head: git('rev-parse', 'HEAD'),
+    symbolicHead: git('symbolic-ref', '-q', 'HEAD'),
+    index: optionalFile('.git/index'),
+    indexEntries: git('ls-files', '--stage'),
+    files,
+    worktrees: git('worktree', 'list', '--porcelain'),
+    reflogs: git('reflog', '--all', '--format=%H%x00%gD%x00%gs'),
+    config: optionalFile('.git/config'),
+    exclude: optionalFile('.git/info/exclude'),
+  };
+}
 
 const runFor = (
   purpose: string,
@@ -506,8 +545,35 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(evaluation.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
     expect(evaluation.failures.map((failure) => failure.code)).toEqual(['final_apply_required']);
 
-    const preparedHandoff = await prepareManualHandoff(h.fx.db, h.fx.goalId);
-    expect(preparedHandoff.reused).toBe(false);
+    const beforeListCount = (
+      h.fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?')
+        .get(h.fx.goalId) as { n: number }
+    ).n;
+    expect(beforeListCount).toBe(0);
+    const beforeHandoffApi = handoffGitState(h.fx.repo);
+    const emptyHandoffs = await call('GET', `/api/goals/${h.fx.goalId}/handoffs`);
+    expect(emptyHandoffs.status).toBe(200);
+    expect(emptyHandoffs.body.handoffs).toEqual([]);
+    expect(
+      h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(h.fx.goalId),
+    ).toEqual({ n: 0 });
+
+    const preparedResponse = await call('POST', `/api/goals/${h.fx.goalId}/handoffs`, {});
+    expect(preparedResponse.status).toBe(201);
+    expect(preparedResponse.body.reused).toBe(false);
+    const handoffId = preparedResponse.body.handoffId as string;
+    const projectionResponse = await call('GET', `/api/goals/${h.fx.goalId}/handoffs/${handoffId}`);
+    expect(projectionResponse.status).toBe(200);
+    const projection = projectionResponse.body.projection as GoalManualHandoffProjection;
+    expect(projection.state).toBe('current');
+    const preparedHandoff = { reused: preparedResponse.body.reused as boolean, record: projection.handoff! };
+    const otherGoal = createGoalDraft(h.fx.db, {
+      projectId: h.fx.projectId,
+      title: 'Cross-scope handoff probe',
+      definition: simpleDefinition(),
+    });
+    expect((await call('GET', `/api/goals/${otherGoal.goalId}/handoffs/${handoffId}`)).status).toBe(404);
     expect(preparedHandoff.record).toMatchObject({
       goalId: h.fx.goalId,
       definition: { version: 1, hash },
@@ -534,6 +600,18 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
     expect(
       h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(h.fx.goalId),
     ).toEqual({ n: 1 });
+    const retry = await call('POST', `/api/goals/${h.fx.goalId}/handoffs`, {});
+    expect(retry.status).toBe(200);
+    expect(retry.body).toMatchObject({
+      handoffId,
+      handoffDigest: preparedHandoff.record.handoffDigest,
+      reused: true,
+    });
+    const listedHandoffs = await call('GET', `/api/goals/${h.fx.goalId}/handoffs?limit=1`);
+    expect(listedHandoffs.body.handoffs).toEqual([
+      expect.objectContaining({ handoffId, sourceCommit: integratedHead, definitionVersion: 1 }),
+    ]);
+    expect(handoffGitState(h.fx.repo)).toEqual(beforeHandoffApi);
     expect(
       h.fx.db
         .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base'")
@@ -1030,6 +1108,12 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
         state: 'stale',
       },
     );
+    expect(
+      await call('GET', `/api/goals/${h.fx.goalId}/handoffs/${preparedHandoff.record.handoffId}`),
+    ).toMatchObject({
+      status: 200,
+      body: { projection: { state: 'stale', reason: { code: 'source_changed' } } },
+    });
 
     const amendment = beginAmendment(h.fx.db, { goalId: h.fx.goalId, actor: 'user' });
     approveDefinition(h.fx.db, {
@@ -1051,6 +1135,17 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
         reason: { code: 'definition_not_approved' },
       },
     );
+    expect(
+      await call('GET', `/api/goals/${h.fx.goalId}/handoffs/${preparedHandoff.record.handoffId}`),
+    ).toMatchObject({
+      status: 200,
+      body: {
+        projection: {
+          state: 'stale',
+          reason: { code: 'definition_not_approved' },
+        },
+      },
+    });
   }, 30_000);
 
   it('keeps a denied each-cycle gate closed through API decision and supervisor reconciliation', async () => {

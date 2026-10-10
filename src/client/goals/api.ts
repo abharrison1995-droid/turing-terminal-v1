@@ -8,6 +8,9 @@ import type {
   GoalEventsResponse,
   GoalEvidenceResponse,
   GoalFinalApplyPreflightView,
+  GoalManualHandoffListResponse,
+  GoalManualHandoffPrepared,
+  GoalManualHandoffProjection,
   GoalFindingsResponse,
   GoalListResponse,
   GoalPreview,
@@ -63,6 +66,14 @@ export const goalsApi = {
   finalApplyPreflight: async (goalId: string) =>
     (await call<{ preflight: GoalFinalApplyPreflightView }>(`${goalPath(goalId)}/final-apply/preflight`))
       .preflight,
+  manualHandoffs: (goalId: string, options: { limit?: number; offset?: number } = {}) =>
+    call<GoalManualHandoffListResponse>(`${goalPath(goalId)}/handoffs${query(options)}`),
+  manualHandoff: async (goalId: string, handoffId: string) =>
+    (
+      await call<{ projection: GoalManualHandoffProjection }>(
+        `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}`,
+      )
+    ).projection,
 
   unifiedApprovals: (options: { status?: 'pending'; goalId?: string; limit?: number } = {}) =>
     call<UnifiedApprovalsResponse>(`/api/approvals/unified${query(options)}`),
@@ -74,6 +85,9 @@ export const goalsApi = {
     post<{ ok: true; goalStatus: string }>(`${goalPath(goalId)}/resume`, { reason }),
   pause: (goalId: string) => post<{ status: 'paused' }>(`${goalPath(goalId)}/pause`, {}),
   abandon: (goalId: string) => post<{ status: 'abandoned' }>(`${goalPath(goalId)}/abandon`, {}),
+  /** Explicit preparation only; the server binds all authority and Git identities itself. */
+  prepareManualHandoff: (goalId: string) =>
+    post<GoalManualHandoffPrepared>(`${goalPath(goalId)}/handoffs`, {}),
   /** Only the decision and an optional note: the server binds the approval, definition and finding itself. */
   decideFinding: (
     goalId: string,

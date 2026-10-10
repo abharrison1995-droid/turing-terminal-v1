@@ -99,9 +99,9 @@ export function describeNextAction(action: GoalNextAction): NextActionPresentati
       );
     case 'final_apply':
       return make(
-        'Ready for final apply',
-        'Everything is accepted. Applying to your branch is a separate step that this screen does not perform.',
-        'done',
+        'Result ready for manual integration review',
+        'Verification, final review and acceptance are complete. Turing can prepare an immutable handoff; you control Git integration.',
+        'attention',
       );
     case 'manual_reconciliation':
       return make(

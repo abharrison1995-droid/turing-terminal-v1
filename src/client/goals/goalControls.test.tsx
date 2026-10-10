@@ -202,31 +202,11 @@ describe('Goal lifecycle controls', () => {
   });
 
   it('keeps final apply informational: no apply control and no apply request', async () => {
-    await open(goal('running', { kind: 'final_apply' }), {
-      '/api/goals/goal-1/final-apply/preflight': () => ({
-        preflight: {
-          status: 'ready_for_approved_apply',
-          recordedBaseBranch: 'main',
-          recordedBaseCommit: 'x',
-          currentBranch: 'main',
-          currentHead: 'x',
-          dirty: false,
-          integrationHead: 'a',
-          goalRef: 'r',
-          fastForwardPossible: true,
-          ahead: 1,
-          behind: 0,
-          changedPathCount: 0,
-          changedPaths: [],
-          safety: { ok: true, violationCount: 0 },
-          appliedExternallySupported: false,
-          manualReconciliationRequired: false,
-        },
-      }),
-    });
-    await screen.findByLabelText('Final apply preflight');
+    await open(goal('running', { kind: 'final_apply' }));
+    expect(await screen.findByLabelText('Next action')).toHaveTextContent('manual integration review');
+    expect(screen.queryByLabelText('Final apply preflight')).toBeNull();
     expect(screen.queryByRole('button', { name: /apply/i })).toBeNull();
-    expect(calls.some((call) => /apply/.test(call.path) && call.method !== 'GET')).toBe(false);
+    expect(calls.some((call) => /final-apply/.test(call.path))).toBe(false);
   });
 
   it('prevents duplicate submission while a request is in flight', async () => {

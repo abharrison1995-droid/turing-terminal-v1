@@ -1,9 +1,4 @@
-import type {
-  GoalCompletionView,
-  GoalDetail,
-  GoalFinalApplyPreflightView,
-  GoalPreview,
-} from '../../shared/goalApi';
+import type { GoalCompletionView, GoalDetail, GoalPreview } from '../../shared/goalApi';
 import { goalsApi } from './api';
 import { goalAcceptsDecisions } from './controls';
 import { NextActionCard } from './NextAction';
@@ -79,7 +74,6 @@ export function GoalOverview({
 
       <Milestones goal={goal} />
       {completion && <CompletionPanel completion={completion} />}
-      {goal.nextAction.kind === 'final_apply' && <FinalApplyPreflight goalId={goal.id} refresh={refresh} />}
       <PreviewSection goalId={goal.id} refresh={refresh} />
 
       <section className="surface-panel" aria-label="Integration branch">
@@ -95,7 +89,10 @@ export function GoalOverview({
             <code>{goal.baseBranch ?? '—'}</code> @ <code>{shortHash(goal.baseCommit)}</code>
           </Fact>
         </dl>
-        <p className="goal-note">Turing only changes this branch. Your own branch is never touched here.</p>
+        <p className="goal-note">
+          Turing prepares an immutable handoff. It does not change the base branch or working files; you
+          control any later Git integration.
+        </p>
       </section>
 
       {goal.reasonDetail && (
@@ -181,7 +178,7 @@ function CompletionPanel({ completion }: { completion: GoalCompletionView }) {
           reason={completion.finalAcceptance.reason}
         />
         <Gate
-          label="Final apply (separate step)"
+          label="Manual integration (separate user step)"
           state={completion.finalApply}
           reason={completion.finalApply.reason}
         />
@@ -196,36 +193,6 @@ function CompletionPanel({ completion }: { completion: GoalCompletionView }) {
           ))}
         </ul>
       )}
-    </section>
-  );
-}
-
-/** Shown only when the server's `nextAction` is `final_apply`; the client never rebuilds that readiness itself. */
-function FinalApplyPreflight({ goalId, refresh }: { goalId: string; refresh: number }) {
-  const { result, reload } = useLoad(() => goalsApi.finalApplyPreflight(goalId), goalId, refresh);
-  return (
-    <section className="surface-panel" aria-label="Final apply preflight">
-      <h2>Final apply preflight</h2>
-      <p className="goal-note">
-        A read-only check. Completing a Goal does not modify your branch, and this screen cannot apply it.
-      </p>
-      <Resource result={result} label="Final apply preflight" onRetry={reload}>
-        {(view: GoalFinalApplyPreflightView) => (
-          <dl className="goal-facts">
-            <Fact label="Status">{humanize(view.status)}</Fact>
-            <Fact label="Fast-forward possible">
-              {view.fastForwardPossible === null ? 'Unknown' : view.fastForwardPossible ? 'Yes' : 'No'}
-            </Fact>
-            <Fact label="Changed paths">{view.changedPathCount}</Fact>
-            <Fact label="Safety">
-              {view.safety.ok ? 'No violations' : `${view.safety.violationCount} violation(s)`}
-            </Fact>
-            {view.manualReconciliationRequired && (
-              <Fact label="Attention">Manual reconciliation required</Fact>
-            )}
-          </dl>
-        )}
-      </Resource>
     </section>
   );
 }

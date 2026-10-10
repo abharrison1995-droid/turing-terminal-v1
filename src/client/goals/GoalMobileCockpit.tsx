@@ -19,7 +19,7 @@ function desktopOnlyMessage(action: GoalNextAction): string | null {
     case 'start':
       return 'This Grand Project is ready. Start it from the desktop interface.';
     case 'final_apply':
-      return 'The Goal is ready for final apply. Final apply requires the desktop interface.';
+      return 'This Goal is ready for manual-integration review. Open Turing Terminal on desktop to prepare and inspect the handoff. Your Git branch will not be changed automatically.';
     case 'manual_reconciliation':
       return 'This Goal needs manual reconciliation on the desktop.';
     default:

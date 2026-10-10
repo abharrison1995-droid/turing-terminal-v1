@@ -12,6 +12,8 @@ import {
 } from 'node:fs';
 import { join, relative } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
+import { call, disabledSupervisor, goalApp } from './apiKit.js';
 import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { beginAmendment, approveDefinition, createGoalDraft, loadDefinitionVersion } from './definitions.js';
@@ -25,7 +27,12 @@ import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } fro
 import { createCycle } from './cycles.js';
 import { transitionGoal } from './stateMachine.js';
 
-afterEach(cleanupRepoFixtures);
+let app: FastifyInstance | undefined;
+afterEach(async () => {
+  await app?.close();
+  app = undefined;
+  cleanupRepoFixtures();
+});
 
 const git = (repo: string, ...args: string[]) =>
   execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
@@ -457,7 +464,18 @@ describe('manual integration handoff', () => {
     expect(amended.evaluation.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
 
     const before = repositoryState(amended.fx.repo);
-    const prepared = await prepareManualHandoff(amended.fx.db, amended.fx.goalId);
+    app = goalApp(amended.fx.db, disabledSupervisor(amended.fx.db));
+    const handoffsPath = `/api/goals/${amended.fx.goalId}/handoffs`;
+    const preparedResponse = await call(app, 'POST', handoffsPath, {});
+    expect(preparedResponse.status).toBe(201);
+    const preparedProjection = await call(app, 'GET', `${handoffsPath}/${preparedResponse.body.handoffId}`);
+    expect(preparedProjection.status).toBe(200);
+    const prepared = {
+      reused: preparedResponse.body.reused as boolean,
+      record: preparedProjection.body.projection.handoff as Awaited<
+        ReturnType<typeof prepareManualHandoff>
+      >['record'],
+    };
     expect(prepared.record).toMatchObject({
       definition: {
         version: 2,
@@ -494,22 +512,32 @@ describe('manual integration handoff', () => {
         ).payload_json,
       ),
     ).toEqual(JSON.parse(originalPayload));
-    expect(
-      await validateManualHandoff(amended.fx.db, amended.fx.goalId, amended.version1Handoff.handoffId),
-    ).toMatchObject({
-      state: 'stale',
-      reason: { code: 'definition_not_approved' },
-      record: { handoffId: amended.version1Handoff.handoffId },
+    expect(await call(app, 'GET', `${handoffsPath}/${amended.version1Handoff.handoffId}`)).toMatchObject({
+      status: 200,
+      body: {
+        projection: {
+          state: 'stale',
+          reason: { code: 'definition_not_approved' },
+          handoff: { handoffId: amended.version1Handoff.handoffId },
+        },
+      },
     });
-    expect(
-      await validateManualHandoff(amended.fx.db, amended.fx.goalId, prepared.record.handoffId),
-    ).toMatchObject({
-      state: 'current',
-      record: { handoffId: prepared.record.handoffId },
+    expect(await call(app, 'GET', `${handoffsPath}/${prepared.record.handoffId}`)).toMatchObject({
+      status: 200,
+      body: { projection: { state: 'current', handoff: { handoffId: prepared.record.handoffId } } },
     });
-    expect(await prepareManualHandoff(amended.fx.db, amended.fx.goalId)).toMatchObject({
-      reused: true,
-      record: { handoffId: prepared.record.handoffId },
+    expect(await call(app, 'POST', handoffsPath, {})).toMatchObject({
+      status: 200,
+      body: { reused: true, handoffId: prepared.record.handoffId },
+    });
+    expect(await call(app, 'GET', handoffsPath)).toMatchObject({
+      status: 200,
+      body: {
+        handoffs: [
+          { definitionVersion: 2, handoffId: prepared.record.handoffId },
+          { definitionVersion: 1, handoffId: amended.version1Handoff.handoffId },
+        ],
+      },
     });
     expect(repositoryState(amended.fx.repo)).toEqual(before);
     expect(await evaluateCompletion(amended.fx.db, amended.fx.goalId)).toMatchObject({
@@ -524,6 +552,31 @@ describe('manual integration handoff', () => {
         .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base'")
         .get(amended.fx.goalId),
     ).toEqual({ n: 0 });
+
+    const registeredGitRoot = (
+      amended.fx.db.prepare('SELECT git_root FROM projects WHERE id = ?').get(amended.fx.projectId) as {
+        git_root: string;
+      }
+    ).git_root;
+    amended.fx.db
+      .prepare('UPDATE projects SET git_root = ? WHERE id = ?')
+      .run(join(amended.fx.repo, 'repository-no-longer-available'), amended.fx.projectId);
+    expect(await call(app, 'GET', `${handoffsPath}/${prepared.record.handoffId}`)).toMatchObject({
+      status: 200,
+      body: { projection: { state: 'unavailable', handoff: { handoffId: prepared.record.handoffId } } },
+    });
+    amended.fx.db
+      .prepare('UPDATE projects SET git_root = ? WHERE id = ?')
+      .run(registeredGitRoot, amended.fx.projectId);
+
+    amended.fx.db.exec('DROP TRIGGER trg_goal_result_handoff_immutable;');
+    amended.fx.db
+      .prepare('UPDATE goal_result_handoffs SET payload_json = payload_json || ? WHERE id = ?')
+      .run(' ', prepared.record.handoffId);
+    expect(await call(app, 'GET', `${handoffsPath}/${prepared.record.handoffId}`)).toMatchObject({
+      status: 200,
+      body: { projection: { state: 'invalid', handoff: null, reason: { code: 'handoff_invalid' } } },
+    });
   });
 
   const amendedApprovalCorruptions = [

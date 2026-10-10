@@ -11,6 +11,7 @@ import { FindingsPanel } from './GoalFindings';
 import { CyclesPanel, EvidencePanel, ReviewsPanel } from './GoalHistory';
 import { RefreshButton } from './GoalList';
 import { GoalOverview } from './GoalOverview';
+import { GoalHandoff } from './GoalHandoff';
 import { UsagePanel } from './GoalUsage';
 import { GoalStatusPill, Resource } from './parts';
 import { humanize } from './presentation';
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'evidence', label: 'Evidence' },
   { id: 'definitions', label: 'Definitions' },
   { id: 'usage', label: 'Usage' },
+  { id: 'handoff', label: 'Handoff' },
 ] as const;
 type TabId = (typeof TABS)[number]['id'];
 
@@ -246,6 +248,7 @@ export function GoalCockpit({
                           />
                         )}
                         {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}
+                        {tab === 'handoff' && <GoalHandoff key={goal.id} goal={goal} refresh={generation} />}
                       </>
                     )}
                   </div>

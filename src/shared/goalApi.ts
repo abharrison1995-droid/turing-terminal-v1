@@ -29,6 +29,82 @@ export interface GoalApiError {
   detail?: unknown;
 }
 
+/** Small history row. Git currentness is intentionally revalidated only for a selected handoff. */
+export interface GoalManualHandoffSummary {
+  handoffId: string;
+  createdAt: string;
+  definitionVersion: number;
+  sourceCommit: string;
+  handoffDigest: string;
+}
+
+export interface GoalManualHandoffListResponse {
+  handoffs: GoalManualHandoffSummary[];
+  limit: number;
+  nextOffset: number | null;
+}
+
+/** Immutable, bounded handoff record v1 returned by the server's validated projection. */
+export interface GoalManualIntegrationHandoff {
+  schemaVersion: 1;
+  kind: 'turing_goal_manual_integration_handoff';
+  handoffId: string;
+  goalId: string;
+  definition: { version: number; hash: string; approvalId: string; approvalIdentityDigest: string };
+  finalAcceptance: { approvalId: string; identityDigest: string };
+  repository: { projectId: string; identity: string; objectFormat: 'sha1' | 'sha256'; scope: string };
+  source: { goalRef: string; commit: string; tree: string };
+  target: { baseBranch: string; baseRef: string; observedBaseCommit: string; observedBaseTree: string };
+  completion: { identityDigest: string; findingsIdentityDigest: string };
+  review: {
+    finalReviewId: string;
+    reviewIdentityDigest: string;
+    evidenceIdentityDigest: string;
+    evidence: Array<{
+      evidenceId: string;
+      criterionKey: string;
+      verifierDigest: string;
+      kind: string;
+      verdict: 'satisfies';
+      identityDigest: string;
+    }>;
+    changedPathDigest: string;
+    changedPathCount: number;
+    changedPathSummaryDigest: string;
+    diffPreviewLimit: number;
+    diffStatDigest: string;
+    diffStatTruncated: boolean;
+    diffPreviewDigest: string;
+    diffPreviewTruncated: boolean;
+  };
+  projection: {
+    changedPaths: string[];
+    changedPathsTruncated: boolean;
+    diffStat: string;
+    diffPreview: string;
+    inspectionCommands: string[];
+    manualIntegrationRequired: true;
+    warning: string;
+  };
+  createdAt: string;
+  handoffDigest: string;
+}
+
+export interface GoalManualHandoffProjection {
+  state: 'current' | 'stale' | 'unavailable' | 'invalid';
+  label: 'Ready for manual integration' | 'Handoff stale' | 'Handoff unavailable' | 'Handoff invalid';
+  handoff: GoalManualIntegrationHandoff | null;
+  reason: { code: string; message: string } | null;
+  actualApplication: 'not_performed_by_turing';
+  goalCompletion: 'not_completed_by_handoff';
+}
+
+export interface GoalManualHandoffPrepared {
+  handoffId: string;
+  handoffDigest: string;
+  reused: boolean;
+}
+
 /** Closed set of reasons a client may claim when resuming. The supervisor decides whether the claim is factual. */
 export const GOAL_RESUME_REASONS = [
   'user_resume',

@@ -1,6 +1,6 @@
 # Goal Manual Integration Handoff Contract
 
-Status: Stage 7C.2B.3 implementation candidate, pending independent review. This contract prepares a reviewed Goal result for user-controlled Git integration. It does not apply the result, attest that integration occurred, or satisfy the existing `applyToBase: "required"` completion policy.
+Status: Stage 7C.2B.4 implementation candidate, pending independent review. This contract prepares a reviewed Goal result for user-controlled Git integration. It does not apply the result, attest that integration occurred, or satisfy the existing `applyToBase: "required"` completion policy.
 
 ## Services and mutation boundary
 
@@ -11,7 +11,17 @@ Status: Stage 7C.2B.3 implementation candidate, pending independent review. This
 - `validateManualHandoff(db, goalId, handoffId)` reads the immutable record and reconstructs the current candidate. It never refreshes or edits the stored payload.
 - `getManualHandoffProjection(db, goalId, handoffId)` returns the bounded stored projection with a fresh `current`, `stale`, `unavailable`, or `invalid` state.
 
-There is no new HTTP route or supervisor hook in this stage. Preparing a handoff is an explicit trusted service call. A future user-facing preparation interaction needs a separate reviewed route. A GET must never call the preparation service.
+Stage 7C.2B.4 exposes three Goal-scoped HTTP operations and a desktop-only cockpit review surface:
+
+- `GET /api/goals/:goalId/handoffs?limit=25&offset=0` returns newest-first metadata only. `limit` is 1–50 (default 25), `offset` is bounded to 100,000, and the response includes a next offset when more rows exist. It selects indexed identity columns and does not parse full history payloads or scan Git.
+- `GET /api/goals/:goalId/handoffs/:handoffId` first checks that the record belongs to the exact Goal, then calls `getManualHandoffProjection()`. It reconstructs and validates the selected record against current authority and Git identities. Currentness describes that read moment only.
+- `POST /api/goals/:goalId/handoffs` accepts an empty JSON object only and calls `prepareManualHandoff(db, goalId)`. All source/base identities and authority remain server-owned. It returns 201 for a new immutable record or 200 when an identical digest is reused. The UI follows with the selected GET; the POST response is not treated as a lasting currentness assertion.
+
+No GET calls the preparation service. Opening the tab, refresh, SSE, history selection, and failed GETs do not prepare a handoff. The explicit confirmation is the only UI path that sends the POST. Preparation errors are returned as bounded domain codes/messages; unexpected server failures do not expose exception traces.
+
+The routes inherit `createApp()`'s existing `/api` authentication. Loopback/local requests use the existing local-trust policy. Remote requests require Tailscale Serve identity and a live paired `__Host-turing-device` session (HttpOnly, Secure, SameSite=Strict). The same authenticated API is available to desktop and mobile clients; there is no server-verifiable desktop-browser principal. Hiding preparation controls from the PWA is a UX boundary, not an authorization guarantee. The UI makes preparation an explicit user action, and no agent, supervisor, scheduler, or provider code path calls these routes. The local-trust policy is process-agnostic: a local process that can reach the API is not distinguished from the desktop UI, so this endpoint does not prove that a human clicked the control. That is an existing principal-boundary limitation, not a desktop-only security guarantee.
+
+The desktop cockpit mounts its Handoff tab only when selected. Mobile has no preparation control and describes the manual integration workflow. The existing tab keyboard model and unsaved-definition navigation guard remain in force. Full SHA IDs, stored evidence/review identities, at most 100 changed paths, a bounded diff stat/preview, explicit truncation, and fixed read-only inspection commands are displayed as inert React text. Copying uses a direct user click and the clipboard fallback is selectable text. Stale, unavailable, and invalid records never show a current-ready state; commands are disabled unless selected validation is current. Historical rows are not eagerly validated; selecting one triggers the full validation.
 
 Git access uses `execFile` argument arrays and `gitTry()` with a 60-second timeout, a 64 MiB output cap, and `GIT_OPTIONAL_LOCKS=0`. The complete content scan is capped at 256 MiB and 60 seconds. The handoff uses only ref/object reads, ancestry checks, commit-to-commit diffs, and the existing full path/content checks. Diff generation disables external diff and text conversion. No command accepts a client-supplied ref, path, or commit. The service does not check out a branch or read the live index/worktree as its result source.
 

@@ -12,7 +12,7 @@ export function NextActionCard({ action }: { action: GoalNextAction }) {
     ? AlertOctagon
     : view.kind === 'wait_for_turing'
       ? Hourglass
-      : view.kind === 'completed' || view.kind === 'final_apply'
+      : view.kind === 'completed'
         ? CheckCircle2
         : view.kind === 'final_acceptance' || view.kind === 'review_approval'
           ? ShieldCheck

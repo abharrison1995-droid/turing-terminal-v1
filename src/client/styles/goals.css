@@ -512,6 +512,170 @@
   cursor: progress;
 }
 
+/* Stage 7C.2B.4: immutable manual-integration review surface. */
+.goal-handoff,
+.goal-handoff-projection {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-handoff .surface-panel {
+  min-width: 0;
+  max-width: 76ch;
+}
+.goal-handoff-intro > p,
+.goal-handoff-status > p,
+.goal-handoff .surface-panel > p {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-actions,
+.goal-handoff-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.goal-handoff-heading-row {
+  justify-content: space-between;
+}
+.goal-handoff-heading-row h3 {
+  margin: 0;
+}
+.goal-handoff-identities {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+}
+.goal-handoff-identity {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(0, 1.6fr);
+  gap: var(--s-2) var(--s-4);
+  align-items: baseline;
+  min-width: 0;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.goal-handoff-identity dt,
+.goal-fact dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.goal-handoff-identity dd,
+.goal-fact dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-identity code,
+.goal-fact code,
+.goal-handoff-paths code,
+.goal-handoff-history code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.goal-handoff-paths {
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--s-2);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+}
+.goal-handoff-paths li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-code {
+  max-width: 100%;
+  max-height: 28rem;
+  margin: 0;
+  padding: var(--s-3);
+  overflow: auto;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+.goal-handoff-diff {
+  max-height: 36rem;
+  overflow-x: auto;
+}
+.goal-diff-addition {
+  color: #14532d;
+  background: #eaf5ec;
+}
+.goal-diff-removal {
+  color: #7f1d1d;
+  background: #f9eaea;
+}
+.goal-diff-context {
+  color: var(--ink);
+}
+.goal-handoff-warning,
+.goal-handoff-reason {
+  color: var(--amber);
+  font-weight: var(--fw-semibold);
+}
+.goal-handoff-status {
+  border-color: var(--hairline);
+}
+.goal-handoff-current h3 {
+  color: var(--info);
+}
+.goal-handoff-stale h3,
+.goal-handoff-unavailable h3,
+.goal-handoff-invalid h3 {
+  color: var(--amber);
+}
+.goal-handoff-history > li {
+  min-width: 0;
+}
+.goal-handoff-history .goal-version {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.goal-handoff-evidence {
+  max-height: 20rem;
+  overflow: auto;
+}
+.goal-handoff-evidence li {
+  overflow-wrap: anywhere;
+}
+.goal-handoff-fallback {
+  display: grid;
+  gap: var(--s-2);
+  max-width: 72ch;
+}
+.goal-handoff-fallback textarea {
+  min-height: 5rem;
+  padding: var(--s-2);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .goal-handoff-identity {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1);
+  }
+  .goal-handoff-history .goal-version {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Stage 7B.2B: definition authority (create, edit, approve, reject, revise). */
 .goal-new,
 .goal-workbench {
