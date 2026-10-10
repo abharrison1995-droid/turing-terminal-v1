@@ -13,6 +13,11 @@ import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
 import { GoalApprovalError } from './approvals.js';
+import {
+  AttestationCorrectionError,
+  getAttestationCorrectionStanding,
+  listAttestationCorrectionHistory,
+} from './attestationCorrection.js';
 import { FinalApplyAuthorityError } from './finalApplyAuthority.js';
 import {
   buildExternalIntegrationObservation,
@@ -606,6 +611,42 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         return { projection };
       } catch (error) {
         return externalIntegrationError(error, reply);
+      }
+    },
+  );
+
+  // Read-only correction history and standing. No write, no Git scan, and no completion effect.
+  app.get(
+    '/api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections',
+    async (request, reply) => {
+      const params = externalAttestationParams.safeParse(request.params);
+      if (!params.success)
+        return send(reply, 400, { error: 'Invalid Goal attestation identity.', code: 'invalid_request' });
+      const { goalId, handoffId, attestationId } = params.data;
+      if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+        return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+      const scoped = db
+        .prepare(
+          `SELECT 1 FROM goal_external_integration_attestations
+           WHERE goal_id = ? AND handoff_id = ? AND id = ?`,
+        )
+        .get(goalId, handoffId, attestationId);
+      if (!scoped)
+        return send(reply, 404, {
+          error: 'The attestation does not exist for this Goal and handoff.',
+          code: 'attestation_not_found',
+        });
+      try {
+        const standing = getAttestationCorrectionStanding(db, goalId, attestationId);
+        const corrections = listAttestationCorrectionHistory(db, goalId, attestationId);
+        return { goalId, handoffId, attestationId, standing, corrections };
+      } catch (error) {
+        if (error instanceof AttestationCorrectionError)
+          return send(reply, 409, {
+            error: 'The correction history cannot be verified.',
+            code: error.code,
+          });
+        throw error;
       }
     },
   );

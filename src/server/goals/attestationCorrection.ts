@@ -556,6 +556,47 @@ export function appendAttestationCorrection(
   }
 }
 
+export interface AttestationCorrectionHistoryEntry {
+  correctionId: string;
+  correctionKind: AttestationCorrectionKind;
+  sequence: number;
+  correctionDigest: string;
+  previousCorrectionDigest: string | null;
+  actionDigest: string;
+  approvalId: string;
+  reasonCode: AttestationCorrectionReasonCode;
+  explanation: string | null;
+  replacementAttestationId: string | null;
+  replacementRecordDigest: string | null;
+  decidedAt: string;
+}
+
+/**
+ * Read-only, fully verified correction history for one attestation. The chain is at most two entries long under the
+ * transition rules, so no pagination is needed. Any verification failure is a refusal, not a partial history.
+ */
+export function listAttestationCorrectionHistory(
+  db: Db,
+  goalId: string,
+  attestationId: string,
+): AttestationCorrectionHistoryEntry[] {
+  const original = loadOriginalAttestation(db, goalId, attestationId);
+  return loadVerifiedChain(db, goalId, original).records.map((record) => ({
+    correctionId: record.correctionId,
+    correctionKind: record.correctionKind,
+    sequence: record.sequence,
+    correctionDigest: record.correctionDigest,
+    previousCorrectionDigest: record.previousCorrectionDigest,
+    actionDigest: record.actionDigest,
+    approvalId: record.approvalId,
+    reasonCode: record.reasonCode,
+    explanation: record.explanation,
+    replacementAttestationId: record.replacement?.attestationId ?? null,
+    replacementRecordDigest: record.replacement?.recordDigest ?? null,
+    decidedAt: record.decision.decidedAt,
+  }));
+}
+
 export interface AttestationCorrectionStandingProjection {
   goalId: string;
   attestationId: string;

@@ -39,8 +39,13 @@ import {
   appendAttestationCorrection,
   buildAttestationCorrectionAction,
   getAttestationCorrectionStanding,
+  listAttestationCorrectionHistory,
   requestAttestationCorrectionApproval,
 } from './attestationCorrection.js';
+import {
+  computeAttestationCorrectionActionDigest,
+  computeAttestationCorrectionRecordDigest,
+} from './attestationCorrectionDetail.js';
 import { closeReview, completeReview, createReview, getReview } from './reviews.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
@@ -2779,5 +2784,325 @@ describe('external integration attestation corrections', () => {
           reviewed.actionDigest,
         ),
     ).toThrow(/attestation correction approval action digest is invalid/);
+  });
+
+  it('exposes read-only correction history scoped to one Goal, handoff, and attestation', async () => {
+    const { fx, handoff, attestation } = await attestedFixture();
+    app = goalApp(fx.db, disabledSupervisor(fx.db));
+    const basePath = `/api/goals/${fx.goalId}/handoffs/${handoff.handoffId}/external-integration/attestations/${attestation.attestationId}/corrections`;
+
+    expect(await call(app, 'GET', basePath)).toMatchObject({
+      status: 200,
+      body: {
+        attestationId: attestation.attestationId,
+        standing: { standing: 'active_uncontested', correctionCount: 0, tip: null },
+        corrections: [],
+      },
+    });
+    expect(
+      await call(
+        app,
+        'GET',
+        `/api/goals/not-a-uuid/handoffs/${handoff.handoffId}/external-integration/attestations/${attestation.attestationId}/corrections`,
+      ),
+    ).toMatchObject({ status: 400, body: { code: 'invalid_request' } });
+    expect(
+      await call(
+        app,
+        'GET',
+        `/api/goals/${fx.goalId}/handoffs/${randomUUID()}/external-integration/attestations/${attestation.attestationId}/corrections`,
+      ),
+    ).toMatchObject({ status: 404, body: { code: 'attestation_not_found' } });
+
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    const appended = appendReviewed(fx, reviewed, 'The recorded observation is not what I confirmed.');
+    const countsBefore = fx.db
+      .prepare(
+        'SELECT (SELECT COUNT(*) FROM goal_attestation_corrections) AS corrections, (SELECT COUNT(*) FROM goal_events) AS events',
+      )
+      .get();
+    const read = await call(app, 'GET', basePath);
+    expect(read).toMatchObject({
+      status: 200,
+      body: {
+        standing: {
+          standing: 'disputed',
+          correctionCount: 1,
+          tip: { kind: 'dispute', sequence: 1, correctionDigest: appended.record.correctionDigest },
+        },
+        corrections: [
+          {
+            correctionId: appended.record.correctionId,
+            correctionKind: 'dispute',
+            sequence: 1,
+            previousCorrectionDigest: null,
+            actionDigest: reviewed.actionDigest,
+            explanation: 'The recorded observation is not what I confirmed.',
+          },
+        ],
+      },
+    });
+    expect(
+      fx.db
+        .prepare(
+          'SELECT (SELECT COUNT(*) FROM goal_attestation_corrections) AS corrections, (SELECT COUNT(*) FROM goal_events) AS events',
+        )
+        .get(),
+    ).toEqual(countsBefore);
+
+    fx.db.exec('DROP TRIGGER trg_goal_attestation_correction_immutable;');
+    const row = fx.db
+      .prepare('SELECT payload_json FROM goal_attestation_corrections WHERE id = ?')
+      .get(appended.record.correctionId) as { payload_json: string };
+    const damaged = row.payload_json.replace(
+      'The recorded observation is not what I confirmed.',
+      'A changed statement that was never approved.',
+    );
+    fx.db
+      .prepare('UPDATE goal_attestation_corrections SET payload_json = ?, explanation = ? WHERE id = ?')
+      .run(damaged, 'A changed statement that was never approved.', appended.record.correctionId);
+    expect(await call(app, 'GET', basePath)).toMatchObject({
+      status: 409,
+      body: { code: 'correction_chain_invalid' },
+    });
+  });
+
+  it('keeps a second real Goal from reading, requesting, or appending another Goal’s correction', async () => {
+    const { fx, attestation, handoff } = await attestedFixture();
+    const other = createGoalDraft(fx.db, {
+      projectId: fx.projectId,
+      title: 'Other Goal',
+      definition: simpleDefinition(),
+    });
+    expect(
+      errorCode(() =>
+        buildAttestationCorrectionAction(fx.db, {
+          goalId: other.goalId,
+          attestationId: attestation.attestationId,
+          correctionKind: 'dispute',
+          reasonCode: 'other',
+          explanation: null,
+          replacementAttestationId: null,
+        }),
+      ),
+    ).toBe('attestation_not_found');
+    expect(
+      errorCode(() => listAttestationCorrectionHistory(fx.db, other.goalId, attestation.attestationId)),
+    ).toBe('attestation_not_found');
+
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    expect(
+      errorCode(() =>
+        appendAttestationCorrection(fx.db, {
+          goalId: other.goalId,
+          approvalId: reviewed.approval.id,
+          expectedActionDigest: reviewed.actionDigest,
+          explanation: 'The recorded observation is not what I confirmed.',
+        }),
+      ),
+    ).toBe('approval_mismatch');
+    expect(
+      fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_attestation_corrections WHERE goal_id = ?')
+        .get(other.goalId),
+    ).toEqual({ n: 0 });
+
+    const forgedRow = (goalId: string) => {
+      const body = {
+        schemaVersion: 1 as const,
+        kind: 'turing_goal_attestation_correction' as const,
+        correctionId: randomUUID(),
+        goalId,
+        handoffId: handoff.handoffId,
+        handoffDigest: handoff.handoffDigest,
+        attestationId: attestation.attestationId,
+        attestationActionDigest: attestation.actionDigest,
+        attestationRecordDigest: attestation.recordDigest,
+        approvalId: reviewed.approval.id,
+        correctionKind: 'dispute' as const,
+        sequence: 1,
+        previousCorrectionDigest: null,
+        actionDigest: reviewed.actionDigest,
+        reasonCode: 'observation_error' as const,
+        explanation: null,
+        explanationDigest: null,
+        replacement: null,
+        definition: { version: attestation.definition.version, hash: attestation.definition.hash },
+        decision: {
+          value: 'correct_external_integration_attestation_v1' as const,
+          decidedBy: 'user' as const,
+          decidedAt: 'not-the-approval-time',
+        },
+      };
+      return { body, correctionDigest: computeAttestationCorrectionRecordDigest(body) };
+    };
+    const { body, correctionDigest } = forgedRow(other.goalId);
+    expect(() =>
+      fx.db
+        .prepare(
+          `INSERT INTO goal_attestation_corrections (
+            id, goal_id, schema_version, kind, handoff_id, handoff_digest, attestation_id,
+            attestation_action_digest, attestation_record_digest, approval_id, correction_kind, sequence,
+            previous_correction_digest, action_digest, correction_digest, reason_code, explanation,
+            explanation_digest, replacement_attestation_id, replacement_record_digest, definition_version,
+            definition_hash, decided_at, payload_json
+          ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'dispute', 1, NULL, ?, ?, 'observation_error', NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+        )
+        .run(
+          body.correctionId,
+          other.goalId,
+          body.kind,
+          body.handoffId,
+          body.handoffDigest,
+          body.attestationId,
+          body.attestationActionDigest,
+          body.attestationRecordDigest,
+          body.approvalId,
+          body.actionDigest,
+          correctionDigest,
+          body.definition.version,
+          body.definition.hash,
+          body.decision.decidedAt,
+          canonicalJson({ ...body, correctionDigest }),
+        ),
+    ).toThrow();
+  });
+
+  it('refuses malformed correction rows that bypass the service through direct SQL', async () => {
+    const { fx, attestation, handoff } = await attestedFixture();
+    const reviewed = requestCorrection(fx, attestation.attestationId);
+    decideApproved(fx, reviewed.approval.id);
+    const first = appendReviewed(fx, reviewed, 'The recorded observation is not what I confirmed.');
+    const insertRow = (
+      kind: 'dispute' | 'withdraw' | 'supersede',
+      sequence: number,
+      approvalDetail: {
+        kind: 'dispute' | 'withdraw' | 'supersede';
+        sequence: number;
+        previous: string | null;
+        reasonCode: 'observation_error' | 'other';
+      },
+    ) => {
+      const fields = {
+        schemaVersion: 1 as const,
+        action: 'correct_external_integration_attestation_v1' as const,
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        handoffDigest: handoff.handoffDigest,
+        attestationId: attestation.attestationId,
+        attestationActionDigest: attestation.actionDigest,
+        attestationRecordDigest: attestation.recordDigest,
+        attestationApprovalId: attestation.approvalId,
+        correctionKind: approvalDetail.kind,
+        sequence: approvalDetail.sequence,
+        previousCorrectionDigest: approvalDetail.previous,
+        reasonCode: approvalDetail.reasonCode,
+        explanationDigest: null,
+        replacementAttestationId: null,
+        replacementRecordDigest: null,
+        definitionVersion: attestation.definition.version,
+        definitionHash: attestation.definition.hash,
+      };
+      const actionDigest = computeAttestationCorrectionActionDigest(fields);
+      const approval = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'direct-SQL negative fixture',
+        requestedBy: 'user',
+        detail: { ...fields, actionDigest },
+        attestationCorrectionActionDigest: actionDigest,
+      });
+      decideApproved(fx, approval.id);
+      const body = {
+        schemaVersion: 1 as const,
+        kind: 'turing_goal_attestation_correction' as const,
+        correctionId: randomUUID(),
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        handoffDigest: handoff.handoffDigest,
+        attestationId: attestation.attestationId,
+        attestationActionDigest: attestation.actionDigest,
+        attestationRecordDigest: attestation.recordDigest,
+        approvalId: approval.id,
+        correctionKind: kind,
+        sequence,
+        previousCorrectionDigest: approvalDetail.previous,
+        actionDigest,
+        reasonCode: approvalDetail.reasonCode,
+        explanation: null,
+        explanationDigest: null,
+        replacement: null,
+        definition: { version: attestation.definition.version, hash: attestation.definition.hash },
+        decision: {
+          value: 'correct_external_integration_attestation_v1' as const,
+          decidedBy: 'user' as const,
+          decidedAt: approval.respondedAt!,
+        },
+      };
+      const correctionDigest = computeAttestationCorrectionRecordDigest(body);
+      return fx.db
+        .prepare(
+          `INSERT INTO goal_attestation_corrections (
+            id, goal_id, schema_version, kind, handoff_id, handoff_digest, attestation_id,
+            attestation_action_digest, attestation_record_digest, approval_id, correction_kind, sequence,
+            previous_correction_digest, action_digest, correction_digest, reason_code, explanation,
+            explanation_digest, replacement_attestation_id, replacement_record_digest, definition_version,
+            definition_hash, decided_at, payload_json
+          ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?)`,
+        )
+        .run(
+          body.correctionId,
+          fx.goalId,
+          body.kind,
+          body.handoffId,
+          body.handoffDigest,
+          body.attestationId,
+          body.attestationActionDigest,
+          body.attestationRecordDigest,
+          body.approvalId,
+          body.correctionKind,
+          body.sequence,
+          body.previousCorrectionDigest,
+          body.actionDigest,
+          correctionDigest,
+          approvalDetail.reasonCode,
+          body.definition.version,
+          body.definition.hash,
+          body.decision.decidedAt,
+          canonicalJson({ ...body, correctionDigest }),
+        );
+    };
+
+    expect(() =>
+      insertRow('dispute', 2, {
+        kind: 'dispute',
+        sequence: 2,
+        previous: first.record.correctionDigest,
+        reasonCode: 'observation_error',
+      }),
+    ).toThrow(/lacks exact approved authority or chain position/);
+    expect(() =>
+      insertRow('withdraw', 1, {
+        kind: 'withdraw',
+        sequence: 1,
+        previous: null,
+        reasonCode: 'observation_error',
+      }),
+    ).toThrow(/UNIQUE|lacks exact approved authority/);
+    expect(() =>
+      insertRow('withdraw', 2, {
+        kind: 'dispute',
+        sequence: 2,
+        previous: first.record.correctionDigest,
+        reasonCode: 'other',
+      }),
+    ).toThrow(/lacks exact approved authority or chain position/);
+    expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
+      standing: 'disputed',
+      correctionCount: 1,
+    });
   });
 });
