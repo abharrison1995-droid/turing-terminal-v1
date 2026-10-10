@@ -1,6 +1,6 @@
 # Goal external-integration attestation correction and withdrawal design
 
-Status: Stage 7C.2B.5D.0 correction/withdrawal design proposal only. Stage 7C.2B.5D.1 adds a versioned correction-chain identity to the future completion-action/proof schemas, but no correction route, approval, ledger, standing evaluator, Goal transition, or correction read-model behavior is implemented.
+Status: Stage 7C.2B.5D.2 correction authority is implemented in the service layer (migration 028, append-only ledger, read-only history route). It is not yet a completion input: the completion-standing projection is Stage D.3, and the correction write route and desktop UI are Stage D.4. See "Stage 7C.2B.5D.2 implementation status" at the end of this document.
 
 **Implementation status (Stage 7C.2B.5D.2, reviewed candidate).** Stage 7C.2B.5D.2 implements append-only per-attestation correction authority (migration 028, service, read-only history route, correction events) as a reviewed candidate. It does not implement a correction write route, desktop correction UI, completion-standing projection, or any completion consumer; those are D.3/D.4 work. The sections below describe the contract; the implementation section at the end lists what exists and what is deferred.
 

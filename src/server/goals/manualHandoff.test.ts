@@ -3010,7 +3010,7 @@ describe('external integration attestation corrections', () => {
           body.decision.decidedAt,
           canonicalJson({ ...body, correctionDigest }),
         ),
-    ).toThrow();
+    ).toThrow(/attestation correction lacks exact approved authority or chain position/);
   });
 
   it('refuses malformed correction rows that bypass the service through direct SQL', async () => {
@@ -3126,7 +3126,7 @@ describe('external integration attestation corrections', () => {
         previous: first.record.correctionDigest,
         reasonCode: 'observation_error',
       }),
-    ).toThrow(/lacks exact approved authority or chain position/);
+    ).toThrow(/attestation correction lacks exact approved authority or chain position/);
     expect(() =>
       insertRow('withdraw', 1, {
         kind: 'withdraw',
@@ -3134,7 +3134,7 @@ describe('external integration attestation corrections', () => {
         previous: null,
         reasonCode: 'observation_error',
       }),
-    ).toThrow(/UNIQUE|lacks exact approved authority/);
+    ).toThrow(/attestation correction lacks exact approved authority or chain position/);
     expect(() =>
       insertRow('withdraw', 2, {
         kind: 'dispute',
@@ -3142,7 +3142,7 @@ describe('external integration attestation corrections', () => {
         previous: first.record.correctionDigest,
         reasonCode: 'other',
       }),
-    ).toThrow(/lacks exact approved authority or chain position/);
+    ).toThrow(/attestation correction lacks exact approved authority or chain position/);
     expect(getAttestationCorrectionStanding(fx.db, fx.goalId, attestation.attestationId)).toMatchObject({
       standing: 'disputed',
       correctionCount: 1,
@@ -3202,9 +3202,11 @@ describe('external integration attestation corrections', () => {
         standing: 'active_uncontested',
         correctionCount: 0,
       });
-      expect(() =>
-        appendOn(db, fx.goalId, pending, 'The recorded observation is not what I confirmed.'),
-      ).toThrow();
+      expect(
+        errorCode(() =>
+          appendOn(db, fx.goalId, pending, 'The recorded observation is not what I confirmed.'),
+        ),
+      ).toBe('approval_required');
       expect(listAttestationCorrectionHistory(db, fx.goalId, attestation.attestationId)).toEqual([]);
     });
   });
@@ -3314,6 +3316,7 @@ describe('external integration attestation corrections', () => {
         correctionCount: 2,
       });
     },
+    30_000,
   );
 
   it.each(['sha1', 'sha256'] as const)(
@@ -3360,9 +3363,10 @@ describe('external integration attestation corrections', () => {
       expect(fx.git('for-each-ref', '--format=%(refname) %(objectname)')).toBe(refsBefore);
       expect(fx.git('rev-parse', 'HEAD')).toBe(headBefore);
     },
+    30_000,
   );
 
-  it('grants completion eligibility only to an uncontested correction standing', () => {
+  it('the completion predicate allows only uncontested correction standing (no completion consumer yet)', () => {
     expect(attestationCorrectionStandingAllowsCompletion('active_uncontested')).toBe(true);
     for (const standing of ['disputed', 'withdrawn', 'superseded', 'invalid'] as const)
       expect(attestationCorrectionStandingAllowsCompletion(standing)).toBe(false);

@@ -2523,7 +2523,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
       db
         .prepare("UPDATE goal_approvals SET detail_json = '{\"changed\":true}' WHERE id = 'att-approval'")
         .run(),
-    ).toThrow(/approval|identity|immutable/);
+    ).toThrow(/goal approval identity is immutable/);
     expect(() =>
       db
         .prepare(
@@ -2545,7 +2545,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
           attestationDigest,
           NOW,
         ),
-    ).toThrow(/lacks exact approved authority or chain position/);
+    ).toThrow(/attestation correction lacks exact approved authority or chain position/);
     db.close();
 
     const reopened = openDatabase(root);
