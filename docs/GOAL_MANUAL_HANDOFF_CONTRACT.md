@@ -116,3 +116,22 @@ The unresolved flag, selected handoff ID, and history offset are kept in per-Goa
 These changes are frontend navigation/recovery safeguards. They add no backend authority, endpoint, migration, Git writer, external-application attestation, or completion behavior. Handoff preparation remains a durable manual-integration record. Git refs, checkout, index, worktree, reflogs, and Goal lifecycle remain untouched; completion remains `final_apply_required` with `finalApply.ok = false` and `reason = not_applied`. `applyApprovedGoalToBase()` stays quarantined and production remains `DisabledGoalExecutor`. No live provider/model calls or subscription usage were introduced.
 
 The remediation candidate awaits independent review. Its exact commit, focused/full gate counts, and hosted CI result are recorded in the checkpoint report. Windows behavior remains unverified.
+
+## Stage 7C.2B.5C — external integration confirmation
+
+The desktop Handoff tab now exposes a separate **External integration** section for a selected valid handoff. The handoff remains immutable preparation evidence; the external-integration attestation is a different record created only after the user has performed Git integration outside Turing and explicitly confirms the exact fresh observation.
+
+The new routes are:
+
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration` reads a bounded summary of stored approval and attestation metadata. It does not scan Git or write SQLite.
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration/verification` rebuilds the current read-only Git observation. It does not create approval or attestation records.
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId` returns a Goal/handoff-scoped validated projection.
+- `POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attest` accepts only the explicit decision literal and requires a strong `If-Match` containing the reviewed action digest. Server authority and Git state are rebuilt before creating/reusing the exact high-risk `confirm_external_integration` user approval.
+
+The review displays full repository identity, scope and object format, source ref/commit/tree, recorded base ref/commit/tree, observed destination commit/tree, both ancestry checks, observation time and action digest. Before confirmation it states plainly that Git ancestry does not prove every accepted file change survived merge resolution or later commits. Turing does not execute Git, change refs/index/worktree/files, resume the Goal or complete it.
+
+The dialog freezes the exact observation shown when it opens. A 412 means the evidence changed; the UI fetches a fresh observation and leaves the new digest for a separate user review. On an ambiguous POST, the UI retains the Goal/handoff/digest in session storage as a local recovery lock and reads scoped approval/attestation metadata. It does not retry automatically. A failed reconciliation keeps the lock; a persisted orphan approval can be resumed only through another deliberate user confirmation; a denied exact action remains denied.
+
+Authentication uses the existing app boundary: a remote Tailscale Serve request needs the identity header and a paired device session. Packaged Tauri CORS permits `If-Match`. Local loopback calls remain process-agnostic, and the server cannot prove a physical human clicked or distinguish desktop from an authenticated paired phone calling the same route. Hiding the action on mobile is a product boundary, not a desktop-only authorization claim.
+
+Historical attestation projections distinguish `current`, `historical`, `stale`, `not_integrated`, `unavailable`, and `invalid`. History is immutable and bounded; status GET reads metadata only and selected record projection performs currentness validation. The labels never claim “all changes applied” or “Goal completed.” Completion remains at `final_apply_required` until a future separately reviewed 7C.2B.5D changes its versioned contract. Windows behavior remains unverified.

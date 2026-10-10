@@ -1,12 +1,18 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { GoalManualHandoffProjection, GoalManualIntegrationHandoff } from '../../shared/goalApi';
+import type {
+  GoalExternalIntegrationAttestationProjection,
+  GoalExternalIntegrationObservation,
+  GoalExternalIntegrationStoredStatus,
+  GoalManualHandoffProjection,
+  GoalManualIntegrationHandoff,
+} from '../../shared/goalApi';
 import { GOAL_EVENT_TYPES } from '../../shared/goals';
 import { GoalsPage } from './GoalsPage';
-import { calls, detail, detailRoutes, item, openGoal, posts, serve } from './testKit';
+import { calls, detail, detailRoutes, item, openGoal, posts, refuse, serve } from './testKit';
 
 const source = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -124,6 +130,130 @@ function history(
   };
 }
 
+function observation(record = handoff(), actionDigest = 'f'.repeat(64)): GoalExternalIntegrationObservation {
+  return {
+    schemaVersion: 1,
+    kind: 'turing_goal_external_integration_observation',
+    goalId: record.goalId,
+    completionContractVersion: 2,
+    handoff: { id: record.handoffId, digest: record.handoffDigest },
+    definition: {
+      version: record.definition.version,
+      hash: record.definition.hash,
+      approvalId: record.definition.approvalId,
+    },
+    review: {
+      finalReviewId: record.review.finalReviewId,
+      acceptanceApprovalId: record.finalAcceptance.approvalId,
+      evidenceIdentityDigest: record.review.evidenceIdentityDigest,
+    },
+    repository: {
+      projectId: record.repository.projectId,
+      identity: record.repository.identity,
+      scope: record.repository.scope,
+      objectFormat: record.repository.objectFormat,
+    },
+    source: { ref: record.source.goalRef, commit: record.source.commit, tree: record.source.tree },
+    destination: {
+      ref: record.target.baseRef,
+      expectedBaseCommit: record.target.observedBaseCommit,
+      expectedBaseTree: record.target.observedBaseTree,
+      observedCommit: source,
+      observedTree: tree,
+    },
+    proof: {
+      mode: 'source_history_observed',
+      sourceAncestor: true,
+      baseAncestor: true,
+      verifierVersion: 1,
+      evidenceDigest: 'a'.repeat(64),
+    },
+    observedAt: '2026-10-09T12:30:00.000Z',
+    actionDigest,
+  };
+}
+
+function storedExternalStatus(
+  record = handoff(),
+  options: {
+    attestationId?: string;
+    actionDigest?: string;
+    approvalStatus?: 'pending' | 'approved' | 'denied';
+    approvalAttestationId?: string;
+    attestationsHaveMore?: boolean;
+    approvalsHaveMore?: boolean;
+  } = {},
+): GoalExternalIntegrationStoredStatus {
+  const attestationId = options.attestationId;
+  const actionDigest = options.actionDigest ?? 'f'.repeat(64);
+  return {
+    goalId: record.goalId,
+    handoffId: record.handoffId,
+    hasAttestation: Boolean(attestationId),
+    attestations: attestationId
+      ? [
+          {
+            attestationId,
+            actionDigest,
+            recordDigest: 'a'.repeat(64),
+            approvalId: 'approval-external',
+            observedAt: '2026-10-09T12:30:00.000Z',
+            decidedAt: '2026-10-09T12:31:00.000Z',
+          },
+        ]
+      : [],
+    approvals: options.approvalStatus
+      ? [
+          {
+            approvalId: 'approval-external',
+            actionDigest,
+            status: options.approvalStatus,
+            decidedBy: options.approvalStatus === 'pending' ? null : 'user',
+            createdAt: '2026-10-09T12:30:00.000Z',
+            respondedAt: options.approvalStatus === 'pending' ? null : '2026-10-09T12:31:00.000Z',
+            attestationId: options.approvalAttestationId ?? attestationId ?? null,
+          },
+        ]
+      : [],
+    limit: 20,
+    attestationsHaveMore: options.attestationsHaveMore ?? false,
+    approvalsHaveMore: options.approvalsHaveMore ?? false,
+  };
+}
+
+function attestationProjection(
+  record = handoff(),
+  action = observation(record),
+): GoalExternalIntegrationAttestationProjection {
+  return {
+    state: 'current',
+    record: {
+      ...action,
+      kind: 'turing_goal_external_integration_attestation',
+      attestationId: 'attestation-external',
+      approvalId: 'approval-external',
+      decision: {
+        value: 'confirm_external_integration',
+        decidedBy: 'user',
+        decidedAt: '2026-10-09T12:31:00.000Z',
+      },
+      recordDigest: 'a'.repeat(64),
+    },
+    reason: null,
+    claim: 'source_history_observed_at_recorded_time',
+    contentPreservation: 'not_proven',
+    goalCompletion: 'not_completed_by_attestation',
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function openHandoff(user: ReturnType<typeof userEvent.setup>) {
   await openGoal(user);
   await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
@@ -191,7 +321,7 @@ describe('desktop manual handoff review', () => {
     const confirm = within(dialog).getByRole('button', { name: 'Confirm preparation' });
     await user.dblClick(confirm);
     expect(await screen.findByRole('heading', { name: 'Ready for manual integration' })).toBeInTheDocument();
-    expect(await screen.findByText(record.source.commit)).toBeInTheDocument();
+    expect(screen.getAllByText(record.source.commit).length).toBeGreaterThan(0);
     expect(screen.getByText(record.target.observedBaseTree)).toBeInTheDocument();
     expect(screen.getByText(/base application: not performed/)).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
@@ -805,5 +935,605 @@ describe('desktop manual handoff review', () => {
     );
     expect(posts()).toEqual([]);
     expect(GOAL_EVENT_TYPES).toContain('state_changed');
+  });
+});
+
+describe('desktop external integration confirmation', () => {
+  it.each([
+    ['not_integrated', 'The recorded source is not present in the destination history'],
+    ['stale', 'The handoff or reviewed Git identity has changed'],
+    ['unavailable', 'Current Git evidence cannot be verified'],
+    ['invalid', 'The stored handoff or Git evidence is invalid'],
+  ] as const)(
+    'shows the typed %s verification state without offering a confirmation',
+    async (state, label) => {
+      const record = handoff();
+      serve(
+        detailRoutes(detail(), {
+          '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+          [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+            projection: projection('current', record),
+          }),
+          [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+            storedExternalStatus(record),
+          [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+            verification: {
+              state,
+              observation: null,
+              proofLimitations: {
+                contentPreservation: 'not_proven',
+                goalCompletion: 'not_completed_by_attestation',
+              },
+              reason: { code: state, message: `Safe ${state} explanation.` },
+            },
+          }),
+        }),
+      );
+      const user = userEvent.setup();
+      render(<GoalsPage />);
+      await openHandoff(user);
+      await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+      expect(await screen.findByRole('heading', { name: label })).toBeInTheDocument();
+      expect(screen.getByText(`Safe ${state} explanation. (${state})`)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Confirm external integration' })).toBeNull();
+      expect(posts()).toEqual([]);
+    },
+  );
+
+  it('shows exact proof and limitations, then sends one exact-digest POST only after explicit confirmation', async () => {
+    const record = handoff();
+    const action = observation(record);
+    let persisted = false;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(
+            record,
+            persisted
+              ? {
+                  actionDigest: action.actionDigest,
+                  approvalStatus: 'approved',
+                  approvalAttestationId: 'attestation-external',
+                  attestationsHaveMore: true,
+                }
+              : {},
+          ),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: (body) => {
+          persisted = true;
+          expect(body).toEqual({ decision: 'confirm_external_integration' });
+          return {
+            attestationId: 'attestation-external',
+            approvalId: 'approval-external',
+            actionDigest: action.actionDigest,
+            reusedAttestation: false,
+            reusedApproval: false,
+          };
+        },
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attestations/attestation-external`]:
+          () => ({
+            projection: attestationProjection(record, action),
+          }),
+      }),
+    );
+    const user = userEvent.setup();
+    const clipboardWrite = vi.fn(async () => undefined);
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    render(<GoalsPage />);
+    await openHandoff(user);
+    expect(
+      await screen.findByText('Request a fresh read-only check after you integrate the source commit.'),
+    ).toBeInTheDocument();
+    expect(calls.some((call) => call.path.endsWith('/verification'))).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Verify external integration' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Source history verified at this observation' }),
+    ).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Source history verified at this observation' });
+    expect(screen.getAllByText(record.source.commit).length).toBeGreaterThan(0);
+    expect(screen.getByText(/does not prove that every accepted file change survived/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Copy exact Git identities' }));
+    await waitFor(() => expect(clipboardWrite).toHaveBeenCalledOnce());
+    expect(clipboardWrite).toHaveBeenCalledWith(
+      expect.stringContaining(`Repository identity: ${record.repository.identity}`),
+    );
+    expect(posts()).toEqual([]);
+
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Confirm your manual integration?' });
+    expect(dialog).toHaveTextContent('manually integrated this handoff');
+    expect(dialog).toHaveTextContent(record.target.baseRef);
+    expect(dialog).toHaveTextContent(record.repository.identity);
+    expect(dialog).toHaveTextContent(action.destination.observedCommit);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(posts()).toEqual([]);
+
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    const confirmation = screen.getByRole('alertdialog', { name: 'Confirm your manual integration?' });
+    await user.click(within(confirmation).getByRole('button', { name: 'Confirm external integration' }));
+    expect(
+      await screen.findByText(
+        /Git history was observed; Git was not changed and the Goal remains incomplete/,
+      ),
+    ).toBeInTheDocument();
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]?.body).toEqual({ decision: 'confirm_external_integration' });
+    expect(posts()[0]?.headers['if-match']).toBe(`"${action.actionDigest}"`);
+    expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
+    expect(screen.queryByText(/^not_proven$/)).toBeNull();
+  });
+
+  it('refreshes changed evidence after a precondition refusal without approving or retrying it', async () => {
+    const record = handoff();
+    const reviewed = observation(record, 'f'.repeat(64));
+    const changed = observation(record, '0'.repeat(64));
+    let verifications = 0;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(record),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: verifications++ === 0 ? reviewed : changed,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () =>
+          refuse(412, 'The reviewed evidence changed.', 'reviewed_observation_changed'),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(reviewed.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    const exactConfirmation = screen.getByRole('alertdialog');
+    await user.click(screen.getByRole('button', { name: /^Refresh$/ }));
+    expect(await screen.findByText(changed.actionDigest)).toBeInTheDocument();
+    expect(within(exactConfirmation).getByText(reviewed.actionDigest)).toBeInTheDocument();
+    await user.click(within(exactConfirmation).getByRole('button', { name: 'Confirm external integration' }));
+    expect(await screen.findByText(/evidence changed since review/)).toBeInTheDocument();
+    expect(await screen.findByText(changed.actionDigest)).toBeInTheDocument();
+    expect(verifications).toBe(3);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]?.headers['if-match']).toBe(`"${reviewed.actionDigest}"`);
+  });
+
+  it('keeps the newest verification when an older GET resolves later', async () => {
+    const record = handoff();
+    const oldObservation = observation(record, 'f'.repeat(64));
+    const newerObservation = observation(record, '0'.repeat(64));
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    let verifications = 0;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(record),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => {
+          verifications += 1;
+          return verifications === 1 ? first.promise : second.promise;
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await waitFor(() => expect(verifications).toBe(1));
+    await user.click(screen.getByRole('button', { name: /^Refresh$/ }));
+    await waitFor(() => expect(verifications).toBe(2));
+    const response = (value: GoalExternalIntegrationObservation) => ({
+      verification: {
+        state: 'verified',
+        observation: value,
+        proofLimitations: {
+          sourceHistory: 'observed',
+          contentPreservation: 'not_proven',
+          goalCompletion: 'not_completed_by_attestation',
+        },
+        reason: null,
+      },
+    });
+    await act(async () => {
+      second.resolve(response(newerObservation));
+      await second.promise;
+    });
+    expect(await screen.findByText(newerObservation.actionDigest)).toBeInTheDocument();
+    await act(async () => {
+      first.resolve(response(oldObservation));
+      await first.promise;
+    });
+    expect(screen.getByText(newerObservation.actionDigest)).toBeInTheDocument();
+    expect(screen.queryByText(oldObservation.actionDigest)).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
+  it('locks an uncertain request, checks persisted state, and never retries POST automatically', async () => {
+    const record = handoff();
+    const action = observation(record);
+    let statusReads = 0;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () => {
+          statusReads += 1;
+          return storedExternalStatus(record);
+        },
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () =>
+          refuse(503, 'The response was lost.', 'external_integration_unavailable'),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(action.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Confirm external integration' }),
+    );
+    expect(
+      await screen.findByText(
+        /No matching approval or attestation is stored as of this successful status read/,
+      ),
+    ).toBeInTheDocument();
+    expect(statusReads).toBeGreaterThanOrEqual(2);
+    expect(posts()).toHaveLength(1);
+    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBeNull();
+  });
+
+  it('prevents duplicate confirmation while the exact POST is still pending', async () => {
+    const record = handoff();
+    const action = observation(record);
+    const pendingPost = deferred<unknown>();
+    let persisted = false;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(
+            record,
+            persisted
+              ? {
+                  actionDigest: action.actionDigest,
+                  approvalStatus: 'approved',
+                  approvalAttestationId: 'attestation-external',
+                  attestationsHaveMore: true,
+                }
+              : {},
+          ),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () => {
+          persisted = true;
+          return pendingPost.promise;
+        },
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attestations/attestation-external`]:
+          () => ({
+            projection: attestationProjection(record, action),
+          }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(action.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    const dialog = screen.getByRole('alertdialog');
+    const confirmButton = within(dialog).getByRole('button', { name: 'Confirm external integration' });
+    await user.dblClick(confirmButton);
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(
+      (within(dialog).getByRole('button', { name: 'Recording confirmation…' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    await act(async () => {
+      pendingPost.resolve({
+        attestationId: 'attestation-external',
+        approvalId: 'approval-external',
+        actionDigest: action.actionDigest,
+        reusedAttestation: false,
+        reusedApproval: false,
+      });
+      await pendingPost.promise;
+    });
+    expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('shows a denied exact digest as non-retryable', async () => {
+    const record = handoff();
+    const action = observation(record);
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(record, { actionDigest: action.actionDigest, approvalStatus: 'denied' }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    expect(
+      await screen.findByText('This exact action was denied and cannot be confirmed again.'),
+    ).toBeInTheDocument();
+    expect(
+      (screen.getByRole('button', { name: 'This action was denied' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(posts()).toEqual([]);
+  });
+
+  it('recovers a persisted immutable attestation after the POST response is lost', async () => {
+    const record = handoff();
+    const action = observation(record);
+    let persisted = false;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(
+            record,
+            persisted
+              ? {
+                  actionDigest: action.actionDigest,
+                  approvalStatus: 'approved',
+                  approvalAttestationId: 'attestation-external',
+                  attestationsHaveMore: true,
+                }
+              : {},
+          ),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () => {
+          persisted = true;
+          return refuse(503, 'Connection ended after persistence.', 'external_integration_unavailable');
+        },
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attestations/attestation-external`]:
+          () => ({
+            projection: attestationProjection(record, action),
+          }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(action.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Confirm external integration' }),
+    );
+    expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
+    expect(posts()).toHaveLength(1);
+    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBeNull();
+  });
+
+  it('requires a deliberate confirmation to resume an approved orphan without replaying POST automatically', async () => {
+    const record = handoff();
+    const action = observation(record);
+    let orphanedApproval = false;
+    let persisted = false;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(
+            record,
+            persisted
+              ? {
+                  attestationId: 'attestation-external',
+                  actionDigest: action.actionDigest,
+                  approvalStatus: 'approved',
+                }
+              : orphanedApproval
+                ? { actionDigest: action.actionDigest, approvalStatus: 'approved' }
+                : {},
+          ),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () => {
+          if (!orphanedApproval) {
+            orphanedApproval = true;
+            return refuse(503, 'The response was lost after approval.', 'external_integration_unavailable');
+          }
+          persisted = true;
+          return {
+            attestationId: 'attestation-external',
+            approvalId: 'approval-external',
+            actionDigest: action.actionDigest,
+            reusedAttestation: false,
+            reusedApproval: true,
+          };
+        },
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attestations/attestation-external`]:
+          () => ({ projection: attestationProjection(record, action) }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(action.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Confirm external integration' }),
+    );
+
+    expect(await screen.findByText(/A matching approval exists without an attestation/)).toBeInTheDocument();
+    expect(posts()).toHaveLength(1);
+    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBe(
+      action.actionDigest,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Resume attestation recording' }));
+    const resume = screen.getByRole('alertdialog', { name: 'Confirm your manual integration?' });
+    await user.click(within(resume).getByRole('button', { name: 'Confirm external integration' }));
+    expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
+    expect(posts()).toHaveLength(2);
+    expect(posts().map((post) => post.headers['if-match'])).toEqual([
+      `"${action.actionDigest}"`,
+      `"${action.actionDigest}"`,
+    ]);
+  });
+
+  it('keeps an uncertain action locked when bounded recovery history may omit the digest', async () => {
+    const record = handoff();
+    const action = observation(record);
+    let ambiguous = false;
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(record, ambiguous ? { approvalsHaveMore: true } : {}),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/verification`]: () => ({
+          verification: {
+            state: 'verified',
+            observation: action,
+            proofLimitations: {
+              sourceHistory: 'observed',
+              contentPreservation: 'not_proven',
+              goalCompletion: 'not_completed_by_attestation',
+            },
+            reason: null,
+          },
+        }),
+        [`POST /api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attest`]: () => {
+          ambiguous = true;
+          return refuse(503, 'The response outcome is unknown.', 'external_integration_unavailable');
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
+    await screen.findByText(action.actionDigest);
+    await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
+    await user.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Confirm external integration' }),
+    );
+
+    expect(
+      await screen.findByText(/history is truncated and may omit this exact action/),
+    ).toBeInTheDocument();
+    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBe(
+      action.actionDigest,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Confirm external integration' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Refresh saved status' }));
+    await screen.findByText(/history is truncated and may omit this exact action/);
+    expect(posts()).toHaveLength(1);
+    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBe(
+      action.actionDigest,
+    );
   });
 });

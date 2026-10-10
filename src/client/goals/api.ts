@@ -7,6 +7,10 @@ import type {
   GoalDetail,
   GoalEventsResponse,
   GoalEvidenceResponse,
+  GoalExternalIntegrationAttested,
+  GoalExternalIntegrationAttestationProjection,
+  GoalExternalIntegrationStoredStatus,
+  GoalExternalIntegrationVerification,
   GoalFinalApplyPreflightView,
   GoalManualHandoffListResponse,
   GoalManualHandoffPrepared,
@@ -25,8 +29,9 @@ import { call } from '../api';
 /**
  * The Goal client API. Every operation is an explicit function with its own endpoint and body; nothing maps a
  * `nextAction` to a request. Reads are GETs. The only mutations are the user controls below, each of which the server
- * independently re-proves: start, resume, pause, abandon, a Goal-approval decision, a finding decision and the
- * definition operations (create, save, begin revision, approve, reject). Final apply is deliberately absent (7C).
+ * independently re-proves: start, resume, pause, abandon, a Goal-approval decision, a finding decision, definition
+ * operations (create, save, begin revision, approve, reject), handoff preparation, and exact external-integration
+ * attestation. Git final apply is deliberately absent (7C).
  */
 const query = (params: Record<string, string | number | undefined>): string => {
   const search = new URLSearchParams();
@@ -74,6 +79,28 @@ export const goalsApi = {
         `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}`,
       )
     ).projection,
+  externalIntegrationStatus: (goalId: string, handoffId: string) =>
+    call<GoalExternalIntegrationStoredStatus>(
+      `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration`,
+    ),
+  verifyExternalIntegration: async (goalId: string, handoffId: string) =>
+    (
+      await call<{ verification: GoalExternalIntegrationVerification }>(
+        `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/verification`,
+      )
+    ).verification,
+  externalIntegrationProjection: async (goalId: string, handoffId: string, attestationId: string) =>
+    (
+      await call<{ projection: GoalExternalIntegrationAttestationProjection }>(
+        `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attestations/${encodeURIComponent(attestationId)}`,
+      )
+    ).projection,
+  confirmExternalIntegration: (goalId: string, handoffId: string, actionDigest: string) =>
+    post<GoalExternalIntegrationAttested>(
+      `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attest`,
+      { decision: 'confirm_external_integration' },
+      ifMatch(actionDigest),
+    ),
 
   unifiedApprovals: (options: { status?: 'pending'; goalId?: string; limit?: number } = {}) =>
     call<UnifiedApprovalsResponse>(`/api/approvals/unified${query(options)}`),

@@ -621,6 +621,149 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
       'final_apply_required',
     ]);
 
+    const externalPath = `/api/goals/${h.fx.goalId}/handoffs/${handoffId}/external-integration`;
+    const approvalsBeforeObservation = (
+      h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(h.fx.goalId) as {
+        n: number;
+      }
+    ).n;
+    expect((await call('GET', externalPath)).body).toMatchObject({
+      hasAttestation: false,
+      attestations: [],
+      approvals: [],
+    });
+    const notIntegrated = await call('GET', `${externalPath}/verification`);
+    expect(notIntegrated).toMatchObject({
+      status: 200,
+      body: {
+        verification: { state: 'not_integrated', observation: null, reason: { code: 'source_not_ancestor' } },
+      },
+    });
+    expect(
+      h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(h.fx.goalId),
+    ).toEqual({
+      n: approvalsBeforeObservation,
+    });
+
+    // Simulate the user's manual fast-forward in this disposable fixture. The HTTP workflow below must be Git-read-only.
+    h.fx.git('merge', '--ff-only', ref);
+    expect(h.fx.git('rev-parse', 'main')).toBe(integratedHead);
+    const afterManualIntegration = handoffGitState(h.fx.repo);
+    const verified = await call('GET', `${externalPath}/verification`);
+    expect(verified).toMatchObject({ status: 200, body: { verification: { state: 'verified' } } });
+    const verifiedObservation = (
+      verified.body.verification as {
+        observation: {
+          actionDigest: string;
+          source: { commit: string };
+          destination: { observedCommit: string };
+        };
+      }
+    ).observation;
+    expect(verifiedObservation).toMatchObject({
+      actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      source: { commit: integratedHead },
+      destination: { observedCommit: integratedHead },
+    });
+    expect(handoffGitState(h.fx.repo)).toEqual(afterManualIntegration);
+
+    const confirmation = await call(
+      'POST',
+      `${externalPath}/attest`,
+      { decision: 'confirm_external_integration' },
+      { 'if-match': `"${verifiedObservation.actionDigest}"` },
+    );
+    expect(confirmation.status).toBe(201);
+    const externalApproval = h.fx.db
+      .prepare(
+        'SELECT gate, risk, requested_by, status, decided_by, external_integration_action_digest, detail_json FROM goal_approvals WHERE id = ?',
+      )
+      .get(confirmation.body.approvalId as string) as {
+      gate: string;
+      risk: string;
+      requested_by: string;
+      status: string;
+      decided_by: string;
+      external_integration_action_digest: string;
+      detail_json: string;
+    };
+    expect(externalApproval).toMatchObject({
+      gate: 'final_apply',
+      risk: 'high',
+      requested_by: 'user',
+      status: 'approved',
+      decided_by: 'user',
+      external_integration_action_digest: verifiedObservation.actionDigest,
+    });
+    expect(JSON.parse(externalApproval.detail_json)).toMatchObject({
+      schemaVersion: 2,
+      action: 'confirm_external_integration',
+      actionDigest: verifiedObservation.actionDigest,
+      handoffId,
+    });
+    const attestationPath = `${externalPath}/attestations/${confirmation.body.attestationId as string}`;
+    expect((await call('GET', attestationPath)).body).toMatchObject({
+      projection: {
+        state: 'current',
+        claim: 'source_history_observed_at_recorded_time',
+        contentPreservation: 'not_proven',
+        goalCompletion: 'not_completed_by_attestation',
+      },
+    });
+    const repeatedConfirmation = await call(
+      'POST',
+      `${externalPath}/attest`,
+      { decision: 'confirm_external_integration' },
+      { 'if-match': `"${verifiedObservation.actionDigest}"` },
+    );
+    expect(repeatedConfirmation).toMatchObject({
+      status: 200,
+      body: {
+        attestationId: confirmation.body.attestationId,
+        approvalId: confirmation.body.approvalId,
+        reusedApproval: true,
+        reusedAttestation: true,
+      },
+    });
+    expect(handoffGitState(h.fx.repo)).toEqual(afterManualIntegration);
+    expect((await evaluateCompletion(h.fx.db, h.fx.goalId)).failures.map((failure) => failure.code)).toEqual([
+      'final_apply_required',
+    ]);
+
+    h.fx.git('commit', '--allow-empty', '-m', 'user advances destination after attestation');
+    const afterLaterCommit = handoffGitState(h.fx.repo);
+    expect((await call('GET', attestationPath)).body).toMatchObject({
+      projection: { state: 'historical', goalCompletion: 'not_completed_by_attestation' },
+    });
+    const staleConfirmation = await call(
+      'POST',
+      `${externalPath}/attest`,
+      { decision: 'confirm_external_integration' },
+      { 'if-match': `"${verifiedObservation.actionDigest}"` },
+    );
+    expect(staleConfirmation).toMatchObject({ status: 412, body: { code: 'reviewed_observation_changed' } });
+    expect(handoffGitState(h.fx.repo)).toEqual(afterLaterCommit);
+    expect(
+      h.fx.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_integration_action_digest = ?',
+        )
+        .get(h.fx.goalId, verifiedObservation.actionDigest),
+    ).toEqual({ n: 1 });
+    expect(h.fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(h.fx.goalId)).not.toEqual({
+      status: 'completed',
+    });
+    expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM runs').get()).toEqual({ n: 3 });
+    expect(
+      h.fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = ?')
+        .get(h.fx.goalId, 'apply_to_base'),
+    ).toEqual({ n: 0 });
+    // Restore the fixture's base checkout so the legacy-authority regression below keeps its original setup.
+    h.fx.git('reset', '--hard', base);
+    expect(h.fx.git('rev-parse', 'main')).toBe(base);
+    expect(h.fx.git('status', '--porcelain')).toBe('');
+
     const preflight = await preflightFinalApply(h.fx.db, h.fx.goalId);
     expect(preflight.status).toBe('ready_for_approved_apply');
     expect(preflight.integrationHead).toBe(integratedHead);

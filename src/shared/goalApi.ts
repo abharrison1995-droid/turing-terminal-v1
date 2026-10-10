@@ -105,6 +105,120 @@ export interface GoalManualHandoffPrepared {
   reused: boolean;
 }
 
+export interface GoalExternalIntegrationObservation {
+  schemaVersion: 1;
+  kind: 'turing_goal_external_integration_observation';
+  goalId: string;
+  completionContractVersion: 2;
+  handoff: { id: string; digest: string };
+  definition: { version: number; hash: string; approvalId: string };
+  review: { finalReviewId: string; acceptanceApprovalId: string; evidenceIdentityDigest: string };
+  repository: {
+    projectId: string;
+    identity: string;
+    scope: string;
+    objectFormat: 'sha1' | 'sha256';
+  };
+  source: { ref: string; commit: string; tree: string };
+  destination: {
+    ref: string;
+    expectedBaseCommit: string;
+    expectedBaseTree: string;
+    observedCommit: string;
+    observedTree: string;
+  };
+  proof: {
+    mode: 'source_history_observed';
+    sourceAncestor: true;
+    baseAncestor: true;
+    verifierVersion: 1;
+    evidenceDigest: string;
+  };
+  observedAt: string;
+  actionDigest: string;
+}
+
+export type GoalExternalIntegrationAttestationRecord = Omit<
+  GoalExternalIntegrationObservation,
+  'kind' | 'observedAt' | 'actionDigest'
+> & {
+  kind: 'turing_goal_external_integration_attestation';
+  attestationId: string;
+  approvalId: string;
+  decision: {
+    value: 'confirm_external_integration';
+    decidedBy: 'user';
+    decidedAt: string;
+  };
+  observedAt: string;
+  actionDigest: string;
+  recordDigest: string;
+};
+
+export interface GoalExternalIntegrationStoredStatus {
+  goalId: string;
+  handoffId: string;
+  hasAttestation: boolean;
+  attestations: Array<{
+    attestationId: string;
+    actionDigest: string;
+    recordDigest: string;
+    approvalId: string;
+    observedAt: string;
+    decidedAt: string;
+  }>;
+  approvals: Array<{
+    approvalId: string;
+    actionDigest: string;
+    status: GoalApprovalStatus;
+    decidedBy: 'user' | 'system' | null;
+    createdAt: string;
+    respondedAt: string | null;
+    attestationId: string | null;
+  }>;
+  limit: number;
+  attestationsHaveMore: boolean;
+  approvalsHaveMore: boolean;
+}
+
+export type GoalExternalIntegrationVerification =
+  | {
+      state: 'verified';
+      observation: GoalExternalIntegrationObservation;
+      proofLimitations: {
+        sourceHistory: 'observed';
+        contentPreservation: 'not_proven';
+        goalCompletion: 'not_completed_by_attestation';
+      };
+      reason: null;
+    }
+  | {
+      state: 'stale' | 'not_integrated' | 'unavailable' | 'invalid';
+      observation: null;
+      proofLimitations: {
+        contentPreservation: 'not_proven';
+        goalCompletion: 'not_completed_by_attestation';
+      };
+      reason: { code: string; message: string };
+    };
+
+export interface GoalExternalIntegrationAttestationProjection {
+  state: 'current' | 'historical' | 'stale' | 'not_integrated' | 'unavailable' | 'invalid';
+  record: GoalExternalIntegrationAttestationRecord | null;
+  reason: { code: string; message: string } | null;
+  claim: 'source_history_observed_at_recorded_time' | 'not_verified';
+  contentPreservation: 'not_proven';
+  goalCompletion: 'not_completed_by_attestation';
+}
+
+export interface GoalExternalIntegrationAttested {
+  attestationId: string;
+  approvalId: string;
+  actionDigest: string;
+  reusedAttestation: boolean;
+  reusedApproval: boolean;
+}
+
 /** Closed set of reasons a client may claim when resuming. The supervisor decides whether the claim is factual. */
 export const GOAL_RESUME_REASONS = [
   'user_resume',

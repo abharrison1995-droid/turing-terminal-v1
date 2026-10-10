@@ -296,7 +296,7 @@ If V1 cannot accept the non-atomic observation and post-completion correction li
 - Windows behavior is unverified.
 - A post-completion withdrawal cannot reverse an immutable terminal transition without a new recovery design.
 
-At this checkpoint there is no external-attestation endpoint, table, migration, completion-policy change, production Git writer, Goal status transition, or UI action. `applyApprovedGoalToBase()` remains quarantined and production remains on `DisabledGoalExecutor`. Stage 7C.3 has not started. This document and its Git evidence await independent review.
+At the 7C.2B.5A design checkpoint there was no external-attestation endpoint, table, migration, completion-policy change, production Git writer, Goal status transition, or UI action. `applyApprovedGoalToBase()` remained quarantined and production remained on `DisabledGoalExecutor`.
 
 ## Stage 7C.2B.5B implementation candidate
 
@@ -313,3 +313,13 @@ Migration 026 is additive and preserves legacy v1 approvals, operations, recover
 Review found that a timestamp excluded from action identity could still be copied from the caller into an otherwise valid observation and persisted. Successful validation now returns the newly constructed server observation, including its server-generated timestamp. The canonical action digest remains timestamp-independent; the record digest continues to cover the authoritative stored `observedAt`. An idempotent retry revalidates Git and returns the original immutable timestamp. A changed destination still requires a new action digest and user approval.
 
 Review also found that a structurally valid record with an invalid linked approval could produce a positive projection claim. Positive claims are now limited to validation states `current` and `historical`, both after approval and record validation. Invalid, stale, unavailable and not-integrated results say `not_verified`; valid historical evidence remains preserved and accurately qualified. These are narrow service/projection corrections only: no migration, approval schema, Git writer, endpoint, UI, Goal completion or provider/billing behavior changed. Deterministic past/future timestamp and corrupted-approval regressions are part of the remediation candidate; full gate and hosted CI status belong to its checkpoint.
+
+## Stage 7C.2B.5C — user attestation API and desktop confirmation candidate
+
+The accepted 5B/5B.1 authority is now connected to bounded Goal/handoff-scoped GET routes, one strict explicit POST, and the desktop Handoff review surface. `GET` reads stored metadata without Git scans or persistence; the verification GET runs the accepted read-only observation service; the POST requires the exact reviewed action digest in `If-Match`, re-observes all authority and Git identities, and only then creates or reuses the distinct high-risk user approval and persists/reuses the immutable attestation.
+
+The UI shows exact repository, source, recorded base and observed destination identities. It visibly explains that ancestry does not prove every accepted content change survived. The explicit dialog freezes Goal/handoff/repository/ref/commit/time/digest values at open; a changed digest is refused and displayed through a fresh verification. Unknown POST results reconcile only the exact approval/attestation metadata; there is no automatic retry. A successful attestation remains separate from application and completion.
+
+The actual trust boundary remains the existing app pre-handler: remote Tailscale requests require a Serve identity and paired device session; Tauri CORS now admits the strong `If-Match` header. Local loopback API callers are process-agnostic, and paired mobile clients can call the same endpoint. The UI is desktop-focused, but the server does not assert a desktop-only physical-human guarantee.
+
+Focused route/component tests and the extended fake-provider E2E use only disposable repositories. They prove GET creates no approval/attestation, exact confirmation creates one user-decided approval and immutable record, duplicate exact confirmation reuses it, changed review evidence is refused, app endpoints leave Git unchanged, later destination movement yields historical projection, and completion remains `final_apply_required`. Stage 7C.2B.5D, 7C.3, Windows qualification and independent acceptance remain outstanding. This candidate is not production-ready.

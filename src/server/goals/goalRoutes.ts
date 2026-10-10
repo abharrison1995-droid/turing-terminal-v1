@@ -15,6 +15,16 @@ import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
 import { GoalApprovalError } from './approvals.js';
 import { FinalApplyAuthorityError } from './finalApplyAuthority.js';
 import {
+  buildExternalIntegrationObservation,
+  ExternalIntegrationError,
+  getExternalIntegrationProjection,
+} from './externalIntegration.js';
+import {
+  confirmExternalIntegration,
+  getExternalIntegrationStoredStatus,
+  withExternalIntegrationVerificationSlot,
+} from './externalIntegrationWorkflow.js';
+import {
   GoalDefinitionError,
   approveDefinition,
   beginAmendment,
@@ -130,6 +140,38 @@ function domainError(error: unknown, reply: FastifyReply) {
   throw error;
 }
 
+/** External Git and persistence errors use bounded service messages; unknown failures never expose raw stderr or SQL. */
+function externalIntegrationError(error: unknown, reply: FastifyReply) {
+  if (error instanceof ExternalIntegrationError) {
+    const status =
+      error.code === 'handoff_not_found' || error.code === 'goal_not_found'
+        ? 404
+        : error.code === 'reviewed_observation_changed'
+          ? 412
+          : error.code === 'verification_busy'
+            ? 429
+            : error.code === 'repository_unavailable' ||
+                error.code === 'git_unavailable' ||
+                error.code === 'git_timeout' ||
+                error.code === 'persistence_failed' ||
+                error.code === 'approval_persistence_failed'
+              ? 503
+              : error.code === 'attestation_invalid'
+                ? 422
+                : 409;
+    return send(reply, status, { error: error.message, code: error.code });
+  }
+  if (error instanceof GoalApprovalError)
+    return send(reply, error.code === 'goal_not_found' ? 404 : 409, {
+      error: error.message,
+      code: error.code,
+    });
+  return send(reply, 503, {
+    error: 'External integration could not be verified or recorded safely.',
+    code: 'external_integration_unavailable',
+  });
+}
+
 function parse<T>(
   schema: z.ZodType<T>,
   value: unknown,
@@ -200,6 +242,14 @@ const approvalsQuery = z.strictObject({
 const versionParam = z.coerce.number().int().min(1);
 const goalIdParams = z.strictObject({ goalId: z.string().uuid() });
 const handoffParams = z.strictObject({ goalId: z.string().uuid(), handoffId: z.string().uuid() });
+const externalAttestationParams = z.strictObject({
+  goalId: z.string().uuid(),
+  handoffId: z.string().uuid(),
+  attestationId: z.string().uuid(),
+});
+const externalIntegrationDecisionBody = z.strictObject({
+  decision: z.literal('confirm_external_integration'),
+});
 const handoffListQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(50).optional(),
   offset: z.coerce.number().int().min(0).max(100_000).optional(),
@@ -442,6 +492,163 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         error: 'The handoff could not be prepared safely. Refresh the Goal before trying again.',
         code: 'handoff_preparation_unavailable',
       });
+    }
+  });
+
+  // --- User-confirmed external integration evidence (read-only Git; no Goal completion) ----------------------------
+
+  app.get('/api/goals/:goalId/handoffs/:handoffId/external-integration', async (request, reply) => {
+    const params = handoffParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal handoff identity.', code: 'invalid_request' });
+    const { goalId, handoffId } = params.data;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    try {
+      return getExternalIntegrationStoredStatus(db, goalId, handoffId);
+    } catch (error) {
+      return externalIntegrationError(error, reply);
+    }
+  });
+
+  app.get(
+    '/api/goals/:goalId/handoffs/:handoffId/external-integration/verification',
+    async (request, reply) => {
+      const params = handoffParams.safeParse(request.params);
+      if (!params.success)
+        return send(reply, 400, { error: 'Invalid Goal handoff identity.', code: 'invalid_request' });
+      const { goalId, handoffId } = params.data;
+      if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+        return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+      if (
+        !db.prepare('SELECT 1 FROM goal_result_handoffs WHERE goal_id = ? AND id = ?').get(goalId, handoffId)
+      )
+        return send(reply, 404, {
+          error: 'The handoff does not exist for this Goal.',
+          code: 'handoff_not_found',
+        });
+      try {
+        const observation = await withExternalIntegrationVerificationSlot(goalId, () =>
+          buildExternalIntegrationObservation(db, goalId, handoffId),
+        );
+        return {
+          verification: {
+            state: 'verified' as const,
+            observation,
+            proofLimitations: {
+              sourceHistory: 'observed' as const,
+              contentPreservation: 'not_proven' as const,
+              goalCompletion: 'not_completed_by_attestation' as const,
+            },
+            reason: null,
+          },
+        };
+      } catch (error) {
+        if (error instanceof ExternalIntegrationError && error.code !== 'verification_busy') {
+          const notIntegrated = new Set(['base_not_ancestor', 'source_not_ancestor']);
+          const unavailable = new Set(['repository_unavailable', 'git_unavailable', 'git_timeout']);
+          const stale = new Set([
+            'source_changed',
+            'destination_ref_missing',
+            'source_ref_missing',
+            'repository_identity_changed',
+            'handoff_git_identity_invalid',
+            'observation_changed',
+          ]);
+          const state = notIntegrated.has(error.code)
+            ? 'not_integrated'
+            : unavailable.has(error.code)
+              ? 'unavailable'
+              : stale.has(error.code)
+                ? 'stale'
+                : 'invalid';
+          return {
+            verification: {
+              state,
+              observation: null,
+              proofLimitations: {
+                contentPreservation: 'not_proven' as const,
+                goalCompletion: 'not_completed_by_attestation' as const,
+              },
+              reason: { code: error.code, message: error.message },
+            },
+          };
+        }
+        return externalIntegrationError(error, reply);
+      }
+    },
+  );
+
+  app.get(
+    '/api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId',
+    async (request, reply) => {
+      const params = externalAttestationParams.safeParse(request.params);
+      if (!params.success)
+        return send(reply, 400, { error: 'Invalid Goal attestation identity.', code: 'invalid_request' });
+      const { goalId, handoffId, attestationId } = params.data;
+      if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+        return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+      const scoped = db
+        .prepare(
+          `SELECT 1 FROM goal_external_integration_attestations
+           WHERE goal_id = ? AND handoff_id = ? AND id = ?`,
+        )
+        .get(goalId, handoffId, attestationId);
+      if (!scoped)
+        return send(reply, 404, {
+          error: 'The attestation does not exist for this Goal and handoff.',
+          code: 'attestation_not_found',
+        });
+      try {
+        const projection = await withExternalIntegrationVerificationSlot(goalId, () =>
+          getExternalIntegrationProjection(db, goalId, attestationId),
+        );
+        return { projection };
+      } catch (error) {
+        return externalIntegrationError(error, reply);
+      }
+    },
+  );
+
+  app.post('/api/goals/:goalId/handoffs/:handoffId/external-integration/attest', async (request, reply) => {
+    const params = handoffParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal handoff identity.', code: 'invalid_request' });
+    const parsedBody = externalIntegrationDecisionBody.safeParse(request.body);
+    if (!parsedBody.success)
+      return send(reply, 400, {
+        error: 'Confirm only the reviewed external integration decision.',
+        code: 'invalid_request',
+      });
+    const { goalId, handoffId } = params.data;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    if (!db.prepare('SELECT 1 FROM goal_result_handoffs WHERE goal_id = ? AND id = ?').get(goalId, handoffId))
+      return send(reply, 404, {
+        error: 'The handoff does not exist for this Goal.',
+        code: 'handoff_not_found',
+      });
+
+    const ifMatch = request.headers['if-match'];
+    if (ifMatch === undefined)
+      return send(reply, 428, {
+        error: 'Review the current Git observation before confirming it.',
+        code: 'reviewed_action_precondition_required',
+      });
+    const digest = typeof ifMatch === 'string' ? /^"([0-9a-f]{64})"$/.exec(ifMatch)?.[1] : undefined;
+    if (!digest)
+      return send(reply, 400, {
+        error: 'The reviewed action digest must be one quoted SHA-256 value.',
+        code: 'reviewed_action_precondition_invalid',
+      });
+
+    try {
+      const result = await withExternalIntegrationVerificationSlot(goalId, () =>
+        confirmExternalIntegration(db, { goalId, handoffId, reviewedActionDigest: digest }),
+      );
+      return reply.code(result.reusedAttestation ? 200 : 201).send(result);
+    } catch (error) {
+      return externalIntegrationError(error, reply);
     }
   });
 

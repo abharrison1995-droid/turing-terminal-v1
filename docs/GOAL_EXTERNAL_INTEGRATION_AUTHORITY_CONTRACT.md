@@ -1,8 +1,8 @@
 # Goal external integration attestation authority contract
 
-## Stage 7C.2B.5B implementation candidate
+## Stage 7C.2B.5B internal authority contract
 
-This is an internal backend authority contract. It adds no user action. The external-integration endpoint, desktop/mobile control, version-2 completion evaluation and Goal completion transition remain unimplemented. The Stage 7C.2B.5B checkpoint is pending independent review; it is not release qualification.
+This section records the internal authority accepted in Stage 7C.2B.5B. Stage 7C.2B.5C adds the explicitly user-confirmed HTTP and desktop workflow described below. Version-2 completion evaluation and the Goal completion transition remain unimplemented. Neither stage qualifies the feature for release.
 
 The three records remain separate:
 
@@ -22,7 +22,7 @@ None of these records by itself completes a Goal. The attestation says only that
 - `persistExternalIntegrationAttestation()` — requires a matching approved user decision, revalidates the observation, then inserts or reuses an immutable record in a short SQLite `BEGIN IMMEDIATE` transaction.
 - `validateExternalIntegrationAttestation()` and `getExternalIntegrationProjection()` — validate historical record integrity and compare it with a fresh read-only observation.
 
-The caller must create and decide the approval through the established approval service. The attestation persistence function never requests or approves one. No route, supervisor, provider, model, scheduler or UI invokes these functions in production.
+At the 7C.2B.5B checkpoint, the contract required a future caller to create and decide the approval through the established approval service; the persistence function itself never requests or approves one. Stage 7C.2B.5C now adds a narrow authenticated HTTP orchestration path and desktop user control described below. No supervisor, provider, model or scheduler invokes the new confirmation workflow.
 
 The verifier derives its repository from the Goal's registered project. It verifies canonical root and Git common directory, project/scope and repository identity, SHA-1/SHA-256 format, exact Goal source ref, exact handoff destination ref, full object-ID widths, source/base trees, and both ancestry relations. It uses fixed `execFile` argument arrays, a 10-second timeout, a 4 MiB output bound, `GIT_OPTIONAL_LOCKS=0`, disabled system Git config and replacement objects, and removes inherited `GIT_*` environment overrides. It does not run a diff, hook, merge driver, shell command, or user-provided command.
 
@@ -32,7 +32,7 @@ The source ref must still name the exact accepted commit. The destination is nev
 
 ## Approval and digest identity
 
-The new approval uses `gate: final_apply`, `risk: high`, `requestedBy: user`, schema version 2, action `confirm_external_integration`, and a separate typed `external_integration_action_digest`. It cannot carry `intent_digest`. Migration 026 makes both typed digest fields immutable and keeps the old prospective-apply index and guard unchanged. A legacy `applied_externally` row or `apply_to_base_intent` approval cannot authorize this record.
+The new approval uses `gate: final_apply`, `risk: high`, `requestedBy: user`, schema version 2, action `confirm_external_integration`, and a separate typed `external_integration_action_digest`. It cannot carry `intent_digest`. Migration 026 makes both typed digest fields immutable and keeps the old prospective-apply index and guard unchanged. A legacy `applied_externally` row or `apply_to_base_intent` approval cannot authorize this record. The explicit POST records this approval only after a user confirms the exact observation; read-only GET routes never create one.
 
 Action identity uses domain-separated SHA-256 over canonical serialization. It binds Goal, handoff ID/digest, contract version, definition and approval, final review/acceptance/evidence identities, repository/project/scope/object format, exact source and recorded destination refs/commits/trees, observed destination commit/tree, proof mode/version and the explicit decision discriminator. It excludes volatile attestation/approval row IDs and timestamps so the same evidence has one action identity.
 
@@ -56,7 +56,26 @@ Before commit, recovery observes no attestation; a user would need a fresh obser
 
 Future 7C.2B.5D must explicitly design and hash-cover a backward-compatible version-2 completion contract, bind the exact attestation and destination observation, and re-observe ancestry close to the Goal transition. Missing definition version remains legacy v1, historical definition bytes/hashes are not rewritten, and unsupported policy versions must fail closed. Completion activation also remains blocked on a separately reviewed append-only correction/withdrawal policy; immutable original evidence cannot silently reverse a terminal Goal.
 
-The current local authentication model does not prove that a human clicked or distinguish desktop from paired mobile/local API callers. A future user-facing route must use the existing authorization boundary and describe that limitation accurately; this stage adds no route or claim of desktop-only authority.
+The current local authentication model does not prove that a human clicked or distinguish desktop from paired mobile/local API callers. Stage 7C.2B.5C preserves that limit and uses the existing authorization boundary; it does not claim desktop-only authority.
+
+## Stage 7C.2B.5C — explicit user attestation API and desktop workflow
+
+The explicit workflow uses these Goal-scoped routes:
+
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration` returns at most 20 newest attestation metadata rows and 20 newest matching approval summaries. It performs no Git scan, approval creation, database mutation, or attestation persistence.
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration/verification` invokes the accepted read-only observation service and returns exact refs, commits, trees, ancestry, repository identity, action digest, timestamp and proof limitations. It does not create or decide an approval.
+- `GET /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId` retrieves the Goal/handoff-scoped immutable record and validates its currentness.
+- `POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attest` accepts only `{ "decision": "confirm_external_integration" }` and requires `If-Match: "<64 lowercase hex action digest>"`. The digest is a precondition, not proof. The server rebuilds the observation and refuses a changed digest before requesting approval.
+
+The POST's explicit user request creates or reuses only the exact schema-version-2 `confirm_external_integration` high-risk `final_apply` approval. It is decided through `decideGoalApprovalAsUser()` and only then passed to the existing immutable attestation persistence service. If a crash or lost response leaves an approval without an attestation, the UI reconciles the exact digest through the metadata GET; it does not report success, mint another approval, or retry automatically. A deliberate user confirmation can resume persistence of the same pending/approved action. A denied action digest remains denied.
+
+The remote request boundary remains the app's existing Tailscale Serve identity plus paired-device session. The packaged Tauri origin is allowed by existing CORS policy, now including `If-Match`. Loopback callers remain process-agnostic, and a paired mobile client can call the same authenticated routes directly. The system cannot prove which physical human clicked or truthfully claim server-enforced desktop-only authority. There is no special desktop header.
+
+The desktop Handoff tab shows exact repository/source/destination identities and a visible ancestry limitation before confirmation. The dialog identifies Goal, handoff, source commit, destination ref and observed commit, repository, observation timestamp and action digest. It freezes the exact displayed observation; a 412 causes a new GET and separate review. The selected attestation's typed projection labels current, historical, stale, not integrated, unavailable or invalid status. A current attestation says only **User confirmed — source history observed**; no UI or read model reports Goal completion.
+
+An uncertain POST stores the exact Goal/handoff/action digest in per-selection `sessionStorage` as a UI safeguard. Recovery distinguishes a matching attestation, a pending/approved orphan, a denied approval, and no matching record. Failed status reads keep the lock. A successful no-record reconciliation clears only the UI lock; a fresh verification and separate user confirmation are still required. This is best-effort client recovery, not durable server authority. SQLite approval/attestation identities and the unique action digest remain authoritative.
+
+Focused route/component tests and the service-backed fake-provider E2E exercise the workflow in disposable repositories. The E2E simulates the manual integration separately, snapshots Git before application reads/writes, confirms that verification and attestation endpoints do not modify Git, and checks that Goal completion still fails only on `final_apply_required`. Stage 7C.2B.5D remains unimplemented. Windows behavior remains unverified; this is not production qualification.
 
 ## Evidence and limitations
 

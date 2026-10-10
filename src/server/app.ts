@@ -460,7 +460,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
     if (origin !== 'tauri://localhost' && origin !== 'http://tauri.localhost') return;
     reply.header('access-control-allow-origin', origin);
     reply.header('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    reply.header('access-control-allow-headers', 'content-type');
+    reply.header('access-control-allow-headers', 'content-type, if-match');
     reply.header('vary', 'Origin');
     if (request.method === 'OPTIONS') return reply.code(204).send();
   });

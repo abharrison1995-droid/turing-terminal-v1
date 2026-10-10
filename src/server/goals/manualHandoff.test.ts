@@ -1352,6 +1352,380 @@ describe('manual integration handoff', () => {
 });
 
 describe('external integration attestation authority', () => {
+  it('exposes scoped read-only verification and requires the exact reviewed digest before user confirmation', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    app = goalApp(fx.db, disabledSupervisor(fx.db));
+    const basePath = `/api/goals/${fx.goalId}/handoffs/${handoff.handoffId}/external-integration`;
+    const beforeGit = repositoryState(fx.repo);
+    const approvalsBefore = (
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(fx.goalId) as {
+        n: number;
+      }
+    ).n;
+    const attestationsBefore = (
+      fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+        .get(fx.goalId) as { n: number }
+    ).n;
+
+    expect(await call(app, 'GET', `${basePath}/attestations/not-a-uuid`)).toMatchObject({
+      status: 400,
+      body: { code: 'invalid_request' },
+    });
+    expect(
+      await call(app, 'GET', `/api/goals/not-a-uuid/handoffs/${handoff.handoffId}/external-integration`),
+    ).toMatchObject({
+      status: 400,
+      body: { code: 'invalid_request' },
+    });
+    expect(
+      await call(app, 'GET', `/api/goals/${fx.goalId}/handoffs/not-a-uuid/external-integration`),
+    ).toMatchObject({
+      status: 400,
+      body: { code: 'invalid_request' },
+    });
+    expect(
+      await call(
+        app,
+        'GET',
+        `/api/goals/00000000-0000-4000-8000-000000000000/handoffs/${handoff.handoffId}/external-integration`,
+      ),
+    ).toMatchObject({
+      status: 404,
+      body: { code: 'goal_not_found' },
+    });
+
+    const emptyStatus = await call(app, 'GET', basePath);
+    expect(emptyStatus).toMatchObject({
+      status: 200,
+      body: {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        hasAttestation: false,
+        attestations: [],
+        approvals: [],
+      },
+    });
+    const fresh = await call(app, 'GET', `${basePath}/verification`);
+    expect(fresh).toMatchObject({
+      status: 200,
+      body: {
+        verification: {
+          state: 'verified',
+          observation: {
+            goalId: fx.goalId,
+            handoff: { id: handoff.handoffId, digest: handoff.handoffDigest },
+            source: { commit: observation.source.commit, tree: observation.source.tree },
+            destination: {
+              ref: observation.destination.ref,
+              observedCommit: observation.destination.observedCommit,
+            },
+            actionDigest: observation.actionDigest,
+          },
+          proofLimitations: {
+            contentPreservation: 'not_proven',
+            goalCompletion: 'not_completed_by_attestation',
+          },
+        },
+      },
+    });
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({
+      n: approvalsBefore,
+    });
+    expect(
+      fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+        .get(fx.goalId),
+    ).toEqual({ n: attestationsBefore });
+
+    const confirmUrl = `${basePath}/attest`;
+    const decision = { decision: 'confirm_external_integration' };
+    const remoteDenied = await app.inject({
+      method: 'POST',
+      url: confirmUrl,
+      headers: { origin: 'https://turing.example.test', 'content-type': 'application/json' },
+      payload: decision,
+    });
+    expect(remoteDenied.statusCode).toBe(401);
+    const tauriPreflight = await app.inject({
+      method: 'OPTIONS',
+      url: confirmUrl,
+      headers: {
+        origin: 'tauri://localhost',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type, if-match',
+      },
+    });
+    expect(tauriPreflight.statusCode).toBe(204);
+    expect(tauriPreflight.headers['access-control-allow-headers']).toContain('if-match');
+    expect(await call(app, 'POST', confirmUrl, decision)).toMatchObject({
+      status: 428,
+      body: { code: 'reviewed_action_precondition_required' },
+    });
+    expect(await call(app, 'POST', confirmUrl, decision, { 'if-match': 'not-a-digest' })).toMatchObject({
+      status: 400,
+      body: { code: 'reviewed_action_precondition_invalid' },
+    });
+    expect(
+      await call(
+        app,
+        'POST',
+        confirmUrl,
+        { ...decision, approvalId: 'client-controlled' },
+        {
+          'if-match': `"${observation.actionDigest}"`,
+        },
+      ),
+    ).toMatchObject({ status: 400, body: { code: 'invalid_request' } });
+    expect(
+      await call(
+        app,
+        'POST',
+        confirmUrl,
+        { decision: 'approve' },
+        {
+          'if-match': `"${observation.actionDigest}"`,
+        },
+      ),
+    ).toMatchObject({ status: 400, body: { code: 'invalid_request' } });
+    expect(
+      await call(app, 'POST', confirmUrl, decision, { 'if-match': `"${'0'.repeat(64)}"` }),
+    ).toMatchObject({
+      status: 412,
+      body: { code: 'reviewed_observation_changed' },
+    });
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({
+      n: approvalsBefore,
+    });
+    expect(
+      fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+        .get(fx.goalId),
+    ).toEqual({ n: attestationsBefore });
+
+    const confirmed = await call(app, 'POST', confirmUrl, decision, {
+      'if-match': `"${observation.actionDigest}"`,
+    });
+    expect(confirmed.status).toBe(201);
+    expect(confirmed.body).toMatchObject({
+      actionDigest: observation.actionDigest,
+      reusedApproval: false,
+      reusedAttestation: false,
+    });
+    const approval = getGoalApproval(fx.db, confirmed.body.approvalId as string)!;
+    expect(approval).toMatchObject({
+      goalId: fx.goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      requestedBy: 'user',
+      status: 'approved',
+      decidedBy: 'user',
+      externalIntegrationActionDigest: observation.actionDigest,
+      detail: {
+        schemaVersion: 2,
+        action: 'confirm_external_integration',
+        actionDigest: observation.actionDigest,
+        handoffId: handoff.handoffId,
+      },
+    });
+    expect(approval.intentDigest).toBeUndefined();
+    expect(
+      fx.db
+        .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base'")
+        .get(fx.goalId),
+    ).toEqual({ n: 0 });
+    expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).not.toEqual({
+      status: 'completed',
+    });
+
+    const repeated = await call(app, 'POST', confirmUrl, decision, {
+      'if-match': `"${observation.actionDigest}"`,
+    });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body).toMatchObject({
+      attestationId: confirmed.body.attestationId,
+      approvalId: confirmed.body.approvalId,
+      actionDigest: observation.actionDigest,
+      reusedApproval: true,
+      reusedAttestation: true,
+    });
+    const stored = await call(app, 'GET', basePath);
+    expect(stored.body).toMatchObject({
+      hasAttestation: true,
+      attestations: [
+        expect.objectContaining({
+          attestationId: confirmed.body.attestationId,
+          approvalId: confirmed.body.approvalId,
+          actionDigest: observation.actionDigest,
+        }),
+      ],
+      approvals: [
+        expect.objectContaining({
+          status: 'approved',
+          decidedBy: 'user',
+          attestationId: confirmed.body.attestationId,
+        }),
+      ],
+    });
+    const projection = await call(
+      app,
+      'GET',
+      `${basePath}/attestations/${confirmed.body.attestationId as string}`,
+    );
+    expect(projection).toMatchObject({
+      status: 200,
+      body: {
+        projection: {
+          state: 'current',
+          claim: 'source_history_observed_at_recorded_time',
+          contentPreservation: 'not_proven',
+          goalCompletion: 'not_completed_by_attestation',
+        },
+      },
+    });
+
+    expect(repositoryState(fx.repo)).toEqual(beforeGit);
+    const later = git(
+      fx.repo,
+      'commit-tree',
+      observation.destination.observedTree,
+      '-p',
+      observation.destination.observedCommit,
+      '-m',
+      'later user integration history',
+    );
+    git(fx.repo, 'update-ref', observation.destination.ref, later);
+    const changedEvidence = await call(app, 'POST', confirmUrl, decision, {
+      'if-match': `"${observation.actionDigest}"`,
+    });
+    expect(changedEvidence).toMatchObject({ status: 412, body: { code: 'reviewed_observation_changed' } });
+    const oldProjection = await call(
+      app,
+      'GET',
+      `${basePath}/attestations/${confirmed.body.attestationId as string}`,
+    );
+    expect(oldProjection).toMatchObject({ status: 200, body: { projection: { state: 'historical' } } });
+    expect(
+      fx.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_integration_action_digest = ?',
+        )
+        .get(fx.goalId, observation.actionDigest),
+    ).toEqual({ n: 1 });
+    expect(repositoryState(fx.repo)).not.toEqual(beforeGit); // Only the test-simulated manual ref advance changed Git.
+    expect(
+      fx.db
+        .prepare("SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ? AND type = 'completed'")
+        .get(fx.goalId),
+    ).toEqual({ n: 0 });
+    expect((await evaluateCompletion(fx.db, fx.goalId)).failures.map(({ code }) => code)).toEqual([
+      'final_apply_required',
+    ]);
+  });
+
+  it('keeps wrong-Goal and unavailable records scoped and distinguishes non-ancestral history from unavailable Git', async () => {
+    const { fx, handoff } = await integratedExternalFixture();
+    app = goalApp(fx.db, disabledSupervisor(fx.db));
+    const path = `/api/goals/${fx.goalId}/handoffs/${handoff.handoffId}/external-integration`;
+    const approvalsBefore = (
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(fx.goalId) as {
+        n: number;
+      }
+    ).n;
+    const other = createGoalDraft(fx.db, {
+      projectId: fx.projectId,
+      title: 'External integration scope probe',
+      definition: simpleDefinition(),
+    });
+    expect(await call(app, 'GET', `${path}/attestations/00000000-0000-4000-8000-000000000000`)).toMatchObject(
+      {
+        status: 404,
+        body: { code: 'attestation_not_found' },
+      },
+    );
+    expect(
+      await call(
+        app,
+        'GET',
+        `/api/goals/${other.goalId}/handoffs/${handoff.handoffId}/external-integration/verification`,
+      ),
+    ).toMatchObject({ status: 404, body: { code: 'handoff_not_found' } });
+
+    git(fx.repo, 'update-ref', 'refs/heads/main', handoff.target.observedBaseCommit);
+    const notIntegrated = await call(app, 'GET', `${path}/verification`);
+    expect(notIntegrated).toMatchObject({
+      status: 200,
+      body: {
+        verification: { state: 'not_integrated', observation: null, reason: { code: 'source_not_ancestor' } },
+      },
+    });
+
+    const project = fx.db.prepare('SELECT path, git_root FROM projects WHERE id = ?').get(fx.projectId) as {
+      path: string;
+      git_root: string;
+    };
+    const missingRoot = `${project.git_root}-unavailable`;
+    fx.db
+      .prepare('UPDATE projects SET path = ?, git_root = ? WHERE id = ?')
+      .run(`${project.path}-unavailable`, missingRoot, fx.projectId);
+    const unavailable = await call(app, 'GET', `${path}/verification`);
+    expect(unavailable).toMatchObject({
+      status: 200,
+      body: {
+        verification: { state: 'unavailable', observation: null, reason: { code: 'repository_unavailable' } },
+      },
+    });
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({
+      n: approvalsBefore,
+    });
+  });
+
+  it('does not override a denied exact user decision or create an attestation for it', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture();
+    app = goalApp(fx.db, disabledSupervisor(fx.db));
+    const denied = requestGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      gate: 'final_apply',
+      risk: 'high',
+      reason: 'The user previously denied this exact observation.',
+      requestedBy: 'user',
+      detail: createExternalIntegrationApprovalDetail(observation),
+      externalIntegrationActionDigest: observation.actionDigest,
+    });
+    decideGoalApproval(fx.db, {
+      goalId: fx.goalId,
+      approvalId: denied.id,
+      decision: 'denied',
+      decidedBy: 'user',
+    });
+    const response = await call(
+      app,
+      'POST',
+      `/api/goals/${fx.goalId}/handoffs/${handoff.handoffId}/external-integration/attest`,
+      { decision: 'confirm_external_integration' },
+      { 'if-match': `"${observation.actionDigest}"` },
+    );
+    expect(response).toMatchObject({ status: 409, body: { code: 'approval_denied' } });
+    expect(
+      fx.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_integration_action_digest = ?',
+        )
+        .get(fx.goalId, observation.actionDigest),
+    ).toEqual({ n: 1 });
+    expect(
+      fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+        .get(fx.goalId),
+    ).toEqual({ n: 0 });
+  });
+
   it.each(['sha1', 'sha256'] as const)(
     'persists an exact user-approved fast-forward observation read-only in %s',
     async (objectFormat) => {

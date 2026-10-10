@@ -7,6 +7,7 @@ import type {
 } from '../../shared/goalApi';
 import { ApiError } from '../api';
 import { ConfirmPanel } from './DefinitionParts';
+import { GoalExternalIntegration } from './GoalExternalIntegration';
 import { goalsApi } from './api';
 import { Empty } from './parts';
 import { formatTime, shortHash } from './presentation';
@@ -726,7 +727,21 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
               handoff. Currentness cannot be verified.
             </p>
           )}
-          {projectionMatchesSelection && projection && <HandoffDetail projection={projection} />}
+          {projectionMatchesSelection && projection && (
+            <>
+              <HandoffDetail projection={projection} />
+              {projection.handoff && (
+                <GoalExternalIntegration
+                  key={`${goal.id}:${projection.handoff.handoffId}`}
+                  goalId={goal.id}
+                  goalTitle={goal.title}
+                  handoff={projection.handoff}
+                  handoffCurrent={projection.state === 'current'}
+                  refresh={`${refresh}:${localRefresh}`}
+                />
+              )}
+            </>
+          )}
         </section>
       )}
     </div>
