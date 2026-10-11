@@ -212,7 +212,7 @@ function isObservationChanged(report: { outcome: string; reasons: { code: string
  * because an identical decision committed meanwhile. That refusal is retried once, immediately and deterministically.
  * A second refusal is returned unchanged.
  */
-async function observeReviewedPreflight(db: Db, goalId: string, attestationId: string) {
+export async function observeReviewedPreflight(db: Db, goalId: string, attestationId: string) {
   const observe = () =>
     computeExternalCompletionPreflightWithIdentity(
       db,

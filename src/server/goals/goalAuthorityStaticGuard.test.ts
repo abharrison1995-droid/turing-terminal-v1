@@ -46,6 +46,8 @@ interface AuthorityRule {
   mode: 'only_in' | 'never_in';
   files: readonly string[];
   reason: string;
+  /** When true, the rule also scans the non-test sources under src/shared (paths prefixed `shared/`). */
+  includeShared?: boolean;
 }
 
 /**
@@ -87,9 +89,14 @@ const RULES: readonly AuthorityRule[] = [
     id: 'decision_reader',
     pattern: /\b(?:readExternalCompletionDecision|listExternalCompletionDecisions)\b/,
     mode: 'only_in',
-    files: ['goals/externalCompletionDecision.ts', 'goals/externalCompletionTerminal.ts'],
+    // externalCompletion.ts reads the decision to replay a stored completion and to re-check it before the terminal write.
+    files: [
+      'goals/externalCompletionDecision.ts',
+      'goals/externalCompletionTerminal.ts',
+      'goals/externalCompletion.ts',
+    ],
     reason:
-      'Only the decision module and the proof-bound terminal authority name the decision readers. No other production consumer reads a decision.',
+      'Only the decision module, the proof-bound terminal authority and the atomic completion service name the decision readers. No other production consumer reads a decision.',
   },
   {
     id: 'decision_record',
@@ -97,6 +104,36 @@ const RULES: readonly AuthorityRule[] = [
     mode: 'only_in',
     files: ['goals/externalCompletionDecision.ts'],
     reason: 'Only the decision module names the decision recorder. It has no production caller yet.',
+  },
+  {
+    id: 'completion_service',
+    pattern: /\bcompleteGoalFromExternalDecision\b/,
+    mode: 'only_in',
+    files: ['goals/externalCompletion.ts'],
+    reason: 'Only the atomic version-2 completion service names its entry point. It has no route caller yet.',
+  },
+  {
+    id: 'completion_consume',
+    pattern: /\b(?:consumeExternalCompletionDecision|selectCompletionDecision)\b/,
+    mode: 'only_in',
+    files: ['goals/externalCompletion.ts', 'goals/externalCompletionTerminal.ts'],
+    reason:
+      'Only the proof-bound terminal authority and the atomic completion service may select or consume a completion decision.',
+  },
+  {
+    id: 'completion_reason',
+    pattern:
+      /\b(?:EXTERNAL_COMPLETION_REASON|external_completion_user_confirmed|external_completion_recorded)\b/,
+    mode: 'only_in',
+    files: [
+      'goals/events.ts',
+      'goals/externalCompletion.ts',
+      'goals/externalCompletionTerminal.ts',
+      'shared/goals.ts',
+    ],
+    includeShared: true,
+    reason:
+      'Only the event vocabulary, the proof-bound terminal writer and the atomic completion service may name the external completion reason or event.',
   },
   {
     id: 'completion_identifier',
@@ -152,6 +189,20 @@ function productionSources(dir = SERVER_ROOT): { path: string; source: string }[
   });
 }
 
+const SHARED_ROOT = fileURLToPath(new URL('../../shared/', import.meta.url));
+
+/** Every non-test file under src/shared, with paths prefixed `shared/`. Only rules with `includeShared` scan it. */
+function sharedSources(dir = SHARED_ROOT): { path: string; source: string }[] {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) return sharedSources(full);
+    const isProduction = name.endsWith('.ts') && !name.endsWith('.test.ts') && !/Kit\.ts$/.test(name);
+    return isProduction
+      ? [{ path: `shared/${relative(SHARED_ROOT, full)}`, source: readFileSync(full, 'utf8') }]
+      : [];
+  });
+}
+
 /** Paths of the production files that match a rule's pattern, sorted. */
 function matchingPaths(rule: AuthorityRule, sources: { path: string; source: string }[]): string[] {
   return sources
@@ -162,6 +213,8 @@ function matchingPaths(rule: AuthorityRule, sources: { path: string; source: str
 
 describe('authority static guard: production sources', () => {
   const sources = productionSources();
+  const shared = sharedSources();
+  const scopeFor = (rule: AuthorityRule) => (rule.includeShared ? [...sources, ...shared] : sources);
 
   it('scans the production server (non-vacuous) and excludes test and kit files', () => {
     expect(sources.length).toBeGreaterThan(50);
@@ -175,6 +228,12 @@ describe('authority static guard: production sources', () => {
     expect(paths).not.toContain('goals/goalV2TestKit.ts');
   });
 
+  it('scans src/shared (non-vacuous) for rules that include shared sources', () => {
+    const paths = shared.map(({ path }) => path);
+    expect(paths).toContain('shared/goals.ts');
+    expect(paths.some((path) => /\.test\.ts$/.test(path))).toBe(false);
+  });
+
   it('completion identifier allow-list is exactly the reviewed file set', () => {
     expect(ruleById('completion_identifier').files).toEqual([...D3D_COMPLETION_IDENTIFIER_FILES].sort());
     expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(9);
@@ -182,14 +241,15 @@ describe('authority static guard: production sources', () => {
 
   for (const rule of RULES) {
     it(`${rule.id}: ${rule.reason}`, () => {
-      const offenders = sources
+      const scope = scopeFor(rule);
+      const offenders = scope
         .filter(({ path, source }) => breaksRule(rule, path, source))
         .map(({ path }) => path);
       expect(offenders).toEqual([]);
       if (rule.mode === 'only_in') {
         // Drift check: every allowed file still matches, so a stale entry fails rather than hiding a removal.
-        expect(matchingPaths(rule, sources).filter((path) => !rule.files.includes(path))).toEqual([]);
-        for (const path of rule.files) expect(sources.map((entry) => entry.path)).toContain(path);
+        expect(matchingPaths(rule, scope).filter((path) => !rule.files.includes(path))).toEqual([]);
+        for (const path of rule.files) expect(scope.map((entry) => entry.path)).toContain(path);
       }
     });
   }
@@ -300,6 +360,29 @@ describe('authority static guard: seeded violations and negative controls', () =
       `db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?");`,
     ],
     ['completion_identifier', 'goals/activeWork.ts', 'const digest = row.externalCompletionActionDigest;'],
+    ['completion_service', 'goals/activeWork.ts', 'await completeGoalFromExternalDecision(db, input);'],
+    [
+      'completion_service',
+      'goals/routes.ts',
+      'app.post(path, () => completeGoalFromExternalDecision(db, body));',
+    ],
+    [
+      'completion_consume',
+      'goals/externalCompletionDecision.ts',
+      'selectCompletionDecision(db, goalId, approvalId);',
+    ],
+    [
+      'completion_consume',
+      'goals/activeWork.ts',
+      'consumeExternalCompletionDecision(db, decision, proof, identity, now);',
+    ],
+    ['completion_reason', 'goals/activeWork.ts', 'const reason = EXTERNAL_COMPLETION_REASON;'],
+    ['completion_reason', 'goals/synthetic.ts', "const type = 'external_completion_recorded';"],
+    [
+      'completion_reason',
+      'shared/synthetic.ts',
+      "export const reason = 'external_completion_user_confirmed';",
+    ],
   ];
 
   it.each(seeded)('%s flags a seeded violation in %s', (ruleId, path, source) => {
@@ -382,6 +465,34 @@ describe('authority static guard: seeded violations and negative controls', () =
       'goals/externalCompletionTerminal.ts',
       'const digest = row.externalCompletionActionDigest;',
     ],
+    [
+      'completion_service',
+      'goals/externalCompletion.ts',
+      'export async function completeGoalFromExternalDecision() {}',
+    ],
+    ['completion_service', 'goals/synthetic.ts', 'const label = "complete goal from external decision";'],
+    [
+      'completion_consume',
+      'goals/externalCompletionTerminal.ts',
+      'export function consumeExternalCompletionDecision() {}',
+    ],
+    [
+      'completion_consume',
+      'goals/externalCompletion.ts',
+      'consumeExternalCompletionDecision(db, decision, proof, postGitIdentity, now);',
+    ],
+    [
+      'decision_reader',
+      'goals/externalCompletion.ts',
+      'const rows = listExternalCompletionDecisions(db, goalId);',
+    ],
+    [
+      'completion_reason',
+      'shared/goals.ts',
+      "export const EXTERNAL_COMPLETION_REASON = 'external_completion_user_confirmed' as const;",
+    ],
+    ['completion_reason', 'goals/events.ts', 'external_completion_recorded: {'],
+    ['completion_reason', 'goals/synthetic.ts', 'const label = "external completion recorded";'],
   ];
 
   it.each(controls)('%s passes its negative control in %s', (ruleId, path, source) => {

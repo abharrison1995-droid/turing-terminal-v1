@@ -1,14 +1,17 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { openDatabase } from '../db.js';
 import { approvedCompletionPolicyMode } from './approvedCompletionAuthority.js';
 import { buildExternalCompletionAction, parseExternalCompletionAction } from './externalCompletionProof.js';
 import {
   PREFLIGHT_CHECK_NAMES,
   computeEmptyCorrectionChainIdentity,
   computeExternalCompletionPreflight,
+  computeExternalCompletionPreflightWithIdentity,
   computeMilestoneIdentityDigest,
   externalCompletionPreflightReportSchema,
   type ExternalCompletionPreflightReport,
@@ -75,6 +78,23 @@ function startGoal(db: GoalFixture['db'], goalId: string): void {
     actor: 'user',
     preconditions: [{ code: 'preflight', ok: true }],
   });
+}
+
+const EMPTY_GOAL_ID = '22222222-2222-4222-8222-222222222222';
+const EMPTY_ATTESTATION_ID = '33333333-3333-4333-8333-333333333333';
+/** The report digest of a refused preflight on an empty database, pinned at HEAD before the D.3E service was added. */
+const EMPTY_DATABASE_REFUSAL_DIGEST = 'e11d1f8c6639e48b4bf033400a8bdfdcc9aee926e3eff75cdd19b38fc7f8023d';
+
+/** Runs `run` against a fresh, empty database in its own directory, and removes the directory afterwards. */
+async function withEmptyDatabase<T>(run: (db: GoalFixture['db']) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'preflight-empty-'));
+  const db = openDatabase(dir);
+  try {
+    return await run(db);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function rewriteStoredContract(fx: GoalFixture, mutate: (contract: Record<string, unknown>) => void): void {
@@ -683,6 +703,9 @@ describe('external completion preflight: no writes', () => {
       'const blocker = activeWorkBlocker(db, goalId);',
       ['identifier:activeWorkBlocker'],
     ],
+    ['active work bare side-effect import', "import './activeWork.js';", ['import_module']],
+    ['active work dynamic import', "const mod = await import('./activeWork.js');", ['import_module']],
+    ['active work require', "const mod = require('../goals/activeWork.js');", ['import_module']],
   ])('T12b scanner flags %s with exact rules', (_label, snippet, expected) => {
     expect(scanPreflightSource(snippet)).toEqual(expected);
   });
@@ -714,6 +737,66 @@ describe('external completion preflight: golden identities', () => {
     } as unknown as Parameters<typeof computeMilestoneIdentityDigest>[0]);
     expect(milestones).toBe('929d475b9c1135b059cba201246cdfa237d9498d3f0d9a7e4529dc33aa459797');
   });
+
+  it('T13b pins the refused empty-database report digest to the HEAD golden', async () => {
+    await withEmptyDatabase(async (db) => {
+      const report = await computeExternalCompletionPreflight(db, EMPTY_GOAL_ID, {
+        attestationId: EMPTY_ATTESTATION_ID,
+      });
+      expect(report.outcome).toBe('refused');
+      expect(report.reasons).toEqual([{ code: 'goal_not_found', detail: null }]);
+      expect(report.digest).toBe(EMPTY_DATABASE_REFUSAL_DIGEST);
+    });
+  });
+});
+
+describe('external completion preflight: observation and identity returns', () => {
+  it.each(FORMATS)(
+    'T14 returns the observation beside an unchanged report body under %s',
+    async (objectFormat) => {
+      const attested = await v2RunningAttestedFixture(objectFormat);
+      const plain = await compute(attested.fx, attested.attestationId);
+      const result = await computeExternalCompletionPreflightWithIdentity(
+        attested.fx.db,
+        attested.fx.goalId,
+        {
+          attestationId: attested.attestationId,
+        },
+      );
+
+      expect(result.report.outcome).toBe('ready');
+      expect(result.report).toEqual(plain);
+      expect(result.report.digest).toBe(plain.digest);
+      expect(result.report).not.toHaveProperty('observation');
+      expect(result.report).not.toHaveProperty('postGitIdentity');
+      expect(result.observation).toEqual({
+        ref: attested.attestation.destination.ref,
+        commit: attested.attestation.destination.observedCommit,
+        tree: attested.attestation.destination.observedTree,
+        objectFormat,
+        evidenceDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        observedAt: expect.any(String),
+      });
+      expect(result.identity).not.toBeNull();
+      expect(result.postGitIdentity).toEqual(result.identity);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it('T14b returns null identity, observation and postGitIdentity for a refused report', async () => {
+    await withEmptyDatabase(async (db) => {
+      const result = await computeExternalCompletionPreflightWithIdentity(db, EMPTY_GOAL_ID, {
+        attestationId: EMPTY_ATTESTATION_ID,
+      });
+      expect(result.report.outcome).toBe('refused');
+      expect(result).toEqual({
+        report: result.report,
+        identity: null,
+        observation: null,
+        postGitIdentity: null,
+      });
+    });
+  });
 });
 
 const SQL_WRITE =
@@ -724,8 +807,9 @@ const PREPARE_CALL = /\.prepare\s*\(/g;
 const PREPARE_LITERAL =
   /\.prepare\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)\s*[,)]/gs;
 const PREPARE_BRACKET = /\[\s*['"`]prepare['"`]\s*\]/;
+/** A static `from`, a bare side-effect `import`, a dynamic `import()` or a `require()` of a Goal write or completion module. */
 const IMPORT_MODULE =
-  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletion|externalCompletionDecision|externalCompletionTerminal|goalCompletionLock|activeWork)\.js['"]/;
+  /(?:\bfrom\s+|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)['"](?:[^'"]*\/)?(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletion|externalCompletionDecision|externalCompletionTerminal|goalCompletionLock|activeWork)\.js['"]/;
 const FORBIDDEN_IDENTIFIERS = [
   'transitionGoal',
   'completeGoal',

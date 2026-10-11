@@ -15,6 +15,7 @@ import {
   loadValidatedRecord,
   validateExternalIntegrationAttestation,
   type ExternalIntegrationAttestationV1,
+  type ExternalIntegrationObservationV1,
   type ExternalIntegrationValidation,
 } from './externalIntegration.js';
 import { withExternalIntegrationVerificationSlot } from './externalIntegrationWorkflow.js';
@@ -601,15 +602,48 @@ export async function computeExternalCompletionPreflight(
 }
 
 /**
- * The same preflight, plus the checks 1 to 6 identity captured before Git (null when the report is refused). A
- * decision uses that identity to prove that nothing it depends on changed between the review and its transaction.
+ * The fresh Git observation a ready preflight relied on. It is returned beside the report, never inside its body, so
+ * the report digest, schema and goldens do not change. The fields are the destination and proof facts that a completion
+ * proof records; `observedAt` is set when the observation is built, after the Git reads.
+ */
+export interface PreflightObservationSummary {
+  ref: string;
+  commit: string;
+  tree: string;
+  objectFormat: 'sha1' | 'sha256';
+  evidenceDigest: string;
+  observedAt: string;
+}
+
+function summarizeObservation(observation: ExternalIntegrationObservationV1): PreflightObservationSummary {
+  return {
+    ref: observation.destination.ref,
+    commit: observation.destination.observedCommit,
+    tree: observation.destination.observedTree,
+    objectFormat: observation.repository.objectFormat,
+    evidenceDigest: observation.proof.evidenceDigest,
+    observedAt: observation.observedAt,
+  };
+}
+
+/**
+ * The same preflight, plus three values returned beside the report. `identity` is the checks 1 to 6 identity captured
+ * before Git. `postGitIdentity` is the identity captured after the Git observation (snapshot_after), which the preflight
+ * has proven equal to `identity`. `observation` is the fresh Git observation. All three are null when the report is
+ * refused, because a refused report is not a reviewed state. A decision uses `identity` to prove that nothing it depends
+ * on changed between the review and its transaction.
  */
 export async function computeExternalCompletionPreflightWithIdentity(
   db: Db,
   goalId: string,
   input: { attestationId: string },
   options: PreflightOptions = {},
-): Promise<{ report: ExternalCompletionPreflightReport; identity: SnapshotIdentity | null }> {
+): Promise<{
+  report: ExternalCompletionPreflightReport;
+  identity: SnapshotIdentity | null;
+  observation: PreflightObservationSummary | null;
+  postGitIdentity: SnapshotIdentity | null;
+}> {
   const facts = emptyFacts();
   const progress: Progress = { index: CHECK.input };
   let identity: SnapshotIdentity | null = null;
@@ -771,6 +805,8 @@ export async function computeExternalCompletionPreflightWithIdentity(
         CHECK.assemble,
       ),
       identity,
+      observation: summarizeObservation(observation),
+      postGitIdentity: second.identity,
     };
   } catch (error) {
     // A refused report carries no identity: the caller must not treat it as a reviewed state.
@@ -778,6 +814,6 @@ export async function computeExternalCompletionPreflightWithIdentity(
       error instanceof PreflightRefusal
         ? refused(goalId, input.attestationId, error.index, error.code, error.detail, facts)
         : refused(goalId, input.attestationId, progress.index, 'preflight_unavailable', null, facts);
-    return { report, identity: null };
+    return { report, identity: null, observation: null, postGitIdentity: null };
   }
 }
