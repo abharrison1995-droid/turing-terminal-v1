@@ -401,6 +401,17 @@ export function readStoredCompletion(db: Db, goalId: string): StoredCompletion {
   }
 }
 
+/**
+ * Counts the completion proof rows of one Goal, read-only. A completed version-2 Goal has exactly one; any other count
+ * is a stored fact that a reader must not treat as a clean completion. Writes nothing.
+ */
+export function externalCompletionProofRowCount(db: Db, goalId: string): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs WHERE goal_id = ?')
+    .get(goalId) as { n: number };
+  return row.n;
+}
+
 function readStored(db: Db, goalId: string): StoredCompletion {
   const goal = db
     .prepare('SELECT status, status_reason_code, status_detail_json, completed_at FROM goals WHERE id = ?')

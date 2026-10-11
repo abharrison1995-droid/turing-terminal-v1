@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Db } from '../db.js';
+import { openDatabase, type Db } from '../db.js';
 import { activeWorkBlocker } from './activeWork.js';
 import { getGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
@@ -11,6 +14,7 @@ import {
   consumeExternalCompletionDecision,
   EXTERNAL_COMPLETION_TERMINAL_ERROR_CODES,
   ExternalCompletionTerminalError,
+  externalCompletionProofRowCount,
   readStoredCompletion,
   selectCompletionDecision,
   type ValidatedCompletionDecision,
@@ -115,12 +119,13 @@ function proofCount(db: Db, goalId: string): unknown {
 }
 
 describe('external completion terminal: the accepted terminal write', () => {
-  it('exports only the consumer, the decision selector, the stored reader and the error type', async () => {
+  it('exports only the consumer, the decision selector, the stored reader, the read-only proof count and the error type', async () => {
     const terminal = await import('./externalCompletionTerminal.js');
     expect(Object.keys(terminal).sort()).toEqual([
       'EXTERNAL_COMPLETION_TERMINAL_ERROR_CODES',
       'ExternalCompletionTerminalError',
       'consumeExternalCompletionDecision',
+      'externalCompletionProofRowCount',
       'readStoredCompletion',
       'selectCompletionDecision',
     ]);
@@ -815,4 +820,17 @@ describe('external completion terminal: F3 timestamps are canonical and ordered'
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+});
+
+describe('external completion terminal: the read-only proof row count', () => {
+  it('counts zero proof rows for any Goal in a fresh database with no completion', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tt-proof-count-'));
+    const db = openDatabase(root);
+    try {
+      expect(externalCompletionProofRowCount(db, randomUUID())).toBe(0);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
