@@ -119,6 +119,7 @@ type CompletionInput = z.infer<typeof completionInput>;
 /** The stored completion, as `readStoredCompletion` verifies it. */
 export type CompletedStoredCompletion = Extract<StoredCompletion, { state: 'completed' }>;
 
+/** Historical identity read only: consult readGoalCompletionStanding before relying on a completed result. */
 export interface ExternalCompletionResult {
   /** True when this call found a completion that was already stored and returned it without any write. */
   reused: boolean;

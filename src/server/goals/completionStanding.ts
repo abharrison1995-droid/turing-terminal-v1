@@ -3,6 +3,7 @@ import type { Db } from '../db.js';
 import {
   AttestationCorrectionError,
   getAttestationCorrectionStanding,
+  listAttestationCorrectionHistory,
   type AttestationCorrectionStanding,
   type AttestationCorrectionStandingProjection,
 } from './attestationCorrection.js';
@@ -129,8 +130,16 @@ export class CompletionStandingError extends Error {
   }
 }
 
-/** The closed reasons the trust classification may carry. Commit 2 emits only the codes listed here. */
+/**
+ * The closed reasons the trust classification may carry. Each reason is produced by at least one derivation path of
+ * the reader, and each has a test that observes it.
+ */
 export const COMPLETION_STANDING_REASONS = [
+  'attestation_disputed',
+  'attestation_withdrawn',
+  'attestation_superseded',
+  'replacement_not_uncontested',
+  'attestation_unavailable',
   'legacy_completion',
   'reason_code_unclassifiable',
   'legacy_policy_unverified',
@@ -138,8 +147,9 @@ export const COMPLETION_STANDING_REASONS = [
   'proof_without_completion',
   'proof_integrity_failed',
   'chain_identity_mismatch',
+  'correction_time_invalid',
+  'correction_mapping_unclassifiable',
   'integrity_check_failed',
-  'correction_mapping_pending',
 ] as const;
 export type CompletionStandingReason = (typeof COMPLETION_STANDING_REASONS)[number];
 
@@ -168,10 +178,20 @@ export type ProofIntegrity =
 
 type ValidProofIntegrity = Extract<ProofIntegrity, { state: 'valid' }>;
 
-/** The newest correction of the proof's attestation, as the projection exposes it. Always null in commit 2. */
-export type CorrectionTip = NonNullable<AttestationCorrectionStandingProjection['tip']>;
+/** The newest correction of the proof's attestation. `decidedAt` is the user's decision time, a canonical ISO string. */
+export interface CorrectionTip {
+  correctionId: string;
+  kind: NonNullable<AttestationCorrectionStandingProjection['tip']>['kind'];
+  sequence: number;
+  correctionDigest: string;
+  decidedAt: string;
+  replacementAttestationId: string | null;
+}
 
-/** The current correction standing of the proof's attestation only. Commit 2 fills only the empty chain. */
+/**
+ * The current correction standing of the proof's attestation only. `unavailable` means the original attestation could not
+ * be loaded for correction projection. `invalidCode` is set only for `invalid`, and carries the projection's own code.
+ */
 export interface CorrectionDimension {
   attestationId: string;
   standing: AttestationCorrectionStanding | 'unavailable';
@@ -242,6 +262,8 @@ export type GoalCompletionStanding =
       otherAttestationsTruncated: false;
     });
 
+type V2Standing = 'uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'reconciliation_required';
+
 /** A Goal row as this reader needs it. Read once, inside the read transaction. */
 interface GoalRow {
   id: string;
@@ -261,6 +283,8 @@ const OTHER_ATTESTATION_LIMIT = 20;
  */
 export function readGoalCompletionStanding(db: Db, goalId: string): GoalCompletionStanding {
   return db.transaction((): GoalCompletionStanding => {
+    // Read outside the try on purpose. Without the Goal row there is no status to report, so a fault in this single read
+    // propagates as an exception to the caller. It is never returned as a standing, so it is never a success.
     const goal = readGoalRow(db, goalId);
     try {
       return deriveStanding(db, goal);
@@ -359,6 +383,10 @@ function legacyOrUnclassifiable(db: Db, goal: GoalRow): GoalCompletionStanding {
   };
 }
 
+/**
+ * The version-2 mapping. The proof is immutable and always reports `valid` once the stored completion verifies. The
+ * standing is derived from the proof's own attestation only, and from its replacement when that attestation is superseded.
+ */
 function versionTwoStanding(db: Db, goal: GoalRow, proofId: string): GoalCompletionStanding {
   const read = readExternalCompletionProof(db, goal.id, proofId);
   // The stored-completion read has just verified this proof, so a failed re-read is an integrity failure, not a state.
@@ -388,80 +416,219 @@ function versionTwoStanding(db: Db, goal: GoalRow, proofId: string): GoalComplet
       null,
     );
 
-  let projection: AttestationCorrectionStandingProjection | null = null;
-  try {
-    projection = getAttestationCorrectionStanding(db, goal.id, attestationId);
-  } catch (error) {
-    // The original attestation is missing or invalid. Commit 2 has no mapping for that, so it is pending like any
-    // other correction result. Any other error is unexpected and is classified by the caller.
-    if (!(error instanceof AttestationCorrectionError)) throw error;
-  }
-  // Commit 2 maps only the empty chain. Commit 3 replaces this fail-closed placeholder with the disputed, withdrawn,
-  // superseded and reconciliation mapping, and removes the `correction_mapping_pending` reason with it.
-  if (
-    projection === null ||
-    projection.standing !== 'active_uncontested' ||
-    projection.correctionCount !== 0 ||
-    projection.tip !== null
-  )
-    return invalidStanding(goal, validProof, 'correction_mapping_pending', null);
-
-  return {
-    kind: 'v2',
-    schemaVersion: 1,
-    goalId: goal.id,
-    status: statusOf(goal),
-    standing: 'uncontested',
-    claim: classifyCompletionStanding({ kind: 'v2', standing: 'uncontested' }),
-    proof: validProof,
-    correction: {
+  const own = ownCorrectionStanding(db, goal.id, attestationId);
+  if (own === null)
+    return invalidStanding(goal, validProof, 'attestation_unavailable', {
       attestationId,
-      standing: 'active_uncontested',
+      standing: 'unavailable',
       correctionCount: 0,
       tip: null,
       correctedAfterCompletion: null,
       invalidCode: null,
       replacement: null,
+    });
+  if (own.standing === 'invalid')
+    return invalidStanding(goal, validProof, 'proof_integrity_failed', {
+      attestationId,
+      standing: 'invalid',
+      correctionCount: 0,
+      tip: null,
+      correctedAfterCompletion: null,
+      invalidCode: own.invalidCode,
+      replacement: null,
+    });
+  if (own.tip === null) {
+    if (own.standing !== 'active_uncontested' || own.correctionCount !== 0)
+      return invalidStanding(goal, validProof, 'correction_mapping_unclassifiable', {
+        attestationId,
+        standing: own.standing,
+        correctionCount: own.correctionCount,
+        tip: null,
+        correctedAfterCompletion: null,
+        invalidCode: null,
+        replacement: null,
+      });
+    return v2Standing(
+      db,
+      goal,
+      validProof,
+      'uncontested',
+      {
+        attestationId,
+        standing: 'active_uncontested',
+        correctionCount: 0,
+        tip: null,
+        correctedAfterCompletion: null,
+        invalidCode: null,
+        replacement: null,
+      },
+      [],
+    );
+  }
+
+  const tip = currentTip(db, goal.id, attestationId, own.tip.correctionId, own.tip.correctionDigest);
+  const base: CorrectionDimension = {
+    attestationId,
+    standing: own.standing,
+    correctionCount: own.correctionCount,
+    tip,
+    correctedAfterCompletion: null,
+    invalidCode: null,
+    replacement: null,
+  };
+  if (tip === null) return invalidStanding(goal, validProof, 'correction_mapping_unclassifiable', base);
+  // Both instants must be canonical ISO, so that their string order is their time order. Otherwise nothing is compared.
+  if (!isCanonicalInstant(goal.completed_at) || !isCanonicalInstant(tip.decidedAt))
+    return invalidStanding(goal, validProof, 'correction_time_invalid', base);
+  const dimension: CorrectionDimension = {
+    ...base,
+    correctedAfterCompletion: tip.decidedAt > goal.completed_at,
+  };
+
+  switch (own.standing) {
+    case 'disputed':
+      return v2Standing(db, goal, validProof, 'disputed', dimension, ['attestation_disputed']);
+    case 'withdrawn':
+      return v2Standing(db, goal, validProof, 'withdrawn', dimension, ['attestation_withdrawn']);
+    case 'superseded':
+      return supersededStanding(db, goal, validProof, dimension, tip);
+    default:
+      return invalidStanding(goal, validProof, 'correction_mapping_unclassifiable', dimension);
+  }
+}
+
+/**
+ * A superseded proof attestation is `superseded` only while its exact replacement is still `active_uncontested`. Any other
+ * replacement standing, or an unavailable replacement, is `reconciliation_required` (decision Q1). The proof attestation's
+ * own standing stays `superseded`, and the Goal never switches to the replacement.
+ */
+function supersededStanding(
+  db: Db,
+  goal: GoalRow,
+  proof: ValidProofIntegrity,
+  dimension: CorrectionDimension,
+  tip: CorrectionTip,
+): GoalCompletionStanding {
+  const replacementId = tip.replacementAttestationId;
+  if (replacementId === null)
+    return invalidStanding(goal, proof, 'correction_mapping_unclassifiable', dimension);
+  const replacementStanding = standingOrUnavailable(db, goal.id, replacementId);
+  const correction: CorrectionDimension = {
+    ...dimension,
+    replacement: { attestationId: replacementId, standing: replacementStanding },
+  };
+  if (replacementStanding === 'active_uncontested')
+    return v2Standing(db, goal, proof, 'superseded', correction, ['attestation_superseded']);
+  const reasons: CompletionStandingReason[] = ['attestation_superseded', 'replacement_not_uncontested'];
+  if (replacementStanding === 'unavailable') reasons.push('attestation_unavailable');
+  return v2Standing(db, goal, proof, 'reconciliation_required', correction, reasons);
+}
+
+function v2Standing(
+  db: Db,
+  goal: GoalRow,
+  proof: ValidProofIntegrity,
+  standing: V2Standing,
+  correction: CorrectionDimension,
+  reasons: CompletionStandingReason[],
+): GoalCompletionStanding {
+  return {
+    kind: 'v2',
+    schemaVersion: 1,
+    goalId: goal.id,
+    status: statusOf(goal),
+    standing,
+    claim: classifyCompletionStanding({ kind: 'v2', standing }),
+    proof,
+    correction,
+    classification: {
+      trust: standing === 'uncontested' ? 'trusted' : 'qualified',
+      reconciliation: standing === 'reconciliation_required' ? 'required' : 'none',
+      reasons,
     },
-    classification: { trust: 'trusted', reconciliation: 'none', reasons: [] },
-    ...readOtherAttestations(db, goal.id, attestationId),
+    ...readOtherAttestations(db, goal.id, proof.attestationId, correction.replacement?.attestationId ?? null),
   };
 }
 
-/** Other attestations of the Goal, in insertion order, bounded. Standing is caught per attestation, never thrown. */
-function readOtherAttestations(
+/**
+ * The verified tip of the proof's attestation chain, with its decision time. The projection and the verified history are
+ * read in the same transaction, so a mismatch between them is an integrity failure and yields null.
+ */
+function currentTip(
   db: Db,
   goalId: string,
-  proofAttestationId: string,
-): { otherAttestations: OtherAttestation[]; otherAttestationsTruncated: boolean } {
-  // One row past the limit tells whether the list is truncated.
-  const rows = db
-    .prepare(
-      'SELECT id, record_digest FROM goal_external_integration_attestations WHERE goal_id = ? AND id <> ? ORDER BY rowid LIMIT 21',
-    )
-    .all(goalId, proofAttestationId) as { id: string; record_digest: string }[];
+  attestationId: string,
+  projectedId: string,
+  projectedDigest: string,
+): CorrectionTip | null {
+  const last = listAttestationCorrectionHistory(db, goalId, attestationId).at(-1);
+  if (!last || last.correctionId !== projectedId || last.correctionDigest !== projectedDigest) return null;
   return {
-    otherAttestations: rows.slice(0, OTHER_ATTESTATION_LIMIT).map((row) => ({
-      attestationId: row.id,
-      recordDigest: row.record_digest,
-      standing: otherAttestationStanding(db, goalId, row.id),
-      isReplacementOfProofAttestation: false,
-      restoresCompletion: false,
-    })),
-    otherAttestationsTruncated: rows.length > OTHER_ATTESTATION_LIMIT,
+    correctionId: last.correctionId,
+    kind: last.correctionKind,
+    sequence: last.sequence,
+    correctionDigest: last.correctionDigest,
+    decidedAt: last.decidedAt,
+    replacementAttestationId: last.replacementAttestationId,
   };
 }
 
-function otherAttestationStanding(
+/** A canonical ISO instant is one whose text is exactly its own `toISOString()` form. */
+function isCanonicalInstant(value: string | null): value is string {
+  if (value === null) return false;
+  const instant = Date.parse(value);
+  return !Number.isNaN(instant) && new Date(instant).toISOString() === value;
+}
+
+/** The projection of one attestation's own chain. Null when that attestation cannot be loaded for correction. */
+function ownCorrectionStanding(
+  db: Db,
+  goalId: string,
+  attestationId: string,
+): AttestationCorrectionStandingProjection | null {
+  try {
+    return getAttestationCorrectionStanding(db, goalId, attestationId);
+  } catch (error) {
+    if (error instanceof AttestationCorrectionError) return null;
+    throw error;
+  }
+}
+
+/** The standing of another attestation. Only an attestation that cannot be loaded is `unavailable`; other faults propagate. */
+function standingOrUnavailable(
   db: Db,
   goalId: string,
   attestationId: string,
 ): AttestationCorrectionStanding | 'unavailable' {
-  try {
-    return getAttestationCorrectionStanding(db, goalId, attestationId).standing;
-  } catch {
-    return 'unavailable';
-  }
+  return ownCorrectionStanding(db, goalId, attestationId)?.standing ?? 'unavailable';
+}
+
+/**
+ * Other attestations of the Goal, bounded. The proof's replacement is always listed first, so truncation can never hide it.
+ * Otherwise the order is insertion order. Standing never influences the Goal standing.
+ */
+function readOtherAttestations(
+  db: Db,
+  goalId: string,
+  proofAttestationId: string,
+  replacementId: string | null,
+): { otherAttestations: OtherAttestation[]; otherAttestationsTruncated: boolean } {
+  // One row past the limit tells whether the list is truncated.
+  const rows = db
+    .prepare(
+      'SELECT id, record_digest FROM goal_external_integration_attestations WHERE goal_id = ? AND id <> ? ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, rowid LIMIT 21',
+    )
+    .all(goalId, proofAttestationId, replacementId) as { id: string; record_digest: string }[];
+  return {
+    otherAttestations: rows.slice(0, OTHER_ATTESTATION_LIMIT).map((row) => ({
+      attestationId: row.id,
+      recordDigest: row.record_digest,
+      standing: standingOrUnavailable(db, goalId, row.id),
+      isReplacementOfProofAttestation: row.id === replacementId,
+      restoresCompletion: false,
+    })),
+    otherAttestationsTruncated: rows.length > OTHER_ATTESTATION_LIMIT,
+  };
 }
 
 function invalidStanding(

@@ -160,10 +160,11 @@ describe('completion standing: P2 to P5 pure classifier', () => {
 describe('completion standing: P6 static source check', () => {
   const SOURCE = readFileSync(new URL('./completionStanding.ts', import.meta.url), 'utf8');
   /**
-   * Write SQL, goal mutators, write-capable statement calls (`run`, `exec`), an immediate transaction, and the names of
-   * the executor and supervisor. Reads use `prepare` with `get` and `all` only, so `prepare` itself is not forbidden.
+   * Write SQL and schema statements (insert, update, delete, create, drop, replace), the SQLite pragma call, goal
+   * mutators, write-capable statement calls (`run`, `exec`), an immediate transaction, and the names of the executor and
+   * supervisor. Reads use `prepare` with `get` and `all` only, so `prepare` itself is not forbidden.
    */
-  const FORBIDDEN_PATTERN = String.raw`\b(?:insert|update|delete|executor|supervisor)\b|\bwriteGoalEvent\b|\brequestGoalApproval\b|\btransitionGoal\b|\bcreateGoal\b|\.run\s*\(|\.exec\s*\(|\.immediate\s*\(`;
+  const FORBIDDEN_PATTERN = String.raw`\b(?:insert|update|delete|create|drop|replace|pragma|executor|supervisor)\b|\bwriteGoalEvent\b|\brequestGoalApproval\b|\btransitionGoal\b|\bcreateGoal\b|\.run\s*\(|\.exec\s*\(|\.immediate\s*\(`;
 
   /**
    * The explicit import allow-list of the reader (commit 2). The module may import these specifiers and nothing else,
@@ -220,9 +221,16 @@ describe('completion standing: P6 static source check', () => {
       'db.transaction(read).immediate();',
       'const next = executor.start(goalId);',
       'supervisor.resume(goalId);',
+      "db.pragma('ignore_check_constraints = ON');",
+      'DROP TRIGGER trg_goal_event_immutable;',
+      'CREATE TABLE shadow (id TEXT);',
+      'REPLACE INTO goals (id) VALUES (?);',
     ];
     const pattern = new RegExp(FORBIDDEN_PATTERN, 'i');
     for (const source of seeded) expect(pattern.test(source), source).toBe(true);
+    // The same pattern must not flag an ordinary read, so the widened words do not make it match everything.
+    const read = "const row = db.prepare('SELECT id, status FROM goals WHERE id = ?').get(goalId);";
+    expect(pattern.test(read), read).toBe(false);
   });
 
   it('P6a negative control: the import check flags each seeded foreign import and passes allow-listed and built-in ones', () => {

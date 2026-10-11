@@ -5,12 +5,14 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 import { openDatabase, type Db } from '../db.js';
+import { getAttestationCorrectionStanding } from './attestationCorrection.js';
 import {
   CompletionStandingError,
+  completionStandingAllowsUnqualifiedSuccess,
+  completionStandingTrustedForDownstream,
   readGoalCompletionStanding,
-  type GoalCompletionStanding,
 } from './completionStanding.js';
-import { completeGoalFromExternalDecision } from './externalCompletion.js';
+import { completeGoalFromExternalDecision, ExternalCompletionError } from './externalCompletion.js';
 import {
   buildExternalCompletionProof,
   externalCompletionProofPayloadJson,
@@ -28,14 +30,17 @@ import {
   v2DecidedFixture,
   v2RunningAttestedFixture,
 } from './goalV2TestKit.js';
-import { recordExternalCompletionDecision } from './externalCompletionDecision.js';
+import {
+  ExternalCompletionDecisionError,
+  recordExternalCompletionDecision,
+} from './externalCompletionDecision.js';
 import { cleanupRepoFixtures, goalRepoFixture, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 /**
- * Real-service tests of the completion-standing reader (commit 2): real Git fixtures and real SQLite with the production
- * migrations. Each tamper below is made on a disposable database, by dropping one named trigger or by lifting the CHECK
- * constraints with `ignore_check_constraints` and then editing one stored row. Every tamper is named where it is made.
- * Every refusal is asserted by its exact code.
+ * Real-service tests of the completion-standing reader (commits 2 and 3): real Git fixtures and real SQLite with the
+ * production migrations. Each tamper below is made on a disposable database, by dropping one named trigger, by dropping a
+ * table, or by lifting the CHECK constraints with `ignore_check_constraints` and then editing one stored row. Every tamper
+ * is named where it is made. Every refusal is asserted by its exact code and detail.
  */
 
 afterEach(() => {
@@ -504,42 +509,973 @@ describe('completion standing reader: R10 the reader is deterministic and writes
   );
 });
 
-describe('completion standing reader: the commit 2 correction placeholder is pinned fail-closed', () => {
-  it.each(['dispute', 'withdraw'] as const)(
-    'a %s after completion is pending (invalid_unverified, correction_mapping_pending) until commit 3 maps it',
-    async (kind) => {
-      const decided = await v2DecidedFixture('sha1');
-      const { fx, attestationId } = decided;
-      const { db, goalId } = fx;
-      const { completion } = await completeGoalFromExternalDecision(db, requestFor(decided));
-      expect(readGoalCompletionStanding(db, goalId).standing).toBe('uncontested');
+/** The version-2 model of a Goal, narrowed. Fails the test when the Goal is not a version-2 completion. */
+function v2Of(db: Db, goalId: string) {
+  const model = readGoalCompletionStanding(db, goalId);
+  if (model.kind !== 'v2') throw new Error(`expected a version-2 model, got ${model.kind}`);
+  return model;
+}
 
-      appendCorrectionForTest(fx, attestationId, kind);
+/** The status the Goal row must show for one completion. Corrections never change it. */
+function completedStatus(completion: { completedAt: string }) {
+  return {
+    goalStatus: 'completed',
+    completedAt: completion.completedAt,
+    reasonCode: EXTERNAL_COMPLETION_REASON,
+  };
+}
 
-      const model: GoalCompletionStanding = readGoalCompletionStanding(db, goalId);
+/** A decision input. The digest is a placeholder where the preflight is expected to refuse before it is compared. */
+function inputFor(goalId: string, attestationId: string, digest = 'a'.repeat(64)) {
+  return { goalId, attestationId, reviewedPreflightDigest: digest, acknowledgeContentNotProven: true };
+}
+
+/** The typed decision refusal of an attempt, by exact code and detail. Fails the test when the attempt succeeds. */
+async function decisionRefusal(attempt: Promise<unknown>): Promise<{ code: string; detail: string | null }> {
+  try {
+    await attempt;
+  } catch (error) {
+    if (error instanceof ExternalCompletionDecisionError) return { code: error.code, detail: error.detail };
+    throw error;
+  }
+  throw new Error('the decision succeeded but a refusal was expected');
+}
+
+/** The typed completion refusal of an attempt, by exact code and detail. Fails the test when the attempt succeeds. */
+async function completionRefusal(
+  attempt: Promise<unknown>,
+): Promise<{ code: string; detail: string | null }> {
+  try {
+    await attempt;
+  } catch (error) {
+    if (error instanceof ExternalCompletionError) return { code: error.code, detail: error.detail };
+    throw error;
+  }
+  throw new Error('the completion succeeded but a refusal was expected');
+}
+
+/** Lets the clock move past the completion, so a correction's decision time is strictly later than the completion time. */
+function letClockAdvance(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+/** Moves the destination to a new commit on top of its current tip, so the next attestation is taken at a new tip (D1). */
+function advanceDestination(attested: Pick<Decided, 'fx' | 'handoff'>, label: string): void {
+  const { repo } = attested.fx;
+  const baseRef = attested.handoff.target.baseRef;
+  const current = git(repo, 'rev-parse', baseRef);
+  const tree = git(repo, 'rev-parse', `${current}^{tree}`);
+  git(repo, 'update-ref', baseRef, git(repo, 'commit-tree', tree, '-p', current, '-m', label));
+}
+
+/** A version-2 Goal completed on its decided attestation, through the real service. */
+async function completed(format: 'sha1' | 'sha256') {
+  const decided = await v2DecidedFixture(format);
+  const { completion } = await completeGoalFromExternalDecision(decided.fx.db, requestFor(decided));
+  return {
+    decided,
+    completion,
+    db: decided.fx.db,
+    goalId: decided.fx.goalId,
+    repo: decided.fx.repo,
+  };
+}
+
+/**
+ * A version-2 Goal completed on proof attestation A, with `others` independent attestations made before completion. Each
+ * independent attestation is observed at a moved destination tip. The tip is then reset to A's tip, so A is the one
+ * decided and completed. Attesting after completion is refused (see C6), so this is the producible way to hold them.
+ */
+async function completedWithIndependent(format: 'sha1' | 'sha256', others: number) {
+  const attested = await v2RunningAttestedFixture(format);
+  const { fx } = attested;
+  const proofTip = git(fx.repo, 'rev-parse', attested.handoff.target.baseRef);
+  const independent: Awaited<ReturnType<typeof reattestAtCurrentTip>>[] = [];
+  for (let index = 1; index <= others; index += 1) {
+    advanceDestination(attested, `destination moved for independent attestation ${index}`);
+    independent.push(await reattestAtCurrentTip(attested));
+  }
+  git(fx.repo, 'update-ref', attested.handoff.target.baseRef, proofTip);
+  const digest = await reviewedDigest(attested);
+  await recordExternalCompletionDecision(fx.db, inputFor(fx.goalId, attested.attestationId, digest));
+  const { completion } = await completeGoalFromExternalDecision(
+    fx.db,
+    inputFor(fx.goalId, attested.attestationId, digest),
+  );
+  return { decided: attested, independent, completion, db: fx.db, goalId: fx.goalId, repo: fx.repo };
+}
+
+/**
+ * A completed Goal whose proof attestation A is superseded after completion by an independent compatible replacement B,
+ * which was attested before completion. Optional further independent attestations are returned in `independent`.
+ */
+async function supersededWithReplacement(format: 'sha1' | 'sha256', others = 1) {
+  const made = await completedWithIndependent(format, others);
+  const replacement = made.independent[0];
+  await letClockAdvance();
+  const { record } = appendCorrectionForTest(
+    made.decided.fx,
+    made.decided.attestationId,
+    'supersede',
+    replacement.attestationId,
+  );
+  return { ...made, replacement, supersedeRecord: record };
+}
+
+describe('completion standing reader: A a correction after completion never reads as uncontested', () => {
+  it.each(FORMATS)(
+    'A1 [%s]: a dispute after completion is disputed, while the Goal stays completed',
+    async (format) => {
+      const { decided, completion, db, goalId } = await completed(format);
+      const before = v2Of(db, goalId);
+      expect(before.standing).toBe('uncontested');
+      expect(before.status.completedAt).toBe(completion.completedAt);
+
+      await letClockAdvance();
+      const { record } = appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'v2',
+        standing: 'disputed',
+        status: completedStatus(completion),
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'disputed_by_user',
+          contentPreservation: 'not_proven',
+        },
+        proof: before.proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'disputed',
+          correctionCount: 1,
+          tip: {
+            correctionId: record.correctionId,
+            kind: 'dispute',
+            sequence: 1,
+            correctionDigest: record.correctionDigest,
+            decidedAt: record.decision.decidedAt,
+            replacementAttestationId: null,
+          },
+          correctedAfterCompletion: true,
+          invalidCode: null,
+          replacement: null,
+        },
+        classification: { trust: 'qualified', reconciliation: 'none', reasons: ['attestation_disputed'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+      expect(model.proof).toMatchObject({ state: 'valid', proofDigest: completion.proofDigest });
+      expect(completionStandingAllowsUnqualifiedSuccess(model)).toBe(false);
+      expect(completionStandingTrustedForDownstream(model)).toBe(false);
+      expect(goalRow(db, goalId).completed_at).toBe(completion.completedAt);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'A2 [%s]: a withdrawal after completion is withdrawn, while the Goal stays completed',
+    async (format) => {
+      const { decided, completion, db, goalId } = await completed(format);
+      const before = v2Of(db, goalId);
+      await letClockAdvance();
+      const { record } = appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'v2',
+        standing: 'withdrawn',
+        status: completedStatus(completion),
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'withdrawn_by_user',
+          contentPreservation: 'not_proven',
+        },
+        proof: before.proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'withdrawn',
+          correctionCount: 1,
+          tip: {
+            correctionId: record.correctionId,
+            kind: 'withdraw',
+            sequence: 1,
+            correctionDigest: record.correctionDigest,
+            decidedAt: record.decision.decidedAt,
+            replacementAttestationId: null,
+          },
+          correctedAfterCompletion: true,
+          invalidCode: null,
+          replacement: null,
+        },
+        classification: { trust: 'qualified', reconciliation: 'none', reasons: ['attestation_withdrawn'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+      expect(completionStandingAllowsUnqualifiedSuccess(model)).toBe(false);
+      expect(goalRow(db, goalId).completed_at).toBe(completion.completedAt);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A3: a dispute then a withdrawal is withdrawn with two corrections, and the tip is the second',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      await letClockAdvance();
+      const { record } = appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      const model = v2Of(db, goalId);
+      expect(model.standing).toBe('withdrawn');
+      expect(model.correction).toEqual({
+        attestationId: decided.attestationId,
+        standing: 'withdrawn',
+        correctionCount: 2,
+        tip: {
+          correctionId: record.correctionId,
+          kind: 'withdraw',
+          sequence: 2,
+          correctionDigest: record.correctionDigest,
+          decidedAt: record.decision.decidedAt,
+          replacementAttestationId: null,
+        },
+        correctedAfterCompletion: true,
+        invalidCode: null,
+        replacement: null,
+      });
+      expect(model.status.completedAt).toBe(completion.completedAt);
+      expect(model.claim.unqualifiedSuccessAllowed).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'A4 [%s]: a supersession after completion by an independent replacement is superseded, and the proof stays on A',
+    async (format) => {
+      const { decided, completion, db, goalId, replacement, supersedeRecord } =
+        await supersededWithReplacement(format);
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'v2',
+        standing: 'superseded',
+        status: completedStatus(completion),
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'superseded_by_user',
+          contentPreservation: 'not_proven',
+        },
+        proof: {
+          state: 'valid',
+          proofId: completion.proofId,
+          proofDigest: completion.proofDigest,
+          attestationId: decided.attestationId,
+          attestationRecordDigest: decided.attestation.recordDigest,
+          approvalId: completion.approvalId,
+          actionDigest: completion.actionDigest,
+          observedAt: completion.observedAt,
+          chainAtProof: {
+            sequence: 0,
+            digest: computeEmptyCorrectionChainIdentity({
+              attestationId: decided.attestationId,
+              attestationRecordDigest: decided.attestation.recordDigest,
+            }).digest,
+            standing: 'active_uncontested',
+          },
+        },
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'superseded',
+          correctionCount: 1,
+          tip: {
+            correctionId: supersedeRecord.correctionId,
+            kind: 'supersede',
+            sequence: 1,
+            correctionDigest: supersedeRecord.correctionDigest,
+            decidedAt: supersedeRecord.decision.decidedAt,
+            replacementAttestationId: replacement.attestationId,
+          },
+          correctedAfterCompletion: true,
+          invalidCode: null,
+          replacement: { attestationId: replacement.attestationId, standing: 'active_uncontested' },
+        },
+        classification: { trust: 'qualified', reconciliation: 'none', reasons: ['attestation_superseded'] },
+        otherAttestations: [
+          {
+            attestationId: replacement.attestationId,
+            recordDigest: replacement.recordDigest,
+            standing: 'active_uncontested',
+            isReplacementOfProofAttestation: true,
+            restoresCompletion: false,
+          },
+        ],
+        otherAttestationsTruncated: false,
+      });
+      expect(completionStandingAllowsUnqualifiedSuccess(model)).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    ['the replacement is disputed', 'dispute', 'disputed'],
+    ['the replacement is withdrawn', 'withdraw', 'withdrawn'],
+  ] as const)(
+    'A5 (sha1): when %s, the Goal is reconciliation_required and the proof attestation stays superseded',
+    async (_label, replacementKind, replacementStanding) => {
+      const { decided, completion, db, goalId, replacement, supersedeRecord } =
+        await supersededWithReplacement('sha1');
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, replacement.attestationId, replacementKind);
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'v2',
+        standing: 'reconciliation_required',
+        status: completedStatus(completion),
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'replacement_failed',
+          contentPreservation: 'not_proven',
+        },
+        proof: v2Of(db, goalId).proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'superseded',
+          correctionCount: 1,
+          tip: {
+            correctionId: supersedeRecord.correctionId,
+            kind: 'supersede',
+            sequence: 1,
+            correctionDigest: supersedeRecord.correctionDigest,
+            decidedAt: supersedeRecord.decision.decidedAt,
+            replacementAttestationId: replacement.attestationId,
+          },
+          correctedAfterCompletion: true,
+          invalidCode: null,
+          replacement: { attestationId: replacement.attestationId, standing: replacementStanding },
+        },
+        classification: {
+          trust: 'qualified',
+          reconciliation: 'required',
+          reasons: ['attestation_superseded', 'replacement_not_uncontested'],
+        },
+        otherAttestations: [
+          {
+            attestationId: replacement.attestationId,
+            recordDigest: replacement.recordDigest,
+            standing: replacementStanding,
+            isReplacementOfProofAttestation: true,
+            restoresCompletion: false,
+          },
+        ],
+        otherAttestationsTruncated: false,
+      });
+      expect(model.claim.unqualifiedSuccessAllowed).toBe(false);
+      expect(model.claim.trustedForDownstream).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A5 (sha1): when the replacement is itself superseded by a third attestation, the Goal is reconciliation_required',
+    async () => {
+      const { decided, completion, db, goalId, replacement, supersedeRecord, independent } =
+        await supersededWithReplacement('sha1', 2);
+      const third = independent[1];
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, replacement.attestationId, 'supersede', third.attestationId);
+      const model = v2Of(db, goalId);
+      expect(model.standing).toBe('reconciliation_required');
+      expect(model.status.completedAt).toBe(completion.completedAt);
+      expect(model.correction).toEqual({
+        attestationId: decided.attestationId,
+        standing: 'superseded',
+        correctionCount: 1,
+        tip: {
+          correctionId: supersedeRecord.correctionId,
+          kind: 'supersede',
+          sequence: 1,
+          correctionDigest: supersedeRecord.correctionDigest,
+          decidedAt: supersedeRecord.decision.decidedAt,
+          replacementAttestationId: replacement.attestationId,
+        },
+        correctedAfterCompletion: true,
+        invalidCode: null,
+        replacement: { attestationId: replacement.attestationId, standing: 'superseded' },
+      });
+      expect(model.otherAttestations).toEqual([
+        {
+          attestationId: replacement.attestationId,
+          recordDigest: replacement.recordDigest,
+          standing: 'superseded',
+          isReplacementOfProofAttestation: true,
+          restoresCompletion: false,
+        },
+        {
+          attestationId: third.attestationId,
+          recordDigest: third.recordDigest,
+          standing: 'active_uncontested',
+          isReplacementOfProofAttestation: false,
+          restoresCompletion: false,
+        },
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A5b (sha1): when the replacement fails integrity after the supersession, the Goal is invalid_unverified with the observed code',
+    async () => {
+      const { decided, completion, db, goalId, replacement } = await supersededWithReplacement('sha1');
+      const proof = v2Of(db, goalId).proof;
+      // Disposable-DB tamper: drop the attestation immutability trigger, lift the CHECK constraints, and change the
+      // observation time inside the replacement's stored body, so its digest no longer matches.
+      db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+      db.pragma('ignore_check_constraints = ON');
+      const row = db
+        .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+        .get(replacement.attestationId) as { payload_json: string };
+      const body = JSON.parse(row.payload_json) as Record<string, unknown>;
+      body.observedAt = LATER;
+      db.prepare('UPDATE goal_external_integration_attestations SET payload_json = ? WHERE id = ?').run(
+        JSON.stringify(body),
+        replacement.attestationId,
+      );
+
+      // The completion itself still verifies: the proof does not depend on the replacement.
+      expect(readStoredCompletion(db, goalId)).toMatchObject({
+        state: 'completed',
+        proofId: completion.proofId,
+      });
+      // Observed: loading the replacement for the proof's chain fails, so the proof attestation reads as invalid.
+      const projection = getAttestationCorrectionStanding(db, goalId, decided.attestationId);
+      expect(projection.standing).toBe('invalid');
+      expect(projection.invalidCode).toBe('correction_chain_invalid');
+
+      const model = readGoalCompletionStanding(db, goalId);
       expect(model).toEqual({
         schemaVersion: 1,
         goalId,
         kind: 'invalid',
         standing: 'invalid_unverified',
-        status: {
-          goalStatus: 'completed',
-          completedAt: completion.completedAt,
-          reasonCode: EXTERNAL_COMPLETION_REASON,
+        status: completedStatus(completion),
+        proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'invalid',
+          correctionCount: 0,
+          tip: null,
+          correctedAfterCompletion: null,
+          invalidCode: 'correction_chain_invalid',
+          replacement: null,
         },
-        proof: expect.objectContaining({ state: 'valid', proofId: completion.proofId }),
-        correction: null,
         claim: INVALID_CLAIM,
-        classification: {
-          trust: 'untrusted',
-          reconciliation: 'none',
-          reasons: ['correction_mapping_pending'],
-        },
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_integrity_failed'] },
         otherAttestations: [],
         otherAttestationsTruncated: false,
       });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A6 (sha1): a forged stored correction reads as invalid with the projection code, and the proof dimension stays valid',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      const proofBefore = v2Of(db, goalId).proof;
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      const stored = db
+        .prepare(
+          'SELECT payload_json FROM goal_attestation_corrections WHERE goal_id = ? AND attestation_id = ?',
+        )
+        .get(goalId, decided.attestationId) as { payload_json: string };
+      const forged = {
+        ...(JSON.parse(stored.payload_json) as Record<string, unknown>),
+        correctionDigest: 'f'.repeat(64),
+      };
+      // Disposable-DB tamper, as externalCompletionPreflight.test.ts T9d does: drop the correction immutability trigger,
+      // then store a forged payload and a forged correction digest.
+      db.exec('DROP TRIGGER trg_goal_attestation_correction_immutable;');
+      db.prepare(
+        'UPDATE goal_attestation_corrections SET payload_json = ?, correction_digest = ? WHERE goal_id = ? AND attestation_id = ?',
+      ).run(JSON.stringify(forged), 'f'.repeat(64), goalId, decided.attestationId);
+
+      const projection = getAttestationCorrectionStanding(db, goalId, decided.attestationId);
+      expect(projection.standing).toBe('invalid');
+      expect(projection.invalidCode).toBe('correction_chain_invalid');
+
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: completedStatus(completion),
+        proof: proofBefore,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'invalid',
+          correctionCount: 0,
+          tip: null,
+          correctedAfterCompletion: null,
+          invalidCode: projection.invalidCode,
+          replacement: null,
+        },
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_integrity_failed'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+      expect(model.proof).toMatchObject({ state: 'valid', proofDigest: completion.proofDigest });
       expect(model.claim.unqualifiedSuccessAllowed).toBe(false);
       expect(model.claim.trustedForDownstream).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A7 (sha1): a dispute and a withdrawal after completion change only the correction, approval and event tables',
+    async () => {
+      const { decided, completion, db, goalId, repo } = await completed('sha1');
+      const snapshotBefore = databaseSnapshot(db);
+      const repoBefore = repositoryState(repo);
+      const goalBefore = db.prepare('SELECT * FROM goals WHERE id = ?').get(goalId);
+      const proofsBefore = db.prepare('SELECT * FROM goal_external_completion_proofs ORDER BY rowid').all();
+      const eventsBefore = db.prepare('SELECT * FROM goal_events ORDER BY rowid').all();
+      const storedBefore = readStoredCompletion(db, goalId);
+      const statusBefore = readGoalCompletionStanding(db, goalId).status;
+
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+
+      const snapshotAfter = databaseSnapshot(db);
+      const changed = Object.keys(snapshotAfter.digests)
+        .filter(
+          (table) =>
+            snapshotAfter.digests[table] !== snapshotBefore.digests[table] ||
+            snapshotAfter.counts[table] !== snapshotBefore.counts[table],
+        )
+        .sort();
+      expect(changed).toEqual(['goal_approvals', 'goal_attestation_corrections', 'goal_events']);
+      expect(
+        Object.fromEntries(
+          changed.map((table) => [table, snapshotAfter.counts[table]! - snapshotBefore.counts[table]!]),
+        ),
+      ).toEqual({ goal_approvals: 2, goal_attestation_corrections: 2, goal_events: 6 });
+
+      expect(db.prepare('SELECT * FROM goals WHERE id = ?').get(goalId)).toEqual(goalBefore);
+      expect(db.prepare('SELECT * FROM goal_external_completion_proofs ORDER BY rowid').all()).toEqual(
+        proofsBefore,
+      );
+      const eventsAfter = db.prepare('SELECT * FROM goal_events ORDER BY rowid').all();
+      expect(eventsAfter.slice(0, eventsBefore.length)).toEqual(eventsBefore);
+      expect(eventsAfter.slice(eventsBefore.length).map((event) => (event as { type: string }).type)).toEqual(
+        [
+          'approval_requested',
+          'approval_decided',
+          'external_integration_corrected',
+          'approval_requested',
+          'approval_decided',
+          'external_integration_corrected',
+        ],
+      );
+
+      expect(readStoredCompletion(db, goalId)).toEqual(storedBefore);
+      expect(readStoredCompletion(db, goalId)).toMatchObject({ state: 'completed' });
+      expect(readGoalCompletionStanding(db, goalId).status).toEqual(statusBefore);
+      expect(repositoryState(repo)).toEqual(repoBefore);
+      expect(completion.completedAt).toBe(statusBefore.completedAt);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A8 (sha1): the uncorrected completion is uncontested, and every later correction is not',
+    async () => {
+      const { decided, db, goalId } = await completed('sha1');
+      expect(readGoalCompletionStanding(db, goalId).standing).toBe('uncontested');
+
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      const disputed = readGoalCompletionStanding(db, goalId).standing;
+      expect(disputed).toBe('disputed');
+      expect(disputed).not.toBe('uncontested');
+
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      const withdrawn = readGoalCompletionStanding(db, goalId).standing;
+      expect(withdrawn).toBe('withdrawn');
+      expect(withdrawn).not.toBe('uncontested');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'A9 (sha1): after a withdrawal the replay still reports completed, and the standing reader reports withdrawn',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      // Pinned current behaviour: the replay names the historical identity and carries no standing.
+      const replay = await completeGoalFromExternalDecision(db, requestFor(decided));
+      expect(replay).toMatchObject({
+        reused: true,
+        completion: { state: 'completed', proofId: completion.proofId },
+      });
+      expect(readGoalCompletionStanding(db, goalId)).toMatchObject({ kind: 'v2', standing: 'withdrawn' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('completion standing reader: B a correction before completion, and independence of attestations', () => {
+  it.each([
+    ['dispute', 'attestation_disputed'],
+    ['withdraw', 'attestation_withdrawn'],
+  ] as const)(
+    'B1 (sha1) %s before any decision: the decision is refused by its code, nothing is written, and the Goal is not completed',
+    async (kind, code) => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      appendCorrectionForTest(fx, attested.attestationId, kind);
+      const before = databaseSnapshot(fx.db);
+
+      expect(
+        await decisionRefusal(
+          recordExternalCompletionDecision(fx.db, inputFor(fx.goalId, attested.attestationId)),
+        ),
+      ).toEqual({ code: 'preflight_refused', detail: code });
+      expect(
+        await completionRefusal(
+          completeGoalFromExternalDecision(fx.db, inputFor(fx.goalId, attested.attestationId)),
+        ),
+      ).toEqual({ code: 'decision_not_found', detail: null });
+      expect(databaseSnapshot(fx.db)).toEqual(before);
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toEqual({
+        schemaVersion: 1,
+        goalId: fx.goalId,
+        kind: 'not_completed',
+        standing: null,
+        status: { goalStatus: 'running', completedAt: null, reasonCode: 'user_start' },
+        claim: NOT_COMPLETED_CLAIM,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B1 (sha1) supersede before any decision: the decision is refused with attestation_superseded, and the Goal is not completed',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      advanceDestination(attested, 'destination moved for the replacement');
+      const replacement = await reattestAtCurrentTip(attested);
+      appendCorrectionForTest(fx, attested.attestationId, 'supersede', replacement.attestationId);
+
+      expect(
+        await decisionRefusal(
+          recordExternalCompletionDecision(fx.db, inputFor(fx.goalId, attested.attestationId)),
+        ),
+      ).toEqual({ code: 'preflight_refused', detail: 'attestation_superseded' });
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
+        kind: 'not_completed',
+        standing: null,
+        claim: NOT_COMPLETED_CLAIM,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B2 (sha1): with A withdrawn before completion, an independent B completes and the Goal is uncontested',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      advanceDestination(attested, 'destination moved before the second observation');
+      const second = await reattestAtCurrentTip(attested);
+      appendCorrectionForTest(fx, attested.attestationId, 'withdraw');
+
+      expect(
+        await decisionRefusal(
+          recordExternalCompletionDecision(fx.db, inputFor(fx.goalId, attested.attestationId)),
+        ),
+      ).toEqual({ code: 'preflight_refused', detail: 'attestation_withdrawn' });
+
+      const digest = await reviewedDigest({ fx, attestationId: second.attestationId });
+      await recordExternalCompletionDecision(fx.db, inputFor(fx.goalId, second.attestationId, digest));
+      const { completion } = await completeGoalFromExternalDecision(
+        fx.db,
+        inputFor(fx.goalId, second.attestationId, digest),
+      );
+      const model = v2Of(fx.db, fx.goalId);
+      expect(model).toMatchObject({
+        standing: 'uncontested',
+        proof: { state: 'valid', proofId: completion.proofId, attestationId: second.attestationId },
+        correction: { attestationId: second.attestationId, standing: 'active_uncontested', tip: null },
+        claim: { unqualifiedSuccessAllowed: true, trustedForDownstream: true, qualifier: 'none' },
+      });
+      expect(model.otherAttestations).toEqual([
+        {
+          attestationId: attested.attestationId,
+          recordDigest: attested.attestation.recordDigest,
+          standing: 'withdrawn',
+          isReplacementOfProofAttestation: false,
+          restoresCompletion: false,
+        },
+      ]);
+      expect(model.otherAttestationsTruncated).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B3 (sha1): a decision recorded for A, then a dispute of A before completion, refuses the completion with attestation_disputed',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      appendCorrectionForTest(fx, decided.attestationId, 'dispute');
+      const before = databaseSnapshot(fx.db);
+
+      expect(await completionRefusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'attestation_disputed',
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before);
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
+        kind: 'not_completed',
+        standing: null,
+        claim: NOT_COMPLETED_CLAIM,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B4 (sha1): after completion on A, withdrawing an independent B leaves the Goal uncontested and trusted',
+    async () => {
+      const made = await completedWithIndependent('sha1', 1);
+      const { decided, completion, db, goalId } = made;
+      const independent = made.independent[0];
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, independent.attestationId, 'withdraw');
+      const model = v2Of(db, goalId);
+      expect(model.standing).toBe('uncontested');
+      expect(model.proof).toMatchObject({
+        attestationId: decided.attestationId,
+        proofDigest: completion.proofDigest,
+      });
+      expect(model.otherAttestations).toEqual([
+        {
+          attestationId: independent.attestationId,
+          recordDigest: independent.recordDigest,
+          standing: 'withdrawn',
+          isReplacementOfProofAttestation: false,
+          restoresCompletion: false,
+        },
+      ]);
+      expect(model.claim.trustedForDownstream).toBe(true);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B5 (sha1): after completion on A, withdrawing A leaves the Goal withdrawn, and B keeps its own standing',
+    async () => {
+      const made = await completedWithIndependent('sha1', 1);
+      const { decided, db, goalId } = made;
+      const independent = made.independent[0];
+      const independentBefore = getAttestationCorrectionStanding(db, goalId, independent.attestationId);
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toMatchObject({
+        kind: 'v2',
+        standing: 'withdrawn',
+        proof: { attestationId: decided.attestationId },
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'withdrawn_by_user',
+        },
+      });
+      expect(model.otherAttestations).toEqual([
+        {
+          attestationId: independent.attestationId,
+          recordDigest: independent.recordDigest,
+          standing: 'active_uncontested',
+          isReplacementOfProofAttestation: false,
+          restoresCompletion: false,
+        },
+      ]);
+      expect(getAttestationCorrectionStanding(db, goalId, independent.attestationId)).toEqual(
+        independentBefore,
+      );
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B6 (sha1): a withdrawal in one completed Goal leaves another completed Goal uncontested (two databases: the kit cannot host two Goals in one)',
+    async () => {
+      const first = await completed('sha1');
+      const second = await completed('sha1');
+      await letClockAdvance();
+      appendCorrectionForTest(first.decided.fx, first.decided.attestationId, 'withdraw');
+      expect(readGoalCompletionStanding(first.db, first.goalId).standing).toBe('withdrawn');
+      expect(readGoalCompletionStanding(second.db, second.goalId)).toMatchObject({
+        kind: 'v2',
+        standing: 'uncontested',
+        claim: { unqualifiedSuccessAllowed: true, trustedForDownstream: true },
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('completion standing reader: review follow-ups for commit 2 (5a to 5c)', () => {
+  it(
+    'C1 (sha1): with 21 other attestations, exactly 20 are listed and the list is marked truncated',
+    async () => {
+      const { db, goalId, independent } = await completedWithIndependent('sha1', 21);
+      const ids = independent.map((record) => record.attestationId);
+      const count = (
+        db
+          .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+          .get(goalId) as { n: number }
+      ).n;
+      expect(count).toBe(22);
+      const model = v2Of(db, goalId);
+      expect(model.standing).toBe('uncontested');
+      expect(model.otherAttestations.map((other) => other.attestationId)).toEqual(ids.slice(0, 20));
+      expect(model.otherAttestations.every((other) => other.standing === 'active_uncontested')).toBe(true);
+      expect(model.otherAttestationsTruncated).toBe(true);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'C2 (sha1): another attestation that fails integrity is unavailable, and the Goal standing does not change',
+    async () => {
+      const { db, goalId, independent } = await completedWithIndependent('sha1', 1);
+      const other = independent[0];
+      // Disposable-DB tamper: drop the attestation immutability trigger, lift the CHECK constraints, and change the
+      // observation time inside the other attestation's stored body.
+      db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+      db.pragma('ignore_check_constraints = ON');
+      const row = db
+        .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+        .get(other.attestationId) as { payload_json: string };
+      const body = JSON.parse(row.payload_json) as Record<string, unknown>;
+      body.observedAt = LATER;
+      db.prepare('UPDATE goal_external_integration_attestations SET payload_json = ? WHERE id = ?').run(
+        JSON.stringify(body),
+        other.attestationId,
+      );
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toMatchObject({
+        kind: 'v2',
+        standing: 'uncontested',
+        claim: { unqualifiedSuccessAllowed: true, trustedForDownstream: true },
+      });
+      expect(model.otherAttestations).toEqual([
+        {
+          attestationId: other.attestationId,
+          recordDigest: other.recordDigest,
+          standing: 'unavailable',
+          isReplacementOfProofAttestation: false,
+          restoresCompletion: false,
+        },
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'C3 (sha1): a non-domain fault in the correction read maps to invalid_unverified with integrity_check_failed',
+    async () => {
+      const { completion, db, goalId } = await completed('sha1');
+      // Disposable-DB technique: drop the correction table. Reading the correction chain then throws a SQLite error, which
+      // is not a domain error, so the reader's catch-all must classify it instead of letting it escape.
+      db.exec('DROP TABLE goal_attestation_corrections;');
+      expect(readGoalCompletionStanding(db, goalId)).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: completedStatus(completion),
+        proof: { state: 'invalid', reason: 'integrity_check_failed' },
+        correction: null,
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['integrity_check_failed'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'C4 (sha1): a fault in the single Goal-row read propagates as an exception, and never returns a standing',
+    async () => {
+      const { db, goalId } = await completed('sha1');
+      // Disposable-DB technique: rename the goals table. The Goal row cannot be read, so there is no status to report.
+      db.exec('ALTER TABLE goals RENAME TO goals_renamed_for_fault_test;');
+      const error = thrownBy(() => readGoalCompletionStanding(db, goalId));
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('no such table: goals');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'C5 (sha1): an attestation whose approval no longer matches is unavailable to the correction read, not a success',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      // Disposable-DB technique: drop the approval identity and terminal triggers, then change the attestation approval's
+      // decision time, so the approval no longer matches the attestation record.
+      db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+      db.prepare('UPDATE goal_approvals SET responded_at = ? WHERE id = ?').run(LATER, decided.approval.id);
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model.standing).not.toBe('uncontested');
+      expect(model.claim.unqualifiedSuccessAllowed).toBe(false);
+      // Observed: the historical identity read still answers completed, because it does not re-check the approval. The
+      // standing reader is the one that reports the mismatch, as invalid.
+      expect(readStoredCompletion(db, goalId)).toMatchObject({ state: 'completed' });
+      expect(model).toMatchObject({
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: completedStatus(completion),
+      });
+      // The approval mismatch is the AttestationCorrectionError branch: the correction read is unavailable, not a success.
+      expect(model.correction).toMatchObject({
+        attestationId: decided.attestationId,
+        standing: 'unavailable',
+      });
+      expect(model.classification.reasons).toEqual(['attestation_unavailable']);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'C6 (sha1), not producible: attesting the destination after completion is refused by its code, and nothing is written',
+    async () => {
+      const { decided, db } = await completed('sha1');
+      advanceDestination(decided, 'destination moved after completion');
+      const before = databaseSnapshot(db);
+      await expect(reattestAtCurrentTip(decided)).rejects.toMatchObject({ code: 'goal_ineligible' });
+      expect(databaseSnapshot(db)).toEqual(before);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
