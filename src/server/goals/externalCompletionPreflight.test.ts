@@ -1,5 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { approvedCompletionPolicyMode } from './approvedCompletionAuthority.js';
 import { buildExternalCompletionAction, parseExternalCompletionAction } from './externalCompletionProof.js';
@@ -24,6 +26,7 @@ import {
   reattestAtCurrentTip,
   repositoryState,
   v2AttestedFixture,
+  v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { getAttestationCorrectionStanding } from './attestationCorrection.js';
@@ -91,7 +94,7 @@ describe('external completion preflight: ready outcome', () => {
   it.each(FORMATS)(
     'T1 is ready for an exactly attested version-2 Goal under %s',
     async (objectFormat) => {
-      const attested = await v2AttestedFixture(objectFormat);
+      const attested = await v2RunningAttestedFixture(objectFormat);
       const report = await compute(attested.fx, attested.attestationId);
       const record = attested.attestation;
 
@@ -152,7 +155,7 @@ describe('external completion preflight: ready outcome', () => {
   it(
     'T2 is still ready when the observation discarded the accepted content',
     async () => {
-      const attested = await v2AttestedFixture('sha1', { strategy: 'ours' });
+      const attested = await v2RunningAttestedFixture('sha1', { strategy: 'ours' });
       const report = await compute(attested.fx, attested.attestationId);
       expect(report.outcome).toBe('ready');
       expect(report.proofLimitations.contentPreservation).toBe('not_proven');
@@ -163,14 +166,14 @@ describe('external completion preflight: ready outcome', () => {
   it(
     'T3 repeats to an identical report and digest, is time-free, and differs by object format',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       const first = await compute(attested.fx, attested.attestationId);
       const second = await compute(attested.fx, attested.attestationId);
       expect(second).toEqual(first);
       expect(second.digest).toBe(first.digest);
       expect(JSON.stringify(first)).not.toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:/);
 
-      const other = await v2AttestedFixture('sha256');
+      const other = await v2RunningAttestedFixture('sha256');
       const otherReport = await compute(other.fx, other.attestationId);
       expect(otherReport.digest).not.toBe(first.digest);
     },
@@ -182,7 +185,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T4 refuses a malformed attestation id, an unknown Goal, and an unknown attestation',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       expectRefusal(await compute(attested.fx, 'not-a-uuid'), 'attestation_id_invalid', null, 'input');
       const unknownGoal = await computeExternalCompletionPreflight(attested.fx.db, randomUUID(), {
         attestationId: attested.attestationId,
@@ -197,8 +200,8 @@ describe('external completion preflight: input and state refusals', () => {
     'T4b does not expose an attestation that belongs to a different Goal database',
     async () => {
       // Each fixture owns a separate database, so this proves the lookup is scoped to the Goal being checked.
-      const mine = await v2AttestedFixture('sha1');
-      const other = await v2AttestedFixture('sha1');
+      const mine = await v2RunningAttestedFixture('sha1');
+      const other = await v2RunningAttestedFixture('sha1');
       expectRefusal(
         await compute(mine.fx, other.attestationId),
         'attestation_not_found',
@@ -212,7 +215,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T5 refuses a paused Goal with its status as the detail',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       pauseGoal(attested.fx.db, attested.fx.goalId);
       expectRefusal(
         await compute(attested.fx, attested.attestationId),
@@ -240,7 +243,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T6c refuses a corrupted stored definition and reports no approved mode',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       rewriteStoredContract(attested.fx, (contract) => {
         contract.outcome = 'A different outcome stored after approval.';
       });
@@ -258,7 +261,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T6d refuses a definition whose version-2 discriminators were stripped after approval',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       rewriteStoredContract(attested.fx, (contract) => {
         const policy = contract.completionPolicy as Record<string, unknown>;
         delete policy.completionContractVersion;
@@ -278,7 +281,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T7 refuses when a completion proof is already recorded, and leaves that proof untouched',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       const row = proofRow(attested.fx.goalId);
       // The row only occupies the table; its referenced rows are not part of this check, so FK checks are off for the insert.
       attested.fx.db.pragma('foreign_keys = OFF');
@@ -305,7 +308,7 @@ describe('external completion preflight: input and state refusals', () => {
   it(
     'T8 refuses a tampered stored attestation as invalid',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       const tampered = { ...attested.attestation, observedAt: '2020-01-01T00:00:00.000Z' };
       attested.fx.db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
       attested.fx.db
@@ -322,13 +325,33 @@ describe('external completion preflight: input and state refusals', () => {
     },
     HEAVY,
   );
+
+  it(
+    'T20 refuses a Goal that was never started, with its stored status as the detail',
+    async () => {
+      const attested = await v2AttestedFixture('sha1');
+      const status = (
+        attested.fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(attested.fx.goalId) as {
+          status: string;
+        }
+      ).status;
+      expect(status).toBe('ready');
+      expectRefusal(
+        await compute(attested.fx, attested.attestationId),
+        'goal_not_running',
+        status,
+        'goal_status',
+      );
+    },
+    HEAVY,
+  );
 });
 
 describe('external completion preflight: correction standing', () => {
   it(
     'T9a refuses a disputed attestation',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       appendCorrectionForTest(attested.fx, attested.attestationId, 'dispute');
       expectRefusal(
         await compute(attested.fx, attested.attestationId),
@@ -343,7 +366,7 @@ describe('external completion preflight: correction standing', () => {
   it(
     'T9b refuses a withdrawn attestation',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       appendCorrectionForTest(attested.fx, attested.attestationId, 'withdraw');
       expectRefusal(
         await compute(attested.fx, attested.attestationId),
@@ -358,7 +381,7 @@ describe('external completion preflight: correction standing', () => {
   it(
     'T9c refuses the superseded attestation and accepts its replacement',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       git(attested.fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
       const replacement = await reattestAtCurrentTip(attested);
       appendCorrectionForTest(attested.fx, attested.attestationId, 'supersede', replacement.attestationId);
@@ -377,7 +400,7 @@ describe('external completion preflight: correction standing', () => {
   it(
     'T9d reports the real invalid code when a stored correction fails verification',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       appendCorrectionForTest(attested.fx, attested.attestationId, 'dispute');
       const stored = attested.fx.db
         .prepare(
@@ -416,7 +439,7 @@ describe('external completion preflight: destination and Git', () => {
   it(
     'T10 refuses an attestation whose destination advanced, and accepts a fresh attestation at the new tip',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       const oldRow = attested.fx.db
         .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
         .get(attested.attestationId);
@@ -448,7 +471,7 @@ describe('external completion preflight: destination and Git', () => {
   it(
     'T11c refuses when the destination no longer contains the accepted source',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       git(
         attested.fx.repo,
         'update-ref',
@@ -468,7 +491,7 @@ describe('external completion preflight: destination and Git', () => {
   it(
     'T11e refuses while two verifications already hold the Goal slots, then releases them',
     async () => {
-      const attested = await v2AttestedFixture('sha1');
+      const attested = await v2RunningAttestedFixture('sha1');
       const releases: (() => void)[] = [];
       const hold = () =>
         withExternalIntegrationVerificationSlot(
@@ -491,13 +514,63 @@ describe('external completion preflight: destination and Git', () => {
     },
     HEAVY,
   );
+
+  it(
+    'T21 refuses as a stale observation when the destination ref was deleted after attestation',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      // The base ref is the checked-out branch. Move HEAD to a branch at the same commit first: deleting it would
+      // leave HEAD unborn, and a detached HEAD fails `symbolic-ref` in repositoryState.
+      git(attested.fx.repo, 'branch', 'retained-head');
+      git(attested.fx.repo, 'symbolic-ref', 'HEAD', 'refs/heads/retained-head');
+      git(attested.fx.repo, 'update-ref', '-d', attested.handoff.target.baseRef);
+      const before = databaseSnapshot(attested.fx.db);
+      const repoBefore = repositoryState(attested.fx.repo);
+      expectRefusal(
+        await compute(attested.fx, attested.attestationId),
+        'attestation_stale',
+        'destination_ref_missing',
+        'git_observation',
+      );
+      expect(databaseSnapshot(attested.fx.db)).toEqual(before);
+      expect(repositoryState(attested.fx.repo)).toEqual(repoBefore);
+    },
+    HEAVY,
+  );
+
+  it(
+    'T22 refuses as a stale observation when the Goal ref is served by a repository with another identity',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const clone = join(dirname(attested.fx.repo), 'clone');
+      execFileSync('git', ['clone', '--quiet', '--no-hardlinks', attested.fx.repo, clone]);
+      git(
+        clone,
+        'branch',
+        attested.handoff.source.goalRef.slice('refs/heads/'.length),
+        attested.handoff.source.commit,
+      );
+      attested.fx.db
+        .prepare('UPDATE projects SET path = ?, git_root = ? WHERE id = ?')
+        .run(clone, clone, attested.fx.projectId);
+      const before = databaseSnapshot(attested.fx.db);
+      expectRefusal(
+        await compute(attested.fx, attested.attestationId),
+        'attestation_stale',
+        'repository_identity_changed',
+        'git_observation',
+      );
+      expect(databaseSnapshot(attested.fx.db)).toEqual(before);
+    },
+    HEAVY,
+  );
 });
 
 describe('external completion preflight: no writes', () => {
   it.each(FORMATS)(
     'T12 writes nothing to the database or the repository under %s',
     async (objectFormat) => {
-      const ready = await v2AttestedFixture(objectFormat);
+      const ready = await v2RunningAttestedFixture(objectFormat);
       const snapshotBefore = {
         database: databaseSnapshot(ready.fx.db),
         repo: repositoryState(ready.fx.repo),
@@ -516,7 +589,7 @@ describe('external completion preflight: no writes', () => {
           .get(ready.attestationId),
       }).toEqual(snapshotBefore);
 
-      const refused = await v2AttestedFixture(objectFormat);
+      const refused = await v2RunningAttestedFixture(objectFormat);
       const beforeRefused = databaseSnapshot(refused.fx.db);
       const repoBeforeRefused = repositoryState(refused.fx.repo);
       git(refused.fx.repo, 'update-ref', refused.handoff.target.baseRef, moveTip(refused));
@@ -531,27 +604,53 @@ describe('external completion preflight: no writes', () => {
 
   it('T12b keeps the service source free of write statements, write entry points and non-SELECT prepares', () => {
     const source = readFileSync(new URL('./externalCompletionPreflight.ts', import.meta.url), 'utf8');
-    const forbiddenVerbs = /\b(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER|PRAGMA)\b/;
-    expect(source).not.toMatch(forbiddenVerbs);
-    expect(source).not.toMatch(/db\.exec\(|\.run\(|BEGIN IMMEDIATE|\.immediate\(/);
-    const forbiddenIdentifiers = [
-      'transitionGoal',
-      'completeGoal',
-      'checkCompletionProof',
-      'requestGoalApproval',
-      'decideGoalApproval',
-      'decideGoalApprovalAsUser',
-      'persistExternalIntegrationAttestation',
-      'confirmExternalIntegration',
-      'prepareManualHandoff',
-      'buildManualHandoffSnapshot',
-      'requestAttestationCorrectionApproval',
-      'appendAttestationCorrection',
-    ];
-    for (const identifier of forbiddenIdentifiers) expect(source).not.toContain(identifier);
-    const prepares = [...source.matchAll(/\.prepare\(\s*'([^']*)'/g)].map((match) => match[1]);
-    expect(prepares.length).toBeGreaterThan(0);
-    for (const statement of prepares) expect(statement.startsWith('SELECT ')).toBe(true);
+    expect(preparedLiterals(source).length).toBeGreaterThan(0);
+    expect(scanPreflightSource(source)).toEqual([]);
+  });
+
+  it('T12b scanner is clean on a negative control that uses update() and lowercase SELECT', () => {
+    const control = [
+      "const digest = createHash('sha256').update(domain).update('\\0');",
+      "const row = db.prepare('select status from goals where id = ?').get(goalId);",
+    ].join('\n');
+    expect(scanPreflightSource(control)).toEqual([]);
+  });
+
+  it.each([
+    [
+      'double-quoted lowercase insert',
+      'db.prepare("insert into goals (id) values (1)");',
+      ['prepare_not_select', 'sql_write'],
+    ],
+    [
+      'template mixed-case update',
+      "db.prepare(`Update goals set status = 'x'`);",
+      ['prepare_not_select', 'sql_write'],
+    ],
+    ['mixed-case delete', 'const sql = "DeLeTe FrOm goals";', ['sql_write']],
+    ['concatenated prepare', "db.prepare('SELECT 1 ' + x);", ['prepare_not_literal']],
+    ['interpolated prepare', 'db.prepare(`SELECT ${t}`);', ['prepare_dynamic']],
+    ['variable prepare', 'db.prepare(sql);', ['prepare_not_literal']],
+    [
+      'multi-statement prepare',
+      'db.prepare("SELECT 1; DROP TABLE goals");',
+      ['prepare_multi_statement', 'sql_write'],
+    ],
+    ['bracket prepare', "db['prepare']('SELECT 1');", ['prepare_not_literal']],
+    ['run call', 'stmt.run();', ['write_entry']],
+    ['exec call', "db.exec('x');", ['write_entry']],
+    ['immediate transaction', 'BEGIN immediate', ['write_entry']],
+    ['Goal event writer', 'writeGoalEvent(db, event);', ['identifier:writeGoalEvent']],
+    ['hub publisher', 'hub.publishGoal(goal);', ['identifier:publishGoal']],
+    ['master event hub', 'const hub = new MasterEventHub();', ['identifier:MasterEventHub']],
+    [
+      'events import',
+      "import { writeGoalEvent } from './events.js';",
+      ['identifier:writeGoalEvent', 'import_module'],
+    ],
+    ['masterEvents import', "import { x } from '../masterEvents.js';", ['import_module']],
+  ])('T12b scanner flags %s with exact rules', (_label, snippet, expected) => {
+    expect(scanPreflightSource(snippet)).toEqual(expected);
   });
 });
 
@@ -582,6 +681,69 @@ describe('external completion preflight: golden identities', () => {
     expect(milestones).toBe('929d475b9c1135b059cba201246cdfa237d9498d3f0d9a7e4529dc33aa459797');
   });
 });
+
+const SQL_WRITE =
+  /\b(?:insert\s+(?:or\s+\w+\s+)?into|update\s+(?:or\s+\w+\s+)?["`[]?\w+["`\]]?\s+set|delete\s+from|replace\s+into|create\s+(?:(?:temp|temporary|unique|virtual)\s+)*(?:table|index|trigger|view)|drop\s+(?:table|index|trigger|view)|alter\s+table|pragma\s+\w+|vacuum|reindex|attach\s+database|detach\s+database)\b/i;
+const WRITE_ENTRY =
+  /\.(?:run|exec|immediate|exclusive|pragma|backup|loadExtension)\s*\(|\bBEGIN\s+(?:IMMEDIATE|EXCLUSIVE)\b/i;
+const PREPARE_CALL = /\.prepare\s*\(/g;
+const PREPARE_LITERAL =
+  /\.prepare\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)\s*[,)]/gs;
+const PREPARE_BRACKET = /\[\s*['"`]prepare['"`]\s*\]/;
+const IMPORT_MODULE =
+  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletionDecision)\.js['"]/;
+const FORBIDDEN_IDENTIFIERS = [
+  'transitionGoal',
+  'completeGoal',
+  'checkCompletionProof',
+  'requestGoalApproval',
+  'decideGoalApproval',
+  'decideGoalApprovalAsUser',
+  'persistExternalIntegrationAttestation',
+  'confirmExternalIntegration',
+  'prepareManualHandoff',
+  'buildManualHandoffSnapshot',
+  'requestAttestationCorrectionApproval',
+  'appendAttestationCorrection',
+  'writeGoalEvent',
+  'recordCompletionEvaluation',
+  'onGoalTransition',
+  'publishGoal',
+  'publishRun',
+  'MasterEventHub',
+  'MasterEventPublisher',
+  'createMasterEventPublisher',
+  'noticeForMasterEvent',
+  'deliverPush',
+  'webPush',
+];
+
+/** The SQL text of every `.prepare('...')` call whose argument is a single literal. */
+function preparedLiterals(source: string): string[] {
+  return [...source.matchAll(PREPARE_LITERAL)].map((match) => match[1] ?? match[2] ?? match[3] ?? '');
+}
+
+/**
+ * Static scan of service source. Returns the sorted names of every rule the source breaks. SQL verbs are matched in
+ * SQL shape, so `hash.update(x)` is not a write, and a case-insensitive match covers literals in any quote style.
+ */
+function scanPreflightSource(source: string): string[] {
+  const found = new Set<string>();
+  if (SQL_WRITE.test(source)) found.add('sql_write');
+  if (WRITE_ENTRY.test(source)) found.add('write_entry');
+  const calls = source.match(PREPARE_CALL)?.length ?? 0;
+  const literals = preparedLiterals(source);
+  if (calls !== literals.length || PREPARE_BRACKET.test(source)) found.add('prepare_not_literal');
+  for (const statement of literals) {
+    if (statement.includes('${')) found.add('prepare_dynamic');
+    if (!/^\s*select\s/i.test(statement)) found.add('prepare_not_select');
+    if (/;\s*\S/.test(statement)) found.add('prepare_multi_statement');
+  }
+  if (IMPORT_MODULE.test(source)) found.add('import_module');
+  for (const identifier of FORBIDDEN_IDENTIFIERS)
+    if (source.includes(identifier)) found.add(`identifier:${identifier}`);
+  return [...found].sort();
+}
 
 /** Moves the destination base ref to a commit that keeps the attested tree but drops the accepted source. */
 function moveTip(attested: Awaited<ReturnType<typeof v2AttestedFixture>>): string {

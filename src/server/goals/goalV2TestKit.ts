@@ -262,16 +262,21 @@ export type GoalFixture = AcceptedFixture['fx'];
 
 export interface V2AttestedFixtureOptions {
   strategy?: 'fast-forward' | 'ours';
+  /** Start the Goal (`running`) before the handoff. Off by default, matching `integratedExternalFixture`. */
+  running?: boolean;
 }
 
-/** A version-2 Goal whose exact observed integration is attested through the real persistence service. */
+/**
+ * A version-2 Goal whose exact observed integration is attested through the real persistence service. The Goal is
+ * not started unless `running` is set; use `v2RunningAttestedFixture` where the Goal must be `running`.
+ */
 export async function v2AttestedFixture(
   objectFormat: 'sha1' | 'sha256' = 'sha1',
   options: V2AttestedFixtureOptions = {},
 ) {
   const integrated = await integratedExternalFixture(objectFormat, options.strategy ?? 'fast-forward', {
     completionContractVersion2: true,
-    running: true,
+    running: options.running ?? false,
   });
   const approval = approveExternalObservation(integrated.fx, integrated.observation);
   const persisted = await persistExternalIntegrationAttestation(integrated.fx.db, {
@@ -282,6 +287,14 @@ export async function v2AttestedFixture(
   });
   const attestation = persisted.record;
   return { ...integrated, approval, attestation, attestationId: attestation.attestationId };
+}
+
+/** `v2AttestedFixture` with the Goal already `running`, the only status a completion preflight accepts. */
+export function v2RunningAttestedFixture(
+  objectFormat: 'sha1' | 'sha256' = 'sha1',
+  options: Omit<V2AttestedFixtureOptions, 'running'> = {},
+) {
+  return v2AttestedFixture(objectFormat, { ...options, running: true });
 }
 
 /** Every user table's row count and a digest of its full content in rowid order: detects updates as well as inserts. */

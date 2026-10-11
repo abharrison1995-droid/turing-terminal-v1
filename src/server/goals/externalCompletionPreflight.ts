@@ -507,6 +507,38 @@ function finish(body: ExternalCompletionPreflightBody, index: number): ExternalC
   return parsed.data;
 }
 
+function refusedBody(
+  goalId: string,
+  attestationId: string,
+  index: number,
+  code: PreflightReasonCode,
+  detail: string | null,
+  facts: Facts,
+): ExternalCompletionPreflightBody {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    kind: REPORT_KIND,
+    goalId: echo(goalId),
+    attestationId: echo(attestationId),
+    outcome: 'refused',
+    reasons: [{ code, detail }],
+    checks: checksFor(index),
+    facts: { ...facts },
+    actionFields: null,
+    proofLimitations: { ...PROOF_LIMITATIONS },
+    authority: { ...AUTHORITY },
+  };
+}
+
+/**
+ * A refusal that never throws. Each attempt keeps `outcome: 'refused'` with one failed check and no action fields, so
+ * no fallback can become `ready`. The fallbacks drop only diagnostic detail, in the order they are listed.
+ */
+const SAFE_REFUSAL: ExternalCompletionPreflightReport = finish(
+  refusedBody('[invalid]', '[invalid]', 0, 'preflight_internal_invalid', null, emptyFacts()),
+  0,
+);
+
 function refused(
   goalId: string,
   attestationId: string,
@@ -515,22 +547,21 @@ function refused(
   detail: string | null,
   facts: Facts,
 ): ExternalCompletionPreflightReport {
-  return finish(
-    {
-      schemaVersion: SCHEMA_VERSION,
-      kind: REPORT_KIND,
-      goalId: echo(goalId),
-      attestationId: echo(attestationId),
-      outcome: 'refused',
-      reasons: [{ code, detail }],
-      checks: checksFor(index),
-      facts: { ...facts },
-      actionFields: null,
-      proofLimitations: { ...PROOF_LIMITATIONS },
-      authority: { ...AUTHORITY },
-    },
-    index,
-  );
+  const at = Math.min(Math.max(Math.trunc(index), 0), PREFLIGHT_CHECK_NAMES.length - 1);
+  const attempts: [PreflightReasonCode, string | null, Facts][] = [
+    [code, detail, facts],
+    [code, null, facts],
+    ['preflight_internal_invalid', null, facts],
+    ['preflight_internal_invalid', null, emptyFacts()],
+  ];
+  for (const [attemptCode, attemptDetail, attemptFacts] of attempts) {
+    try {
+      return finish(refusedBody(goalId, attestationId, at, attemptCode, attemptDetail, attemptFacts), at);
+    } catch {
+      // Any failure, including a non-refusal error from the digest, moves to the next attempt.
+    }
+  }
+  return SAFE_REFUSAL;
 }
 
 /**
