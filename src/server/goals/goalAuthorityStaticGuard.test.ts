@@ -18,7 +18,10 @@ const KIT_FILE_NAMES = new Set([
   'testPlanProvider.ts',
 ]);
 
-/** The D.3D allow-list of files that may name completion-action identifiers. Commit 1 adds no file to it. */
+/**
+ * The D.3D allow-list of production files that may name completion-action identifiers. Each entry is checked for drift
+ * by the `only_in` rule below. `finalApplyAuthority.ts` is a refusal-only consumer (D.3E F2).
+ */
 const D3D_COMPLETION_IDENTIFIER_FILES = [
   'goals/approvals.ts',
   'goals/evidence.ts',
@@ -43,29 +46,55 @@ interface AuthorityRule {
   reason: string;
 }
 
+/**
+ * SQL separator: whitespace or a block comment, so `INSERT /**\/ INTO` is one gap. Line comments (`--`) are not matched.
+ */
+const SQL_GAP = String.raw`(?:\s|/\*[\s\S]*?\*/)+`;
+/** An optional schema qualifier (`main.`, `"main".`) and an optional opening quote or bracket before a table name. */
+const SQL_TABLE_PREFIX = String.raw`(?:["\`\[]?\w+["\`\]]?\s*\.\s*)?["\`\[]?`;
+/** `INSERT`, `INSERT OR <conflict>`, `REPLACE` into the proof table, or `UPDATE` / `DELETE FROM` it, in any casing. */
+const PROOF_WRITE_SQL = new RegExp(
+  String.raw`\b(?:insert|replace)${SQL_GAP}(?:or${SQL_GAP}\w+${SQL_GAP})?into${SQL_GAP}${SQL_TABLE_PREFIX}goal_external_completion_proofs\b` +
+    String.raw`|\bupdate${SQL_GAP}(?:or${SQL_GAP}\w+${SQL_GAP})?${SQL_TABLE_PREFIX}goal_external_completion_proofs\b` +
+    String.raw`|\bdelete${SQL_GAP}from${SQL_GAP}${SQL_TABLE_PREFIX}goal_external_completion_proofs\b`,
+  'i',
+);
+/**
+ * Any `UPDATE` of the goals table whose SET list assigns `status`, whatever its position in the list. Covers schema
+ * qualifiers, quoted names and `OR <conflict>`. The SET list ends at `WHERE`, `;` or a backtick, so a `status` in a
+ * WHERE clause or a later statement does not count. Does not cover `status` reached by string concatenation.
+ */
+const GOAL_STATUS_WRITE_SQL = new RegExp(
+  String.raw`\bupdate${SQL_GAP}(?:or${SQL_GAP}\w+${SQL_GAP})?${SQL_TABLE_PREFIX}goals["\`\]]?${SQL_GAP}set${SQL_GAP}` +
+    String.raw`(?:(?!\bwhere\b)[^;\`])*?(?<!\w)["\`\[]?status["\`\]]?\s*=`,
+  'i',
+);
+
 const RULES: readonly AuthorityRule[] = [
   {
     id: 'proof_write',
-    pattern:
-      /\b(?:insert|replace)\s+(?:or\s+\w+\s+)?into\s+["`[]?goal_external_completion_proofs\b|\b(?:update|delete\s+from)\s+["`[]?goal_external_completion_proofs\b/i,
+    // Covers the proof table with or without a schema qualifier or quotes, and with block comments or newlines between
+    // keywords. Does not cover line comments or table names built by string concatenation.
+    pattern: PROOF_WRITE_SQL,
     mode: 'only_in',
     files: [],
     reason:
-      'No production file writes a completion proof in commit 1. A later terminal writer adds the only writer.',
+      'No production file may write a completion proof. The allow-list stays empty until a terminal writer is added with its own review.',
   },
   {
     id: 'decision_reader',
     pattern: /\b(?:readExternalCompletionDecision|listExternalCompletionDecisions)\b/,
     mode: 'only_in',
     files: ['goals/externalCompletionDecision.ts'],
-    reason: 'The readers are defined in the decision module. No consumer reads a decision in commit 1.',
+    reason:
+      'Only the decision module names the decision readers. No production consumer reads a decision yet.',
   },
   {
     id: 'decision_record',
     pattern: /\brecordExternalCompletionDecision\b/,
     mode: 'only_in',
     files: ['goals/externalCompletionDecision.ts'],
-    reason: 'The decision recorder has no production caller in commit 1.',
+    reason: 'Only the decision module names the decision recorder. It has no production caller yet.',
   },
   {
     id: 'completion_identifier',
@@ -73,11 +102,12 @@ const RULES: readonly AuthorityRule[] = [
       /externalCompletionActionDigest|external_completion_action_digest|complete_goal_external_integration_v2|goal_external_completion_proofs/,
     mode: 'only_in',
     files: D3D_COMPLETION_IDENTIFIER_FILES,
-    reason: 'The D.3D allow-list. Commit 1 adds no file to it.',
+    reason: 'Only the D.3D allow-listed production files may name completion-action identifiers.',
   },
   {
     id: 'goal_status_write',
-    pattern: /\bUPDATE\s+goals\s+SET\s+status\b/i,
+    // Covers `status` at any position in the SET list, quoted or schema-qualified goals, and OR <conflict> forms.
+    pattern: GOAL_STATUS_WRITE_SQL,
     mode: 'only_in',
     files: ['goals/stateMachine.ts'],
     reason: 'Only the state machine writes goal status.',
@@ -181,6 +211,31 @@ describe('authority static guard: seeded violations and negative controls', () =
     ],
     ['proof_write', 'goals/synthetic.ts', "db.prepare('update goal_external_completion_proofs set id = ?');"],
     ['proof_write', 'goals/synthetic.ts', 'db.prepare("DELETE\nFROM `goal_external_completion_proofs`");'],
+    [
+      'proof_write',
+      'goals/synthetic.ts',
+      "db.prepare('INSERT INTO main.goal_external_completion_proofs (id) VALUES (?)');",
+    ],
+    [
+      'proof_write',
+      'goals/synthetic.ts',
+      'db.prepare(\'INSERT INTO "main"."goal_external_completion_proofs" (id) VALUES (?)\');',
+    ],
+    [
+      'proof_write',
+      'goals/synthetic.ts',
+      "db.prepare('INSERT /**/ INTO goal_external_completion_proofs (id) VALUES (?)');",
+    ],
+    [
+      'proof_write',
+      'goals/synthetic.ts',
+      "db.prepare('INSERT /* split */ OR REPLACE INTO main.goal_external_completion_proofs (id) VALUES (?)');",
+    ],
+    [
+      'proof_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE main.goal_external_completion_proofs SET id = ?');",
+    ],
     ['decision_reader', 'goals/synthetic.ts', 'readExternalCompletionDecision(db, goalId, approvalId);'],
     ['decision_reader', 'goals/synthetic.ts', 'const rows = listExternalCompletionDecisions(db, goalId);'],
     ['decision_record', 'goals/synthetic.ts', 'await recordExternalCompletionDecision(db, input);'],
@@ -197,6 +252,14 @@ describe('authority static guard: seeded violations and negative controls', () =
       'db.prepare("UPDATE goals SET status = \'completed\' WHERE id = ?");',
     ],
     ['goal_status_write', 'goals/synthetic.ts', 'db.prepare("update   goals\n  set status = ?");'],
+    ['goal_status_write', 'goals/synthetic.ts', "db.prepare('UPDATE goals SET updated_at = ?, status = ?');"],
+    ['goal_status_write', 'goals/synthetic.ts', `db.prepare('UPDATE "goals" SET status = ?');`],
+    ['goal_status_write', 'goals/synthetic.ts', "db.prepare('UPDATE OR REPLACE goals SET status = ?');"],
+    [
+      'goal_status_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE main.goals SET updated_at = ?,\n  status = ?');",
+    ],
     [
       'preflight_isolation',
       'goals/externalCompletionPreflight.ts',
@@ -231,6 +294,12 @@ describe('authority static guard: seeded violations and negative controls', () =
     ],
     ['proof_write', 'goals/synthetic.ts', 'db.prepare("INSERT INTO goal_events (id) VALUES (?)");'],
     [
+      'proof_write',
+      'goals/synthetic.ts',
+      "db.prepare('SELECT COUNT(*) FROM main.goal_external_completion_proofs');",
+    ],
+    ['proof_write', 'goals/synthetic.ts', "db.prepare('INSERT INTO main.goal_events (id) VALUES (?)');"],
+    [
       'decision_reader',
       'goals/externalCompletionDecision.ts',
       'export function readExternalCompletionDecision() {}',
@@ -252,6 +321,21 @@ describe('authority static guard: seeded violations and negative controls', () =
       'UPDATE goals SET status = ?, status_reason_code = ? WHERE id = ?',
     ],
     ['goal_status_write', 'goals/synthetic.ts', 'UPDATE goal_runtime SET status = ? WHERE goal_id = ?'],
+    [
+      'goal_status_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE goals SET updated_at = ? WHERE status = ?');",
+    ],
+    [
+      'goal_status_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE goals SET status_reason_code = ? WHERE id = ?');",
+    ],
+    [
+      'goal_status_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE goals SET last_status = ? WHERE id = ?');",
+    ],
     [
       'preflight_isolation',
       'goals/externalCompletionPreflight.ts',

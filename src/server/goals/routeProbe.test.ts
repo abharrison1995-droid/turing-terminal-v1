@@ -65,8 +65,6 @@ let calls: ProviderRunRequest[];
 type Behaviour = (request: ProviderRunRequest, profile: ProbeProfileName) => Promise<ReturnType<typeof done>>;
 let overrides: Partial<Record<ProbeProfileName, Behaviour>>;
 let gate: Promise<void> | null;
-// These real Git/SQLite/RunEngine cases use waitRun's 20s bound; keep CI headroom local to these tests.
-const ROUTE_PROBE_INTEGRATION_TIMEOUT_MS = 25_000;
 
 const goodBehaviour: Behaviour = async (request, profile) => {
   if (profile === 'broker-read') {
@@ -216,7 +214,7 @@ describe('POST /api/route-validations: request and exact identity', () => {
       release();
       await h.waitRun(runId, 'completed');
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('pins the route exactly on the enabled stages, applies no fallback, and skips profiles that were not requested', async () => {
@@ -470,7 +468,7 @@ describe('probe lifecycle and the validation record writer', () => {
       expect(set.available).toBe(true);
       for (const record of all) expect(validationRecordConsistent(record)).toBe(true);
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('uses a 24-hour lifetime for an opportunity probe', async () => {
@@ -568,7 +566,7 @@ describe('probe lifecycle and the validation record writer', () => {
           .every((r) => r.status === 'fail'),
       ).toBe(true);
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('leaves no record for a profile that was never meaningfully tested (infrastructure failure)', async () => {
@@ -692,7 +690,7 @@ describe('probe lifecycle and the validation record writer', () => {
       expect(rows.find((row) => row.profile === 'orchestrator-json')).toEqual(first);
       expect(probeRow(probeId).status).toBe('consumed');
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('never revalidates because a record expired: no code path but the POST route creates a probe', async () => {
@@ -776,7 +774,7 @@ describe('worktree retention and database invariants', () => {
       expect(existsSync(run.worktree_path)).toBe(true);
       expect(await pruneProbeWorktree(h.db, 'no-such-probe')).toMatchObject({ status: 'refused' });
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('enforces migration 021: records are unique per run and profile, immutable, and bound to their pending probe', async () => {

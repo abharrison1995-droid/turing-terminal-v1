@@ -17,7 +17,12 @@ const TIMEOUT_CONSTANT = 'REAL_GIT_TEST_TIMEOUT_MS';
 /** Vitest hooks run under the 10 s default timeout unless the second argument is passed, so they are guarded too. */
 const HOOK_NAMES = new Set(['beforeAll', 'beforeEach', 'afterAll', 'afterEach']);
 
-/** Each real-Git kit helper and the kit module that exports it. Checked against the kit sources below. */
+/**
+ * Each real-Git kit helper and the kit module that exports it. Checked against the kit sources below.
+ * Kit exports that run no Git, directly or through a helper here, are deliberately absent: `approveExternalObservation`
+ * and `appendCorrectionForTest` are synchronous and touch only the database, and `probeHarness` makes no Git call
+ * itself (its methods start production runs, which the name-based scan cannot follow).
+ */
 const REAL_GIT_HELPERS: Record<string, string> = {
   acceptedFixture: 'goalV2TestKit',
   buildFixtureRepository: 'routeProbeFixture',
@@ -27,12 +32,21 @@ const REAL_GIT_HELPERS: Record<string, string> = {
   integratedExternalFixture: 'goalV2TestKit',
   passDeterministic: 'repoKit',
   realRunHarness: 'turingRunKit',
+  reattestAtCurrentTip: 'goalV2TestKit',
   repositoryState: 'goalV2TestKit',
+  reviewedDigest: 'goalV2TestKit',
   v2AttestedFixture: 'goalV2TestKit',
   v2RunningAttestedFixture: 'goalV2TestKit',
   verifyFixture: 'routeProbeFixture',
 };
 const RAW_GIT_HELPER = 'git';
+/** The names that declare a test: `it` and `test`. */
+const TEST_ROOTS = new Set(['it', 'test']);
+/**
+ * Vitest modifiers that keep a declaration a test: `it.only`, `test.skip`, `it.concurrent`, `it.only.concurrent`. The
+ * `each` form is matched separately, because it takes the table before the test arguments.
+ */
+const TEST_MODIFIERS = new Set(['only', 'skip', 'concurrent', 'sequential']);
 
 function sourceFile(path: string): ts.SourceFile {
   return ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true);
@@ -98,18 +112,21 @@ function gitCallableNames(file: ts.SourceFile): Set<string> {
 
 /**
  * A raw Git call: the fixture method `.git(...)`, a local `git(...)` helper call, or a process call whose first
- * argument is the literal program `'git'` or a command string starting with `'git '`.
+ * argument is the program `'git'` or a command string starting with `'git '`. The command may be a plain literal or a
+ * template with substitutions, such as ``git -C ${dir} init``: only its leading text before the first `${` is read.
  */
 function isRawGitCall(call: ts.CallExpression): boolean {
   if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === RAW_GIT_HELPER)
     return true;
   if (ts.isIdentifier(call.expression) && call.expression.text === RAW_GIT_HELPER) return true;
   const first = call.arguments[0];
-  return (
-    first !== undefined &&
-    ts.isStringLiteralLike(first) &&
-    (first.text === RAW_GIT_HELPER || first.text.startsWith(`${RAW_GIT_HELPER} `))
-  );
+  if (first === undefined) return false;
+  const leading = ts.isTemplateExpression(first)
+    ? first.head.text
+    : ts.isStringLiteralLike(first)
+      ? first.text
+      : null;
+  return leading !== null && (leading === RAW_GIT_HELPER || leading.startsWith(`${RAW_GIT_HELPER} `));
 }
 
 /** Functions of this file that call a Git helper, directly or through another such function. */
@@ -142,20 +159,42 @@ function gitFunctionNames(file: ts.SourceFile): Set<string> {
   return new Set([...direct, ...git]);
 }
 
-/** The `it(...)` or `it.each(...)(...)` call expression at this node, or null. */
-function itCall(node: ts.Node): ts.CallExpression | null {
+/** `it`, `test`, or one of them with modifiers: `it.only`, `test.skip`, `it.only.concurrent`. */
+function isTestCallee(expression: ts.Expression): boolean {
+  if (ts.isIdentifier(expression)) return TEST_ROOTS.has(expression.text);
+  return (
+    ts.isPropertyAccessExpression(expression) &&
+    TEST_MODIFIERS.has(expression.name.text) &&
+    isTestCallee(expression.expression)
+  );
+}
+
+/**
+ * The `each` table of a parametrised test, as a call or a tagged template: `it.each(table)`, ``it.each`table` ``,
+ * `test.only.each(table)`. The test arguments are then passed to the table's result.
+ */
+function isEachTable(expression: ts.Expression): boolean {
+  const each = ts.isCallExpression(expression)
+    ? expression.expression
+    : ts.isTaggedTemplateExpression(expression)
+      ? expression.tag
+      : null;
+  return (
+    each !== null &&
+    ts.isPropertyAccessExpression(each) &&
+    each.name.text === 'each' &&
+    isTestCallee(each.expression)
+  );
+}
+
+/**
+ * The test declaration at this node, or null. Covers `it(...)`, `test(...)`, the modifier forms (`it.only`, `it.skip`,
+ * `it.concurrent`, `test.only`, `test.skip`), and `each` as a call or a tagged template. A `todo` has no callback and
+ * is not a test body, so it is not covered.
+ */
+function testCall(node: ts.Node): ts.CallExpression | null {
   if (!ts.isCallExpression(node)) return null;
-  const callee = node.expression;
-  if (ts.isIdentifier(callee) && callee.text === 'it') return node;
-  if (
-    ts.isCallExpression(callee) &&
-    ts.isPropertyAccessExpression(callee.expression) &&
-    ts.isIdentifier(callee.expression.expression) &&
-    callee.expression.expression.text === 'it' &&
-    callee.expression.name.text === 'each'
-  )
-    return node;
-  return null;
+  return isTestCallee(node.expression) || isEachTable(node.expression) ? node : null;
 }
 
 export interface TimeoutViolation {
@@ -195,7 +234,7 @@ export function timeoutViolations(path: string, file: ts.SourceFile): TimeoutVio
   const violations: TimeoutViolation[] = [];
   const lineOf = (node: ts.Node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
   const visit = (node: ts.Node) => {
-    const call = itCall(node);
+    const call = testCall(node);
     if (call && call.arguments.length >= 2 && callsRealGit(call.arguments[1]!, gitNames)) {
       const third = call.arguments[2];
       const explicit = third !== undefined && ts.isIdentifier(third) && third.text === TIMEOUT_CONSTANT;
@@ -358,5 +397,98 @@ describe('real-Git timeout guard: every real-Git test has the explicit shared ti
       ts.createSourceFile('s.ts', source, ts.ScriptTarget.Latest, true),
     );
     expect(violations).toEqual([]);
+  });
+});
+
+describe('real-Git timeout guard: seeded violations and negative controls for each coverage hole', () => {
+  const titlesOf = (source: string) =>
+    timeoutViolations(
+      'goals/synthetic.test.ts',
+      ts.createSourceFile('s.ts', source, ts.ScriptTarget.Latest, true),
+    ).map(({ title }) => title);
+
+  it('flags a test that calls a Git-running kit helper missing from the list (reattestAtCurrentTip, reviewedDigest)', () => {
+    const source = [
+      "import { reattestAtCurrentTip, reviewedDigest } from './goalV2TestKit.js';",
+      "it('reattest without timeout', async () => { await reattestAtCurrentTip(attested); });",
+      "it('digest without timeout', async () => { await reviewedDigest(attested); });",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual(['reattest without timeout', 'digest without timeout']);
+  });
+
+  it('does not flag a test that calls a kit helper which runs no Git, with or without the shared timeout', () => {
+    const source = [
+      "import { approveExternalObservation, appendCorrectionForTest } from './goalV2TestKit.js';",
+      "it('approve without timeout', () => { approveExternalObservation(fx, observation); });",
+      "it('correction without timeout', () => { appendCorrectionForTest(fx, id, 'dispute'); });",
+      "it('approve with timeout', () => { approveExternalObservation(fx, observation); }, REAL_GIT_TEST_TIMEOUT_MS);",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual([]);
+  });
+
+  it('flags every test-declaration form that lacks the shared timeout', () => {
+    const source = [
+      "import { goalRepoFixture } from './repoKit.js';",
+      "test('test form', async () => { await goalRepoFixture({}); });",
+      "it.only('only form', async () => { await goalRepoFixture({}); });",
+      "it.skip('skip form', async () => { await goalRepoFixture({}); });",
+      "it.concurrent('concurrent form', async () => { await goalRepoFixture({}); });",
+      "test.only('test only form', async () => { await goalRepoFixture({}); });",
+      "test.skip('test skip form', async () => { await goalRepoFixture({}); });",
+      "it.only.concurrent('chained form', async () => { await goalRepoFixture({}); });",
+      "it.each([1])('each form %s', async () => { await goalRepoFixture({}); });",
+      "it.only.each([1])('only each form %s', async () => { await goalRepoFixture({}); });",
+      "it.each`\n  a\n  ${1}\n`('tagged each form %s', async () => { await goalRepoFixture({}); });",
+      "test.each`\n  a\n  ${1}\n`('tagged test form %s', async () => { await goalRepoFixture({}); });",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual([
+      'test form',
+      'only form',
+      'skip form',
+      'concurrent form',
+      'test only form',
+      'test skip form',
+      'chained form',
+      'each form %s',
+      'only each form %s',
+      'tagged each form %s',
+      'tagged test form %s',
+    ]);
+  });
+
+  it('does not flag the same test-declaration forms with the shared timeout, an it.todo, or a non-test describe', () => {
+    const source = [
+      "import { goalRepoFixture, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';",
+      "test('test form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.only('only form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.skip('skip form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.concurrent('concurrent form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "test.only('test only form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "test.skip('test skip form', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.each([1])('each form %s', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.each`\n  a\n  ${1}\n`('tagged %s', async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      "it.todo('planned form');",
+      "describe.only('a group', () => { goalRepoFixture({}); });",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual([]);
+  });
+
+  it('flags a raw Git command written as a template with substitutions, with no helper involved', () => {
+    const source = [
+      "import { execSync } from 'node:child_process';",
+      "it('template git command', () => { execSync(`git -C ${dir} init`); });",
+      "it('template git through a runner', () => { runCommand(`git -C ${dir} status`); });",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual(['template git command', 'template git through a runner']);
+  });
+
+  it('does not flag a template command that does not begin with git, or a template with the shared timeout', () => {
+    const source = [
+      "it('echo template', () => { runCommand(`echo ${dir}`); });",
+      "it('git word later', () => { runCommand(`-C ${dir} git status`); });",
+      "it('pure', () => { expect(`${1}`).toBe('1'); });",
+      "it('template git with timeout', () => { execSync(`git -C ${dir} init`); }, REAL_GIT_TEST_TIMEOUT_MS);",
+    ].join('\n');
+    expect(titlesOf(source)).toEqual([]);
   });
 });
