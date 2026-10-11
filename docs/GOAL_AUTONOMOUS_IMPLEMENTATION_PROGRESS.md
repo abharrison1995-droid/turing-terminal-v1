@@ -7,18 +7,15 @@ and a Sonnet PASS on that SHA. Verdicts and CI results are recorded only after t
 
 ## Current state
 
-- Accepted SHA: `0a401bcc2358e7436e087909abf1c361a40ddb54` (Stage 7C.2B.5D.1a, accepted).
-- D.2 CI-green candidate: `faf09858fa92d58c6b30cdb44543b5e05cc1bc04`.
-  - Hosted CI run 38092373327: success on the exact SHA.
-  - Sonnet 5.5 Medium verdict: PASS (no critical, high or medium findings; four low findings, addressed in the
-    commit that follows this checkpoint, see Stage log).
-- D.2 candidate awaiting acceptance: the commit that adds this checkpoint's remediation (SHA recorded in the next
-  checkpoint, not in this file, because a file cannot name its own commit). Its hosted CI and fresh Sonnet review
-  are pending. D.2 is not accepted until both pass on that SHA.
-- Implementer model: Claude Haiku 5.5 (High).
-- Reviewer model: Claude Sonnet 5.5 (Medium), invoked as a clean subagent with an exact review packet.
-- Next required action: confirm hosted CI success on the pending candidate SHA, record the Sonnet verdict, then
-  accept or remediate D.2. D.3 planning starts only after D.2 acceptance.
+- Stage D.2 (7C.2B.5D.2, attestation correction authority): **ACCEPTED** on `8a9dc80f98d7e399e5df51daab2784f4ca2b21ea`.
+  - Hosted CI run 38096171842: success on the exact SHA (https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/38096171842).
+  - Sonnet 5.5 Medium fresh re-review of `8a9dc80`: PASS, no high or medium findings. Two minor doc imprecisions, corrected in the docs-only commit that follows this record.
+  - Gate on `8a9dc80`: format, lint, typecheck, build and `npm audit --omit=dev` (0 vulnerabilities) passed; `npm test` 122 files, 2002 tests passed.
+- Stage 7C.2B.5D.1a baseline accepted: `0a401bcc2358e7436e087909abf1c361a40ddb54`.
+- The docs-only commit that records this acceptance and corrects the two imprecisions is a new HEAD. It inherits no acceptance from `8a9dc80`. It is verified separately by the gate and its own hosted CI run.
+- PR #3: open, unmerged.
+- Next action: D.3.0A formal completion-contract reconciliation (Sonnet /plan), covering the five design decisions D1–D5 and the three blockers B1–B3 recorded below.
+- Limits retained for D.2 (also in `docs/V1_READINESS.md`): restart tests are not OS-kill qualification; the 026→028 fixture does not prove full historical chain validity; completion standing is D.3; the correction API and UI are D.4; post-completion correction approval through the ordinary command is blocked and must be fixed in D.4C; cross-process CAS qualification is separate.
 
 ## Stage log (append-only)
 
@@ -100,3 +97,13 @@ Limits that must be stated at D.2 acceptance:
 - CI-only fix: the `finalApply` timeout after `6766381` was handled by the user's `aafc7b7`, not counted as a
   review remediation.
 - Budget: the four-attempt limit per phase is not reached.
+
+## Open validation risk (recorded during the docs-only acceptance commit)
+
+- On the docs-only commit's first `npm test`, five tests in `src/server/goals/supervisorRemediation.test.ts` and
+  `src/server/goals/routeProbe.test.ts` hit the 5000 ms default timeout (5 to 8 s observed). The same two files pass
+  63 of 63 in isolation, with the slowest test at 529 ms. A second full `npm test` on the same tree passed 122 files
+  and 2002 tests. The first failing run is recorded here, not treated as a pass.
+- Load during the failing run was about 4 on 12 cores, with desktop applications running. The cause is not proven.
+- Action for hardening (H.x): measure and reduce fixture cost, or set a justified per-test timeout with measured
+  headroom in those specific tests. Do not raise global timeouts to hide failures.
