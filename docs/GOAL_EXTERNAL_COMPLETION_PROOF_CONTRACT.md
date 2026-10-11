@@ -4,7 +4,7 @@
 
 Stage 7C.2B.5D.1 adds versioned policy and immutable proof infrastructure. Stage 7C.2B.5D.1a adds fail-closed validation of approved definition content and approval lineage before completion evaluation and terminal proof acceptance. Neither stage activates version-2 Goal completion. No production service can create the version-2 completion approval or proof, no endpoint or desktop action exists, and no Goal can become completed through this contract. The document describes the implemented boundary plus the records reserved for a later stage.
 
-The D.3.0B reconciliation (CCv2r1) records the version-2 completion decisions D1-D5 in the section below. It is a documentation change only: version-2 completion remains inactive and this document makes no activation or release claim. The identifiers named as reserved in this section are specified here and are not yet implemented.
+The D.3.0B reconciliation (CCv2r1) records the version-2 completion decisions D1-D5 in the section below. It is a documentation change only: version-2 completion remains inactive and this document makes no activation or release claim. The identifiers named as reserved in this section are specified here and are not yet implemented. Stage 7C.2B.5D.3E adds the internal version-2 completion service described in the D.3E section below; the statements in this Status section describe the state before D.3E.
 
 ## Definition policy
 
@@ -104,3 +104,14 @@ The rejected checked-out-worktree writer remains quarantined, production uses `D
 A decision creates one approved `user_confirmation` approval with a completion action digest. It is not a proof. `goal_external_completion_proofs` stays empty, and a static test confirms that no production code inserts a proof.
 
 `readExternalCompletionDecision` returns `valid` only when the stored detail parses, its digest matches the column, and the row is approved by the user with the required gate, risk and requester. External-integration approvals, correction approvals and legacy `applied_externally` final-apply approvals are never completion decisions.
+
+## D.3E version-2 completion
+
+Stage 7C.2B.5D.3E adds `completeGoalFromExternalDecision` in `src/server/goals/externalCompletion.ts`. It is an internal service with no route and no UI. For a Goal whose `completionContractVersion` is 2, it is the only completion route. Its ordering and its limitations are in [GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md](GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md).
+
+- **`external_completion_not_activated`.** The legacy evaluator still reports this code for every version-2 Goal, and the legacy transition path refuses version-2 completion with the same code. It means that the Goal cannot be completed through the legacy path. It does not mean that version-2 completion is unavailable through the service.
+- **Legacy v1 is unchanged.** The evaluator and the legacy completion path have no D.3E change. `transitionGoal` now notifies observers through `notifyGoalTransition` with the same behaviour.
+- **No v2 downgrade.** A Goal whose approved policy is version 2 cannot complete through the legacy v1 path. Its completion rests on the decided version-2 action and the immutable proof, not on legacy `applied_externally` or apply-operation evidence.
+- **`contentPreservation` is `not_proven`.** Every version-2 proof records `contentPreservation: 'not_proven'`, and the proof schema accepts only that literal. Ancestry alone is not content preservation. Ancestry shows that the source and base commits are in the destination history. A `git merge -s ours` result passes both ancestry checks when the accepted files are absent.
+- **Authenticated `user`.** `user` means authenticated application control (loopback or Tailscale login plus paired device), not a verified person. The completed Goal records that a user confirmed the decision, and the proof records that content preservation was not proven.
+- **Outstanding.** The final whole-path D.3E review is pending. No HTTP route, UI, or Windows qualification exists.
