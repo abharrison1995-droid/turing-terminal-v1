@@ -1,8 +1,14 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { expect } from 'vitest';
+import type { Db } from '../db.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
+import {
+  appendAttestationCorrection,
+  requestAttestationCorrectionApproval,
+} from './attestationCorrection.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { recordEvidence } from './evidence.js';
 import {
@@ -11,6 +17,7 @@ import {
   persistExternalIntegrationAttestation,
 } from './externalIntegration.js';
 import { prepareManualHandoff } from './manualHandoff.js';
+import { transitionGoal } from './stateMachine.js';
 import { goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { completeReview, createReview } from './reviews.js';
 
@@ -194,9 +201,18 @@ export async function acceptedFixture(
 export async function integratedExternalFixture(
   objectFormat: 'sha1' | 'sha256' = 'sha1',
   strategy: 'fast-forward' | 'ours' = 'fast-forward',
-  options: { completionContractVersion2?: boolean } = {},
+  options: { completionContractVersion2?: boolean; running?: boolean } = {},
 ) {
   const accepted = await acceptedFixture(objectFormat, options);
+  // Completion can only leave `running`, so a preflight fixture starts the Goal before the handoff is prepared.
+  if (options.running)
+    transitionGoal(accepted.fx.db, {
+      goalId: accepted.fx.goalId,
+      to: 'running',
+      reasonCode: 'user_start',
+      actor: 'user',
+      preconditions: [{ code: 'preflight', ok: true }],
+    });
   const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
   if (strategy === 'fast-forward') git(accepted.fx.repo, 'merge', '--ff-only', accepted.sourceRef);
   else
@@ -255,6 +271,7 @@ export async function v2AttestedFixture(
 ) {
   const integrated = await integratedExternalFixture(objectFormat, options.strategy ?? 'fast-forward', {
     completionContractVersion2: true,
+    running: true,
   });
   const approval = approveExternalObservation(integrated.fx, integrated.observation);
   const persisted = await persistExternalIntegrationAttestation(integrated.fx.db, {
@@ -265,4 +282,74 @@ export async function v2AttestedFixture(
   });
   const attestation = persisted.record;
   return { ...integrated, approval, attestation, attestationId: attestation.attestationId };
+}
+
+/** Every user table's row count and a digest of its full content in rowid order: detects updates as well as inserts. */
+export function databaseSnapshot(db: Db): {
+  counts: Record<string, number>;
+  digests: Record<string, string>;
+} {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all() as { name: string }[];
+  const counts: Record<string, number> = {};
+  const digests: Record<string, string> = {};
+  for (const { name } of tables) {
+    counts[name] = (db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get() as { n: number }).n;
+    const rows = db.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all();
+    digests[name] = createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+  }
+  return { counts, digests };
+}
+
+/** Request, user-approve and append one correction, using the same three steps as the correction tests. */
+export function appendCorrectionForTest(
+  fx: GoalFixture,
+  attestationId: string,
+  kind: 'dispute' | 'withdraw' | 'supersede',
+  replacementAttestationId: string | null = null,
+) {
+  const reasonCode =
+    kind === 'dispute'
+      ? 'observation_error'
+      : kind === 'withdraw'
+        ? 'integration_not_performed'
+        : 'superseded_by_new_observation';
+  const reviewed = requestAttestationCorrectionApproval(fx.db, {
+    goalId: fx.goalId,
+    attestationId,
+    correctionKind: kind,
+    reasonCode,
+    explanation: 'Recorded by a preflight test.',
+    replacementAttestationId,
+  });
+  decideGoalApproval(fx.db, {
+    goalId: fx.goalId,
+    approvalId: reviewed.approval.id,
+    decision: 'approved',
+    decidedBy: 'user',
+  });
+  return appendAttestationCorrection(fx.db, {
+    goalId: fx.goalId,
+    approvalId: reviewed.approval.id,
+    expectedActionDigest: reviewed.actionDigest,
+    explanation: 'Recorded by a preflight test.',
+  });
+}
+
+/** Attests the destination's current tip as a new observation for the same immutable handoff. */
+export async function reattestAtCurrentTip(attested: Awaited<ReturnType<typeof v2AttestedFixture>>) {
+  const observation = await buildExternalIntegrationObservation(
+    attested.fx.db,
+    attested.fx.goalId,
+    attested.handoff.handoffId,
+  );
+  const approval = approveExternalObservation(attested.fx, observation);
+  const persisted = await persistExternalIntegrationAttestation(attested.fx.db, {
+    goalId: attested.fx.goalId,
+    handoffId: attested.handoff.handoffId,
+    observation,
+    approvalId: approval.id,
+  });
+  return persisted.record;
 }
