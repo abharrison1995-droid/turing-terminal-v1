@@ -198,6 +198,42 @@ Limits that must be stated at D.2 acceptance:
 - Disclosed gaps, non-blocking: test 5 (changed lineage) not implemented; test 19 supervisor-with-proof leg untestable until a proof writer exists.
 - Next action: Sonnet 5.5 Medium `/plan` for D.3E, including follow-ups 1–5.
 
+### D.3E atomic version-2 Goal completion: candidate chain (lead record; final review pending)
+
+- Authorised base: `160fa2b` (CI green). Owner decision recorded: accept `160fa2b` as the reconciled base; do not re-ask.
+- Commits on `feature/grand-project-goal-engine`, each gated on the exact tree and pushed fast-forward only:
+  - D.3D follow-ups F1, F2, F3, F5: `1d9cac4` (per-Goal FIFO lock, retry-once on `observation_changed`, `.immediate()` decision
+    transaction), `073d196` (completion approvals refused as final-apply authority, allow-list length 7 to 8), `e150d95`
+    (30 s real-Git timeout constant, AST timeout guard, hardened static guard). Hosted CI green on `e150d95`.
+  - Commit 2, terminal authority: `e884a7d` (`externalCompletionTerminal.ts`, `activeWork.ts`, `EXTERNAL_COMPLETION_REASON`,
+    proof payload helper). Hosted CI run 38161289548 success. Independent Sonnet Medium: PASS WITH NON-BLOCKING FINDINGS.
+  - Commit 3a, completion service: `d6ab8ad` (`externalCompletion.ts`, preflight identity fields). Hosted CI run 38163968111
+    success on the exact SHA. Independent Sonnet Medium: PASS WITH NON-BLOCKING FINDINGS (test gaps moved to 3b).
+  - Commit 3b, adversarial matrix and hardening: `207219e`. Gate on the exact tree: format, lint, typecheck, build,
+    `npm audit --omit=dev` 0 vulnerabilities, `npm test` 133 files and 2346 tests passed. Hosted CI run 38167906897
+    success on the exact SHA. Independent Sonnet Medium: PASS WITH NON-BLOCKING FINDINGS, no blocking findings.
+- Non-blocking findings carried to the final D.3E review:
+  1. A transient SQLite read failure during replay is reported as `completion_corrupt/integrity_check_failed`, not
+     `completion_read_failed`. Fail-closed, but the label is misleading. Disclose or correct in a later commit.
+  2. In-transaction read errors surface as `completion_persistence_failed` or `database_busy`, not `completion_read_failed`.
+     Fail-closed, mislabelled.
+  3. The `action_identity` branch and the second action-digest comparison after the re-read have no direct test.
+  4. The drift seam test asserts counts and the Goal row, but not a full event-log comparison.
+  5. `decision_action_mismatch` and `reviewed_preflight_changed` are tested only through a seam that replaces the report. The
+     `decision_action_mismatch` setup cannot occur in production because the report digest binds the action fields.
+  6. A destination advanced after observation still completes on the attested commit (the stated D1 behaviour). The proof
+     records the observed commit, which is no longer the live tip. Must be disclosed in the final review.
+- Not produced by a real service path, recorded as untested: `destination_changed` (structurally unreachable),
+  requirement 17 (observation from another run; no producing path), definition amendment, milestone skip, pending final
+  review, handoff tamper, active run, blocking finding, supersede.
+- Deviations from the plan's predicted codes (all fail-closed): denied decision row gives `decision_corrupt/approval_fields_invalid`;
+  denied attestation gives `preflight_refused/correction_standing_unavailable`; failed replay read gives
+  `completion_corrupt/integrity_check_failed`.
+- Commit 4 documentation: `a6d73f8` (contract design, proof contract, V1_READINESS D4 row; Haiku, gate format, lint and typecheck
+  only). A lead follow-up corrects the stale identifier-table rows in `docs/V1_READINESS.md`.
+- Next action: push, hosted CI on the exact pushed SHA, then the final whole-path D.3E review (Sonnet Medium) against the 21-row matrix.
+  D.3E is not accepted until that review passes. D.3F, D.3G, D.4 and the Model Opportunity Layer have not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
