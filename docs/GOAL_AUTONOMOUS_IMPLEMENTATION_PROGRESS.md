@@ -159,6 +159,45 @@ Limits that must be stated at D.2 acceptance:
 - Low follow-ups carried into the D.3C hardening commit in progress (Haiku, from the plan `d3d_plan.md` section 2): `refused()` never throws; stricter static read-only guard; targeted tests for `preflight_unavailable` and `preflight_internal_invalid`; explicit running helper in the v2 fixture; destination-ref and repository-identity negative tests. Four held-out tests (T6b, T11a, T11b, T11d) remain unimplemented; the plan records why their absence does not weaken the gate.
 - Until the hardening commit is accepted on its own SHA, the follow-ups stay open.
 
+### D.3C hardening (`d17dc30`) and D.3D user completion decision (`d97a528`, docs `5d3b489`): candidate `7bd4297`
+
+- Implementer: Haiku 5.5 High. Plan: Sonnet 5.5 Medium (`d3d_plan.md`). Trailers: Haiku on each commit. Migrations unchanged (`git diff 3ca0a63 HEAD -- migrations` empty).
+- Lead gate on `7bd4297` (clean committed tree): format, lint, typecheck, build, `npm audit --omit=dev` (0), `npm test` 126 files and 2103 tests all passed.
+- Sonnet 5.5 Medium review of `7bd4297`: PASS. Targeted: 75 of 75 decision and preflight tests; typecheck clean. Inertness table: every completion-approval consumer guarded (decideGoalApprovalAsUser, bindExactGate, recordUserConfirmationEvidence, freshness user_confirmation, evaluateCompletion, checkCompletionProof, transitionGoal, completeGoal, supervisor). SOL Low: waived by user, not performed.
+- Review follow-ups. None blocks D.3D. All must close before D.3E starts:
+  1. Concurrency: no committed concurrent test. Test 16 is serial only. Observed behaviour: concurrent identical decisions give one success and one fail-closed `preflight_refused / observation_changed`. D.3E must serialize per Goal or retry once on `observation_changed`, and add a committed concurrent test asserting one row, two events and one success.
+  2. No direct test of the completion-approval guards in `evidence.ts:410` and `freshness.ts:137-138`. The `freshness.ts` change also tightens correction approvals, which is untested.
+  3. Static guard D19b is weaker than the plan. It is case-sensitive and single-space, and it does not flag a production caller of `readExternalCompletionDecision` or `listExternalCompletionDecisions`. The preflight `FORBIDDEN_IDENTIFIERS` omits `externalCompletionDecision`; the import check covers it.
+  4. `completionRows` matches any row with the action string in `detail_json`; only raw SQL can create such a row. Fail-closed; no fix needed before D.3E.
+  5. Docs: state that `'user'` means an authenticated app control (loopback, or Tailscale login plus paired device), not a verified person. Add in D.3E docs.
+- Disclosed gaps, non-blocking for D.3D: test 5 (changed lineage) not implemented; test 19 supervisor-with-proof leg untestable (no proof writer before D.3E).
+- CI: run 38136541904 on `7bd4297`, in progress at this entry. Acceptance requires success.
+- Next action after CI success: accept D.3C hardening and D.3D on `7bd4297` under the user's standard; then Sonnet 5.5 Medium `/plan` for D.3E, the highest-risk stage.
+
+### CI result on `7bd4297` and timeout fix `3848522` (lead verification)
+
+- Hosted CI run 38136541904 on `7bd4297`: **failure**. The gate's `npm test` failed two cases: `A3 refuses destination-ref movement for version 2 without ancestry-based acceptance (sha1)` and `(sha256)`, each `Test timed out in 5000ms`. The other 125 files passed. The lead's local gate on `7bd4297` had passed; the runner was slower. `7bd4297` is therefore NOT an accepted SHA, even though the Sonnet review returned PASS on it.
+- Fix `3848522` (test-only, one line): `30_000` ms added to the `it.each` block, which covers both sha1 and sha256. Hosted CI run 38137370538 on `3848522`: **success**.
+- Acceptance status: D.3D code is unchanged between `7bd4297` and `3848522`. Acceptance must still be recorded on a reviewed, CI-green SHA; the timeout-only commit needs its own small Sonnet review before D.3D is accepted on `3848522`.
+- Timeout policy (decided by the lead, per the user's request): no global or CI-only timeout increase. Real-Git integration tests will use one shared named constant, applied explicitly per test with measured justification. A static guard test will fail when a test that creates a Goal repository or fixture omits an explicit timeout, so the same omission cannot recur silently. Root-cause fixture-cost reduction remains in H.5.
+
+### ACCEPTED: D.3C hardening (`d17dc30`) and D.3D user completion decision (`d97a528`, docs `5d3b489`) on `3848522`
+
+- Accepted SHA: `3848522` (includes `7bd4297`; the only change since `7bd4297` is one test timeout line).
+- Acceptance basis under the user's standard (Sonnet Medium plus full gate plus exact-SHA CI; SOL waived by user, not performed):
+  - Sonnet 5.5 Medium on `7bd4297`: PASS (decision authority, inertness table, concurrency judgement, test quality).
+  - Sonnet 5.5 Medium on `3848522`: PASS, no findings (one-line timeout change, per-test only, config unchanged).
+  - Lead gate on `7bd4297` (clean tree): format, lint, typecheck, build, audit 0, `npm test` 126 files and 2103 tests passed. Hosted CI on `7bd4297` (run 38136541904): **failure**, two A3 cases timed out at 5000 ms; fixed by `3848522`.
+  - Hosted CI on `3848522` (run 38137370538): **success**.
+- Open follow-ups that MUST close before D.3E starts (non-blocking for D.3D, blocking for D.3E):
+  1. Committed concurrent-duplicate test and per-Goal serialization (or one retry on `observation_changed`) so duplicate decisions reuse instead of refusing.
+  2. Direct tests for the completion-approval guards in `evidence.ts:410` and `freshness.ts:137-138`, including the correction-approval tightening in `freshness.ts`.
+  3. Stronger static guard (D19b): case-insensitive, whitespace-tolerant proof-insert check; flag production callers of `readExternalCompletionDecision` and `listExternalCompletionDecisions`; add `externalCompletionDecision` to the preflight forbidden identifiers.
+  4. Docs sentence: `'user'` means an authenticated app control (loopback, or Tailscale login plus paired device), not a verified person.
+  5. Timeout guard and shared constant for real-Git integration tests (decided; see the CI entry above).
+- Disclosed gaps, non-blocking: test 5 (changed lineage) not implemented; test 19 supervisor-with-proof leg untestable until a proof writer exists.
+- Next action: Sonnet 5.5 Medium `/plan` for D.3E, including follow-ups 1–5.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
