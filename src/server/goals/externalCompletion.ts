@@ -54,6 +54,7 @@ export const EXTERNAL_COMPLETION_ERROR_CODES = [
   'completion_persistence_failed',
   'completion_conflict',
   'completion_corrupt',
+  'completion_read_failed',
   // Terminal refusals, passed through under their own codes so the cause is not renamed.
   'completion_proof_required',
   'goal_not_found',
@@ -82,6 +83,7 @@ const MESSAGES: Record<ExternalCompletionErrorCode, string> = {
   completion_persistence_failed: 'The external completion could not be recorded, so nothing changed.',
   completion_conflict: 'This Goal is already completed by a different decision.',
   completion_corrupt: 'The stored completion of this Goal fails verification.',
+  completion_read_failed: 'The Goal state could not be read, so nothing changed.',
   completion_proof_required: 'A completion needs a validated decision and its proof.',
   goal_not_found: 'The Goal does not exist.',
   goal_not_running: 'The Goal is not running.',
@@ -145,12 +147,40 @@ export async function completeGoalFromExternalDecision(
   }
 }
 
+/**
+ * Maps a failed read to a refusal. A refusal already raised keeps its code. A terminal refusal keeps its own code and
+ * detail. Any other failure, a SQLite error for example, becomes `completion_read_failed` with the read's name.
+ */
+function readOrRefuse<T>(readName: string, read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    if (error instanceof ExternalCompletionError) throw error;
+    if (error instanceof ExternalCompletionTerminalError)
+      throw new ExternalCompletionError(error.code, error.detail);
+    throw new ExternalCompletionError('completion_read_failed', readName);
+  }
+}
+
+/**
+ * The refusal for a stored completion that does not verify. A missing Goal is `goal_not_found`. A Goal completed by a
+ * path other than this service (a legacy or another reason code) is a `completion_conflict`, not corruption. Anything
+ * else is `completion_corrupt` and is never reused.
+ */
+function replayRefusal(reason: string): ExternalCompletionError {
+  if (reason === 'goal_not_found') return new ExternalCompletionError('goal_not_found', null);
+  if (reason === 'reason_code_mismatch') return new ExternalCompletionError('completion_conflict', null);
+  return new ExternalCompletionError('completion_corrupt', reason);
+}
+
 async function completeLocked(db: Db, input: CompletionInput): Promise<ExternalCompletionResult> {
   // Replay first, before any Git work: a stored completion is the answer for this request or a conflict.
   const replay = readStoredCompletion(db, input.goalId);
-  if (replay.state === 'invalid') throw new ExternalCompletionError('completion_corrupt', replay.reason);
+  if (replay.state === 'invalid') throw replayRefusal(replay.reason);
   if (replay.state === 'completed') {
-    const stored = readExternalCompletionDecision(db, input.goalId, replay.approvalId);
+    const stored = readOrRefuse('decision_read', () =>
+      readExternalCompletionDecision(db, input.goalId, replay.approvalId),
+    );
     if (
       stored.state !== 'valid' ||
       stored.action.attestation.id !== input.attestationId ||
@@ -160,10 +190,10 @@ async function completeLocked(db: Db, input: CompletionInput): Promise<ExternalC
     return { reused: true, completion: replay };
   }
 
-  const decision = selectDecision(db, input);
+  const decision = readOrRefuse('decision_select', () => selectDecision(db, input));
 
   // Active work is checked here, before Git, through the shared predicate. The preflight report does not carry it.
-  const blocker = activeWorkBlocker(db, input.goalId);
+  const blocker = readOrRefuse('active_work', () => activeWorkBlocker(db, input.goalId));
   if (blocker !== null) throw new ExternalCompletionError('preflight_refused', blocker);
 
   const reviewed = await observeReviewedPreflight(db, input.goalId, input.attestationId);

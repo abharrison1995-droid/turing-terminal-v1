@@ -5,6 +5,7 @@ import { activeWorkBlocker } from './activeWork.js';
 import { getGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { createCycle, finalizeCycle } from './cycles.js';
+import { writeGoalEvent } from './events.js';
 import { readPreflightSnapshotIdentity, type SnapshotIdentity } from './externalCompletionPreflight.js';
 import {
   consumeExternalCompletionDecision,
@@ -20,6 +21,7 @@ import { completionProofForDecision, databaseSnapshot, v2DecidedFixture } from '
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { createReview } from './reviews.js';
 import { GoalStateError, transitionGoal, type TransitionRequest } from './stateMachine.js';
+import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 
 /**
  * Tests of the proof-bound terminal authority. Every fixture is real SQLite with the production migrations; the only
@@ -33,7 +35,9 @@ afterEach(() => {
 
 const FORMATS = ['sha1', 'sha256'] as const;
 const OBSERVED_AT = '2026-10-11T09:00:00.000Z';
-const NOW = '2026-10-11T09:05:00.000Z';
+// Later than the real decision time that the fixture records (the consumer refuses a `now` before the decision), and
+// canonical. The decision is recorded at the wall clock, so a fixed earlier instant would be refused.
+const NOW = '2030-01-01T00:00:00.000Z';
 
 type Proof = ExternalCompletionProofV1;
 
@@ -613,6 +617,198 @@ describe('external completion terminal: active work refuses the terminal write (
       expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
         code: 'authority_changed_during_completion',
         detail: 'handoff_fingerprint',
+      });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion terminal: F1 a stored completion that is tampered reads as invalid, never completed', () => {
+  const TAMPERS: [string, (db: Db, goalId: string, proofId: string, approvalId: string) => void, string][] = [
+    [
+      'a proof re-pointed to another Goal',
+      (db, _goalId, proofId) => {
+        // The migration CHECK ties goal_id to the payload's goalId, so it is lifted for this disposable row only.
+        db.pragma('foreign_keys = OFF');
+        db.pragma('ignore_check_constraints = ON');
+        db.exec('DROP TRIGGER trg_goal_external_completion_proof_immutable;');
+        db.prepare('UPDATE goal_external_completion_proofs SET goal_id = ? WHERE id = ?').run(
+          randomUUID(),
+          proofId,
+        );
+      },
+      'proof_missing',
+    ],
+    [
+      'a second state_changed event to completed',
+      (db, goalId) => {
+        writeGoalEvent(
+          db,
+          goalId,
+          'state_changed',
+          { from: 'running', to: 'completed', reasonCode: EXTERNAL_COMPLETION_REASON, actor: 'user' },
+          NOW,
+        );
+      },
+      'state_event_count',
+    ],
+    [
+      'a completed_at that differs from the recorded event',
+      (db, goalId) => {
+        db.prepare('UPDATE goals SET completed_at = ? WHERE id = ?').run('2030-02-01T00:00:00.000Z', goalId);
+      },
+      'recorded_event_mismatch',
+    ],
+    [
+      'a completed_at that is null',
+      (db, goalId) => {
+        db.prepare('UPDATE goals SET completed_at = NULL WHERE id = ?').run(goalId);
+      },
+      'completed_at_missing',
+    ],
+    [
+      'a decision row that is no longer approved',
+      (db, _goalId, _proofId, approvalId) => {
+        db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+        db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(approvalId);
+      },
+      // The proof reader checks the completion approval row before readStoredCompletion reaches its decision check.
+      'completion_approval_mismatch',
+    ],
+  ];
+
+  it.each(TAMPERS)(
+    'F1 reads %s as invalid, never completed',
+    async (_label, tamper, reason) => {
+      const { db, goalId, decision, proof, expected } = await decided();
+      const result = consumeInTransaction(db, decision, proof, expected);
+      expect(readStoredCompletion(db, goalId)).toMatchObject({ state: 'completed', proofId: result.proofId });
+
+      tamper(db, goalId, result.proofId, decision.approval.id);
+      expect(readStoredCompletion(db, goalId)).toEqual({ state: 'invalid', reason });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion terminal: F2 the proof is compared with the stored action, not the held copy', () => {
+  it.each([
+    [
+      'a destination edited in memory',
+      (decision: ValidatedCompletionDecision) => {
+        (decision.action.destination as { observedCommit: string }).observedCommit = 'a'.repeat(
+          decision.action.destination.observedCommit.length,
+        );
+      },
+      { code: 'proof_action_mismatch', detail: 'destination' },
+    ],
+    [
+      'an action digest edited in memory',
+      (decision: ValidatedCompletionDecision) => {
+        (decision.action as { actionDigest: string }).actionDigest = '1'.repeat(64);
+      },
+      { code: 'authority_changed_during_completion', detail: 'action_digest' },
+    ],
+  ] as const)(
+    'F2 refuses a held decision with %s, builds the proof from that copy, and writes nothing',
+    async (_label, edit, expectedRefusal) => {
+      const { db, goalId, decision, expected } = await decided();
+      edit(decision);
+      // The proof is built from the edited copy, so only a comparison with the stored action can refuse it.
+      const proof = completionProofForDecision(decision, OBSERVED_AT);
+      const before = databaseSnapshot(db);
+
+      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject(
+        expectedRefusal,
+      );
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+      expect(readStoredCompletion(db, goalId)).toEqual({ state: 'not_completed' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion terminal: F3 timestamps are canonical and ordered', () => {
+  it(
+    'F3 refuses a non-canonical now with completion_internal_state and writes nothing',
+    async () => {
+      const { db, goalId, decision, proof, expected } = await decided();
+      const before = databaseSnapshot(db);
+
+      expect(
+        refusal(() =>
+          db
+            .transaction(() =>
+              consumeExternalCompletionDecision(db, decision, proof, expected, '2030-01-01T00:00:00Z'),
+            )
+            .immediate(),
+        ),
+      ).toMatchObject({ code: 'completion_internal_state', detail: 'clock_not_canonical' });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'F3 refuses a now before the stored decision with completion_internal_state',
+    async () => {
+      const { db, goalId, decision, proof, expected } = await decided();
+      const before = databaseSnapshot(db);
+      const beforeDecision = new Date(Date.parse(decision.approval.respondedAt!) - 1000).toISOString();
+
+      expect(
+        refusal(() =>
+          db
+            .transaction(() =>
+              consumeExternalCompletionDecision(db, decision, proof, expected, beforeDecision),
+            )
+            .immediate(),
+        ),
+      ).toMatchObject({ code: 'completion_internal_state', detail: 'clock_before_decision' });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'F3 refuses a now before the observation the proof records with completion_internal_state',
+    async () => {
+      const { db, goalId, decision, expected } = await decided();
+      const proof = completionProofForDecision(decision, '2030-06-01T00:00:00.000Z');
+      const before = databaseSnapshot(db);
+
+      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
+        code: 'completion_internal_state',
+        detail: 'clock_before_observation',
+      });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    ['a decided time that differs from the stored decision', '2026-10-11T09:00:00.000Z'],
+    ['a decided time that is not canonical', null],
+  ] as const)(
+    'F3 refuses a proof with %s with proof_action_mismatch/decided_at',
+    async (_label, replacement) => {
+      const { db, goalId, decision, expected } = await decided();
+      const decidedAt = replacement ?? decision.approval.respondedAt!.replace(/\.(\d{3})Z$/, 'Z');
+      const proof = completionProofForDecision(
+        { approval: { ...decision.approval, respondedAt: decidedAt }, action: decision.action },
+        OBSERVED_AT,
+      );
+      const before = databaseSnapshot(db);
+
+      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
+        code: 'proof_action_mismatch',
+        detail: 'decided_at',
       });
       expect(databaseSnapshot(db)).toEqual(before);
       expect(goalStatus(db, goalId)).toEqual({ status: 'running' });

@@ -128,10 +128,13 @@ export function consumeExternalCompletionDecision(
   if (!issuedDecisions.has(decision))
     throw new ExternalCompletionTerminalError('completion_proof_required', null);
   if (!db.inTransaction) throw new ExternalCompletionTerminalError('completion_internal_state', null);
+  if (!isCanonicalTimestamp(now))
+    throw new ExternalCompletionTerminalError('completion_internal_state', 'clock_not_canonical');
 
-  const action = decision.action;
-  const goalId = action.goalId;
-  const attestationId = action.attestation.id;
+  // The Goal and attestation of the decision the caller holds are only the coordinates of the lookup. Every comparison
+  // below is made against the action re-read from the stored approval inside this transaction, never the in-memory copy.
+  const goalId = decision.action.goalId;
+  const attestationId = decision.action.attestation.id;
 
   const parsed = parseExternalCompletionProof(proof);
   if (!parsed.valid) throw new ExternalCompletionTerminalError('proof_invalid', parsed.reason);
@@ -169,7 +172,7 @@ export function consumeExternalCompletionDecision(
   if (!row || row.goalId !== goalId) throw new ExternalCompletionTerminalError('decision_not_found', null);
   if (row.status !== 'approved')
     throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'approval_status');
-  if (row.externalCompletionActionDigest !== action.actionDigest)
+  if (row.externalCompletionActionDigest !== decision.action.actionDigest)
     throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'action_digest');
   const reread = readExternalCompletionDecision(db, goalId, decision.approval.id);
   if (reread.state !== 'valid')
@@ -177,6 +180,13 @@ export function consumeExternalCompletionDecision(
       'decision_corrupt',
       reread.state === 'invalid' ? reread.reason : 'not_found',
     );
+  // From here on the stored action is the only action. A held copy that was edited after selection is refused above or
+  // below, and the proof is never compared with the held copy.
+  const action = reread.action;
+  if (action.goalId !== goalId || action.attestation.id !== attestationId)
+    throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'action_identity');
+  if (row.externalCompletionActionDigest !== action.actionDigest)
+    throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'action_digest');
 
   let sameAttestation = 0;
   for (const stored of listExternalCompletionDecisions(db, goalId)) {
@@ -200,6 +210,20 @@ export function consumeExternalCompletionDecision(
   if (!sameDestination(validProof.destination, action.destination))
     throw new ExternalCompletionTerminalError('proof_action_mismatch', 'destination');
 
+  // The proof's timestamps must be the stored decision time and a time no earlier than the observation and the decision.
+  if (
+    validProof.decision.decidedAt !== row.respondedAt ||
+    !isCanonicalTimestamp(validProof.decision.decidedAt)
+  )
+    throw new ExternalCompletionTerminalError('proof_action_mismatch', 'decided_at');
+  if (!isCanonicalTimestamp(validProof.gitProof.observedAt))
+    throw new ExternalCompletionTerminalError('proof_invalid', 'observed_at');
+  const instant = Date.parse(now);
+  if (instant < Date.parse(validProof.decision.decidedAt))
+    throw new ExternalCompletionTerminalError('completion_internal_state', 'clock_before_decision');
+  if (instant < Date.parse(validProof.gitProof.observedAt))
+    throw new ExternalCompletionTerminalError('completion_internal_state', 'clock_before_observation');
+
   // The same predicate the manual handoff uses; the blocker code is the refusal detail.
   const blocker = activeWorkBlocker(db, goalId);
   if (blocker !== null) throw new ExternalCompletionTerminalError('goal_work_in_flight', blocker);
@@ -208,6 +232,13 @@ export function consumeExternalCompletionDecision(
   issuedAuthorities.add(authority);
   applyExternalCompletionTerminal(db, authority, now);
   return { from: 'running', to: 'completed', proofId: authority.proofId };
+}
+
+/** A timestamp is canonical when it is the exact `toISOString()` form of a valid instant. */
+function isCanonicalTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const instant = Date.parse(value);
+  return !Number.isNaN(instant) && new Date(instant).toISOString() === value;
 }
 
 function sameDestination(

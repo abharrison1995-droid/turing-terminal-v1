@@ -1,13 +1,16 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { renameSync } from 'node:fs';
+import { readFileSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { getGoalApproval } from './approvals.js';
+import { writeGoalEvent } from './events.js';
 import {
   completeGoalFromExternalDecision,
+  EXTERNAL_COMPLETION_ERROR_CODES,
   ExternalCompletionError,
   type ExternalCompletionResult,
 } from './externalCompletion.js';
@@ -715,6 +718,330 @@ describe('external completion service: no generic transition edge', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+});
+
+describe('external completion service: adversarial matrix', () => {
+  const EMPTY_TREE_SHA1 = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
+  it(
+    'refuses a request for a Goal that does not exist with goal_not_found and writes nothing (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const before = snapshotOf(decided.fx, decided.recorded.approvalId);
+
+      expect(
+        await refusal(
+          completeGoalFromExternalDecision(decided.fx.db, requestFor(decided, { goalId: randomUUID() })),
+        ),
+      ).toEqual({ code: 'goal_not_found', detail: null });
+      expectNothingWritten(decided.fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a Goal completed by another reason code with completion_conflict and writes nothing (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      fx.db
+        .prepare(
+          "UPDATE goals SET status = 'completed', completed_at = ?, status_reason_code = 'legacy_manual' WHERE id = ?",
+        )
+        .run(new Date().toISOString(), fx.goalId);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'completion_conflict',
+        detail: null,
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before.db);
+      expect(goalEvents(fx.db, fx.goalId)).toEqual(before.events);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    ['a different reviewed preflight digest', { reviewedPreflightDigest: 'e'.repeat(64) }],
+    ['a different attestation', { attestationId: randomUUID() }],
+  ] as const)(
+    'replays a completed Goal for %s with completion_conflict and no write (sha1)',
+    async (_label, overrides) => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      await completeGoalFromExternalDecision(fx.db, requestFor(decided));
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided, overrides)))).toEqual({
+        code: 'completion_conflict',
+        detail: null,
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before.db);
+      expect(goalEvents(fx.db, fx.goalId)).toEqual(before.events);
+      expect(proofRows(fx.db, fx.goalId)).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    [
+      'a proof re-pointed to another Goal',
+      (fx: GoalFixture, proofId: string) => {
+        fx.db.pragma('foreign_keys = OFF');
+        fx.db.pragma('ignore_check_constraints = ON');
+        fx.db.exec('DROP TRIGGER trg_goal_external_completion_proof_immutable;');
+        fx.db
+          .prepare('UPDATE goal_external_completion_proofs SET goal_id = ? WHERE id = ?')
+          .run(randomUUID(), proofId);
+      },
+      'proof_missing',
+    ],
+    [
+      'a second state_changed event to completed',
+      (fx: GoalFixture) => {
+        writeGoalEvent(
+          fx.db,
+          fx.goalId,
+          'state_changed',
+          { from: 'running', to: 'completed', reasonCode: EXTERNAL_COMPLETION_REASON, actor: 'user' },
+          new Date().toISOString(),
+        );
+      },
+      'state_event_count',
+    ],
+    [
+      'a completed_at that differs from the recorded event',
+      (fx: GoalFixture) => {
+        fx.db
+          .prepare('UPDATE goals SET completed_at = ? WHERE id = ?')
+          .run('2030-02-01T00:00:00.000Z', fx.goalId);
+      },
+      'recorded_event_mismatch',
+    ],
+    [
+      'a completed_at that is null',
+      (fx: GoalFixture) => {
+        fx.db.prepare('UPDATE goals SET completed_at = NULL WHERE id = ?').run(fx.goalId);
+      },
+      'completed_at_missing',
+    ],
+  ] as const)(
+    'replays a completed Goal with %s as completion_corrupt, never reused (sha1)',
+    async (_label, tamper, reason) => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const first = await completeGoalFromExternalDecision(fx.db, requestFor(decided));
+      tamper(fx, first.completion.proofId);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'completion_corrupt',
+        detail: reason,
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a Goal whose completion decision row is no longer approved with decision_corrupt (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+      fx.db
+        .prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?")
+        .run(decided.recorded.approvalId);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      // The decision list reads the row's fields before the proof reader's approval check: approval_fields_invalid.
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'decision_corrupt',
+        detail: 'approval_fields_invalid',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses two valid decisions for one attestation and digest with decision_corrupt multiple_decisions (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const approvalId = decided.recorded.approvalId;
+      // The unique index on the completion action digest is lifted for this disposable duplicate only.
+      fx.db.exec(
+        'DROP INDEX idx_goal_approval_external_completion_action; DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;',
+      );
+      const copyId = randomUUID();
+      fx.db.exec('DROP TABLE IF EXISTS temp.dup_approval;');
+      fx.db
+        .prepare('CREATE TEMP TABLE dup_approval AS SELECT * FROM goal_approvals WHERE id = ?')
+        .run(approvalId);
+      fx.db.prepare('UPDATE temp.dup_approval SET id = ?').run(copyId);
+      // The insert guards are lifted for this disposable duplicate only: a copy of an approved row is otherwise refused.
+      const triggers = fx.db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'goal_approvals'")
+        .all() as { name: string }[];
+      for (const { name } of triggers) fx.db.exec(`DROP TRIGGER ${name};`);
+      fx.db.exec('INSERT INTO goal_approvals SELECT * FROM temp.dup_approval;');
+      fx.db.exec('DROP TABLE temp.dup_approval;');
+      const before = snapshotOf(fx, approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'decision_corrupt',
+        detail: 'multiple_decisions',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a Goal whose attestation approval is no longer approved with attestation_invalid (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const attestation = fx.db
+        .prepare('SELECT approval_id FROM goal_external_integration_attestations WHERE id = ?')
+        .get(decided.attestationId) as { approval_id: string };
+      expect(attestation.approval_id).not.toBe(decided.recorded.approvalId);
+      fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+      fx.db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(attestation.approval_id);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      // The attestation's standing check reports the lost approval as correction_standing_unavailable (observed).
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'correction_standing_unavailable',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    [
+      'an unrelated root commit with the attested tree',
+      (decided: Decided) =>
+        git(
+          decided.fx.repo,
+          'commit-tree',
+          decided.attestation.destination.observedTree,
+          '-m',
+          'unrelated root',
+        ),
+      'destination_not_integrated',
+    ],
+    [
+      'a child commit with a different tree',
+      (decided: Decided) =>
+        git(
+          decided.fx.repo,
+          'commit-tree',
+          EMPTY_TREE_SHA1,
+          '-p',
+          decided.attestation.destination.observedCommit,
+          '-m',
+          'tree changed',
+        ),
+      'destination_advanced_after_observation',
+    ],
+  ] as const)(
+    'refuses a destination moved to %s with preflight_refused and writes nothing (sha1)',
+    async (_label, makeCommit, detail) => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const moved = makeCommit(decided);
+      git(fx.repo, 'update-ref', decided.attestation.destination.ref, moved);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail,
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses the tenth of ten concurrent requests with completion_busy and completes the other nine (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+
+      const settled = await Promise.allSettled(
+        Array.from({ length: 10 }, () => completeGoalFromExternalDecision(fx.db, requestFor(decided))),
+      );
+
+      const rejected = settled.filter((outcome) => outcome.status === 'rejected');
+      const fulfilled = settled.filter((outcome) => outcome.status === 'fulfilled');
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.reason).toMatchObject({ code: 'completion_busy', detail: null });
+      expect(fulfilled).toHaveLength(9);
+      expect(fulfilled.filter((outcome) => !outcome.value.reused)).toHaveLength(1);
+      expect(fulfilled.filter((outcome) => outcome.value.reused)).toHaveLength(8);
+      expect(proofRows(fx.db, fx.goalId)).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'reports a failed active-work read as completion_read_failed and writes nothing (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      fx.db.pragma('foreign_keys = OFF');
+      fx.db.exec('DROP VIEW goal_runs;');
+      fx.db.pragma('foreign_keys = ON');
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'completion_read_failed',
+        detail: 'active_work',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'fails a replay read closed as completion_corrupt, never completed, and writes nothing (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      fx.db.pragma('foreign_keys = OFF');
+      fx.db.exec('DROP TABLE goal_external_completion_proofs;');
+      fx.db.pragma('foreign_keys = ON');
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      // The terminal read reports a failed read as an invalid state, so the replay check fails closed (observed). It is
+      // not reported as completion_read_failed, which the planned matrix predicted. The proofs table is gone, so the
+      // check reads the Goal row and the database snapshot directly.
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'completion_corrupt',
+        detail: 'integrity_check_failed',
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before.db);
+      expect(goalEvents(fx.db, fx.goalId)).toEqual(before.events);
+      expect(goalRow(fx.db, fx.goalId)).toMatchObject({ status: 'running', completed_at: null });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it('keeps every code the service throws in its declared list and every declared code in its messages', () => {
+    const source = readFileSync(fileURLToPath(new URL('./externalCompletion.ts', import.meta.url)), 'utf8');
+    const thrown = [...source.matchAll(/new ExternalCompletionError\(\s*'([a-z_]+)'/g)].map(
+      (match) => match[1]!,
+    );
+    const declared = new Set<string>(EXTERNAL_COMPLETION_ERROR_CODES);
+    expect(thrown.length).toBeGreaterThan(0);
+    expect(thrown.filter((code) => !declared.has(code))).toEqual([]);
+    const messageKeys = [...source.matchAll(/^ {2}([a-z_]+): '/gm)].map((match) => match[1]!);
+    expect(EXTERNAL_COMPLETION_ERROR_CODES.filter((code) => !messageKeys.includes(code))).toEqual([]);
+  });
 });
 
 describe('external completion service: exports', () => {
