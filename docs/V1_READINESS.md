@@ -301,3 +301,11 @@ Observed results at commit `068dd0d`: the focused `manualHandoff.test.ts` file p
 Known inconsistency, pinned and not changed (F2): the same stale condition maps to different states. The handoff authority and attestation validators return `stale`, while the observation validator returns `invalid` for `definition_not_approved` and `completion_not_ready`.
 
 Remaining D.3 work: the version-2 transition, the completion preflight, and the correction-standing consumer are not implemented. Completion remains disabled.
+
+## Stage 7C.2B.5D.3D - user completion decision candidate
+
+This candidate follows the D.3C preflight hardening commit `d17dc30`. The D.3D decision is commit `d97a528`. It adds an internal service that records the user's completion decision as an approved high-risk `user_confirmation` approval bound to a reviewed preflight digest. It has no route and no UI.
+
+The decision is inert. Version-2 completion stays `external_completion_not_activated`, no proof row is written, and no Goal moves to `completed`. D.3E must consume and re-verify the decision before any completion. Version-2 completion remains disabled.
+
+Known limitations: a concurrent duplicate decision is refused by the preflight snapshot check instead of being reused. A lineage-change refusal and the evidence path for a completion approval are not covered by a test in this stage. V1 is not release-ready, and Windows remains unverified.

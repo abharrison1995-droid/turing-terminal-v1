@@ -320,3 +320,15 @@ Focused tests prove the legacy authority bypass before and after the evaluator g
 Stage 7C.2B.5D.2 implements append-only per-attestation correction authority (migration 028, service, read-only history route, correction events) as a reviewed candidate. It does not implement a correction write route, desktop correction UI, completion-standing projection, or any completion consumer; those are D.3/D.4 work.
 
 The v2 completion path remains inactive. No completion action, proof issuance, or supervisor completion was added in D.2, and the legacy evaluator is unchanged.
+
+## Stage 7C.2B.5D.3D - user completion decision boundary
+
+Option B is implemented. One explicit user action records the decision. `recordExternalCompletionDecision` in `src/server/goals/externalCompletionDecision.ts` is an internal service with no route. It takes the Goal, the attestation, an acknowledgement that content is `not_proven`, and the digest of the preflight the user reviewed. It recomputes the preflight with fresh Git and requires the reviewed digest to equal the fresh digest. In one transaction it requests and approves a high-risk `user_confirmation` approval whose detail is the exact completion action, bound by `external_completion_action_digest`.
+
+The decision records no proof, changes no Goal status, and does not complete the Goal. Completion remains `external_completion_not_activated`. D.3E must consume and re-verify the decision before any completion.
+
+Guards: the generic decision route refuses completion approvals (`completion_decision_requires_dedicated_service`). A completion request must carry a digest that matches its action (`invalid_external_completion_action_digest`). Bind, evidence and freshness paths exclude completion approvals. The preflight option `allowRecordedDecision` lets the decision read a preflight after a decision exists. The default still refuses with `completion_already_recorded`.
+
+Stale and conflict rules: a reviewed digest that no longer matches the fresh digest is refused (`reviewed_preflight_changed`). A database change between the Git read and the commit is refused (`authority_changed_during_decision`). A stored completion row that fails validation blocks new decisions for that Goal (`decision_corrupt`). A different decision for the same attestation is refused (`decision_conflict`).
+
+Observed limitations at this stage: a serial repeat of an exact decision returns the existing approval with `reused: true`. A concurrent duplicate is refused by the preflight's snapshot check (`preflight_refused` with detail `observation_changed`) instead of being reused. A lineage-change refusal is not covered by a test in this stage.

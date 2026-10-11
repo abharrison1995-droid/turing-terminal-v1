@@ -98,3 +98,9 @@ These decisions reconcile the version-2 completion contract (CCv2r1) before D.3 
 - Windows production qualification.
 
 The rejected checked-out-worktree writer remains quarantined, production uses `DisabledGoalExecutor`, and V1 is not release-ready. Stage 7C.2B.5D.2 is a reviewed candidate for correction authority; D.3 and later stages remain separate gates.
+
+## D.3D user completion decision
+
+A decision creates one approved `user_confirmation` approval with a completion action digest. It is not a proof. `goal_external_completion_proofs` stays empty, and a static test confirms that no production code inserts a proof.
+
+`readExternalCompletionDecision` returns `valid` only when the stored detail parses, its digest matches the column, and the row is approved by the user with the required gate, risk and requester. External-integration approvals, correction approvals and legacy `applied_externally` final-apply approvals are never completion decisions.
