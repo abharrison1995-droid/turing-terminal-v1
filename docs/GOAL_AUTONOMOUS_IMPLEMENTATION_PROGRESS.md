@@ -245,10 +245,21 @@ Limits that must be stated at D.2 acceptance:
   a stale test title (fixed), a stale line reference (fixed), an inaccurate row-12 enforcement label (fixed), a stale V1_READINESS
   active-work statement (fixed), this progress record not updated (this entry), a per-test timeout not aligned with the enclosed wait
   (fixed), and an evidence-invalidation drift gap not named in the coverage list (fixed).
-- Hosted CI on `b769eb0` (run 38174971561): in progress when this entry was written. Its result is not recorded here until observed.
-- Next action: after the follow-up commit that fixes the review findings is pushed, hosted CI on that exact SHA, then a Sonnet Medium
-  re-review of it. D.3E is not accepted until CI is green on the exact SHA and that review passes. D.3F, D.3G, D.4 and the Model
-  Opportunity Layer have not started.
+- Hosted CI on `b769eb0` (run 38174971561): success on the exact SHA.
+- Follow-up `7ed1a0b` applies the review findings (docs, one test title, one per-test timeout; no production code).
+  Hosted CI on `7ed1a0b` (run 38176520728): success on the exact SHA. Focused re-review (Sonnet Medium) of `7ed1a0b`: PASS WITH
+  NON-BLOCKING FINDINGS, no blocking findings; it confirmed each fix against source and that no production code changed since `b769eb0`.
+- **D.3E ACCEPTED on `7ed1a0b`** under the stage rule: hosted CI green on the exact SHA and a Sonnet Medium PASS (whole-path review on
+  `b769eb0`, delta re-review on `7ed1a0b`). Accepted with these disclosed residual risks, all in `docs/GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md`:
+  the Git/SQLite TOCTOU window (a ref that moves after the Git read still completes on the observed commit); `contentPreservation`
+  `not_proven`; the in-process per-Goal lock; the error-label deviations; no service-path test for a reused observation (not producible
+  through the service input) or for a definition amendment, a supersede or a handoff tamper; `destination_changed` unreachable; no route or UI;
+  Windows unverified.
+- Non-blocking items still open, not gating D.3E: the planned operation and `apply_to_base` active-work blockers are covered at terminal
+  and unit level only; the `completion_decision_requires_dedicated_service` code is referenced by a route refusal and a test, and is
+  recorded in the contract doc.
+- Next action: D.3F. D.3G, D.4, the Model Opportunity Layer, V1 hardening and V1 qualification have not started. D.3F is planned by Sonnet
+  Medium, implemented by Haiku, reviewed and gated under the same rules before any work begins.
 
 ## Remediation iterations
 
