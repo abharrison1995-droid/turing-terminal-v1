@@ -21,8 +21,9 @@ import {
 } from './externalCompletionTerminal.js';
 import type { ExternalCompletionProofV1 } from './externalCompletionProof.js';
 import { buildManualHandoffSnapshot } from './manualHandoff.js';
+import { createGoalDraft } from './definitions.js';
 import { completionProofForDecision, databaseSnapshot, v2DecidedFixture } from './goalV2TestKit.js';
-import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS, simpleDefinition } from './repoKit.js';
 import { createReview } from './reviews.js';
 import { GoalStateError, transitionGoal, type TransitionRequest } from './stateMachine.js';
 import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
@@ -833,4 +834,30 @@ describe('external completion terminal: the read-only proof row count', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it(
+    'counts exactly one proof row for a Goal with one completed external completion',
+    async () => {
+      const { db, goalId, decision, proof, expected } = await decided();
+      consumeInTransaction(db, decision, proof, expected);
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'isolates Goals in one database: a second Goal in the same database counts zero for its own id',
+    async () => {
+      const { db, fx, goalId, decision, proof, expected } = await decided();
+      consumeInTransaction(db, decision, proof, expected);
+      const second = createGoalDraft(db, {
+        projectId: fx.projectId,
+        title: 'Second Goal in the same database',
+        definition: simpleDefinition(),
+      });
+      expect(externalCompletionProofRowCount(db, second.goalId)).toBe(0);
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

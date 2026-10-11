@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { builtinModules } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import {
   classifyCompletionStanding,
@@ -125,7 +126,6 @@ describe('completion standing: P2 to P5 pure classifier', () => {
 
   it('P3: not_completed facts give no standing, no unqualified success, and the not_completed qualifier', () => {
     const facts: CompletionStandingFacts = { kind: 'not_completed', standing: null };
-    expect(facts.standing).toBeNull();
     const claim = classifyCompletionStanding(facts);
     expect(claim.unqualifiedSuccessAllowed).toBe(false);
     expect(claim.trustedForDownstream).toBe(false);
@@ -159,14 +159,54 @@ describe('completion standing: P2 to P5 pure classifier', () => {
 
 describe('completion standing: P6 static source check', () => {
   const SOURCE = readFileSync(new URL('./completionStanding.ts', import.meta.url), 'utf8');
-  /** Writes, goal transitions, goal creation, raw prepared statements, and any import of the database or read model. */
-  const FORBIDDEN_PATTERN = String.raw`\b(?:insert|update|delete)\b|\bwriteGoalEvent\b|\brequestGoalApproval\b|\btransitionGoal\b|\bcreateGoal\b|\bdb\s*\.\s*prepare\b|from\s+["'][^"']*(?:\/db|readModel)\.js["']`;
+  /**
+   * Write SQL, goal mutators, write-capable statement calls (`run`, `exec`), an immediate transaction, and the names of
+   * the executor and supervisor. Reads use `prepare` with `get` and `all` only, so `prepare` itself is not forbidden.
+   */
+  const FORBIDDEN_PATTERN = String.raw`\b(?:insert|update|delete|executor|supervisor)\b|\bwriteGoalEvent\b|\brequestGoalApproval\b|\btransitionGoal\b|\bcreateGoal\b|\.run\s*\(|\.exec\s*\(|\.immediate\s*\(`;
 
-  it('P6: completionStanding.ts contains no write SQL, goal mutator, prepared statement, or database import', () => {
+  /**
+   * The explicit import allow-list of the reader (commit 2). The module may import these specifiers and nothing else,
+   * apart from node built-ins. The shared goal types and the database handle type are type-only.
+   */
+  const ALLOWED_IMPORTS = [
+    '../../shared/goals.js',
+    '../db.js',
+    './attestationCorrection.js',
+    './approvedCompletionAuthority.js',
+    './externalCompletionPreflight.js',
+    './externalCompletionProof.js',
+    './externalCompletionTerminal.js',
+  ] as const;
+
+  /** Every module specifier the source imports, re-exports, dynamically imports, or requires. */
+  function importSpecifiers(source: string): string[] {
+    const pattern =
+      /\b(?:import|export)\s[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)|\brequire\(\s*['"]([^'"]+)['"]\s*\)/g;
+    return [...source.matchAll(pattern)].map((match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? '');
+  }
+
+  /** Specifiers that break the rule: not a node built-in and not on the allow-list. */
+  function offendingSpecifiers(source: string): string[] {
+    return importSpecifiers(source).filter(
+      (specifier) =>
+        !specifier.startsWith('node:') &&
+        !builtinModules.includes(specifier) &&
+        !(ALLOWED_IMPORTS as readonly string[]).includes(specifier),
+    );
+  }
+
+  it('P6: completionStanding.ts contains no write SQL, goal mutator, write-capable statement call, or executor name', () => {
     expect(SOURCE.match(new RegExp(FORBIDDEN_PATTERN, 'gi'))).toBeNull();
   });
 
-  it('P6 negative control: the same pattern catches each seeded violation', () => {
+  it('P6a: every import specifier is a node built-in or on the explicit allow-list, and the allow-list is exact', () => {
+    expect(offendingSpecifiers(SOURCE)).toEqual([]);
+    // Exact: every allow-listed specifier is really imported, so a stale entry fails rather than hiding a removal.
+    expect([...new Set(importSpecifiers(SOURCE))].sort()).toEqual([...ALLOWED_IMPORTS].sort());
+  });
+
+  it('P6 negative control: the forbidden pattern catches each seeded write, mutator and call', () => {
     const seeded = [
       "db.prepare('INSERT INTO goals (id) VALUES (?)');",
       'db . prepare("update   goals set status = ?");',
@@ -174,11 +214,43 @@ describe('completion standing: P6 static source check', () => {
       'await requestGoalApproval(db, input);',
       'transitionGoal(db, goalId, to);',
       'const goal = createGoal(db, input);',
-      "import { readGoal } from './readModel.js';",
-      "import type { Db } from '../db.js';",
       'DELETE FROM goal_events WHERE id = ?',
+      'db.prepare("SELECT 1").run();',
+      'db.exec("SELECT 1");',
+      'db.transaction(read).immediate();',
+      'const next = executor.start(goalId);',
+      'supervisor.resume(goalId);',
     ];
     const pattern = new RegExp(FORBIDDEN_PATTERN, 'i');
     for (const source of seeded) expect(pattern.test(source), source).toBe(true);
+  });
+
+  it('P6a negative control: the import check flags each seeded foreign import and passes allow-listed and built-in ones', () => {
+    const foreign = [
+      "import { readGoal } from './readModel.js';",
+      "import { activeWorkBlocker } from '../activeWork.js';",
+      "export * from './goalCompletionLock.js';",
+      "const late = await import('./readModel.js');",
+      "const lodash = require('lodash');",
+      "import { x } from\n  './externalCompletionDecision.js';",
+    ];
+    for (const source of foreign) expect(offendingSpecifiers(source), source).not.toEqual([]);
+    const permitted = [
+      "import type { Db } from '../db.js';",
+      "import { randomUUID } from 'node:crypto';",
+      "import { readStoredCompletion } from './externalCompletionTerminal.js';",
+      "import { createHash } from 'crypto';",
+    ];
+    for (const source of permitted) expect(offendingSpecifiers(source), source).toEqual([]);
+  });
+});
+
+describe('completion standing: pure fallback for an impossible pairing', () => {
+  it('uncontested paired with a legacy kind (through a cast) is not trusted and carries the proof_unverified qualifier', () => {
+    const impossible = { kind: 'legacy', standing: 'uncontested' } as unknown as CompletionStandingFacts;
+    const claim = classifyCompletionStanding(impossible);
+    expect(claim.unqualifiedSuccessAllowed).toBe(false);
+    expect(claim.trustedForDownstream).toBe(false);
+    expect(claim.qualifier).toBe('proof_unverified');
   });
 });

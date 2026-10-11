@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CompletionEvaluation, GoalDefinition } from '../../shared/goals.js';
 import { checkCompletionProof, evaluateCompletion } from './completionEvaluation.js';
 import { completeGoal } from './completion.js';
+import { readGoalCompletionStanding } from './completionStanding.js';
 import { hashGoalDefinition } from './definitionHash.js';
 import { loadDefinitionVersion } from './definitions.js';
 import { listGoalEvents } from './events.js';
@@ -839,4 +840,43 @@ describe('completeGoal and completion proofs', () => {
         Object.keys(mod).filter((name) => /issue|mint|proof/i.test(name) && name !== 'checkCompletionProof'),
       ).toEqual([]);
   });
+});
+
+describe('completion standing: R4 a legacy version-1 completion reads as historical_legacy', () => {
+  it(
+    'R4: a real completeGoal completion with no proof row is kind legacy, historical_legacy, and not trusted',
+    async () => {
+      const fx = running();
+      fx.advance({ 'src/work.ts': 'w' });
+      await passDeterministic(fx);
+      const result = await completeGoal(fx.db, fx.goalId);
+      expect(result.completed).toBe(true);
+      const row = fx.db.prepare('SELECT completed_at FROM goals WHERE id = ?').get(fx.goalId) as {
+        completed_at: string | null;
+      };
+      const model = readGoalCompletionStanding(fx.db, fx.goalId);
+      expect(model).toEqual({
+        schemaVersion: 1,
+        goalId: fx.goalId,
+        kind: 'legacy',
+        standing: 'historical_legacy',
+        status: { goalStatus: 'completed', completedAt: row.completed_at, reasonCode: 'completion_verified' },
+        proof: { state: 'legacy_no_proof' },
+        correction: null,
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'legacy_not_v2_attested',
+          contentPreservation: 'not_applicable',
+        },
+        classification: { trust: 'qualified', reconciliation: 'none', reasons: ['legacy_completion'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+      expect(model.standing).not.toBe('invalid_unverified');
+      expect(model.standing).not.toBe('uncontested');
+      expect(row.completed_at).not.toBeNull();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
