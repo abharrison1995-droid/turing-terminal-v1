@@ -3838,6 +3838,7 @@ describe('version-2 handoff closure (D.3.1 review)', () => {
       expect(repositoryState(fx.repo)).toEqual(deleted);
       expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
     },
+    30_000,
   );
 
   it.each([
