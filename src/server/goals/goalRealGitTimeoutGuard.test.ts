@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 
 const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const TIMEOUT_CONSTANT = 'REAL_GIT_TEST_TIMEOUT_MS';
+/** Vitest hooks run under the 10 s default timeout unless the second argument is passed, so they are guarded too. */
+const HOOK_NAMES = new Set(['beforeAll', 'beforeEach', 'afterAll', 'afterEach']);
 
 /** Each real-Git kit helper and the kit module that exports it. Checked against the kit sources below. */
 const REAL_GIT_HELPERS: Record<string, string> = {
@@ -162,36 +164,60 @@ export interface TimeoutViolation {
   title: string;
 }
 
-/** Real-Git test blocks in one source that do not pass the shared timeout constant as their explicit third argument. */
+/** The `beforeAll`, `beforeEach`, `afterAll` or `afterEach` hook call at this node, or null. */
+function hookCall(node: ts.Node): ts.CallExpression | null {
+  if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return null;
+  return HOOK_NAMES.has(node.expression.text) ? node : null;
+}
+
+/**
+ * Whether a callback body, or a callback that is a bare identifier naming a Git-calling function of this file, calls a
+ * real-Git helper.
+ */
+function callsRealGit(callback: ts.Node, gitNames: Set<string>): boolean {
+  if (ts.isIdentifier(callback)) return gitNames.has(callback.text);
+  let callsGit = false;
+  const scan = (child: ts.Node) => {
+    if (callsGit) return;
+    if (ts.isCallExpression(child)) {
+      const callee = calleeName(child);
+      if (isRawGitCall(child) || (callee !== null && gitNames.has(callee))) callsGit = true;
+    }
+    ts.forEachChild(child, scan);
+  };
+  scan(callback);
+  return callsGit;
+}
+
+/** Real-Git test blocks and hooks in one source that do not pass the shared timeout constant explicitly. */
 export function timeoutViolations(path: string, file: ts.SourceFile): TimeoutViolation[] {
   const gitNames = gitFunctionNames(file);
   const violations: TimeoutViolation[] = [];
+  const lineOf = (node: ts.Node) => file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1;
   const visit = (node: ts.Node) => {
     const call = itCall(node);
-    if (call && call.arguments.length >= 2) {
-      const body = call.arguments[1]!;
-      let callsGit = false;
-      const scan = (child: ts.Node) => {
-        if (callsGit) return;
-        if (ts.isCallExpression(child)) {
-          const callee = calleeName(child);
-          if (isRawGitCall(child) || (callee !== null && gitNames.has(callee))) callsGit = true;
-        }
-        ts.forEachChild(child, scan);
-      };
-      scan(body);
-      if (callsGit) {
-        const third = call.arguments[2];
-        const explicit = third !== undefined && ts.isIdentifier(third) && third.text === TIMEOUT_CONSTANT;
-        if (!explicit || call.arguments.length !== 3) {
-          const title =
-            call.arguments[0] && ts.isStringLiteralLike(call.arguments[0])
-              ? call.arguments[0].text
-              : '(dynamic title)';
-          const { line } = file.getLineAndCharacterOfPosition(call.getStart(file));
-          violations.push({ path, line: line + 1, title });
-        }
+    if (call && call.arguments.length >= 2 && callsRealGit(call.arguments[1]!, gitNames)) {
+      const third = call.arguments[2];
+      const explicit = third !== undefined && ts.isIdentifier(third) && third.text === TIMEOUT_CONSTANT;
+      if (!explicit || call.arguments.length !== 3) {
+        const title =
+          call.arguments[0] && ts.isStringLiteralLike(call.arguments[0])
+            ? call.arguments[0].text
+            : '(dynamic title)';
+        violations.push({ path, line: lineOf(call), title });
       }
+    }
+    // A hook takes its callback first and its timeout second: `beforeAll(fn, REAL_GIT_TEST_TIMEOUT_MS)`.
+    const hook = hookCall(node);
+    if (hook && hook.arguments.length >= 1 && callsRealGit(hook.arguments[0]!, gitNames)) {
+      const second = hook.arguments[1];
+      const explicit = second !== undefined && ts.isIdentifier(second) && second.text === TIMEOUT_CONSTANT;
+      if (!explicit || hook.arguments.length !== 2)
+        violations.push({
+          path,
+          line: lineOf(hook),
+          title: `${(hook.expression as ts.Identifier).text} hook`,
+        });
     }
     ts.forEachChild(node, visit);
   };
@@ -281,6 +307,51 @@ describe('real-Git timeout guard: every real-Git test has the explicit shared ti
       "it('with the shared timeout', async () => { goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);",
       "it('pure', () => { expect(1).toBe(1); });",
       "it('local harness', () => { harness(); });",
+    ].join('\n');
+    const violations = timeoutViolations(
+      'goals/synthetic.test.ts',
+      ts.createSourceFile('s.ts', source, ts.ScriptTarget.Latest, true),
+    );
+    expect(violations).toEqual([]);
+  });
+
+  it('catches a real-Git hook without the explicit timeout, through a fixture, a raw git call, a local wrapper and an identifier callback', () => {
+    const source = [
+      "import { execFileSync } from 'node:child_process';",
+      "import { goalRepoFixture, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';",
+      "import { v2RunningAttestedFixture } from './goalV2TestKit.js';",
+      'const HEAVY = 60_000;',
+      "const raw = () => execFileSync('git', ['status']);",
+      'function make() { return goalRepoFixture({}); }',
+      'function setupRepo() { return goalRepoFixture({}); }',
+      'beforeAll(async () => { await goalRepoFixture({}); });',
+      'beforeEach(() => { make(); }, 30_000);',
+      'afterAll(() => { raw(); });',
+      "afterEach(() => { v2RunningAttestedFixture('sha1'); }, HEAVY);",
+      'beforeAll(setupRepo);',
+    ].join('\n');
+    const violations = timeoutViolations(
+      'goals/synthetic.test.ts',
+      ts.createSourceFile('s.ts', source, ts.ScriptTarget.Latest, true),
+    );
+    expect(violations.map(({ title }) => title)).toEqual([
+      'beforeAll hook',
+      'beforeEach hook',
+      'afterAll hook',
+      'afterEach hook',
+      'beforeAll hook',
+    ]);
+  });
+
+  it('does not flag a real-Git hook that passes the shared timeout, and does not flag a pure hook', () => {
+    const source = [
+      "import { goalRepoFixture, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';",
+      "import { v2RunningAttestedFixture } from './goalV2TestKit.js';",
+      'function pureSetup() { return 1; }',
+      'beforeAll(async () => { await goalRepoFixture({}); }, REAL_GIT_TEST_TIMEOUT_MS);',
+      "afterAll(async () => { await v2RunningAttestedFixture('sha1'); }, REAL_GIT_TEST_TIMEOUT_MS);",
+      'beforeEach(() => { expect(1).toBe(1); });',
+      'afterEach(() => { pureSetup(); });',
     ].join('\n');
     const violations = timeoutViolations(
       'goals/synthetic.test.ts',

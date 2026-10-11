@@ -25,6 +25,8 @@ const D3D_COMPLETION_IDENTIFIER_FILES = [
   'goals/externalCompletionDecision.ts',
   'goals/externalCompletionPreflight.ts',
   'goals/externalCompletionProof.ts',
+  // legacy final-apply refuses completion and correction approvals (refusal only; D.3E F2)
+  'goals/finalApplyAuthority.ts',
   'goals/freshness.ts',
   'goals/goalCommands.ts',
 ] as const;
@@ -142,7 +144,7 @@ describe('authority static guard: production sources', () => {
 
   it('D3D completion identifier allow-list is exactly the reviewed file set', () => {
     expect(ruleById('completion_identifier').files).toEqual([...D3D_COMPLETION_IDENTIFIER_FILES].sort());
-    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(7);
+    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(8);
   });
 
   for (const rule of RULES) {

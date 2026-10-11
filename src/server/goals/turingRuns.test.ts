@@ -90,7 +90,7 @@ beforeEach(() => {
     });
     return request.role === 'implementer' ? implementer(request) : planner();
   });
-});
+}, REAL_GIT_TEST_TIMEOUT_MS);
 
 afterEach(async () => {
   await h?.close();

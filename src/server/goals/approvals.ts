@@ -330,5 +330,7 @@ export function bindExactGate(
   if (!approval || approval.goalId !== goalId || approval.gate !== named.gate) return { ok: false };
   // A completion approval is never a gate the supervisor or a read model may resolve; it is inert until its consumer.
   if (approval.externalCompletionActionDigest !== undefined) return { ok: false };
+  // A correction approval is never a gate either: it is a user_confirmation decision with its own consumer only.
+  if (approval.attestationCorrectionActionDigest !== undefined) return { ok: false };
   return { ok: true, approval };
 }

@@ -209,4 +209,45 @@ describe('bindExactGate: a completion decision is never a gate (paired)', () => 
       }),
     ).toEqual({ ok: false });
   });
+
+  it('binds the plain control gate, and refuses a copy of it that carries only a correction digest', () => {
+    const { db, goalId } = setup();
+    const control = requestGoalApproval(db, {
+      goalId,
+      gate: 'user_confirmation',
+      risk: 'high',
+      reason: 'Ordinary user confirmation gate.',
+      requestedBy: 'user',
+      detail: { note: 'control' },
+    });
+    const gateNamingControl = {
+      status: 'needs_user',
+      reasonCode: 'gate_pending',
+      detail: { approvalId: control.id, gate: 'user_confirmation' },
+    };
+    expect(bindExactGate(db, goalId, gateNamingControl)).toMatchObject({
+      ok: true,
+      approval: { id: control.id },
+    });
+
+    // The correction insert guard only admits a row whose detail is a correction; this copy's detail is not one.
+    db.exec('DROP TRIGGER trg_goal_approval_attestation_correction_guard;');
+    const correctionCopy = copyGoalApprovalRow(db, control.id, {
+      externalCompletion: null,
+      attestationCorrection: testDigest('bind-correction-copy'),
+    });
+    expect(getGoalApproval(db, correctionCopy)).toMatchObject({
+      gate: 'user_confirmation',
+      detail: { note: 'control' },
+      attestationCorrectionActionDigest: testDigest('bind-correction-copy'),
+    });
+    expect(getGoalApproval(db, correctionCopy)).not.toHaveProperty('externalCompletionActionDigest');
+    expect(
+      bindExactGate(db, goalId, {
+        status: 'needs_user',
+        reasonCode: 'gate_pending',
+        detail: { approvalId: correctionCopy, gate: 'user_confirmation' },
+      }),
+    ).toEqual({ ok: false });
+  });
 });

@@ -29,7 +29,7 @@ describe('subject state capture', () => {
     writeFileSync(join(repo, 'libs', 'shared.txt'), 'shared\n');
     git(repo, 'add', '.');
     git(repo, 'commit', '-qm', 'initial');
-  });
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 

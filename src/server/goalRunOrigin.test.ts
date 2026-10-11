@@ -91,7 +91,7 @@ describe('Goal-origin run launch', () => {
     plainWorkflowId = await create(
       workflowPayload('In place', false, [{ id: 'gate', label: 'Gate', kind: 'humanApproval' }]),
     );
-  });
+  }, REAL_GIT_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await app.close();

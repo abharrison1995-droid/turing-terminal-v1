@@ -43,7 +43,7 @@ import {
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { GoalStateError, transitionGoal } from './stateMachine.js';
-import { cleanupRepoFixtures, copyGoalApprovalRow, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { cleanupRepoFixtures, copyGoalApprovalRow, REAL_GIT_TEST_TIMEOUT_MS, testDigest } from './repoKit.js';
 
 afterEach(() => {
   cleanupRepoFixtures();
@@ -1261,6 +1261,117 @@ describe('external completion decision: approval consumers refuse a completion d
           .run(randomUUID(), goalId, detail, '2026-01-01T00:00:00.000Z', decision.actionDigest),
       ).toThrow('external completion approval action digest is invalid');
       expect(completionRows(db, goalId)).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion decision: correction digests stay out of the completion decision (paired)', () => {
+  it(
+    'lists the real completion decision, and ignores a correction-digest copy of a plain confirmation',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const control = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, attested.attestationId, digest),
+      );
+      expect(control).toMatchObject({ reused: false });
+      const listedBefore = listExternalCompletionDecisions(db, goalId);
+      expect(listedBefore).toMatchObject([{ state: 'valid', approval: { id: control.approvalId } }]);
+      const recordedBefore = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, attested.attestationId, digest),
+      );
+
+      // Paired treatment: a plain user_confirmation row (no completion marker in its detail) whose copy carries ONLY a
+      // correction digest. The disposable database drops the correction insert guard for that copy.
+      db.exec('DROP TRIGGER trg_goal_approval_attestation_correction_guard;');
+      const plain = requestGoalApproval(db, {
+        goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Plain confirmation for the correction-copy isolation test.',
+        requestedBy: 'user',
+        detail: { note: 'plain' },
+      });
+      const copyId = copyGoalApprovalRow(db, plain.id, {
+        externalCompletion: null,
+        attestationCorrection: testDigest('decision-correction-copy'),
+      });
+      expect(getGoalApproval(db, copyId)).toMatchObject({
+        gate: 'user_confirmation',
+        attestationCorrectionActionDigest: testDigest('decision-correction-copy'),
+      });
+      expect(getGoalApproval(db, copyId)).not.toHaveProperty('externalCompletionActionDigest');
+
+      // The copy is not a completion row: it is not listed, and the direct reader reports it as not a completion.
+      expect(listExternalCompletionDecisions(db, goalId)).toEqual(listedBefore);
+      expect(completionRows(db, goalId).map(({ id }) => id)).toEqual([control.approvalId]);
+      expect(readExternalCompletionDecision(db, goalId, copyId)).toEqual({
+        state: 'invalid',
+        approvalId: copyId,
+        reason: 'not_completion_approval',
+      });
+
+      // Recording is unchanged: the exact duplicate is still reused with the same approval and the same result.
+      await expect(
+        recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest)),
+      ).resolves.toEqual(recordedBefore);
+      expect(recordedBefore).toMatchObject({ approvalId: control.approvalId, reused: true });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'lists a completion-detail copy that carries a correction digest as invalid, and refuses every new decision',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const control = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, attested.attestationId, digest),
+      );
+
+      // Paired treatment: the real completion decision copied with a correction digest and no completion digest. Its
+      // detail still names the completion action, so the completion reader selects it.
+      db.exec('DROP TRIGGER trg_goal_approval_external_completion_action_guard;');
+      db.exec('DROP TRIGGER trg_goal_approval_attestation_correction_guard;');
+      const copyId = copyGoalApprovalRow(db, control.approvalId, {
+        externalCompletion: null,
+        attestationCorrection: testDigest('completion-detail-correction-copy'),
+      });
+      expect(getGoalApproval(db, copyId)).toMatchObject({
+        gate: 'user_confirmation',
+        status: 'approved',
+        attestationCorrectionActionDigest: testDigest('completion-detail-correction-copy'),
+      });
+      expect(getGoalApproval(db, copyId)).not.toHaveProperty('externalCompletionActionDigest');
+
+      expect(listExternalCompletionDecisions(db, goalId)).toEqual([
+        expect.objectContaining({
+          state: 'valid',
+          approval: expect.objectContaining({ id: control.approvalId }),
+        }),
+        { state: 'invalid', approvalId: copyId, reason: 'not_completion_approval' },
+      ]);
+      expect(readExternalCompletionDecision(db, goalId, copyId)).toEqual({
+        state: 'invalid',
+        approvalId: copyId,
+        reason: 'not_completion_approval',
+      });
+
+      const before = capture(attested);
+      await expectDecisionRefusal(
+        recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest)),
+        'decision_corrupt',
+        'not_completion_approval',
+      );
+      expectNoChange(attested, before);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

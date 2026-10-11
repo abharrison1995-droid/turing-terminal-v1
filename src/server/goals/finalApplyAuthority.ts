@@ -526,6 +526,13 @@ export async function validateFinalApplyAuthority(
       'approval_mismatch',
       'The approval does not authorize this Goal final apply.',
     );
+    // Completion and correction approvals are never final-apply authority (D.3E F2).
+    ensure(
+      approval.externalCompletionActionDigest === undefined &&
+        approval.attestationCorrectionActionDigest === undefined,
+      'approval_mismatch',
+      'Completion and correction approvals are never final-apply authority.',
+    );
     ensure(
       approval.risk === 'high' && approval.requestedBy === 'user',
       'approval_mismatch',
@@ -609,6 +616,12 @@ export function assertFinalApplyOperationDatabaseCurrent(
     'approval_mismatch',
     'Only the explicit approved user authority may apply this Goal.',
   );
+  ensure(
+    approval.externalCompletionActionDigest === undefined &&
+      approval.attestationCorrectionActionDigest === undefined,
+    'approval_mismatch',
+    'Completion and correction approvals are never final-apply authority.',
+  );
   const stored = parseProspectiveDetail(approval);
   ensure(
     allowance.approvalId === approvalId && sameIntent(allowance.intent, stored.intent),
@@ -636,6 +649,12 @@ export function assertFinalApplyApprovalDatabaseCurrent(db: Db, approvalId: stri
     approval.gate === 'final_apply' && approval.risk === 'high' && approval.requestedBy === 'user',
     'approval_mismatch',
     'Final-apply authority requires a high-risk user-requested approval.',
+  );
+  ensure(
+    approval.externalCompletionActionDigest === undefined &&
+      approval.attestationCorrectionActionDigest === undefined,
+    'approval_mismatch',
+    'Completion and correction approvals are never final-apply authority.',
   );
   ensure(
     approval.status === 'pending',

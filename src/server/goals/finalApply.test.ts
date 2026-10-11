@@ -7,17 +7,24 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { applyApprovedGoalToBase, FinalApplyInjectedCrash } from './finalApply.js';
 import { decideGoalApprovalAsUser } from './goalCommands.js';
-import { requestFinalApplyApproval } from './finalApplyAuthority.js';
-import { requestGoalApproval } from './approvals.js';
+import {
+  assertFinalApplyApprovalDatabaseCurrent,
+  assertFinalApplyOperationDatabaseCurrent,
+  requestFinalApplyApproval,
+  validateFinalApplyAuthority,
+} from './finalApplyAuthority.js';
+import { getGoalApproval, requestGoalApproval } from './approvals.js';
 import { recoverIntegrationOps } from '../goalGit.js';
 import { completeReview, createReview } from './reviews.js';
 import { approveDefinition, beginAmendment } from './definitions.js';
 import {
   cleanupRepoFixtures,
+  copyGoalApprovalRow,
   goalRepoFixture,
   passDeterministic,
   reportOf,
   simpleDefinition,
+  testDigest,
   type GoalRepoFixture,
   REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
@@ -203,7 +210,7 @@ describe('guarded Goal final apply', () => {
       const excludePath = join(prepared.fx.repo, '.git', 'info', 'exclude');
       const previousExclude = readFileSync(excludePath, 'utf8');
       writeFileSync(excludePath, `${previousExclude}\n/src/final-apply.txt\n`);
-    });
+    }, REAL_GIT_TEST_TIMEOUT_MS);
 
     it(
       'reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate',
@@ -1056,3 +1063,145 @@ process.exit(result.status || 0);
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
+
+describe('legacy final-apply authority refuses a completion digest (paired)', () => {
+  it(
+    'accepts the real final-apply control, and refuses a completion-digest copy of it',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, approval.id, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: true, authority: { approvalId: approval.id } });
+
+      // Disposable database only: the completion insert guard refuses a completion digest on any gate but
+      // user_confirmation, and the live-intent index allows one live row per intent, which the copy would collide with.
+      fx.db.exec('DROP TRIGGER trg_goal_approval_external_completion_action_guard;');
+      fx.db.exec('DROP INDEX idx_goal_approval_live_final_apply_intent;');
+      const copyId = copyGoalApprovalRow(fx.db, approval.id, {
+        externalCompletion: testDigest('final-apply-completion-copy'),
+        attestationCorrection: null,
+      });
+      expect(getGoalApproval(fx.db, copyId)).toMatchObject({
+        gate: 'final_apply',
+        status: 'approved',
+        externalCompletionActionDigest: testDigest('final-apply-completion-copy'),
+      });
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, copyId, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: false, code: 'approval_mismatch' });
+      // The database-current guards refuse the same copy with the same exact code.
+      const intent = await controlIntent(fx, approval.id);
+      expect(thrownCode(() => assertFinalApplyApprovalDatabaseCurrent(fx.db, copyId))).toBe(
+        'approval_mismatch',
+      );
+      expect(
+        thrownCode(() =>
+          assertFinalApplyOperationDatabaseCurrent(fx.db, fx.goalId, copyId, {
+            operationId: 'completion-copy-operation',
+            approvalId: copyId,
+            operationDigest: testDigest('final-apply-completion-copy-operation'),
+            intent,
+          }),
+        ),
+      ).toBe('approval_mismatch');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'accepts the real final-apply control, and refuses a correction-digest copy of it',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, approval.id, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: true, authority: { approvalId: approval.id } });
+      const intent = await controlIntent(fx, approval.id);
+
+      // Disposable database only: the correction insert guard refuses a correction digest on any gate but
+      // user_confirmation, and the live-intent index would collide with the copy, which carries the same intent digest.
+      fx.db.exec('DROP TRIGGER trg_goal_approval_attestation_correction_guard;');
+      fx.db.exec('DROP INDEX idx_goal_approval_live_final_apply_intent;');
+      const copyId = copyGoalApprovalRow(fx.db, approval.id, {
+        externalCompletion: null,
+        attestationCorrection: testDigest('final-apply-correction-copy'),
+      });
+      expect(getGoalApproval(fx.db, copyId)).toMatchObject({
+        gate: 'final_apply',
+        status: 'approved',
+        attestationCorrectionActionDigest: testDigest('final-apply-correction-copy'),
+      });
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, copyId, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: false, code: 'approval_mismatch' });
+      expect(thrownCode(() => assertFinalApplyApprovalDatabaseCurrent(fx.db, copyId))).toBe(
+        'approval_mismatch',
+      );
+      expect(
+        thrownCode(() =>
+          assertFinalApplyOperationDatabaseCurrent(fx.db, fx.goalId, copyId, {
+            operationId: 'correction-copy-operation',
+            approvalId: copyId,
+            operationDigest: testDigest('final-apply-correction-copy-operation'),
+            intent,
+          }),
+        ),
+      ).toBe('approval_mismatch');
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, approval.id, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: true });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'does not let a completion-digest copy that stays user_confirmation satisfy the final-apply lookup',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      const plain = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Ordinary user confirmation for the final-apply lookup test.',
+        requestedBy: 'user',
+        detail: { note: 'plain' },
+      });
+      fx.db.exec('DROP TRIGGER trg_goal_approval_external_completion_action_guard;');
+      const copyId = copyGoalApprovalRow(fx.db, plain.id, {
+        externalCompletion: testDigest('final-apply-confirmation-copy'),
+        attestationCorrection: null,
+      });
+      expect(getGoalApproval(fx.db, copyId)).toMatchObject({
+        gate: 'user_confirmation',
+        externalCompletionActionDigest: testDigest('final-apply-confirmation-copy'),
+      });
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, copyId, { expectedStatus: 'pending' }),
+      ).resolves.toMatchObject({ ok: false, code: 'approval_mismatch' });
+
+      // Control: the real final-apply approval is still the only row the lookup accepts.
+      await expect(
+        validateFinalApplyAuthority(fx.db, fx.goalId, approval.id, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: true });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+/** The intent of a real approved final-apply control, for building a planned allowance around a copy. */
+async function controlIntent(fx: GoalRepoFixture, controlId: string) {
+  const control = await validateFinalApplyAuthority(fx.db, fx.goalId, controlId, {
+    expectedStatus: 'approved',
+  });
+  if (!control.ok) throw new Error(`control approval refused: ${control.code}`);
+  return control.authority.intent;
+}
+
+/** The exact error code a synchronous guard throws, or 'no throw' so a missing refusal fails the pinned comparison. */
+function thrownCode(run: () => void): unknown {
+  try {
+    run();
+  } catch (error) {
+    return (error as { code?: unknown }).code;
+  }
+  return 'no throw';
+}
