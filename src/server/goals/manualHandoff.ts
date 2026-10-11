@@ -20,6 +20,7 @@ import {
 import { redactSecrets } from '../security.js';
 import { computeFinalApplyRepositoryIdentity } from './finalApplyOperation.js';
 import { evaluateCompletion } from './completionEvaluation.js';
+import { approvedCompletionPolicyMode } from './approvedCompletionAuthority.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { getGoalApproval } from './approvals.js';
 import { getReview, type GoalReviewRow } from './reviews.js';
@@ -619,14 +620,30 @@ function ensureCompletionReady(
     evaluation.definitionVersion === version.version && evaluation.definitionHash === version.definitionHash,
     'definition_not_approved',
   );
-  assert(
-    evaluation.failures.length === 1 &&
-      evaluation.failures[0]?.code === 'final_apply_required' &&
-      evaluation.finalApply.required &&
-      !evaluation.finalApply.ok &&
-      evaluation.finalApply.reason === 'not_applied',
-    'completion_not_ready',
-  );
+  // Version-aware precondition. The legacy v1 branch is unchanged. A v2 Goal reaches a handoff only when external
+  // integration is its sole remaining prerequisite: the evaluator's marker is a precondition for preparing a handoff
+  // and attestation, never permission to complete. Completion remains refused by the evaluator and the proof path.
+  const policyMode = approvedCompletionPolicyMode(db, goalId, version.version);
+  assert(policyMode !== null, 'definition_not_approved');
+  if (policyMode === 'external_user_attested_v2') {
+    assert(
+      evaluation.failures.length === 1 &&
+        evaluation.failures[0]?.code === 'external_completion_not_activated' &&
+        evaluation.finalApply.required &&
+        !evaluation.finalApply.ok &&
+        evaluation.finalApply.reason === 'external_completion_not_activated',
+      'completion_not_ready',
+    );
+  } else {
+    assert(
+      evaluation.failures.length === 1 &&
+        evaluation.failures[0]?.code === 'final_apply_required' &&
+        evaluation.finalApply.required &&
+        !evaluation.finalApply.ok &&
+        evaluation.finalApply.reason === 'not_applied',
+      'completion_not_ready',
+    );
+  }
   assert(
     evaluation.finalAcceptance.required &&
       evaluation.finalAcceptance.ok &&

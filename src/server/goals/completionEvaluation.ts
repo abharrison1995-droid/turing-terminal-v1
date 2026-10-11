@@ -6,14 +6,13 @@ import type {
   MilestoneEvaluation,
 } from '../../shared/goals.js';
 import type { Db } from '../db.js';
-import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { allowedOpenFindings, openFindingCounts } from './findings.js';
 import { evaluateCriteria } from './freshness.js';
 import { evaluateMilestones, userApprovals } from './milestones.js';
 import { createRepositoryReader, resolveGoalRepository } from './repository.js';
 import { listReviews } from './reviews.js';
 import { hasVerifiedAppliedFinalApplyOperation } from './finalApplyOperation.js';
-import { parseCompletionPolicy, validateApprovedCompletionPolicyLineage } from './completionPolicy.js';
+import { readApprovedCompletionAuthority } from './approvedCompletionAuthority.js';
 
 /**
  * Completion authority. This module is the only place a `CompletionEvaluation` can become proof: the registry below
@@ -57,54 +56,6 @@ function blank(goalId: string, now: string, failure: CompletionFailure): Complet
     finalApply: { required: false, ok: false, basis: null, reason: null },
     failures: [failure],
   };
-}
-
-type ApprovedCompletionAuthority =
-  | { kind: 'not_approved' }
-  | { kind: 'invalid' }
-  | {
-      kind: 'valid';
-      version: NonNullable<ReturnType<typeof loadDefinitionVersion>>;
-      lineage: Extract<ReturnType<typeof validateApprovedCompletionPolicyLineage>, { kind: 'valid' }>;
-      parsedPolicy: Extract<ReturnType<typeof parseCompletionPolicy>, { kind: 'valid' }>;
-    };
-
-/** Rechecks the approved content, user approval binding, and entire parent lineage from one database snapshot. */
-function readApprovedCompletionAuthority(
-  db: Db,
-  goalId: string,
-  expectedVersion?: number,
-): ApprovedCompletionAuthority {
-  try {
-    return db.transaction((): ApprovedCompletionAuthority => {
-      const goal = db.prepare('SELECT current_definition_version FROM goals WHERE id = ?').get(goalId) as
-        { current_definition_version: number | null } | undefined;
-      if (!goal || goal.current_definition_version === null) return { kind: 'not_approved' };
-      if (expectedVersion !== undefined && goal.current_definition_version !== expectedVersion)
-        return { kind: 'invalid' };
-      const status = db
-        .prepare('SELECT status FROM goal_definition_versions WHERE goal_id = ? AND version = ?')
-        .get(goalId, goal.current_definition_version) as { status: string } | undefined;
-      if (!status || status.status !== 'approved') return { kind: 'not_approved' };
-
-      const lineage = validateApprovedCompletionPolicyLineage(db, goalId, goal.current_definition_version);
-      if (lineage.kind !== 'valid') return { kind: 'invalid' };
-      const version = loadDefinitionVersion(db, goalId, goal.current_definition_version);
-      if (
-        !version ||
-        version.status !== 'approved' ||
-        version.version !== lineage.currentVersion ||
-        version.definitionHash !== lineage.currentHash ||
-        !verifyDefinitionHash(version)
-      )
-        return { kind: 'invalid' };
-      const parsedPolicy = parseCompletionPolicy(version.definition.contract?.completionPolicy);
-      if (parsedPolicy.kind !== 'valid' || parsedPolicy.mode !== lineage.mode) return { kind: 'invalid' };
-      return { kind: 'valid', version, lineage, parsedPolicy };
-    })();
-  } catch {
-    return { kind: 'invalid' };
-  }
 }
 
 function invalidCompletionAuthority(goalId: string, now: string, version: number): CompletionEvaluation {

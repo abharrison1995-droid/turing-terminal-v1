@@ -24,7 +24,12 @@ import { recordEvidence } from './evidence.js';
 import type { GoalDefinition } from '../../shared/goals.js';
 import { prepareFinalApplyIntent } from './finalApplyAuthority.js';
 import { applyReviewFindings } from './findings.js';
-import { getManualHandoffProjection, prepareManualHandoff, validateManualHandoff } from './manualHandoff.js';
+import {
+  ManualHandoffError,
+  getManualHandoffProjection,
+  prepareManualHandoff,
+  validateManualHandoff,
+} from './manualHandoff.js';
 import {
   buildExternalIntegrationObservation,
   computeExternalIntegrationActionDigest,
@@ -53,7 +58,7 @@ import {
 import { closeReview, completeReview, createReview, getReview } from './reviews.js';
 import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
-import { transitionGoal } from './stateMachine.js';
+import { GoalStateError, transitionGoal } from './stateMachine.js';
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -181,6 +186,8 @@ const passingReport = {
 };
 
 interface AcceptedFixtureOptions {
+  /** Approve the definition under the explicit version-2 external-integration completion policy. */
+  completionContractVersion2?: boolean;
   files?: Record<string, string>;
   omitEvidence?: boolean;
   omitReview?: boolean;
@@ -208,7 +215,15 @@ async function acceptedFixture(
         requiredEvidence: [{ criterionKey: 'deliverable', kinds: ['artifact'] }],
       }),
     ],
-    policy: { requireFinalReview: true, requireUserAcceptance: true, applyToBase: 'required' },
+    policy: options.completionContractVersion2
+      ? {
+          completionContractVersion: 2,
+          integrationMode: 'external_user_attested',
+          requireFinalReview: true,
+          requireUserAcceptance: true,
+          applyToBase: 'required',
+        }
+      : { requireFinalReview: true, requireUserAcceptance: true, applyToBase: 'required' },
     gates: { finalAcceptance: true },
   });
   definition.routing.independence.finalReview = 'different-family';
@@ -282,10 +297,16 @@ async function acceptedFixture(
   }
   if (!options.omitEvidence && !options.omitReview && !options.omitAcceptance) {
     const completion = await evaluateCompletion(fx.db, fx.goalId);
-    expect(completion.failures.map(({ code }) => code)).toEqual(['final_apply_required']);
+    expect(completion.failures.map(({ code }) => code)).toEqual([
+      options.completionContractVersion2 ? 'external_completion_not_activated' : 'final_apply_required',
+    ]);
     expect(completion.finalReview).toMatchObject({ required: true, ok: true });
     expect(completion.finalAcceptance).toMatchObject({ required: true, ok: true });
-    expect(completion.finalApply).toMatchObject({ required: true, ok: false, reason: 'not_applied' });
+    expect(completion.finalApply).toMatchObject({
+      required: true,
+      ok: false,
+      reason: options.completionContractVersion2 ? 'external_completion_not_activated' : 'not_applied',
+    });
   }
   return { fx, sourceCommit, sourceRef, acceptanceId, reviewId };
 }
@@ -293,8 +314,9 @@ async function acceptedFixture(
 async function integratedExternalFixture(
   objectFormat: 'sha1' | 'sha256' = 'sha1',
   strategy: 'fast-forward' | 'ours' = 'fast-forward',
+  options: { completionContractVersion2?: boolean } = {},
 ) {
-  const accepted = await acceptedFixture(objectFormat);
+  const accepted = await acceptedFixture(objectFormat, options);
   const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
   if (strategy === 'fast-forward') git(accepted.fx.repo, 'merge', '--ff-only', accepted.sourceRef);
   else
@@ -3592,5 +3614,148 @@ describe('external integration attestation corrections', () => {
     ).rejects.toMatchObject({ code: 'goal_terminal' });
     expect(getGoalApproval(fx.db, reviewed.approval.id)).toMatchObject({ status: 'pending' });
     expect(listAttestationCorrectionHistory(fx.db, fx.goalId, attestation.attestationId)).toEqual([]);
+  });
+});
+describe('version-2 completion characterization (D.3.0C)', () => {
+  // Characterization tests (D.3.0C): they pin observable behaviour and change no production code.
+  it('refuses a manual handoff for a version-2 amendment that has no fresh final review or acceptance', async () => {
+    const { fx } = await acceptedFixture();
+    const version2 = structuredClone(fx.definition);
+    version2.contract.completionPolicy.completionContractVersion = 2;
+    version2.contract.completionPolicy.integrationMode = 'external_user_attested';
+    const amendment = beginAmendment(fx.db, {
+      goalId: fx.goalId,
+      actor: 'user',
+      definition: version2,
+      changeSummary: 'Characterize the version-2 handoff refusal.',
+    });
+    approveDefinition(fx.db, { goalId: fx.goalId, version: amendment.version, actor: 'user' });
+
+    let code = 'no_error';
+    try {
+      await prepareManualHandoff(fx.db, fx.goalId);
+    } catch (error) {
+      code = error instanceof ManualHandoffError ? error.code : `unexpected:${String(error)}`;
+    }
+    expect(code).toBe('completion_not_ready');
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({ n: 0 });
+  });
+
+  it('characterizes that a user cannot move a Goal from running to completed through the state machine', async () => {
+    const { fx } = await acceptedFixture();
+    const before = fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId);
+    let refusal = 'no_error';
+    try {
+      transitionGoal(fx.db, {
+        goalId: fx.goalId,
+        to: 'completed',
+        reasonCode: 'completion_verified',
+        actor: 'user',
+      });
+    } catch (error) {
+      refusal = error instanceof GoalStateError ? error.code : `unexpected:${String(error)}`;
+    }
+    expect(refusal).toBe('illegal_transition');
+    expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).toEqual(before);
+  });
+});
+describe('version-2 handoff preparation (D.3.1)', () => {
+  it.each(['sha1', 'sha256'] as const)(
+    'prepares a version-2 handoff, verifies a fast-forward integration, and persists an attestation under %s',
+    async (objectFormat) => {
+      const { fx, handoff, observation } = await integratedExternalFixture(objectFormat, 'fast-forward', {
+        completionContractVersion2: true,
+      });
+      expect(handoff.handoffId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(observation).toMatchObject({
+        completionContractVersion: 2,
+        handoff: { id: handoff.handoffId, digest: handoff.handoffDigest },
+      });
+      const statusBefore = fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId);
+      const approval = approveExternalObservation(fx, observation);
+      const attestation = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      expect(attestation.record).toMatchObject({ completionContractVersion: 2 });
+      expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).toEqual(statusBefore);
+      expect(
+        fx.db
+          .prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs WHERE goal_id = ?')
+          .get(fx.goalId),
+      ).toEqual({ n: 0 });
+      const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+      expect(evaluation.finalApply).toEqual({
+        required: true,
+        ok: false,
+        basis: null,
+        reason: 'external_completion_not_activated',
+      });
+    },
+  );
+
+  it('fails closed for a version-2 observation when the source ref moves or the repository identity changes', async () => {
+    const sourceMoved = await integratedExternalFixture('sha1', 'fast-forward', {
+      completionContractVersion2: true,
+    });
+    const replacementSource = sourceMoved.fx.git(
+      'commit-tree',
+      sourceMoved.observation.source.tree,
+      '-p',
+      sourceMoved.handoff.target.observedBaseCommit,
+      '-m',
+      'different version-2 source commit with the same tree',
+    );
+    sourceMoved.fx.git('update-ref', sourceMoved.handoff.source.goalRef, replacementSource);
+    expect(
+      await validateExternalIntegrationObservation(
+        sourceMoved.fx.db,
+        sourceMoved.fx.goalId,
+        sourceMoved.handoff.handoffId,
+        sourceMoved.observation,
+      ),
+    ).toMatchObject({ state: 'stale', code: 'source_changed' });
+
+    const replacedRepository = await integratedExternalFixture('sha1', 'fast-forward', {
+      completionContractVersion2: true,
+    });
+    const alternate = join(replacedRepository.fx.repo, 'unrelated-version-2-repository');
+    mkdirSync(alternate);
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main', alternate]);
+    replacedRepository.fx.db
+      .prepare('UPDATE projects SET path = ?, git_root = ? WHERE id = ?')
+      .run(alternate, alternate, replacedRepository.fx.projectId);
+    expect(
+      await validateExternalIntegrationObservation(
+        replacedRepository.fx.db,
+        replacedRepository.fx.goalId,
+        replacedRepository.handoff.handoffId,
+        replacedRepository.observation,
+      ),
+    ).toMatchObject({ state: 'stale', code: 'repository_identity_changed' });
+  });
+
+  it('refuses a version-2 handoff when final review is missing', async () => {
+    const { fx } = await acceptedFixture('sha1', { completionContractVersion2: true, omitReview: true });
+    await expect(prepareManualHandoff(fx.db, fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({ n: 0 });
+  });
+
+  it('refuses a version-2 handoff when final user acceptance is missing', async () => {
+    const { fx } = await acceptedFixture('sha1', { completionContractVersion2: true, omitAcceptance: true });
+    await expect(prepareManualHandoff(fx.db, fx.goalId)).rejects.toMatchObject({
+      code: 'completion_not_ready',
+    });
+    expect(
+      fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(fx.goalId),
+    ).toEqual({ n: 0 });
   });
 });
