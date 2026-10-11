@@ -15,7 +15,7 @@ import {
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
-import { cleanupRepoFixtures } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 /** Test-only switches read by the module mocks below. Reset before every test. */
 const seam = vi.hoisted(() => ({
@@ -136,8 +136,6 @@ afterEach(() => {
   cleanupRepoFixtures();
 });
 
-const HEAVY = 60_000;
-
 function compute(fx: GoalFixture, attestationId: string): Promise<ExternalCompletionPreflightReport> {
   return computeExternalCompletionPreflight(fx.db, fx.goalId, { attestationId });
 }
@@ -201,7 +199,7 @@ describe('external completion preflight: seam failures', () => {
       });
       expect(databaseSnapshot(attested.fx.db)).toEqual(before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -229,7 +227,7 @@ describe('external completion preflight: seam failures', () => {
       });
       expect(report.actionFields).toBeNull();
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -244,7 +242,7 @@ describe('external completion preflight: seam failures', () => {
       expect(seam.inTransactionAfterCall).toBe(false);
       expect(attested.fx.db.inTransaction).toBe(false);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -264,7 +262,7 @@ describe('external completion preflight: unexpected failures become typed refusa
         'git_observation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -282,7 +280,7 @@ describe('external completion preflight: unexpected failures become typed refusa
         'completion_evaluation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -300,7 +298,7 @@ describe('external completion preflight: unexpected failures become typed refusa
         'definition',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -320,7 +318,7 @@ describe('external completion preflight: unexpected failures become typed refusa
       expect(report.checks.slice(0, 10).every(({ status }) => status === 'passed')).toBe(true);
       expect(report.facts.freshCommit).toBe(attested.attestation.destination.observedCommit);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -340,7 +338,7 @@ describe('external completion preflight: refusal path never throws', () => {
         'git_observation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -359,7 +357,7 @@ describe('external completion preflight: refusal path never throws', () => {
       );
       expect(report.facts.correctionStanding).toBe('invalid');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -388,6 +386,6 @@ describe('external completion preflight: refusal path never throws', () => {
         'git_observation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });

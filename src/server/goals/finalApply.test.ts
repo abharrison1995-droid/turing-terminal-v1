@@ -19,6 +19,7 @@ import {
   reportOf,
   simpleDefinition,
   type GoalRepoFixture,
+  REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
 import { parseFinalApplyOperationRecord } from './finalApplyOperation.js';
 
@@ -64,51 +65,55 @@ function mainReflog(fx: GoalRepoFixture): string {
 }
 
 describe('guarded Goal final apply', () => {
-  it('does not let a successful historical Turing apply operation satisfy v2 completion', async () => {
-    const { fx, approval } = await readyApplyFixture();
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'applied',
-    });
-    const v2 = structuredClone(fx.definition);
-    v2.contract.completionPolicy.completionContractVersion = 2;
-    v2.contract.completionPolicy.integrationMode = 'external_user_attested';
-    v2.contract.completionPolicy.requireFinalReview = true;
-    v2.contract.completionPolicy.requireUserAcceptance = true;
-    v2.contract.completionPolicy.applyToBase = 'required';
-    v2.review.final = true;
-    const { version } = beginAmendment(fx.db, { goalId: fx.goalId, actor: 'user', definition: v2 });
-    approveDefinition(fx.db, { goalId: fx.goalId, version, actor: 'user' });
-    fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
-    const { id: reviewId } = await createReview(fx.db, {
-      goalId: fx.goalId,
-      definitionVersion: version,
-      reviewKind: 'final',
-    });
-    completeReview(fx.db, {
-      reviewId,
-      report: reportOf({ verdict: 'pass' }),
-      independence: { established: true, policy: 'different-family' },
-    });
-    fx.approval('final_acceptance', {
-      definitionVersion: version,
-      definitionHash: fx.currentHash(),
-      integrationTree: fx.tree(),
-    });
+  it(
+    'does not let a successful historical Turing apply operation satisfy v2 completion',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'applied',
+      });
+      const v2 = structuredClone(fx.definition);
+      v2.contract.completionPolicy.completionContractVersion = 2;
+      v2.contract.completionPolicy.integrationMode = 'external_user_attested';
+      v2.contract.completionPolicy.requireFinalReview = true;
+      v2.contract.completionPolicy.requireUserAcceptance = true;
+      v2.contract.completionPolicy.applyToBase = 'required';
+      v2.review.final = true;
+      const { version } = beginAmendment(fx.db, { goalId: fx.goalId, actor: 'user', definition: v2 });
+      approveDefinition(fx.db, { goalId: fx.goalId, version, actor: 'user' });
+      fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+      const { id: reviewId } = await createReview(fx.db, {
+        goalId: fx.goalId,
+        definitionVersion: version,
+        reviewKind: 'final',
+      });
+      completeReview(fx.db, {
+        reviewId,
+        report: reportOf({ verdict: 'pass' }),
+        independence: { established: true, policy: 'different-family' },
+      });
+      fx.approval('final_acceptance', {
+        definitionVersion: version,
+        definitionHash: fx.currentHash(),
+        integrationTree: fx.tree(),
+      });
 
-    const evaluation = await evaluateCompletion(fx.db, fx.goalId);
-    expect(evaluation).toMatchObject({
-      ok: false,
-      finalReview: { ok: true },
-      finalAcceptance: { ok: true },
-      finalApply: { required: true, ok: false, reason: 'external_completion_not_activated' },
-      failures: [expect.objectContaining({ code: 'external_completion_not_activated' })],
-    });
-    expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).toEqual({
-      status: 'running',
-    });
-  });
+      const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+      expect(evaluation).toMatchObject({
+        ok: false,
+        finalReview: { ok: true },
+        finalAcceptance: { ok: true },
+        finalApply: { required: true, ok: false, reason: 'external_completion_not_activated' },
+        failures: [expect.objectContaining({ code: 'external_completion_not_activated' })],
+      });
+      expect(fx.db.prepare('SELECT status FROM goals WHERE id = ?').get(fx.goalId)).toEqual({
+        status: 'running',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it.each(['sha1', 'sha256'] as const)(
     'applies an exact approved fast-forward in a %s repository',
@@ -187,6 +192,7 @@ describe('guarded Goal final apply', () => {
         ).n,
       ).toBe(1);
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   describe.skipIf(process.platform === 'win32')('final read-tree boundary characterization', () => {
@@ -199,29 +205,31 @@ describe('guarded Goal final apply', () => {
       writeFileSync(excludePath, `${previousExclude}\n/src/final-apply.txt\n`);
     });
 
-    it('reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate', async () => {
-      const { fx, approval, sourceHead } = prepared;
-      const relativeTarget = 'src/final-apply.txt';
-      const target = join(fx.repo, relativeTarget);
-      const originalBytes = 'USER-ORIGINAL-IGNORED-BYTES\n';
-      const approvedBytes = 'approved Goal content\n';
+    it(
+      'reproduces ignored user-file replacement at the final read-tree boundary on the rejected candidate',
+      async () => {
+        const { fx, approval, sourceHead } = prepared;
+        const relativeTarget = 'src/final-apply.txt';
+        const target = join(fx.repo, relativeTarget);
+        const originalBytes = 'USER-ORIGINAL-IGNORED-BYTES\n';
+        const approvedBytes = 'approved Goal content\n';
 
-      const wrapperDir = mkdtempSync(join(tmpdir(), 'turing-final-apply-git-boundary-'));
-      const wrapperPath = join(wrapperDir, 'git');
-      const statusMarker = join(wrapperDir, 'status-before-read-tree');
-      const exitMarker = join(wrapperDir, 'read-tree-exit');
-      const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
-      const originalPath = process.env.PATH;
-      const envKeys = [
-        'TT_FINAL_APPLY_REAL_GIT',
-        'TT_FINAL_APPLY_REPO',
-        'TT_FINAL_APPLY_TARGET',
-        'TT_FINAL_APPLY_BYTES',
-        'TT_FINAL_APPLY_STATUS_MARKER',
-        'TT_FINAL_APPLY_EXIT_MARKER',
-      ] as const;
-      const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
-      const wrapper = `#!/usr/bin/env node
+        const wrapperDir = mkdtempSync(join(tmpdir(), 'turing-final-apply-git-boundary-'));
+        const wrapperPath = join(wrapperDir, 'git');
+        const statusMarker = join(wrapperDir, 'status-before-read-tree');
+        const exitMarker = join(wrapperDir, 'read-tree-exit');
+        const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+        const originalPath = process.env.PATH;
+        const envKeys = [
+          'TT_FINAL_APPLY_REAL_GIT',
+          'TT_FINAL_APPLY_REPO',
+          'TT_FINAL_APPLY_TARGET',
+          'TT_FINAL_APPLY_BYTES',
+          'TT_FINAL_APPLY_STATUS_MARKER',
+          'TT_FINAL_APPLY_EXIT_MARKER',
+        ] as const;
+        const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+        const wrapper = `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const { existsSync, mkdirSync, readFileSync, writeFileSync } = require('node:fs');
 const { dirname } = require('node:path');
@@ -244,365 +252,417 @@ if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
 process.exit(result.status || 0);
 `;
-      mkdirSync(wrapperDir, { recursive: true });
-      writeFileSync(wrapperPath, wrapper);
-      chmodSync(wrapperPath, 0o755);
-      process.env.TT_FINAL_APPLY_REAL_GIT = realGit;
-      process.env.TT_FINAL_APPLY_REPO = fx.repo;
-      process.env.TT_FINAL_APPLY_TARGET = target;
-      process.env.TT_FINAL_APPLY_BYTES = originalBytes;
-      process.env.TT_FINAL_APPLY_STATUS_MARKER = statusMarker;
-      process.env.TT_FINAL_APPLY_EXIT_MARKER = exitMarker;
-      process.env.PATH = [wrapperDir, originalPath].filter(Boolean).join(delimiter);
+        mkdirSync(wrapperDir, { recursive: true });
+        writeFileSync(wrapperPath, wrapper);
+        chmodSync(wrapperPath, 0o755);
+        process.env.TT_FINAL_APPLY_REAL_GIT = realGit;
+        process.env.TT_FINAL_APPLY_REPO = fx.repo;
+        process.env.TT_FINAL_APPLY_TARGET = target;
+        process.env.TT_FINAL_APPLY_BYTES = originalBytes;
+        process.env.TT_FINAL_APPLY_STATUS_MARKER = statusMarker;
+        process.env.TT_FINAL_APPLY_EXIT_MARKER = exitMarker;
+        process.env.PATH = [wrapperDir, originalPath].filter(Boolean).join(delimiter);
 
-      let result;
-      let statusBeforeReadTree = '';
-      let readTreeExit = '';
-      try {
-        result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
+        let result;
+        let statusBeforeReadTree = '';
+        let readTreeExit = '';
+        try {
+          result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
+          expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
+          statusBeforeReadTree = readFileSync(statusMarker, 'utf8');
+          readTreeExit = readFileSync(exitMarker, 'utf8');
+        } finally {
+          process.env.PATH = originalPath;
+          for (const key of envKeys) {
+            const value = originalEnv.get(key);
+            if (value === undefined) delete process.env[key];
+            else process.env[key] = value;
+          }
+          rmSync(wrapperDir, { recursive: true, force: true });
+        }
+
+        expect(statusBeforeReadTree.trimEnd()).toBe(`D  ${relativeTarget}`);
+        expect(readTreeExit).toBe('0');
         expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
-        statusBeforeReadTree = readFileSync(statusMarker, 'utf8');
-        readTreeExit = readFileSync(exitMarker, 'utf8');
-      } finally {
-        process.env.PATH = originalPath;
-        for (const key of envKeys) {
-          const value = originalEnv.get(key);
-          if (value === undefined) delete process.env[key];
-          else process.env[key] = value;
-        }
-        rmSync(wrapperDir, { recursive: true, force: true });
-      }
+        expect(readFileSync(target, 'utf8')).toBe(approvedBytes);
+        expect(readFileSync(target, 'utf8')).not.toBe(originalBytes);
+        expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
+        expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+        expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+          required: true,
+          ok: true,
+          basis: 'applied_by_turing',
+        });
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+  });
 
-      expect(statusBeforeReadTree.trimEnd()).toBe(`D  ${relativeTarget}`);
-      expect(readTreeExit).toBe('0');
-      expect(result).toMatchObject({ outcome: 'applied', commit: sourceHead });
-      expect(readFileSync(target, 'utf8')).toBe(approvedBytes);
-      expect(readFileSync(target, 'utf8')).not.toBe(originalBytes);
+  it(
+    'keeps an ignored untracked target intact and refuses before creating an operation',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const collision = join(fx.repo, 'src', 'final-apply.txt');
+      mkdirSync(join(fx.repo, 'src'), { recursive: true });
+      writeFileSync(collision, 'user ignored bytes\n');
+      const excludePath = join(fx.repo, '.git', 'info', 'exclude');
+      const previousExclude = readFileSync(excludePath, 'utf8');
+      writeFileSync(excludePath, `${previousExclude}\n/src/final-apply.txt\n`);
       expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
-      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
-      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-        required: true,
-        ok: true,
-        basis: 'applied_by_turing',
-      });
-    }, 30_000);
-  });
 
-  it('keeps an ignored untracked target intact and refuses before creating an operation', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const collision = join(fx.repo, 'src', 'final-apply.txt');
-    mkdirSync(join(fx.repo, 'src'), { recursive: true });
-    writeFileSync(collision, 'user ignored bytes\n');
-    const excludePath = join(fx.repo, '.git', 'info', 'exclude');
-    const previousExclude = readFileSync(excludePath, 'utf8');
-    writeFileSync(excludePath, `${previousExclude}\n/src/final-apply.txt\n`);
-    expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
-
-    const result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
-    expect(result).toMatchObject({
-      outcome: 'refused',
-      reason: 'changed_git_state',
-      code: 'untracked_target_collision',
-    });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
-    expect(readFileSync(collision, 'utf8')).toBe('user ignored bytes\n');
-    expect(
-      (
-        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get() as {
-          n: number;
-        }
-      ).n,
-    ).toBe(0);
-  });
-
-  it('refuses missing and wrong-Goal authority without touching refs or completion', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    for (const input of [
-      { goalId: fx.goalId, approvalId: randomUUID(), code: 'approval_not_found' },
-      { goalId: randomUUID(), approvalId: approval.id, code: 'approval_mismatch' },
-    ]) {
-      expect(await applyApprovedGoalToBase(fx.db, input)).toMatchObject({
+      const result = await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id });
+      expect(result).toMatchObject({
         outcome: 'refused',
-        reason: 'stale_approval',
-        code: input.code,
+        reason: 'changed_git_state',
+        code: 'untracked_target_collision',
       });
       expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-      expect(fx.git(`rev-parse`, `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
-      expect((await evaluateCompletion(fx.db, fx.goalId)).ok).toBe(false);
-    }
-    expect(
-      (
-        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get() as {
-          n: number;
-        }
-      ).n,
-    ).toBe(0);
-  });
+      expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
+      expect(readFileSync(collision, 'utf8')).toBe('user ignored bytes\n');
+      expect(
+        (
+          fx.db
+            .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('refuses pending and denied final-apply approvals before planning', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture('sha1', false);
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'stale_approval',
-      code: 'approval_not_approved',
-    });
-    await decideGoalApprovalAsUser(fx.db, { approvalId: approval.id, decision: 'denied' });
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'stale_approval',
-      code: 'approval_not_approved',
-    });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
-    expect(
-      (
-        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get() as {
-          n: number;
-        }
-      ).n,
-    ).toBe(0);
-  });
+  it(
+    'refuses missing and wrong-Goal authority without touching refs or completion',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      for (const input of [
+        { goalId: fx.goalId, approvalId: randomUUID(), code: 'approval_not_found' },
+        { goalId: randomUUID(), approvalId: approval.id, code: 'approval_mismatch' },
+      ]) {
+        expect(await applyApprovedGoalToBase(fx.db, input)).toMatchObject({
+          outcome: 'refused',
+          reason: 'stale_approval',
+          code: input.code,
+        });
+        expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+        expect(fx.git(`rev-parse`, `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
+        expect((await evaluateCompletion(fx.db, fx.goalId)).ok).toBe(false);
+      }
+      expect(
+        (
+          fx.db
+            .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('refuses a different approval gate and changed Goal source before planning', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const otherGate = requestGoalApproval(fx.db, {
-      goalId: fx.goalId,
-      gate: 'final_acceptance',
-      risk: 'high',
-      reason: 'Not final-apply authority.',
-      requestedBy: 'user',
-    });
-    await decideGoalApprovalAsUser(fx.db, { approvalId: otherGate.id, decision: 'approved' });
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: otherGate.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'stale_approval',
-      code: 'approval_mismatch',
-    });
+  it(
+    'refuses pending and denied final-apply approvals before planning',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture('sha1', false);
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'stale_approval',
+        code: 'approval_not_approved',
+      });
+      await decideGoalApprovalAsUser(fx.db, { approvalId: approval.id, decision: 'denied' });
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'stale_approval',
+        code: 'approval_not_approved',
+      });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
+      expect(
+        (
+          fx.db
+            .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-    const changedSource = fx.git(
-      'commit-tree',
-      `${sourceHead}^{tree}`,
-      '-p',
-      fx.baseCommit,
-      '-m',
-      'changed Goal head',
-    );
-    fx.git('update-ref', `refs/heads/turing/goal/${fx.goalId}`, changedSource, sourceHead);
-    fx.db
-      .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
-      .run(changedSource, fx.goalId);
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'stale_approval',
-    });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(
-      (
-        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get() as {
-          n: number;
-        }
-      ).n,
-    ).toBe(0);
-  });
+  it(
+    'refuses a different approval gate and changed Goal source before planning',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const otherGate = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'final_acceptance',
+        risk: 'high',
+        reason: 'Not final-apply authority.',
+        requestedBy: 'user',
+      });
+      await decideGoalApprovalAsUser(fx.db, { approvalId: otherGate.id, decision: 'approved' });
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: otherGate.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'stale_approval',
+        code: 'approval_mismatch',
+      });
 
-  it('refuses a dirty or detached destination checkout without losing user bytes', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const userFile = join(fx.repo, 'docs', 'README.md');
-    const original = readFileSync(userFile, 'utf8');
-    writeFileSync(userFile, `${original}\nuser edit\n`);
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'changed_git_state',
-    });
-    expect(readFileSync(userFile, 'utf8')).toContain('user edit');
-    writeFileSync(userFile, original);
-    fx.git('checkout', '--detach', fx.baseCommit);
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'refused',
-      reason: 'changed_git_state',
-    });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
-    expect(
-      (
-        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get() as {
-          n: number;
-        }
-      ).n,
-    ).toBe(0);
-  });
+      const changedSource = fx.git(
+        'commit-tree',
+        `${sourceHead}^{tree}`,
+        '-p',
+        fx.baseCommit,
+        '-m',
+        'changed Goal head',
+      );
+      fx.git('update-ref', `refs/heads/turing/goal/${fx.goalId}`, changedSource, sourceHead);
+      fx.db
+        .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
+        .run(changedSource, fx.goalId);
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'stale_approval',
+      });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect(
+        (
+          fx.db
+            .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('aborts a planned operation after a pre-CAS crash and permits a fresh retry', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    await expect(
-      applyApprovedGoalToBase(
+  it(
+    'refuses a dirty or detached destination checkout without losing user bytes',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const userFile = join(fx.repo, 'docs', 'README.md');
+      const original = readFileSync(userFile, 'utf8');
+      writeFileSync(userFile, `${original}\nuser edit\n`);
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'changed_git_state',
+      });
+      expect(readFileSync(userFile, 'utf8')).toContain('user edit');
+      writeFileSync(userFile, original);
+      fx.git('checkout', '--detach', fx.baseCommit);
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'refused',
+        reason: 'changed_git_state',
+      });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
+      expect(
+        (
+          fx.db
+            .prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'")
+            .get() as {
+            n: number;
+          }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'aborts a planned operation after a pre-CAS crash and permits a fresh retry',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            afterPlanPersist: () => {
+              throw new FinalApplyInjectedCrash('after-planned-record');
+            },
+          },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      const planned = fx.db
+        .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
+        .get() as { id: string; status: string };
+      expect(planned.status).toBe('planned');
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      const refsBefore = refs(fx);
+      const logBefore = existsSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main'))
+        ? mainReflog(fx)
+        : '';
+
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { opId: planned.id, op: 'apply_to_base', outcome: 'aborted', observedRef: fx.baseCommit },
+      ]);
+      expect(refs(fx)).toBe(refsBefore);
+      expect(existsSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main')) ? mainReflog(fx) : '').toBe(
+        logBefore,
+      );
+      expect(fx.db.prepare('SELECT status FROM goal_integration_ops WHERE id = ?').get(planned.id)).toEqual({
+        status: 'aborted',
+      });
+
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'applied',
+        commit: sourceHead,
+      });
+      expect(
+        (
+          fx.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'leaves no operation or Git mutation for a crash before plan persistence',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      const before = refs(fx);
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            beforePlanPersist: () => {
+              throw new FinalApplyInjectedCrash('before-plan-persist');
+            },
+          },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      expect(refs(fx)).toBe(before);
+      expect(
+        fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get(),
+      ).toEqual({
+        n: 0,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'aborts a planned operation after a crash at the CAS boundary without replaying a ref write',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      const before = refs(fx);
+      const logBefore = mainReflog(fx);
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            beforeCas: () => {
+              throw new FinalApplyInjectedCrash('before-cas');
+            },
+          },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      const operation = fx.db
+        .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
+        .get() as { id: string; status: string };
+      expect(operation.status).toBe('planned');
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
+      ]);
+      expect(refs(fx)).toBe(before);
+      expect(mainReflog(fx)).toBe(logBefore);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'preserves a tracked user edit made after CAS and leaves the operation incomplete',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const userFile = join(fx.repo, 'docs', 'README.md');
+      const editedBytes = `${readFileSync(userFile, 'utf8')}\nexternal edit after CAS\n`;
+      const result = await applyApprovedGoalToBase(
         fx.db,
         { goalId: fx.goalId, approvalId: approval.id },
         {
-          afterPlanPersist: () => {
-            throw new FinalApplyInjectedCrash('after-planned-record');
-          },
+          afterCas: () => writeFileSync(userFile, editedBytes),
         },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    const planned = fx.db
-      .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
-      .get() as { id: string; status: string };
-    expect(planned.status).toBe('planned');
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    const refsBefore = refs(fx);
-    const logBefore = existsSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main'))
-      ? mainReflog(fx)
-      : '';
+      );
+      expect(result).toMatchObject({ outcome: 'checkout_index_sync_incomplete' });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+      expect(readFileSync(userFile, 'utf8')).toBe(editedBytes);
+      expect(
+        (
+          fx.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(0);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'not_applied',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { opId: planned.id, op: 'apply_to_base', outcome: 'aborted', observedRef: fx.baseCommit },
-    ]);
-    expect(refs(fx)).toBe(refsBefore);
-    expect(existsSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main')) ? mainReflog(fx) : '').toBe(
-      logBefore,
-    );
-    expect(fx.db.prepare('SELECT status FROM goal_integration_ops WHERE id = ?').get(planned.id)).toEqual({
-      status: 'aborted',
-    });
-
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'applied',
-      commit: sourceHead,
-    });
-    expect(
-      (
-        fx.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
-          )
-          .get() as { n: number }
-      ).n,
-    ).toBe(1);
-  });
-
-  it('leaves no operation or Git mutation for a crash before plan persistence', async () => {
-    const { fx, approval } = await readyApplyFixture();
-    const before = refs(fx);
-    await expect(
-      applyApprovedGoalToBase(
+  it(
+    'preserves a non-overlapping untracked file and refuses to claim a clean applied checkout',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const userFile = join(fx.repo, 'scratch', 'notes.txt');
+      const userBytes = 'unrelated file created after CAS\n';
+      const result = await applyApprovedGoalToBase(
         fx.db,
         { goalId: fx.goalId, approvalId: approval.id },
         {
-          beforePlanPersist: () => {
-            throw new FinalApplyInjectedCrash('before-plan-persist');
+          afterCas: () => {
+            mkdirSync(join(fx.repo, 'scratch'), { recursive: true });
+            writeFileSync(userFile, userBytes);
           },
         },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    expect(refs(fx)).toBe(before);
-    expect(
-      fx.db.prepare("SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base'").get(),
-    ).toEqual({
-      n: 0,
-    });
-  });
-
-  it('aborts a planned operation after a crash at the CAS boundary without replaying a ref write', async () => {
-    const { fx, approval } = await readyApplyFixture();
-    const before = refs(fx);
-    const logBefore = mainReflog(fx);
-    await expect(
-      applyApprovedGoalToBase(
-        fx.db,
-        { goalId: fx.goalId, approvalId: approval.id },
-        {
-          beforeCas: () => {
-            throw new FinalApplyInjectedCrash('before-cas');
-          },
-        },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    const operation = fx.db
-      .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
-      .get() as { id: string; status: string };
-    expect(operation.status).toBe('planned');
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
-    ]);
-    expect(refs(fx)).toBe(before);
-    expect(mainReflog(fx)).toBe(logBefore);
-  });
-
-  it('preserves a tracked user edit made after CAS and leaves the operation incomplete', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const userFile = join(fx.repo, 'docs', 'README.md');
-    const editedBytes = `${readFileSync(userFile, 'utf8')}\nexternal edit after CAS\n`;
-    const result = await applyApprovedGoalToBase(
-      fx.db,
-      { goalId: fx.goalId, approvalId: approval.id },
-      {
-        afterCas: () => writeFileSync(userFile, editedBytes),
-      },
-    );
-    expect(result).toMatchObject({ outcome: 'checkout_index_sync_incomplete' });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
-    expect(readFileSync(userFile, 'utf8')).toBe(editedBytes);
-    expect(
-      (
-        fx.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
-          )
-          .get() as { n: number }
-      ).n,
-    ).toBe(0);
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: 'not_applied',
-    });
-  });
-
-  it('preserves a non-overlapping untracked file and refuses to claim a clean applied checkout', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const userFile = join(fx.repo, 'scratch', 'notes.txt');
-    const userBytes = 'unrelated file created after CAS\n';
-    const result = await applyApprovedGoalToBase(
-      fx.db,
-      { goalId: fx.goalId, approvalId: approval.id },
-      {
-        afterCas: () => {
-          mkdirSync(join(fx.repo, 'scratch'), { recursive: true });
-          writeFileSync(userFile, userBytes);
-        },
-      },
-    );
-    expect(result).toMatchObject({ outcome: 'checkout_index_sync_incomplete' });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
-    expect(readFileSync(join(fx.repo, 'src', 'final-apply.txt'), 'utf8')).toBe('approved Goal content\n');
-    expect(readFileSync(userFile, 'utf8')).toBe(userBytes);
-    expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toContain('scratch/notes.txt');
-    expect(
-      (
-        fx.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
-          )
-          .get() as { n: number }
-      ).n,
-    ).toBe(0);
-  });
+      );
+      expect(result).toMatchObject({ outcome: 'checkout_index_sync_incomplete' });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+      expect(readFileSync(join(fx.repo, 'src', 'final-apply.txt'), 'utf8')).toBe('approved Goal content\n');
+      expect(readFileSync(userFile, 'utf8')).toBe(userBytes);
+      expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toContain('scratch/notes.txt');
+      expect(
+        (
+          fx.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it.each(['afterCheckoutSync', 'beforeAppliedRecord'] as const)(
     'recovers a clean synchronized checkout exactly once after a %s crash',
@@ -637,213 +697,242 @@ process.exit(result.status || 0);
         basis: 'applied_by_turing',
       });
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it('treats recovery after applied bookkeeping as a no-op and preserves idempotency', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    await expect(
-      applyApprovedGoalToBase(
-        fx.db,
-        { goalId: fx.goalId, approvalId: approval.id },
-        {
-          afterAppliedRecord: () => {
-            throw new FinalApplyInjectedCrash('after-applied-record');
+  it(
+    'treats recovery after applied bookkeeping as a no-op and preserves idempotency',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            afterAppliedRecord: () => {
+              throw new FinalApplyInjectedCrash('after-applied-record');
+            },
           },
-        },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    const log = mainReflog(fx);
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toEqual([]);
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'already_applied',
-      commit: sourceHead,
-    });
-    expect(mainReflog(fx)).toBe(log);
-  });
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      const log = mainReflog(fx);
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toEqual([]);
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'already_applied',
+        commit: sourceHead,
+      });
+      expect(mainReflog(fx)).toBe(log);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('keeps corrupted planned provenance unresolved without moving refs', async () => {
-    const { fx, approval } = await readyApplyFixture();
-    await expect(
-      applyApprovedGoalToBase(
-        fx.db,
-        { goalId: fx.goalId, approvalId: approval.id },
-        {
-          afterPlanPersist: () => {
-            throw new FinalApplyInjectedCrash('corrupt-record-fixture');
+  it(
+    'keeps corrupted planned provenance unresolved without moving refs',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            afterPlanPersist: () => {
+              throw new FinalApplyInjectedCrash('corrupt-record-fixture');
+            },
           },
-        },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    const operation = fx.db
-      .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
-      .get() as { id: string; status: string };
-    const before = refs(fx);
-    const log = mainReflog(fx);
-    fx.db.exec('DROP TRIGGER trg_goal_integration_op_identity');
-    fx.db.prepare("UPDATE goal_integration_ops SET checks_json = 'not-json' WHERE id = ?").run(operation.id);
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { opId: operation.id, outcome: 'manual_reconciliation_required', observedRef: null },
-    ]);
-    expect(fx.db.prepare('SELECT status FROM goal_integration_ops WHERE id = ?').get(operation.id)).toEqual({
-      status: 'planned',
-    });
-    expect(refs(fx)).toBe(before);
-    expect(mainReflog(fx)).toBe(log);
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: 'not_applied',
-    });
-  });
-
-  it('does not let synthetic applied bookkeeping bypass reflog provenance', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    await expect(
-      applyApprovedGoalToBase(
-        fx.db,
-        { goalId: fx.goalId, approvalId: approval.id },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      const operation = fx.db
+        .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
+        .get() as { id: string; status: string };
+      const before = refs(fx);
+      const log = mainReflog(fx);
+      fx.db.exec('DROP TRIGGER trg_goal_integration_op_identity');
+      fx.db
+        .prepare("UPDATE goal_integration_ops SET checks_json = 'not-json' WHERE id = ?")
+        .run(operation.id);
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { opId: operation.id, outcome: 'manual_reconciliation_required', observedRef: null },
+      ]);
+      expect(fx.db.prepare('SELECT status FROM goal_integration_ops WHERE id = ?').get(operation.id)).toEqual(
         {
-          afterPlanPersist: () => {
-            throw new FinalApplyInjectedCrash('synthetic-proof-fixture');
-          },
+          status: 'planned',
         },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    const operation = fx.db
-      .prepare(
-        "SELECT id, checks_json, expected_old, new_commit FROM goal_integration_ops WHERE op = 'apply_to_base'",
-      )
-      .get() as { id: string; checks_json: string; expected_old: string; new_commit: string };
-    const record = parseFinalApplyOperationRecord(operation.checks_json)!;
-    const syntheticProof = {
-      schemaVersion: 1,
-      operationDigest: record.operationDigest,
-      refLog: {
-        message: record.reflogMessage,
-        oldCommit: operation.expected_old,
-        newCommit: operation.new_commit,
-        lineDigest: 'f'.repeat(64),
-      },
-      checkout: {
-        branch: 'main',
-        head: sourceHead,
-        baseRef: 'refs/heads/main',
-        indexMatchesHead: true,
-        worktreeMatchesIndex: true,
-        clean: true,
-        registeredCheckout: true,
-        noTargetCollision: true,
-      },
-      verifiedAt: new Date().toISOString(),
-    };
-    fx.db
-      .prepare(
-        "UPDATE goal_integration_ops SET status = 'applied', finished_at = ?, recovery_json = ? WHERE id = ?",
-      )
-      .run(new Date().toISOString(), JSON.stringify(syntheticProof), operation.id);
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: 'not_applied',
-    });
-  });
+      );
+      expect(refs(fx)).toBe(before);
+      expect(mainReflog(fx)).toBe(log);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'not_applied',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('serializes concurrent calls for one approval to one applied operation', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const [left, right] = await Promise.all([
-      applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-      applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ]);
-    expect(
-      [left, right].some((result) => result.outcome === 'applied' || result.outcome === 'already_applied'),
-    ).toBe(true);
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
-    expect(
-      (
-        fx.db
-          .prepare(
-            "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
-          )
-          .get() as { n: number }
-      ).n,
-    ).toBe(1);
-  });
+  it(
+    'does not let synthetic applied bookkeeping bypass reflog provenance',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            afterPlanPersist: () => {
+              throw new FinalApplyInjectedCrash('synthetic-proof-fixture');
+            },
+          },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      const operation = fx.db
+        .prepare(
+          "SELECT id, checks_json, expected_old, new_commit FROM goal_integration_ops WHERE op = 'apply_to_base'",
+        )
+        .get() as { id: string; checks_json: string; expected_old: string; new_commit: string };
+      const record = parseFinalApplyOperationRecord(operation.checks_json)!;
+      const syntheticProof = {
+        schemaVersion: 1,
+        operationDigest: record.operationDigest,
+        refLog: {
+          message: record.reflogMessage,
+          oldCommit: operation.expected_old,
+          newCommit: operation.new_commit,
+          lineDigest: 'f'.repeat(64),
+        },
+        checkout: {
+          branch: 'main',
+          head: sourceHead,
+          baseRef: 'refs/heads/main',
+          indexMatchesHead: true,
+          worktreeMatchesIndex: true,
+          clean: true,
+          registeredCheckout: true,
+          noTargetCollision: true,
+        },
+        verifiedAt: new Date().toISOString(),
+      };
+      fx.db
+        .prepare(
+          "UPDATE goal_integration_ops SET status = 'applied', finished_at = ?, recovery_json = ? WHERE id = ?",
+        )
+        .run(new Date().toISOString(), JSON.stringify(syntheticProof), operation.id);
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'not_applied',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('fails closed when an applied operation reflog marker is duplicated', async () => {
-    const { fx, approval } = await readyApplyFixture();
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'applied',
-    });
-    const log = mainReflog(fx);
-    const latestLine = log.trimEnd().split('\n').at(-1)!;
-    writeFileSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main'), `${log}${latestLine}\n`);
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: 'not_applied',
-    });
-    expect(
-      await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
-    ).toMatchObject({
-      outcome: 'manual_reconciliation_required',
-    });
-  });
+  it(
+    'serializes concurrent calls for one approval to one applied operation',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const [left, right] = await Promise.all([
+        applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+        applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ]);
+      expect(
+        [left, right].some((result) => result.outcome === 'applied' || result.outcome === 'already_applied'),
+      ).toBe(true);
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+      expect(
+        (
+          fx.db
+            .prepare(
+              "SELECT COUNT(*) AS n FROM goal_integration_ops WHERE op = 'apply_to_base' AND status = 'applied'",
+            )
+            .get() as { n: number }
+        ).n,
+      ).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('does not replay CAS during recovery after a crash between ref movement and checkout sync', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    await expect(
-      applyApprovedGoalToBase(
-        fx.db,
-        { goalId: fx.goalId, approvalId: approval.id },
+  it(
+    'fails closed when an applied operation reflog marker is duplicated',
+    async () => {
+      const { fx, approval } = await readyApplyFixture();
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'applied',
+      });
+      const log = mainReflog(fx);
+      const latestLine = log.trimEnd().split('\n').at(-1)!;
+      writeFileSync(join(fx.repo, '.git', 'logs', 'refs', 'heads', 'main'), `${log}${latestLine}\n`);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'not_applied',
+      });
+      expect(
+        await applyApprovedGoalToBase(fx.db, { goalId: fx.goalId, approvalId: approval.id }),
+      ).toMatchObject({
+        outcome: 'manual_reconciliation_required',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'does not replay CAS during recovery after a crash between ref movement and checkout sync',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      await expect(
+        applyApprovedGoalToBase(
+          fx.db,
+          { goalId: fx.goalId, approvalId: approval.id },
+          {
+            afterCas: () => {
+              throw new FinalApplyInjectedCrash('after-cas-before-sync');
+            },
+          },
+        ),
+      ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
+      expect(fx.git('rev-parse', 'HEAD')).toBe(sourceHead);
+      expect(fx.git('diff', '--cached', '--name-status', '--')).toContain('final-apply.txt');
+      const refsBeforeRecovery = refs(fx);
+      const logBeforeRecovery = mainReflog(fx);
+      const checkoutBeforeRecovery = fx.git('status', '--porcelain=v1', '--untracked-files=all');
+
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
         {
-          afterCas: () => {
-            throw new FinalApplyInjectedCrash('after-cas-before-sync');
-          },
+          op: 'apply_to_base',
+          outcome: 'checkout_index_sync_incomplete',
+          observedRef: sourceHead,
         },
-      ),
-    ).rejects.toBeInstanceOf(FinalApplyInjectedCrash);
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(sourceHead);
-    expect(fx.git('rev-parse', 'HEAD')).toBe(sourceHead);
-    expect(fx.git('diff', '--cached', '--name-status', '--')).toContain('final-apply.txt');
-    const refsBeforeRecovery = refs(fx);
-    const logBeforeRecovery = mainReflog(fx);
-    const checkoutBeforeRecovery = fx.git('status', '--porcelain=v1', '--untracked-files=all');
+      ]);
+      expect(refs(fx)).toBe(refsBeforeRecovery);
+      expect(mainReflog(fx)).toBe(logBeforeRecovery);
+      expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe(checkoutBeforeRecovery);
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'not_applied',
+      });
 
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      {
-        op: 'apply_to_base',
-        outcome: 'checkout_index_sync_incomplete',
-        observedRef: sourceHead,
-      },
-    ]);
-    expect(refs(fx)).toBe(refsBeforeRecovery);
-    expect(mainReflog(fx)).toBe(logBeforeRecovery);
-    expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe(checkoutBeforeRecovery);
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: 'not_applied',
-    });
-
-    // This is an explicit manual repair in the disposable fixture. Recovery itself does no Git write.
-    git(fx.repo, 'read-tree', '-m', '-u', fx.baseCommit, sourceHead);
-    const logBeforeReconcile = mainReflog(fx);
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { op: 'apply_to_base', outcome: 'completed', observedRef: sourceHead },
-    ]);
-    expect(mainReflog(fx)).toBe(logBeforeReconcile);
-    expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
-    expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
-      required: true,
-      ok: true,
-      basis: 'applied_by_turing',
-    });
-  });
+      // This is an explicit manual repair in the disposable fixture. Recovery itself does no Git write.
+      git(fx.repo, 'read-tree', '-m', '-u', fx.baseCommit, sourceHead);
+      const logBeforeReconcile = mainReflog(fx);
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { op: 'apply_to_base', outcome: 'completed', observedRef: sourceHead },
+      ]);
+      expect(mainReflog(fx)).toBe(logBeforeReconcile);
+      expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
+      expect((await evaluateCompletion(fx.db, fx.goalId)).finalApply).toMatchObject({
+        required: true,
+        ok: true,
+        basis: 'applied_by_turing',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it.each(['beforeCheckoutSync', 'beforeReadTree'] as const)(
     'recovers an incomplete but exact ref movement without Git writes after a %s crash',
@@ -882,73 +971,88 @@ process.exit(result.status || 0);
         ).n,
       ).toBe(0);
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it('refuses a destination ref race and leaves a third-party commit untouched', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const thirdParty = fx.git(
-      'commit-tree',
-      `${fx.baseCommit}^{tree}`,
-      '-p',
-      fx.baseCommit,
-      '-m',
-      'external ref move',
-    );
-    const result = await applyApprovedGoalToBase(
-      fx.db,
-      { goalId: fx.goalId, approvalId: approval.id },
-      {
-        beforeCas: () => {
-          git(fx.repo, 'update-ref', 'refs/heads/main', thirdParty, fx.baseCommit);
+  it(
+    'refuses a destination ref race and leaves a third-party commit untouched',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const thirdParty = fx.git(
+        'commit-tree',
+        `${fx.baseCommit}^{tree}`,
+        '-p',
+        fx.baseCommit,
+        '-m',
+        'external ref move',
+      );
+      const result = await applyApprovedGoalToBase(
+        fx.db,
+        { goalId: fx.goalId, approvalId: approval.id },
+        {
+          beforeCas: () => {
+            git(fx.repo, 'update-ref', 'refs/heads/main', thirdParty, fx.baseCommit);
+          },
         },
-      },
-    );
-    expect(result).toMatchObject({ outcome: 'concurrent_ref_conflict', code: 'ref_compare_and_swap_failed' });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(thirdParty);
-    expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
-    const operation = fx.db
-      .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
-      .get() as { id: string; status: string };
-    expect(operation.status).toBe('planned');
+      );
+      expect(result).toMatchObject({
+        outcome: 'concurrent_ref_conflict',
+        code: 'ref_compare_and_swap_failed',
+      });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(thirdParty);
+      expect(fx.git('rev-parse', `refs/heads/turing/goal/${fx.goalId}`)).toBe(sourceHead);
+      const operation = fx.db
+        .prepare("SELECT id, status FROM goal_integration_ops WHERE op = 'apply_to_base'")
+        .get() as { id: string; status: string };
+      expect(operation.status).toBe('planned');
 
-    git(fx.repo, 'update-ref', 'refs/heads/main', fx.baseCommit, thirdParty);
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
-    ]);
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
-  });
+      git(fx.repo, 'update-ref', 'refs/heads/main', fx.baseCommit, thirdParty);
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
+      ]);
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect(fx.git('status', '--porcelain=v1', '--untracked-files=all')).toBe('');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('checks the source Goal ref atomically and refuses Goal-ref movement', async () => {
-    const { fx, approval, sourceHead } = await readyApplyFixture();
-    const ref = `refs/heads/turing/goal/${fx.goalId}`;
-    const thirdSource = fx.git(
-      'commit-tree',
-      `${sourceHead}^{tree}`,
-      '-p',
-      fx.baseCommit,
-      '-m',
-      'external Goal ref move',
-    );
-    const result = await applyApprovedGoalToBase(
-      fx.db,
-      { goalId: fx.goalId, approvalId: approval.id },
-      {
-        beforeCas: () => {
-          git(fx.repo, 'update-ref', ref, thirdSource, sourceHead);
+  it(
+    'checks the source Goal ref atomically and refuses Goal-ref movement',
+    async () => {
+      const { fx, approval, sourceHead } = await readyApplyFixture();
+      const ref = `refs/heads/turing/goal/${fx.goalId}`;
+      const thirdSource = fx.git(
+        'commit-tree',
+        `${sourceHead}^{tree}`,
+        '-p',
+        fx.baseCommit,
+        '-m',
+        'external Goal ref move',
+      );
+      const result = await applyApprovedGoalToBase(
+        fx.db,
+        { goalId: fx.goalId, approvalId: approval.id },
+        {
+          beforeCas: () => {
+            git(fx.repo, 'update-ref', ref, thirdSource, sourceHead);
+          },
         },
-      },
-    );
-    expect(result).toMatchObject({ outcome: 'concurrent_ref_conflict', code: 'ref_compare_and_swap_failed' });
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-    expect(fx.git('rev-parse', ref)).toBe(thirdSource);
-    const operation = fx.db
-      .prepare("SELECT id FROM goal_integration_ops WHERE op = 'apply_to_base'")
-      .get() as { id: string };
-    git(fx.repo, 'update-ref', ref, sourceHead, thirdSource);
-    expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
-      { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
-    ]);
-    expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
-  });
+      );
+      expect(result).toMatchObject({
+        outcome: 'concurrent_ref_conflict',
+        code: 'ref_compare_and_swap_failed',
+      });
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+      expect(fx.git('rev-parse', ref)).toBe(thirdSource);
+      const operation = fx.db
+        .prepare("SELECT id FROM goal_integration_ops WHERE op = 'apply_to_base'")
+        .get() as { id: string };
+      git(fx.repo, 'update-ref', ref, sourceHead, thirdSource);
+      expect(await recoverIntegrationOps(fx.db, fx.goalId)).toMatchObject([
+        { opId: operation.id, outcome: 'aborted', observedRef: fx.baseCommit },
+      ]);
+      expect(fx.git('rev-parse', 'refs/heads/main')).toBe(fx.baseCommit);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

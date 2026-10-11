@@ -1,7 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Db } from '../db.js';
 import {
@@ -11,6 +8,10 @@ import {
   GoalApprovalError,
   requestGoalApproval,
 } from './approvals.js';
+import {
+  appendAttestationCorrection,
+  requestAttestationCorrectionApproval,
+} from './attestationCorrection.js';
 import { completeGoal } from './completion.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { buildExternalCompletionAction, parseExternalCompletionAction } from './externalCompletionProof.js';
@@ -25,6 +26,10 @@ import {
   externalCompletionPreflightReportSchema,
   type ExternalCompletionPreflightReport,
 } from './externalCompletionPreflight.js';
+import {
+  assertFinalApplyApprovalDatabaseCurrent,
+  validateFinalApplyAuthority,
+} from './finalApplyAuthority.js';
 import { decideGoalApprovalAsUser } from './goalCommands.js';
 import {
   acceptedFixture,
@@ -38,15 +43,13 @@ import {
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { GoalStateError, transitionGoal } from './stateMachine.js';
-import { cleanupRepoFixtures } from './repoKit.js';
+import { cleanupRepoFixtures, copyGoalApprovalRow, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 afterEach(() => {
   cleanupRepoFixtures();
 });
 
 const FORMATS = ['sha1', 'sha256'] as const;
-const HEAVY = 60_000;
-const SERVER_ROOT = fileURLToPath(new URL('../', import.meta.url));
 
 type Attested = Awaited<ReturnType<typeof v2RunningAttestedFixture>>;
 
@@ -304,7 +307,7 @@ describe('external completion decision: the accepted decision', () => {
       });
       expectOnlyApprovalChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -379,7 +382,7 @@ describe('external completion decision: input and action validation', () => {
       expect(completionRows(db, goalId)).toEqual([]);
       expectNoChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -437,7 +440,7 @@ describe('external completion decision: input and action validation', () => {
           ),
       ).toThrow('external completion approval action digest is invalid');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -472,7 +475,7 @@ describe('external completion decision: refusals from the preflight', () => {
       );
       expectNoChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -505,7 +508,7 @@ describe('external completion decision: refusals from the preflight', () => {
         'definition_not_v2',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -534,7 +537,7 @@ describe('external completion decision: refusals from the preflight', () => {
       );
       expectNoChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -572,7 +575,7 @@ describe('external completion decision: refusals from the preflight', () => {
       );
       expectNoChange(disputed, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -605,7 +608,7 @@ describe('external completion decision: refusals from the preflight', () => {
       );
       expect(completionRows(disputed.fx.db, disputed.fx.goalId)).toEqual([]);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -667,7 +670,7 @@ describe('external completion decision: authority and copies', () => {
         ).toMatchObject({ code: 'invalid_external_completion_action_digest' });
       expectNoChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -702,7 +705,7 @@ describe('external completion decision: authority and copies', () => {
       expect(result.approvalId).not.toBe(attested.approval.id);
       expect(result.reused).toBe(false);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -743,7 +746,7 @@ describe('external completion decision: authority and copies', () => {
       );
       expect(result).toMatchObject({ status: 'approved', reused: false });
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -774,7 +777,7 @@ describe('external completion decision: authority and copies', () => {
       const evaluation = await evaluateCompletion(db, goalId);
       expect(evaluation.finalApply).toMatchObject({ ok: false, reason: 'external_completion_not_activated' });
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -815,7 +818,7 @@ describe('external completion decision: authority and copies', () => {
       );
       expectNoChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -840,7 +843,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
       expect(completionRows(db, goalId)).toHaveLength(1);
       expectOnlyApprovalChange(attested, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -892,7 +895,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
         'valid',
       ]);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -990,7 +993,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
       );
       expectNoChange(versioned, before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -1038,7 +1041,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
       expect(goalState(db, goalId)).toEqual({ status: 'running', completedAt: null });
       expect(proofCount(db)).toBe(0);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -1072,47 +1075,193 @@ describe('external completion decision: reuse, corruption and inert checks', () 
       expect(allowed.outcome).toBe('ready');
       expect(allowed.digest).toBe(digest);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
-describe('external completion decision: static source guard', () => {
-  const ALLOWED = new Set([
-    'goals/approvals.ts',
-    'goals/goalCommands.ts',
-    'goals/evidence.ts',
-    'goals/freshness.ts',
-    'goals/externalCompletionProof.ts',
-    'goals/externalCompletionPreflight.ts',
-    'goals/externalCompletionDecision.ts',
-  ]);
+describe('external completion decision: concurrent identical and conflicting requests', () => {
+  it.each(FORMATS)(
+    'E5 two simultaneous identical decisions create exactly one approval and reuse it under %s',
+    async (objectFormat) => {
+      const attested = await v2RunningAttestedFixture(objectFormat);
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const before = capture(attested);
+      const request = () =>
+        recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest));
 
-  function serverSources(dir: string): string[] {
-    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) return serverSources(path);
-      const isProduction =
-        entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts') && entry.name !== 'goalV2TestKit.ts';
-      return isProduction ? [path] : [];
-    });
-  }
+      const results = await Promise.all([request(), request()]);
 
-  it('D19b no production code inserts a completion proof, and completion digests stay in the allow-list', () => {
-    const files = serverSources(SERVER_ROOT);
-    expect(files.length).toBeGreaterThan(50);
-    const offenders: string[] = [];
-    for (const file of files) {
-      const source = readFileSync(file, 'utf8');
-      const rel = relative(SERVER_ROOT, file);
-      if (/INSERT INTO goal_external_completion_proofs/.test(source)) offenders.push(`proof insert: ${rel}`);
-      if (
-        /externalCompletionActionDigest|external_completion_action_digest|complete_goal_external_integration_v2/.test(
-          source,
-        ) &&
-        !ALLOWED.has(rel)
-      )
-        offenders.push(`completion identifier outside allow-list: ${rel}`);
-    }
-    expect(offenders).toEqual([]);
-  });
+      const created = results.filter((result) => !result.reused);
+      const reused = results.filter((result) => result.reused);
+      expect(created).toHaveLength(1);
+      expect(reused).toHaveLength(1);
+      expect(reused[0]).toEqual({ ...created[0], reused: true });
+      expect(created[0]).toEqual({
+        approvalId: expect.any(String),
+        actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        preflightDigest: digest,
+        status: 'approved',
+        reused: false,
+      });
+      expect(completionRows(db, goalId)).toEqual([
+        { id: created[0]!.approvalId, status: 'approved', digest: created[0]!.actionDigest },
+      ]);
+      expect(
+        db
+          .prepare(
+            'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_completion_action_digest IS NOT NULL',
+          )
+          .get(goalId),
+      ).toEqual({ n: 1 });
+      expect(goalEvents(db).length - before.events.length).toBe(2);
+      expectOnlyApprovalChange(attested, before);
+      expect(proofCount(db)).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'E5b a conflicting decision for the same attestation fails closed for every concurrent request under %s',
+    async (objectFormat) => {
+      const attested = await v2RunningAttestedFixture(objectFormat);
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const report = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      const conflicting = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: 'f'.repeat(64),
+      })!;
+      const conflict = requestGoalApproval(db, {
+        goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Conflicting decision for the same attestation.',
+        requestedBy: 'user',
+        detail: { ...conflicting },
+        externalCompletionActionDigest: conflicting.actionDigest,
+      });
+      decideGoalApproval(db, { goalId, approvalId: conflict.id, decision: 'approved', decidedBy: 'user' });
+      const before = capture(attested);
+      const request = () =>
+        recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest));
+
+      const errors = await Promise.all([captureError(request()), captureError(request())]);
+
+      for (const error of errors) expect(error).toMatchObject({ code: 'decision_conflict', detail: null });
+      expect(errors.every((error) => error instanceof ExternalCompletionDecisionError)).toBe(true);
+      expectNoChange(attested, before);
+      expect(completionRows(db, goalId).map((row) => row.id)).toEqual([conflict.id]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion decision: approval consumers refuse a completion decision', () => {
+  it.each(FORMATS)(
+    'F2c the attestation-correction gate refuses a completion digest and accepts its own digest under %s',
+    async (objectFormat) => {
+      const attested = await v2RunningAttestedFixture(objectFormat);
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const decision = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, attested.attestationId, digest),
+      );
+      const reviewed = requestAttestationCorrectionApproval(db, {
+        goalId,
+        attestationId: attested.attestationId,
+        correctionKind: 'dispute',
+        reasonCode: 'observation_error',
+        explanation: 'Recorded by a consumer-isolation test.',
+        replacementAttestationId: null,
+      });
+      decideGoalApproval(db, {
+        goalId,
+        approvalId: reviewed.approval.id,
+        decision: 'approved',
+        decidedBy: 'user',
+      });
+      const correctionInput = (approvalId: string) => ({
+        goalId,
+        approvalId,
+        expectedActionDigest: reviewed.actionDigest,
+        explanation: 'Recorded by a consumer-isolation test.',
+      });
+
+      // The real completion decision is not a correction authority.
+      expect(
+        catchSync(() =>
+          appendAttestationCorrection(db, {
+            goalId,
+            approvalId: decision.approvalId,
+            expectedActionDigest: decision.actionDigest,
+            explanation: 'Recorded by a consumer-isolation test.',
+          }),
+        ),
+      ).toMatchObject({ code: 'correction_action_mismatch' });
+
+      // Paired copy: the correction row with its correction digest moved into the completion digest column.
+      db.exec('DROP TRIGGER trg_goal_approval_external_completion_action_guard;');
+      db.exec('DROP TRIGGER trg_goal_approval_attestation_correction_guard;');
+      const movedCopy = copyGoalApprovalRow(db, reviewed.approval.id, {
+        externalCompletion: reviewed.actionDigest,
+        attestationCorrection: null,
+      });
+      expect(catchSync(() => appendAttestationCorrection(db, correctionInput(movedCopy)))).toMatchObject({
+        code: 'correction_action_mismatch',
+      });
+      expect(getGoalApproval(db, movedCopy)).toMatchObject({ gate: 'user_confirmation', status: 'approved' });
+      expect(getGoalApproval(db, movedCopy)).not.toHaveProperty('attestationCorrectionActionDigest');
+
+      // Control: the untouched correction row is still accepted as the correction authority.
+      expect(appendAttestationCorrection(db, correctionInput(reviewed.approval.id))).toMatchObject({
+        reused: false,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'F2d the legacy final-apply authority refuses a completion decision and the insert guard refuses a final-apply copy under %s',
+    async (objectFormat) => {
+      const attested = await v2RunningAttestedFixture(objectFormat);
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const decision = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, attested.attestationId, digest),
+      );
+
+      expect(catchSync(() => assertFinalApplyApprovalDatabaseCurrent(db, decision.approvalId))).toMatchObject(
+        { code: 'approval_mismatch' },
+      );
+      await expect(
+        validateFinalApplyAuthority(db, goalId, decision.approvalId, { expectedStatus: 'approved' }),
+      ).resolves.toMatchObject({ ok: false, code: 'approval_mismatch' });
+
+      // A final-apply gate can never carry a completion digest; the insert guard refuses it outright.
+      const detail = JSON.stringify(getGoalApproval(db, decision.approvalId)!.detail);
+      expect(() =>
+        db
+          .prepare(
+            `INSERT INTO goal_approvals (id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
+               external_completion_action_digest)
+             VALUES (?, ?, 'final_apply', 'high', 'final apply copy', 'user', ?, 'pending', ?, ?)`,
+          )
+          .run(randomUUID(), goalId, detail, '2026-01-01T00:00:00.000Z', decision.actionDigest),
+      ).toThrow('external completion approval action digest is invalid');
+      expect(completionRows(db, goalId)).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

@@ -30,7 +30,7 @@ import {
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { getAttestationCorrectionStanding } from './attestationCorrection.js';
-import { cleanupRepoFixtures } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 afterEach(() => {
   cleanupRepoFixtures();
@@ -38,7 +38,6 @@ afterEach(() => {
 
 const FORMATS = ['sha1', 'sha256'] as const;
 const NOW = '2026-01-01T00:00:00.000Z';
-const HEAVY = 60_000;
 
 function compute(fx: GoalFixture, attestationId: string) {
   return computeExternalCompletionPreflight(fx.db, fx.goalId, { attestationId });
@@ -149,7 +148,7 @@ describe('external completion preflight: ready outcome', () => {
         }).digest,
       ).toBe(emptyChainDigest(attested.attestationId, record.recordDigest));
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -160,7 +159,7 @@ describe('external completion preflight: ready outcome', () => {
       expect(report.outcome).toBe('ready');
       expect(report.proofLimitations.contentPreservation).toBe('not_proven');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -177,7 +176,7 @@ describe('external completion preflight: ready outcome', () => {
       const otherReport = await compute(other.fx, other.attestationId);
       expect(otherReport.digest).not.toBe(first.digest);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -193,7 +192,7 @@ describe('external completion preflight: input and state refusals', () => {
       expectRefusal(unknownGoal, 'goal_not_found', null, 'input');
       expectRefusal(await compute(attested.fx, randomUUID()), 'attestation_not_found', null, 'attestation');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -209,7 +208,7 @@ describe('external completion preflight: input and state refusals', () => {
         'attestation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -224,7 +223,7 @@ describe('external completion preflight: input and state refusals', () => {
         'goal_status',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -237,7 +236,7 @@ describe('external completion preflight: input and state refusals', () => {
       });
       expectRefusal(report, 'definition_not_v2', 'legacy_v1', 'definition');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -255,7 +254,7 @@ describe('external completion preflight: input and state refusals', () => {
         'definition',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -275,7 +274,7 @@ describe('external completion preflight: input and state refusals', () => {
         'definition',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -302,7 +301,7 @@ describe('external completion preflight: input and state refusals', () => {
       );
       expect(databaseSnapshot(attested.fx.db)).toEqual(before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -323,7 +322,7 @@ describe('external completion preflight: input and state refusals', () => {
         'attestation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -343,7 +342,7 @@ describe('external completion preflight: input and state refusals', () => {
         'goal_status',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -360,7 +359,7 @@ describe('external completion preflight: correction standing', () => {
         'correction_standing',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -375,7 +374,7 @@ describe('external completion preflight: correction standing', () => {
         'correction_standing',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -394,7 +393,7 @@ describe('external completion preflight: correction standing', () => {
       const replacementReport = await compute(attested.fx, replacement.attestationId);
       expect(replacementReport.outcome).toBe('ready');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -431,7 +430,7 @@ describe('external completion preflight: correction standing', () => {
         'correction_standing',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -465,7 +464,7 @@ describe('external completion preflight: destination and Git', () => {
           .get(attested.attestationId),
       ).toEqual(oldRow);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -485,7 +484,7 @@ describe('external completion preflight: destination and Git', () => {
         'git_observation',
       );
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -512,7 +511,7 @@ describe('external completion preflight: destination and Git', () => {
       }
       expect((await compute(attested.fx, attested.attestationId)).outcome).toBe('ready');
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -535,7 +534,7 @@ describe('external completion preflight: destination and Git', () => {
       expect(databaseSnapshot(attested.fx.db)).toEqual(before);
       expect(repositoryState(attested.fx.repo)).toEqual(repoBefore);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
@@ -562,7 +561,7 @@ describe('external completion preflight: destination and Git', () => {
       );
       expect(databaseSnapshot(attested.fx.db)).toEqual(before);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
@@ -599,7 +598,7 @@ describe('external completion preflight: no writes', () => {
       expect(repositoryState(refused.fx.repo)).toEqual(repoAfterMove);
       expect(repoAfterMove).not.toEqual(repoBeforeRefused);
     },
-    HEAVY,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it('T12b keeps the service source free of write statements, write entry points and non-SELECT prepares', () => {
@@ -649,6 +648,31 @@ describe('external completion preflight: no writes', () => {
       ['identifier:writeGoalEvent', 'import_module'],
     ],
     ['masterEvents import', "import { x } from '../masterEvents.js';", ['import_module']],
+    [
+      'decision recorder call',
+      'await recordExternalCompletionDecision(db, input);',
+      ['identifier:recordExternalCompletionDecision'],
+    ],
+    [
+      'decision module import',
+      "import { recordExternalCompletionDecision } from './externalCompletionDecision.js';",
+      [
+        'identifier:externalCompletionDecision',
+        'identifier:recordExternalCompletionDecision',
+        'import_module',
+      ],
+    ],
+    [
+      'completion lock import',
+      "import { withGoalCompletionLock } from './goalCompletionLock.js';",
+      ['identifier:goalCompletionLock', 'identifier:withGoalCompletionLock', 'import_module'],
+    ],
+    [
+      'completion terminal import',
+      "import { x } from './externalCompletionTerminal.js';",
+      ['identifier:externalCompletionTerminal', 'import_module'],
+    ],
+    ['bare completion module import', "import { x } from './externalCompletion.js';", ['import_module']],
   ])('T12b scanner flags %s with exact rules', (_label, snippet, expected) => {
     expect(scanPreflightSource(snippet)).toEqual(expected);
   });
@@ -691,7 +715,7 @@ const PREPARE_LITERAL =
   /\.prepare\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)\s*[,)]/gs;
 const PREPARE_BRACKET = /\[\s*['"`]prepare['"`]\s*\]/;
 const IMPORT_MODULE =
-  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletionDecision)\.js['"]/;
+  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletion|externalCompletionDecision|externalCompletionTerminal|goalCompletionLock)\.js['"]/;
 const FORBIDDEN_IDENTIFIERS = [
   'transitionGoal',
   'completeGoal',
@@ -716,6 +740,14 @@ const FORBIDDEN_IDENTIFIERS = [
   'noticeForMasterEvent',
   'deliverPush',
   'webPush',
+  'externalCompletionDecision',
+  'recordExternalCompletionDecision',
+  'readExternalCompletionDecision',
+  'listExternalCompletionDecisions',
+  'externalCompletionTerminal',
+  'goalCompletionLock',
+  'withGoalCompletionLock',
+  'completeGoalFromExternalDecision',
 ];
 
 /** The SQL text of every `.prepare('...')` call whose argument is a single literal. */

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   CompletionPolicy,
   GoalDefinition,
@@ -15,6 +15,17 @@ import { requestGoalApproval, decideGoalApproval } from './approvals.js';
 import { approveDefinition, createGoalDraft, loadDefinitionVersion } from './definitions.js';
 import { validDefinition } from './testKit.js';
 import { verifierDigest } from './verifierDigest.js';
+
+/**
+ * The explicit per-test timeout for every test that builds a real Git repository or fixture (enforced by
+ * goalRealGitTimeoutGuard.test.ts). Measured locally on 2026-10-11 on the final D.3E commit 1 tree, one file at a time
+ * under the repository's serialized Vitest config (maxWorkers 1), across the 62 real-Git test files (1218 tests, all
+ * passing): slowest real-Git test 5.0 s (goalE2E.test.ts, "runs a proposal through final-apply readiness"); next
+ * slowest 4.0 s (externalCompletionDecision.test.ts, D18); slowest version-2 destination-ref case 3.1 s
+ * (manualHandoff.test.ts, A3, sha1 and sha256). 30 s is 6x the slowest measured test. Do not raise the global Vitest
+ * timeout to hide a slow test; fix the fixture cost or change this value with new data.
+ */
+export const REAL_GIT_TEST_TIMEOUT_MS = 30_000;
 
 const folders: string[] = [];
 const databases: Db[] = [];
@@ -123,6 +134,65 @@ export interface GoalRepoFixture {
     decision?: 'approved' | 'denied',
   ): string;
   currentHash(): string;
+}
+
+/** Test-only digest for a copied row. The value is a real 64-character lowercase hex digest. */
+export function testDigest(label: string): string {
+  return createHash('sha256').update(`repoKit-test-digest:${label}`).digest('hex');
+}
+
+/**
+ * Inserts a copy of one `goal_approvals` row whose two digest columns are replaced. Every other column is copied, so
+ * the copy differs from its source only in the digest columns named here. Callers must drop the matching insert guard
+ * trigger inside their own disposable database first; the guard would otherwise refuse the copy.
+ */
+export function copyGoalApprovalRow(
+  db: Db,
+  sourceId: string,
+  digests: { externalCompletion: string | null; attestationCorrection: string | null },
+): string {
+  const row = db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(sourceId) as Record<
+    string,
+    unknown
+  >;
+  // Approvals are inserted pending and decided once by UPDATE, so the copy follows that path with the source's decision.
+  const copy: Record<string, unknown> = {
+    ...row,
+    id: randomUUID(),
+    status: 'pending',
+    decided_by: null,
+    decision_note: null,
+    responded_at: null,
+    external_completion_action_digest: digests.externalCompletion,
+    attestation_correction_action_digest: digests.attestationCorrection,
+  };
+  insertCopy(db, 'goal_approvals', copy);
+  db.prepare(
+    'UPDATE goal_approvals SET status = ?, decided_by = ?, decision_note = ?, responded_at = ? WHERE id = ?',
+  ).run(row.status, row.decided_by, row.decision_note, row.responded_at, copy.id);
+  return copy.id as string;
+}
+
+/**
+ * Inserts a copy of one `goal_evidence` row that points at another approval. Used to show how freshness judges the same
+ * evidence when only its approval differs. Evidence rows are immutable, so only a fresh row can be copied.
+ */
+export function copyGoalEvidenceRow(db: Db, sourceId: string, approvalId: string): string {
+  const row = db.prepare('SELECT * FROM goal_evidence WHERE id = ?').get(sourceId) as Record<string, unknown>;
+  const copy: Record<string, unknown> = {
+    ...row,
+    id: randomUUID(),
+    ref_json: JSON.stringify({ ...(JSON.parse(row.ref_json as string) as object), approvalId }),
+  };
+  insertCopy(db, 'goal_evidence', copy);
+  return copy.id as string;
+}
+
+function insertCopy(db: Db, table: string, row: Record<string, unknown>): void {
+  const columns = Object.keys(row);
+  db.prepare(
+    `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+  ).run(...columns.map((column) => row[column] as string | number | null));
 }
 
 /** Creates a real temporary Git repository and Goal; approval and Goal-ref initialization are on by default. */

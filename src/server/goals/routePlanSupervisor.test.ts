@@ -17,7 +17,7 @@ import { passRecords } from './routingKit.js';
 import { readStoredResolutions } from './routeResolution.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
 import { observeRouteSnapshot } from './routingSnapshot.js';
-import { cleanupRepoFixtures, milestone, simpleDefinition } from './repoKit.js';
+import { cleanupRepoFixtures, milestone, simpleDefinition, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { GOOD_TASK } from './supervisorKit.js';
 import { realRunHarness, type RealRunHarness } from './turingRunKit.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
@@ -193,113 +193,133 @@ const cycleResolutions = () =>
   );
 
 describe('first-use gate for a ready Goal', () => {
-  it('Start creates or reuses one pending approval, stays ready, and queues nothing', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    expect(goal().status).toBe('ready');
-    const first = await h.supervisor.startGoal(h.fx.goalId);
-    expect(first).toMatchObject({ ok: false, code: 'gate_pending' });
-    const approvalId = (first as { approvalId?: string }).approvalId!;
-    expect(approvalId).toBeTruthy();
-    expect(goal().status).toBe('ready');
-    expect(count('goal_cycles')).toBe(0);
-    expect(count('runs')).toBe(0);
-    expect(calls).toHaveLength(0);
-    const rows = firstUse();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ id: approvalId, status: 'pending' });
-    expect(detail(rows[0]!)).toMatchObject({ poolId: 'orchs', role: 'orchestrator', memberIndex: 0 });
-    expect(detail(rows[0]!).memberIdentityHash).toMatch(/^[0-9a-f]{64}$/);
-    // Asking again reuses the pending approval.
-    const again = await h.supervisor.startGoal(h.fx.goalId);
-    expect(again).toMatchObject({ ok: false, code: 'gate_pending', approvalId });
-    expect(firstUse()).toHaveLength(1);
-  });
+  it(
+    'Start creates or reuses one pending approval, stays ready, and queues nothing',
+    async () => {
+      h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
+      await seedValidations(POOL);
+      expect(goal().status).toBe('ready');
+      const first = await h.supervisor.startGoal(h.fx.goalId);
+      expect(first).toMatchObject({ ok: false, code: 'gate_pending' });
+      const approvalId = (first as { approvalId?: string }).approvalId!;
+      expect(approvalId).toBeTruthy();
+      expect(goal().status).toBe('ready');
+      expect(count('goal_cycles')).toBe(0);
+      expect(count('runs')).toBe(0);
+      expect(calls).toHaveLength(0);
+      const rows = firstUse();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: approvalId, status: 'pending' });
+      expect(detail(rows[0]!)).toMatchObject({ poolId: 'orchs', role: 'orchestrator', memberIndex: 0 });
+      expect(detail(rows[0]!).memberIdentityHash).toMatch(/^[0-9a-f]{64}$/);
+      // Asking again reuses the pending approval.
+      const again = await h.supervisor.startGoal(h.fx.goalId);
+      expect(again).toMatchObject({ ok: false, code: 'gate_pending', approvalId });
+      expect(firstUse()).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('after the user approves, Start proceeds and the proposal run carries exactly the resolved route', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    const gated = await h.supervisor.startGoal(h.fx.goalId);
-    user((gated as { approvalId: string }).approvalId, 'approved');
-    expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
-    await h.until('proposal_run_started');
-    const stored = cycleResolutions().orchestrator!;
-    expect(stored.selected.configuration.modelId).toBe('claude-sonnet-5-5');
-    expect(stored.approval.state).toBe('approved');
-    await providerCalled();
-    expect(calls[0]).toMatchObject({
-      backendId: 'claude-code',
-      providerId: 'anthropic-subscription',
-      modelId: 'claude-sonnet-5-5',
-      billingLane: 'claude-subscription',
-    });
-    const stages = h.fx.db
-      .prepare(
-        "SELECT backend_id, provider_id, model_id, billing_lane FROM stages WHERE run_id = (SELECT id FROM runs WHERE goal_run_purpose = 'proposal') AND kind = 'planner'",
-      )
-      .all() as Array<Record<string, unknown>>;
-    for (const stage of stages)
-      expect(stage).toEqual({
-        backend_id: stored.selected.configuration.backendId,
-        provider_id: stored.selected.configuration.providerId,
-        model_id: stored.selected.configuration.modelId,
-        billing_lane: stored.selected.configuration.billingLane,
+  it(
+    'after the user approves, Start proceeds and the proposal run carries exactly the resolved route',
+    async () => {
+      h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
+      await seedValidations(POOL);
+      const gated = await h.supervisor.startGoal(h.fx.goalId);
+      user((gated as { approvalId: string }).approvalId, 'approved');
+      expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
+      await h.until('proposal_run_started');
+      const stored = cycleResolutions().orchestrator!;
+      expect(stored.selected.configuration.modelId).toBe('claude-sonnet-5-5');
+      expect(stored.approval.state).toBe('approved');
+      await providerCalled();
+      expect(calls[0]).toMatchObject({
+        backendId: 'claude-code',
+        providerId: 'anthropic-subscription',
+        modelId: 'claude-sonnet-5-5',
+        billingLane: 'claude-subscription',
       });
-  });
+      const stages = h.fx.db
+        .prepare(
+          "SELECT backend_id, provider_id, model_id, billing_lane FROM stages WHERE run_id = (SELECT id FROM runs WHERE goal_run_purpose = 'proposal') AND kind = 'planner'",
+        )
+        .all() as Array<Record<string, unknown>>;
+      for (const stage of stages)
+        expect(stage).toEqual({
+          backend_id: stored.selected.configuration.backendId,
+          provider_id: stored.selected.configuration.providerId,
+          model_id: stored.selected.configuration.modelId,
+          billing_lane: stored.selected.configuration.billingLane,
+        });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a denial makes the pool consider the next member, which needs its own approval', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    const gated = await h.supervisor.startGoal(h.fx.goalId);
-    user((gated as { approvalId: string }).approvalId, 'denied');
-    const second = await h.supervisor.startGoal(h.fx.goalId);
-    expect(second).toMatchObject({ ok: false, code: 'gate_pending' });
-    const rows = firstUse();
-    expect(rows).toHaveLength(2);
-    expect(detail(rows[1]!)).toMatchObject({ poolId: 'orchs', memberIndex: 1 });
-    user((second as { approvalId: string }).approvalId, 'approved');
-    expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
-    await h.until('proposal_run_started');
-    expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-opus-5-5');
-    await providerCalled();
-    expect(calls[0]?.modelId).toBe('claude-opus-5-5');
-  });
+  it(
+    'a denial makes the pool consider the next member, which needs its own approval',
+    async () => {
+      h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
+      await seedValidations(POOL);
+      const gated = await h.supervisor.startGoal(h.fx.goalId);
+      user((gated as { approvalId: string }).approvalId, 'denied');
+      const second = await h.supervisor.startGoal(h.fx.goalId);
+      expect(second).toMatchObject({ ok: false, code: 'gate_pending' });
+      const rows = firstUse();
+      expect(rows).toHaveLength(2);
+      expect(detail(rows[1]!)).toMatchObject({ poolId: 'orchs', memberIndex: 1 });
+      user((second as { approvalId: string }).approvalId, 'approved');
+      expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
+      await h.until('proposal_run_started');
+      expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-opus-5-5');
+      await providerCalled();
+      expect(calls[0]?.modelId).toBe('claude-opus-5-5');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('an approval for another pool or a user-less row establishes nothing', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    const wrong = requestGoalApproval(h.fx.db, {
-      goalId: h.fx.goalId,
-      gate: 'pool_route_first_use',
-      risk: 'low',
-      reason: 'x',
-      requestedBy: 'supervisor',
-      detail: { poolId: 'some-other-pool', memberIdentityHash: 'f'.repeat(64) },
-    });
-    user(wrong.id, 'approved');
-    const started = await h.supervisor.startGoal(h.fx.goalId);
-    expect(started).toMatchObject({ ok: false, code: 'gate_pending' });
-    expect((started as { approvalId: string }).approvalId).not.toBe(wrong.id);
-    expect(goal().status).toBe('ready');
-    expect(() =>
-      decideGoalApproval(h.fx.db, {
+  it(
+    'an approval for another pool or a user-less row establishes nothing',
+    async () => {
+      h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
+      await seedValidations(POOL);
+      const wrong = requestGoalApproval(h.fx.db, {
         goalId: h.fx.goalId,
-        approvalId: (started as { approvalId: string }).approvalId,
-        decision: 'approved',
-        decidedBy: 'system',
-      }),
-    ).toThrow();
-    expect(await h.supervisor.startGoal(h.fx.goalId)).toMatchObject({ ok: false, code: 'gate_pending' });
-  });
+        gate: 'pool_route_first_use',
+        risk: 'low',
+        reason: 'x',
+        requestedBy: 'supervisor',
+        detail: { poolId: 'some-other-pool', memberIdentityHash: 'f'.repeat(64) },
+      });
+      user(wrong.id, 'approved');
+      const started = await h.supervisor.startGoal(h.fx.goalId);
+      expect(started).toMatchObject({ ok: false, code: 'gate_pending' });
+      expect((started as { approvalId: string }).approvalId).not.toBe(wrong.id);
+      expect(goal().status).toBe('ready');
+      expect(() =>
+        decideGoalApproval(h.fx.db, {
+          goalId: h.fx.goalId,
+          approvalId: (started as { approvalId: string }).approvalId,
+          decision: 'approved',
+          decidedBy: 'system',
+        }),
+      ).toThrow();
+      expect(await h.supervisor.startGoal(h.fx.goalId)).toMatchObject({ ok: false, code: 'gate_pending' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('refuses without a gate when no member is usable (no validation), with no fallback', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
-    const started = await h.supervisor.startGoal(h.fx.goalId);
-    expect(started).toMatchObject({ ok: false, code: 'route_unavailable' });
-    expect(firstUse()).toHaveLength(0);
-    expect(count('runs')).toBe(0);
-    expect(calls).toHaveLength(0);
-  });
+  it(
+    'refuses without a gate when no member is usable (no validation), with no fallback',
+    async () => {
+      h = await realRunHarness({ definition: definition(), planProvider: real, requireResolvedRoutes: true });
+      const started = await h.supervisor.startGoal(h.fx.goalId);
+      expect(started).toMatchObject({ ok: false, code: 'route_unavailable' });
+      expect(firstUse()).toHaveLength(0);
+      expect(count('runs')).toBe(0);
+      expect(calls).toHaveLength(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('first-use gate for a running Goal', () => {
@@ -309,107 +329,130 @@ describe('first-use gate for a running Goal', () => {
     return { checkRoutes: async () => ({ ready: true }), planRun: (request) => inner.planRun(request) };
   };
 
-  it('moves to needs_user(gate_pending) with one pending approval and no run, then resumes after approval', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: racing, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
-    const seen = await h.until('gate_requested');
-    expect(seen.at(-1)).toBe('gate_requested');
-    const state = goal();
-    expect(state).toMatchObject({ status: 'needs_user', code: 'gate_pending' });
-    const rows = firstUse();
-    expect(rows).toHaveLength(1);
-    expect(JSON.parse(state.detail!)).toMatchObject({
-      approvalId: rows[0]!.id,
-      gate: 'pool_route_first_use',
-    });
-    expect(detail(rows[0]!)).toMatchObject({ poolId: 'orchs', role: 'orchestrator', memberIndex: 0 });
-    expect(count('runs')).toBe(0);
-    expect(calls).toHaveLength(0);
-    // Waiting: no further approvals, no run.
-    expect(await h.tick()).toBe('waiting_gate');
-    expect(firstUse()).toHaveLength(1);
-    user(rows[0]!.id, 'approved');
-    expect(await h.tick()).toBe('resumed');
-    expect(goal().status).toBe('running');
-    await h.until('proposal_run_started');
-    expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-sonnet-5-5');
-    await providerCalled();
-    expect(calls[0]?.modelId).toBe('claude-sonnet-5-5');
-  });
+  it(
+    'moves to needs_user(gate_pending) with one pending approval and no run, then resumes after approval',
+    async () => {
+      h = await realRunHarness({
+        definition: definition(),
+        planProvider: racing,
+        requireResolvedRoutes: true,
+      });
+      await seedValidations(POOL);
+      expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
+      const seen = await h.until('gate_requested');
+      expect(seen.at(-1)).toBe('gate_requested');
+      const state = goal();
+      expect(state).toMatchObject({ status: 'needs_user', code: 'gate_pending' });
+      const rows = firstUse();
+      expect(rows).toHaveLength(1);
+      expect(JSON.parse(state.detail!)).toMatchObject({
+        approvalId: rows[0]!.id,
+        gate: 'pool_route_first_use',
+      });
+      expect(detail(rows[0]!)).toMatchObject({ poolId: 'orchs', role: 'orchestrator', memberIndex: 0 });
+      expect(count('runs')).toBe(0);
+      expect(calls).toHaveLength(0);
+      // Waiting: no further approvals, no run.
+      expect(await h.tick()).toBe('waiting_gate');
+      expect(firstUse()).toHaveLength(1);
+      user(rows[0]!.id, 'approved');
+      expect(await h.tick()).toBe('resumed');
+      expect(goal().status).toBe('running');
+      await h.until('proposal_run_started');
+      expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-sonnet-5-5');
+      await providerCalled();
+      expect(calls[0]?.modelId).toBe('claude-sonnet-5-5');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a denial keeps the cycle and gates the next member instead of cancelling', async () => {
-    h = await realRunHarness({ definition: definition(), planProvider: racing, requireResolvedRoutes: true });
-    await seedValidations(POOL);
-    await h.supervisor.startGoal(h.fx.goalId);
-    await h.until('gate_requested');
-    user(firstUse()[0]!.id, 'denied');
-    expect(await h.tick()).toBe('resumed');
-    await h.until('gate_requested');
-    const rows = firstUse();
-    expect(rows).toHaveLength(2);
-    expect(detail(rows[1]!)).toMatchObject({ memberIndex: 1 });
-    expect(
-      h.fx.db.prepare('SELECT status FROM goal_cycles ORDER BY sequence DESC LIMIT 1').get(),
-    ).not.toMatchObject({ status: 'cancelled' });
-    expect(count('runs')).toBe(0);
-  });
+  it(
+    'a denial keeps the cycle and gates the next member instead of cancelling',
+    async () => {
+      h = await realRunHarness({
+        definition: definition(),
+        planProvider: racing,
+        requireResolvedRoutes: true,
+      });
+      await seedValidations(POOL);
+      await h.supervisor.startGoal(h.fx.goalId);
+      await h.until('gate_requested');
+      user(firstUse()[0]!.id, 'denied');
+      expect(await h.tick()).toBe('resumed');
+      await h.until('gate_requested');
+      const rows = firstUse();
+      expect(rows).toHaveLength(2);
+      expect(detail(rows[1]!)).toMatchObject({ memberIndex: 1 });
+      expect(
+        h.fx.db.prepare('SELECT status FROM goal_cycles ORDER BY sequence DESC LIMIT 1').get(),
+      ).not.toMatchObject({ status: 'cancelled' });
+      expect(count('runs')).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('resume preflight keeps a persisted current-cycle route (Stage 5B.4)', () => {
-  it('does not recompute or rotate the persisted orchestrator when its evidence later expires, and resumes the exact paused run', async () => {
-    let clock = () => new Date().toISOString();
-    h = await realRunHarness({
-      definition: definition(),
-      planProvider: (db) => new ResolvedGoalRunPlanProvider(db, { now: () => clock() }),
-      requireResolvedRoutes: true,
-    });
-    // The orchestrator's validation lasts 10 hours; the implementer's far longer.
-    await seedValidations(POOL, 10);
-    const gated = await h.supervisor.startGoal(h.fx.goalId);
-    user((gated as { approvalId: string }).approvalId, 'approved');
-    // The first provider call hangs until the run is paused; the resumed call completes.
-    vi.mocked(executeProvider).mockReset();
-    vi.mocked(executeProvider).mockImplementation(async (request) => {
-      calls.push(request);
-      if (calls.length === 1) {
-        await new Promise<void>((resolve) => request.signal.addEventListener('abort', () => resolve()));
-        throw new Error('interrupted');
-      }
-      return done(JSON.stringify(GOOD_TASK));
-    });
-    expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
-    await h.until('proposal_run_started');
-    await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 15_000 });
-    const runId = (
-      h.fx.db.prepare("SELECT id FROM runs WHERE goal_run_purpose = 'proposal'").get() as { id: string }
-    ).id;
-    expect(h.engine.intervene(runId, 'pause')).toBe(true);
-    await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('paused'), {
-      timeout: 15_000,
-    });
-    await h.until('run_interrupted');
+  it(
+    'does not recompute or rotate the persisted orchestrator when its evidence later expires, and resumes the exact paused run',
+    async () => {
+      let clock = () => new Date().toISOString();
+      h = await realRunHarness({
+        definition: definition(),
+        planProvider: (db) => new ResolvedGoalRunPlanProvider(db, { now: () => clock() }),
+        requireResolvedRoutes: true,
+      });
+      // The orchestrator's validation lasts 10 hours; the implementer's far longer.
+      await seedValidations(POOL, 10);
+      const gated = await h.supervisor.startGoal(h.fx.goalId);
+      user((gated as { approvalId: string }).approvalId, 'approved');
+      // The first provider call hangs until the run is paused; the resumed call completes.
+      vi.mocked(executeProvider).mockReset();
+      vi.mocked(executeProvider).mockImplementation(async (request) => {
+        calls.push(request);
+        if (calls.length === 1) {
+          await new Promise<void>((resolve) => request.signal.addEventListener('abort', () => resolve()));
+          throw new Error('interrupted');
+        }
+        return done(JSON.stringify(GOOD_TASK));
+      });
+      expect(await h.supervisor.startGoal(h.fx.goalId)).toEqual({ ok: true });
+      await h.until('proposal_run_started');
+      await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 15_000 });
+      const runId = (
+        h.fx.db.prepare("SELECT id FROM runs WHERE goal_run_purpose = 'proposal'").get() as { id: string }
+      ).id;
+      expect(h.engine.intervene(runId, 'pause')).toBe(true);
+      await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('paused'), {
+        timeout: 15_000,
+      });
+      await h.until('run_interrupted');
 
-    const stored = JSON.stringify(cycleResolutions());
-    expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-sonnet-5-5');
-    const approvalsBefore = firstUse().length;
-    // Time passes: the orchestrator's evidence is now stale (a fresh selection would refuse every member).
-    clock = () => new Date(Date.now() + 30 * 3_600_000).toISOString();
-    const fresh = new ResolvedGoalRunPlanProvider(h.fx.db, { now: () => clock() });
-    expect(await fresh.checkRoutes(h.fx.goalId)).toEqual({ ready: true });
+      const stored = JSON.stringify(cycleResolutions());
+      expect(cycleResolutions().orchestrator!.selected.configuration.modelId).toBe('claude-sonnet-5-5');
+      const approvalsBefore = firstUse().length;
+      // Time passes: the orchestrator's evidence is now stale (a fresh selection would refuse every member).
+      clock = () => new Date(Date.now() + 30 * 3_600_000).toISOString();
+      const fresh = new ResolvedGoalRunPlanProvider(h.fx.db, { now: () => clock() });
+      expect(await fresh.checkRoutes(h.fx.goalId)).toEqual({ ready: true });
 
-    const resumed = await h.supervisor.resumeGoal(h.fx.goalId, { actor: 'user', reasonCode: 'run_resumed' });
-    expect(resumed).toEqual({ ok: true });
-    await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2), { timeout: 15_000 });
-    await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('completed'), {
-      timeout: 20_000,
-    });
-    // The same run was resumed; the route was neither rewritten nor re-asked.
-    expect(count('runs')).toBe(1);
-    expect(JSON.stringify(cycleResolutions())).toBe(stored);
-    expect(firstUse()).toHaveLength(approvalsBefore);
-    expect(calls[1]).toMatchObject({ modelId: 'claude-sonnet-5-5', backendId: 'claude-code' });
-  });
+      const resumed = await h.supervisor.resumeGoal(h.fx.goalId, {
+        actor: 'user',
+        reasonCode: 'run_resumed',
+      });
+      expect(resumed).toEqual({ ok: true });
+      await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(2), { timeout: 15_000 });
+      await vi.waitFor(() => expect((h.runRow(runId) as { status: string }).status).toBe('completed'), {
+        timeout: 20_000,
+      });
+      // The same run was resumed; the route was neither rewritten nor re-asked.
+      expect(count('runs')).toBe(1);
+      expect(JSON.stringify(cycleResolutions())).toBe(stored);
+      expect(firstUse()).toHaveLength(approvalsBefore);
+      expect(calls[1]).toMatchObject({ modelId: 'claude-sonnet-5-5', backendId: 'claude-code' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('production wiring', () => {

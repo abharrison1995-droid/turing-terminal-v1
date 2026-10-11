@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  bindExactGate,
   GoalApprovalError,
   decideGoalApproval,
   getGoalApproval,
@@ -7,6 +8,7 @@ import {
   requestGoalApproval,
 } from './approvals.js';
 import { listGoalEvents } from './events.js';
+import { copyGoalApprovalRow, testDigest } from './repoKit.js';
 import { cleanupTestDatabases, freshDatabase, goalAt, seedProject } from './testKit.js';
 
 afterEach(cleanupTestDatabases);
@@ -165,5 +167,46 @@ describe('Goal approvals', () => {
       decideGoalApproval(db, { goalId, approvalId: id, decision: 'approved', decidedBy: 'user' }),
     ).toThrow(/event write failed/);
     expect(getGoalApproval(db, id)!.status).toBe('pending');
+  });
+});
+
+describe('bindExactGate: a completion decision is never a gate (paired)', () => {
+  it('binds the plain control gate, and refuses a copy of it that carries only a completion digest', () => {
+    const { db, goalId } = setup();
+    const control = requestGoalApproval(db, {
+      goalId,
+      gate: 'user_confirmation',
+      risk: 'high',
+      reason: 'Ordinary user confirmation gate.',
+      requestedBy: 'user',
+      detail: { note: 'control' },
+    });
+    const gateNamingControl = {
+      status: 'needs_user',
+      reasonCode: 'gate_pending',
+      detail: { approvalId: control.id, gate: 'user_confirmation' },
+    };
+    expect(bindExactGate(db, goalId, gateNamingControl)).toMatchObject({
+      ok: true,
+      approval: { id: control.id },
+    });
+
+    db.exec('DROP TRIGGER trg_goal_approval_external_completion_action_guard;');
+    const completionCopy = copyGoalApprovalRow(db, control.id, {
+      externalCompletion: testDigest('bind-completion-copy'),
+      attestationCorrection: null,
+    });
+    expect(getGoalApproval(db, completionCopy)).toMatchObject({
+      gate: 'user_confirmation',
+      detail: { note: 'control' },
+      externalCompletionActionDigest: testDigest('bind-completion-copy'),
+    });
+    expect(
+      bindExactGate(db, goalId, {
+        status: 'needs_user',
+        reasonCode: 'gate_pending',
+        detail: { approvalId: completionCopy, gate: 'user_confirmation' },
+      }),
+    ).toEqual({ ok: false });
   });
 });

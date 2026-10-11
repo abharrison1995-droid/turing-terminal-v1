@@ -15,6 +15,7 @@ import {
   startQueuedRun,
   type RunPreview,
 } from './runLauncher.js';
+import { REAL_GIT_TEST_TIMEOUT_MS } from './goals/repoKit.js';
 
 const NOW = '2026-01-01T00:00:00.000Z';
 
@@ -291,25 +292,29 @@ describe('Goal-origin run launch', () => {
       expect(ordinary).not.toHaveProperty('origin');
     });
 
-    it('starts a Goal run from the trusted commit while the checkout is dirty and has moved on', async () => {
-      writeFileSync(join(repo, 'dirty.txt'), 'uncommitted user work\n');
-      writeFileSync(join(repo, 'app.txt'), 'uncommitted edit\n');
-      const preview = await goalPreview();
-      const { runId } = queueRun(db, preview);
-      expect(startQueuedRun(db, engine, runId)).toEqual({ started: true });
-      await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
-      const row = rowOf(runId);
-      expect(row.starting_commit).toBe(baseCommit);
-      expect(row.starting_commit).not.toBe(headCommit);
-      expect(row.base_branch).toBeNull();
-      expect(row.branch).toBe(`turing/${runId.slice(0, 8)}`);
-      const worktree = String(row.worktree_path);
-      expect(git(worktree, 'rev-parse', 'HEAD')).toBe(baseCommit);
-      expect(existsSync(join(worktree, 'dirty.txt'))).toBe(false);
-      expect(git(worktree, 'show', 'HEAD:app.txt')).toBe('base');
-      // The user's checkout is untouched.
-      expect(git(repo, 'status', '--porcelain')).toContain('dirty.txt');
-    });
+    it(
+      'starts a Goal run from the trusted commit while the checkout is dirty and has moved on',
+      async () => {
+        writeFileSync(join(repo, 'dirty.txt'), 'uncommitted user work\n');
+        writeFileSync(join(repo, 'app.txt'), 'uncommitted edit\n');
+        const preview = await goalPreview();
+        const { runId } = queueRun(db, preview);
+        expect(startQueuedRun(db, engine, runId)).toEqual({ started: true });
+        await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
+        const row = rowOf(runId);
+        expect(row.starting_commit).toBe(baseCommit);
+        expect(row.starting_commit).not.toBe(headCommit);
+        expect(row.base_branch).toBeNull();
+        expect(row.branch).toBe(`turing/${runId.slice(0, 8)}`);
+        const worktree = String(row.worktree_path);
+        expect(git(worktree, 'rev-parse', 'HEAD')).toBe(baseCommit);
+        expect(existsSync(join(worktree, 'dirty.txt'))).toBe(false);
+        expect(git(worktree, 'show', 'HEAD:app.txt')).toBe('base');
+        // The user's checkout is untouched.
+        expect(git(repo, 'status', '--porcelain')).toContain('dirty.txt');
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
 
     it('still records HEAD and the base branch for an ordinary run on a clean checkout', async () => {
       const preview = await buildPreview(db, input(gateWorkflowId));
@@ -428,44 +433,48 @@ describe('Goal-origin run launch', () => {
   });
 
   describe('subject state during a Goal run', () => {
-    it('records subjectTree and subjectCommit for build stages of Goal runs only', async () => {
-      const goalRun = queueRun(db, await goalPreview(buildWorkflowId));
-      startQueuedRun(db, engine, goalRun.runId);
-      await vi.waitFor(() => expect(rowOf(goalRun.runId).status).toBe('completed'), { timeout: 15_000 });
-      const output = JSON.parse(
-        String(
-          (
-            db
-              .prepare("SELECT output_json FROM stages WHERE run_id = ? AND stage_key = 'build'")
-              .get(goalRun.runId) as {
-              output_json: string;
-            }
-          ).output_json,
-        ),
-      ) as Record<string, unknown>;
-      expect(output.exitCode).toBe(0);
-      expect(output.subjectCommit).toBe(baseCommit);
-      expect(output.subjectTree).toBe(git(repo, 'rev-parse', `${baseCommit}^{tree}`));
-      expect(output.subjectScope).toBe('');
+    it(
+      'records subjectTree and subjectCommit for build stages of Goal runs only',
+      async () => {
+        const goalRun = queueRun(db, await goalPreview(buildWorkflowId));
+        startQueuedRun(db, engine, goalRun.runId);
+        await vi.waitFor(() => expect(rowOf(goalRun.runId).status).toBe('completed'), { timeout: 15_000 });
+        const output = JSON.parse(
+          String(
+            (
+              db
+                .prepare("SELECT output_json FROM stages WHERE run_id = ? AND stage_key = 'build'")
+                .get(goalRun.runId) as {
+                output_json: string;
+              }
+            ).output_json,
+          ),
+        ) as Record<string, unknown>;
+        expect(output.exitCode).toBe(0);
+        expect(output.subjectCommit).toBe(baseCommit);
+        expect(output.subjectTree).toBe(git(repo, 'rev-parse', `${baseCommit}^{tree}`));
+        expect(output.subjectScope).toBe('');
 
-      // Ordinary runs keep byte-identical stage output (no subject fields).
-      const ordinaryPreview = await buildPreview(db, input(buildWorkflowId));
-      expect(ordinaryPreview!.canStart).toBe(true);
-      const ordinary = createRun(db, engine, ordinaryPreview!);
-      await vi.waitFor(() => expect(rowOf(ordinary.id).status).toBe('completed'), { timeout: 15_000 });
-      const plain = JSON.parse(
-        String(
-          (
-            db
-              .prepare("SELECT output_json FROM stages WHERE run_id = ? AND stage_key = 'build'")
-              .get(ordinary.id) as {
-              output_json: string;
-            }
-          ).output_json,
-        ),
-      ) as Record<string, unknown>;
-      expect(plain).not.toHaveProperty('subjectTree');
-      expect(plain).not.toHaveProperty('subjectCommit');
-    });
+        // Ordinary runs keep byte-identical stage output (no subject fields).
+        const ordinaryPreview = await buildPreview(db, input(buildWorkflowId));
+        expect(ordinaryPreview!.canStart).toBe(true);
+        const ordinary = createRun(db, engine, ordinaryPreview!);
+        await vi.waitFor(() => expect(rowOf(ordinary.id).status).toBe('completed'), { timeout: 15_000 });
+        const plain = JSON.parse(
+          String(
+            (
+              db
+                .prepare("SELECT output_json FROM stages WHERE run_id = ? AND stage_key = 'build'")
+                .get(ordinary.id) as {
+                output_json: string;
+              }
+            ).output_json,
+          ),
+        ) as Record<string, unknown>;
+        expect(plain).not.toHaveProperty('subjectTree');
+        expect(plain).not.toHaveProperty('subjectCommit');
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
   });
 });

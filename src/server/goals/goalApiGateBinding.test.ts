@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { call, goalApp } from './apiKit.js';
 import { bindExactGate, decideGoalApproval, requestGoalApproval } from './approvals.js';
-import { cleanupRepoFixtures } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { transitionGoal } from './stateMachine.js';
 import { goalAt } from './testKit.js';
 import { harness, type Harness } from './supervisorKit.js';
@@ -49,57 +49,73 @@ const resume = (h: Harness) =>
   call(app!, 'POST', `/api/goals/${h.fx.goalId}/resume`, { reason: 'gate_resolved' });
 
 describe('malformed gate_pending state fails closed', () => {
-  it('an unknown approval id never surfaces an unrelated pending approval', async () => {
-    const h = await running();
-    const unrelated = approve(h, 'finding_decision');
-    waitOn(h, { approvalId: 'unknown', gate: 'each_cycle' });
-    expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
-    expect(unrelated.status).toBe('pending');
-    const refused = await resume(h);
-    expect([refused.status, refused.body.code]).toEqual([409, 'gate_not_resolved']);
-    expect(h.status().status).toBe('needs_user');
-  });
-
-  it('a missing approvalId or gate is manual reconciliation', async () => {
-    for (const detail of [undefined, { gate: 'each_cycle' }, { approvalId: 'x' }]) {
+  it(
+    'an unknown approval id never surfaces an unrelated pending approval',
+    async () => {
       const h = await running();
-      approve(h, 'finding_decision');
-      waitOn(h, detail);
+      const unrelated = approve(h, 'finding_decision');
+      waitOn(h, { approvalId: 'unknown', gate: 'each_cycle' });
+      expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
+      expect(unrelated.status).toBe('pending');
+      const refused = await resume(h);
+      expect([refused.status, refused.body.code]).toEqual([409, 'gate_not_resolved']);
+      expect(h.status().status).toBe('needs_user');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a missing approvalId or gate is manual reconciliation',
+    async () => {
+      for (const detail of [undefined, { gate: 'each_cycle' }, { approvalId: 'x' }]) {
+        const h = await running();
+        approve(h, 'finding_decision');
+        waitOn(h, detail);
+        expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
+        expect((await resume(h)).body.code).toBe('gate_not_resolved');
+        await app!.close();
+        cleanupRepoFixtures();
+      }
+      app = undefined;
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a gate mismatch is manual reconciliation and not resolvable, even when approved',
+    async () => {
+      const h = await running();
+      const a = approve(h, 'final_acceptance');
+      decideAs(h, a.id, 'approved');
+      waitOn(h, { approvalId: a.id, gate: 'each_cycle' });
+      expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
+      const refused = await resume(h);
+      expect([refused.status, refused.body.code]).toEqual([409, 'gate_not_resolved']);
+      expect(h.status().status).toBe('needs_user');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'an approval of another Goal is manual reconciliation and not resolvable',
+    async () => {
+      const h = await running();
+      const foreignGoal = goalAt(h.fx.db, h.fx.projectId, 'draft');
+      const foreign = approve(h, 'each_cycle', foreignGoal);
+      decideAs(h, foreign.id, 'approved', foreignGoal);
+      waitOn(h, { approvalId: foreign.id, gate: 'each_cycle' });
       expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
       expect((await resume(h)).body.code).toBe('gate_not_resolved');
-      await app!.close();
-      cleanupRepoFixtures();
-    }
-    app = undefined;
-  });
-
-  it('a gate mismatch is manual reconciliation and not resolvable, even when approved', async () => {
-    const h = await running();
-    const a = approve(h, 'final_acceptance');
-    decideAs(h, a.id, 'approved');
-    waitOn(h, { approvalId: a.id, gate: 'each_cycle' });
-    expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
-    const refused = await resume(h);
-    expect([refused.status, refused.body.code]).toEqual([409, 'gate_not_resolved']);
-    expect(h.status().status).toBe('needs_user');
-  });
-
-  it('an approval of another Goal is manual reconciliation and not resolvable', async () => {
-    const h = await running();
-    const foreignGoal = goalAt(h.fx.db, h.fx.projectId, 'draft');
-    const foreign = approve(h, 'each_cycle', foreignGoal);
-    decideAs(h, foreign.id, 'approved', foreignGoal);
-    waitOn(h, { approvalId: foreign.id, gate: 'each_cycle' });
-    expect(await nextAction(h)).toEqual({ kind: 'manual_reconciliation' });
-    expect((await resume(h)).body.code).toBe('gate_not_resolved');
-    expect(
-      bindExactGate(h.fx.db, h.fx.goalId, {
-        status: 'needs_user',
-        reasonCode: 'gate_pending',
-        detail: { approvalId: foreign.id, gate: 'each_cycle' },
-      }),
-    ).toEqual({ ok: false });
-  });
+      expect(
+        bindExactGate(h.fx.db, h.fx.goalId, {
+          status: 'needs_user',
+          reasonCode: 'gate_pending',
+          detail: { approvalId: foreign.id, gate: 'each_cycle' },
+        }),
+      ).toEqual({ ok: false });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('valid exact gates keep their accepted behaviour', () => {
@@ -126,17 +142,22 @@ describe('valid exact gates keep their accepted behaviour', () => {
       }
       app = undefined;
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it('a denied pool gate resumes (resolver consideration); a pending one does not', async () => {
-    const h = await running();
-    const a = approve(h, 'pool_route_first_use');
-    waitOn(h, { approvalId: a.id, gate: 'pool_route_first_use' });
-    expect(await nextAction(h)).toEqual({ kind: 'review_approval', approvalId: a.id });
-    expect((await resume(h)).body.code).toBe('gate_not_resolved');
-    decideAs(h, a.id, 'denied');
-    expect(await nextAction(h)).toEqual({ kind: 'resume' });
-    // Resolved for pool semantics: it passes the factual check (preflight then decides; no route is ready here).
-    expect((await resume(h)).body.code).not.toBe('gate_not_resolved');
-  });
+  it(
+    'a denied pool gate resumes (resolver consideration); a pending one does not',
+    async () => {
+      const h = await running();
+      const a = approve(h, 'pool_route_first_use');
+      waitOn(h, { approvalId: a.id, gate: 'pool_route_first_use' });
+      expect(await nextAction(h)).toEqual({ kind: 'review_approval', approvalId: a.id });
+      expect((await resume(h)).body.code).toBe('gate_not_resolved');
+      decideAs(h, a.id, 'denied');
+      expect(await nextAction(h)).toEqual({ kind: 'resume' });
+      // Resolved for pool semantics: it passes the factual check (preflight then decides; no route is ready here).
+      expect((await resume(h)).body.code).not.toBe('gate_not_resolved');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

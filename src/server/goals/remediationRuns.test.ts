@@ -12,7 +12,7 @@ vi.mock('../providers.js', () => ({
 import { discoverProviders, executeProvider } from '../providers.js';
 import type { ProposalRequest } from './executor.js';
 import { openFinding } from './remediationKit.js';
-import { cleanupRepoFixtures } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { TuringGoalExecutor } from './turingExecutor.js';
 import { realRunHarness, type RealRunHarness } from './turingRunKit.js';
 
@@ -84,22 +84,26 @@ const promptOf = async (harness: RealRunHarness): Promise<string> => {
 };
 
 describe('real proposal prompt for remediation cycles', () => {
-  it('derives the remediation planning text from the persisted cycle kind', async () => {
-    const ordinaryHarness = await open();
-    expect(await promptOf(ordinaryHarness)).not.toContain('remediation planning cycle');
-    await ordinaryHarness.close();
-    h = undefined;
-    cleanupRepoFixtures();
+  it(
+    'derives the remediation planning text from the persisted cycle kind',
+    async () => {
+      const ordinaryHarness = await open();
+      expect(await promptOf(ordinaryHarness)).not.toContain('remediation planning cycle');
+      await ordinaryHarness.close();
+      h = undefined;
+      cleanupRepoFixtures();
 
-    h = await realRunHarness({ mutate: (workflow) => mutate.current(workflow) });
-    await openFinding(h.fx, 'high', { kind: 'milestone', milestone: 'm1' });
-    await h.supervisor.startGoal(h.fx.goalId);
-    await h.until('cycle_created');
-    const cycle = h.fx.db.prepare('SELECT kind FROM goal_cycles WHERE id = ?').get(h.cycleId()) as {
-      kind: string;
-    };
-    expect(cycle.kind).toBe('remediation');
-    expect(await promptOf(h)).toContain('remediation planning cycle');
-    expect(vi.mocked(executeProvider)).not.toHaveBeenCalled();
-  });
+      h = await realRunHarness({ mutate: (workflow) => mutate.current(workflow) });
+      await openFinding(h.fx, 'high', { kind: 'milestone', milestone: 'm1' });
+      await h.supervisor.startGoal(h.fx.goalId);
+      await h.until('cycle_created');
+      const cycle = h.fx.db.prepare('SELECT kind FROM goal_cycles WHERE id = ?').get(h.cycleId()) as {
+        kind: string;
+      };
+      expect(cycle.kind).toBe('remediation');
+      expect(await promptOf(h)).toContain('remediation planning cycle');
+      expect(vi.mocked(executeProvider)).not.toHaveBeenCalled();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

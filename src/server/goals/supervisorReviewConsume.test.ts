@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GoalReviewKind } from '../../shared/goals.js';
 import { listGoalEvents } from './events.js';
 import { applyReviewFindings } from './findings.js';
-import { cleanupRepoFixtures, newFinding, reportOf } from './repoKit.js';
+import { cleanupRepoFixtures, newFinding, reportOf, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { createReviewCycle } from './reviewCycle.js';
 import { recordReviewEvidence } from './reviewConsume.js';
 import { readGoalReviewReport } from './reviewReport.js';
@@ -151,134 +151,168 @@ const applied = (h: Harness) =>
   listGoalEvents(h.fx.db, h.fx.goalId).filter((e) => e.type === 'review_findings_applied');
 
 describe('review consumption: semantic outcomes', () => {
-  it('a blocking milestone report succeeds the cycle, blocks the Goal and records contradicting evidence', async () => {
-    const { h, cycleId, runId, action } = await consume(
-      'milestone',
-      reportOf({ verdict: 'block', newFindings: [newFinding()] }),
-    );
-    expect(action).toBe('review_consumed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
-      status: 'completed',
-      verdict: 'block',
-      blocking: true,
-    });
-    // The review machinery ran and produced a valid report: the cycle is a success; the verdict is the semantic result.
-    expect(getCycle(h.fx.db, cycleId)).toMatchObject({ status: 'succeeded' });
-    expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_consumed', blocking: true });
-    expect(h.status()).toMatchObject({ status: 'blocked', reason: 'review_blocked' });
-    expect(findings(h)).toEqual([expect.objectContaining({ status: 'open', severity: 'high' })]);
-    // The new Goal finding is linked to the per-run row of THIS run.
-    const link = h.fx.db.prepare('SELECT run_finding_id FROM goal_finding_observations').get() as {
-      run_finding_id: string;
-    };
-    expect(
-      (
-        h.fx.db.prepare('SELECT run_id FROM review_findings WHERE id = ?').get(link.run_finding_id) as {
-          run_id: string;
-        }
-      ).run_id,
-    ).toBe(runId);
-    expect(evidence(h)).toEqual([
-      expect.objectContaining({ criterion_key: 'm1-review', verdict: 'contradicts' }),
-    ]);
-    expect(markers(h)).toHaveLength(1);
-    expect(markers(h)[0]!.payload).toMatchObject({ runId, evidenceCount: 1 });
-    expect(applied(h)).toHaveLength(1);
-    // No remediation is scheduled automatically in 6A.
-    expect(h.fx.db.prepare("SELECT COUNT(*) AS n FROM goal_cycles WHERE kind = 'remediation'").get()).toEqual(
-      { n: 0 },
-    );
-  });
+  it(
+    'a blocking milestone report succeeds the cycle, blocks the Goal and records contradicting evidence',
+    async () => {
+      const { h, cycleId, runId, action } = await consume(
+        'milestone',
+        reportOf({ verdict: 'block', newFindings: [newFinding()] }),
+      );
+      expect(action).toBe('review_consumed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+        status: 'completed',
+        verdict: 'block',
+        blocking: true,
+      });
+      // The review machinery ran and produced a valid report: the cycle is a success; the verdict is the semantic result.
+      expect(getCycle(h.fx.db, cycleId)).toMatchObject({ status: 'succeeded' });
+      expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_consumed', blocking: true });
+      expect(h.status()).toMatchObject({ status: 'blocked', reason: 'review_blocked' });
+      expect(findings(h)).toEqual([expect.objectContaining({ status: 'open', severity: 'high' })]);
+      // The new Goal finding is linked to the per-run row of THIS run.
+      const link = h.fx.db.prepare('SELECT run_finding_id FROM goal_finding_observations').get() as {
+        run_finding_id: string;
+      };
+      expect(
+        (
+          h.fx.db.prepare('SELECT run_id FROM review_findings WHERE id = ?').get(link.run_finding_id) as {
+            run_id: string;
+          }
+        ).run_id,
+      ).toBe(runId);
+      expect(evidence(h)).toEqual([
+        expect.objectContaining({ criterion_key: 'm1-review', verdict: 'contradicts' }),
+      ]);
+      expect(markers(h)).toHaveLength(1);
+      expect(markers(h)[0]!.payload).toMatchObject({ runId, evidenceCount: 1 });
+      expect(applied(h)).toHaveLength(1);
+      // No remediation is scheduled automatically in 6A.
+      expect(
+        h.fx.db.prepare("SELECT COUNT(*) AS n FROM goal_cycles WHERE kind = 'remediation'").get(),
+      ).toEqual({ n: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a passing milestone report returns the Goal to running with satisfying evidence', async () => {
-    const { h, cycleId } = await consume('milestone', reportOf({ verdict: 'pass' }));
-    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
-    expect(getCycle(h.fx.db, cycleId)).toMatchObject({ status: 'succeeded' });
-    expect(evidence(h)).toEqual([
-      expect.objectContaining({ criterion_key: 'm1-review', verdict: 'satisfies' }),
-    ]);
-    expect(findings(h)).toEqual([]);
-  });
+  it(
+    'a passing milestone report returns the Goal to running with satisfying evidence',
+    async () => {
+      const { h, cycleId } = await consume('milestone', reportOf({ verdict: 'pass' }));
+      expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
+      expect(getCycle(h.fx.db, cycleId)).toMatchObject({ status: 'succeeded' });
+      expect(evidence(h)).toEqual([
+        expect.objectContaining({ criterion_key: 'm1-review', verdict: 'satisfies' }),
+      ]);
+      expect(findings(h)).toEqual([]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('pass_with_findings is non-blocking: it opens findings, satisfies a milestone verifier and resumes running', async () => {
-    const { h } = await consume(
-      'milestone',
-      reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding({ severity: 'low' })] }),
-    );
-    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
-    expect(findings(h)).toEqual([expect.objectContaining({ status: 'open', severity: 'low' })]);
-    expect(evidence(h)).toEqual([
-      expect.objectContaining({ criterion_key: 'm1-review', verdict: 'satisfies' }),
-    ]);
-  });
+  it(
+    'pass_with_findings is non-blocking: it opens findings, satisfies a milestone verifier and resumes running',
+    async () => {
+      const { h } = await consume(
+        'milestone',
+        reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding({ severity: 'low' })] }),
+      );
+      expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
+      expect(findings(h)).toEqual([expect.objectContaining({ status: 'open', severity: 'low' })]);
+      expect(evidence(h)).toEqual([
+        expect.objectContaining({ criterion_key: 'm1-review', verdict: 'satisfies' }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a periodic block that policy makes non-blocking resumes running and never satisfies a verifier', async () => {
-    const { h, cycleId } = await consume('periodic', reportOf({ verdict: 'block' }));
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ verdict: 'block', blocking: false });
-    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
-    expect(evidence(h)).toEqual([]);
-    // Zero evidence is a valid, recorded outcome.
-    expect(markers(h)[0]!.payload).toMatchObject({ evidenceCount: 0 });
-  });
+  it(
+    'a periodic block that policy makes non-blocking resumes running and never satisfies a verifier',
+    async () => {
+      const { h, cycleId } = await consume('periodic', reportOf({ verdict: 'block' }));
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ verdict: 'block', blocking: false });
+      expect(h.status()).toMatchObject({ status: 'running', reason: 'review_passed' });
+      expect(evidence(h)).toEqual([]);
+      // Zero evidence is a valid, recorded outcome.
+      expect(markers(h)[0]!.payload).toMatchObject({ evidenceCount: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('records review evidence only for the matching kind and the criteria the milestone owns', async () => {
-    const { h } = await consume('milestone', reportOf({ verdict: 'pass' }));
-    expect(evidence(h).map((row) => row.criterion_key)).toEqual(['m1-review']);
-  });
+  it(
+    'records review evidence only for the matching kind and the criteria the milestone owns',
+    async () => {
+      const { h } = await consume('milestone', reportOf({ verdict: 'pass' }));
+      expect(evidence(h).map((row) => row.criterion_key)).toEqual(['m1-review']);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('review consumption: existing findings', () => {
-  it('resolves only what is explicitly resolved; still_open, not_assessed and omitted findings stay open', async () => {
-    const seed = await consume(
-      'periodic',
-      reportOf({
-        verdict: 'pass_with_findings',
-        newFindings: ['A', 'B', 'C', 'D'].map((name) =>
-          newFinding({ severity: 'low', description: `Finding ${name}`, affectedFiles: [`src/${name}.ts`] }),
-        ),
-      }),
-    );
-    const { h } = seed;
-    const ids = Object.fromEntries(findings(h).map((finding) => [finding.description.slice(-1), finding.id]));
-    expect(Object.keys(ids)).toEqual(['A', 'B', 'C', 'D']);
-    await readyToConsume(
-      'periodic',
-      reportOf({
-        verdict: 'pass_with_findings',
-        existingFindings: [
-          { goalFindingId: ids.A!, status: 'resolved', basis: 'fixed in this head' },
-          { goalFindingId: ids.B!, status: 'still_open', basis: 'still there' },
-          { goalFindingId: ids.C!, status: 'not_assessed', basis: 'out of range' },
-        ],
-      }),
-      { h },
-    );
-    expect(await h.tick()).toBe('review_consumed');
-    const status = Object.fromEntries(
-      findings(h).map((finding) => [finding.description.slice(-1), finding.status]),
-    );
-    expect(status).toEqual({ A: 'resolved', B: 'open', C: 'open', D: 'open' });
-  });
+  it(
+    'resolves only what is explicitly resolved; still_open, not_assessed and omitted findings stay open',
+    async () => {
+      const seed = await consume(
+        'periodic',
+        reportOf({
+          verdict: 'pass_with_findings',
+          newFindings: ['A', 'B', 'C', 'D'].map((name) =>
+            newFinding({
+              severity: 'low',
+              description: `Finding ${name}`,
+              affectedFiles: [`src/${name}.ts`],
+            }),
+          ),
+        }),
+      );
+      const { h } = seed;
+      const ids = Object.fromEntries(
+        findings(h).map((finding) => [finding.description.slice(-1), finding.id]),
+      );
+      expect(Object.keys(ids)).toEqual(['A', 'B', 'C', 'D']);
+      await readyToConsume(
+        'periodic',
+        reportOf({
+          verdict: 'pass_with_findings',
+          existingFindings: [
+            { goalFindingId: ids.A!, status: 'resolved', basis: 'fixed in this head' },
+            { goalFindingId: ids.B!, status: 'still_open', basis: 'still there' },
+            { goalFindingId: ids.C!, status: 'not_assessed', basis: 'out of range' },
+          ],
+        }),
+        { h },
+      );
+      expect(await h.tick()).toBe('review_consumed');
+      const status = Object.fromEntries(
+        findings(h).map((finding) => [finding.description.slice(-1), finding.status]),
+      );
+      expect(status).toEqual({ A: 'resolved', B: 'open', C: 'open', D: 'open' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('review consumption: stale review', () => {
-  it('a review whose head moved is completed but inert: no findings, no evidence, and the cycle still ends', async () => {
-    const ready = await readyToConsume(
-      'milestone',
-      reportOf({ verdict: 'block', newFindings: [newFinding()] }),
-    );
-    const { h, cycleId } = ready;
-    h.fx.advance({ 'src/late.ts': 'export const late = 1;\n' }, 'late work');
-    expect(await h.tick()).toBe('review_consumed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'completed', verdict: 'block' });
-    expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_stale', stale: true });
-    expect(findings(h)).toEqual([]);
-    expect(evidence(h)).toEqual([]);
-    expect(applied(h)).toEqual([]);
-    // A stale blocking verdict must not block the current head.
-    expect(h.status()).toMatchObject({ status: 'running', reason: 'review_stale' });
-    expect(markers(h)[0]!.payload).toMatchObject({ evidenceCount: 0 });
-  });
+  it(
+    'a review whose head moved is completed but inert: no findings, no evidence, and the cycle still ends',
+    async () => {
+      const ready = await readyToConsume(
+        'milestone',
+        reportOf({ verdict: 'block', newFindings: [newFinding()] }),
+      );
+      const { h, cycleId } = ready;
+      h.fx.advance({ 'src/late.ts': 'export const late = 1;\n' }, 'late work');
+      expect(await h.tick()).toBe('review_consumed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'completed', verdict: 'block' });
+      expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_stale', stale: true });
+      expect(findings(h)).toEqual([]);
+      expect(evidence(h)).toEqual([]);
+      expect(applied(h)).toEqual([]);
+      // A stale blocking verdict must not block the current head.
+      expect(h.status()).toMatchObject({ status: 'running', reason: 'review_stale' });
+      expect(markers(h)[0]!.payload).toMatchObject({ evidenceCount: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('review consumption: invalid reports are infrastructure failures', () => {
@@ -326,21 +360,32 @@ describe('review consumption: invalid reports are infrastructure failures', () =
       expect(findings(h)).toEqual([]);
       expect(evidence(h)).toEqual([]);
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it('a missing consolidate stage and a failed consolidate stage are both report failures', async () => {
-    const none = await consume('periodic', null);
-    expect(none.action).toBe('review_decision_needed');
-    expect(JSON.stringify(getCycle(none.h.fx.db, none.cycleId)!.outcome)).toContain('consolidate_missing');
-  });
+  it(
+    'a missing consolidate stage and a failed consolidate stage are both report failures',
+    async () => {
+      const none = await consume('periodic', null);
+      expect(none.action).toBe('review_decision_needed');
+      expect(JSON.stringify(getCycle(none.h.fx.db, none.cycleId)!.outcome)).toContain('consolidate_missing');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a final review whose route resolution cannot be re-proven fails closed instead of inventing independence', async () => {
-    const { h, cycleId, action } = await consume('final', reportOf({ verdict: 'pass' }));
-    expect(action).toBe('review_decision_needed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'failed', independence: null });
-    expect(JSON.stringify(getCycle(h.fx.db, cycleId)!.outcome)).toContain('independence_resolution_missing');
-    expect(evidence(h)).toEqual([]);
-  });
+  it(
+    'a final review whose route resolution cannot be re-proven fails closed instead of inventing independence',
+    async () => {
+      const { h, cycleId, action } = await consume('final', reportOf({ verdict: 'pass' }));
+      expect(action).toBe('review_decision_needed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'failed', independence: null });
+      expect(JSON.stringify(getCycle(h.fx.db, cycleId)!.outcome)).toContain(
+        'independence_resolution_missing',
+      );
+      expect(evidence(h)).toEqual([]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('review consumption: restart safety', () => {
@@ -366,62 +411,82 @@ describe('review consumption: restart safety', () => {
     expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_finding_observations').get()).toEqual({ n: 1 });
   };
 
-  it('crash after completeReview, before applying findings: the findings are applied exactly once', async () => {
-    const s = await setup();
-    complete(s);
-    const restarted = s.h.restart();
-    expect(await restarted.supervisor.tickGoal(s.h.fx.goalId)).toMatchObject({ action: 'review_consumed' });
-    finishedClean(s.h, s.cycleId);
-  });
+  it(
+    'crash after completeReview, before applying findings: the findings are applied exactly once',
+    async () => {
+      const s = await setup();
+      complete(s);
+      const restarted = s.h.restart();
+      expect(await restarted.supervisor.tickGoal(s.h.fx.goalId)).toMatchObject({ action: 'review_consumed' });
+      finishedClean(s.h, s.cycleId);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('crash after applying findings, before evidence: evidence is recorded, findings are not applied again', async () => {
-    const s = await setup();
-    const review = complete(s);
-    await applyReviewFindings(s.h.fx.db, {
-      reviewId: review.id,
-      runFindingIds: { new: s.read.runFindingIds.new },
-    });
-    const restarted = s.h.restart();
-    await restarted.supervisor.tickGoal(s.h.fx.goalId);
-    finishedClean(s.h, s.cycleId);
-  });
-
-  it('crash after evidence, before the marker and cycle finish: nothing is duplicated', async () => {
-    const s = await setup();
-    const review = complete(s);
-    await applyReviewFindings(s.h.fx.db, {
-      reviewId: review.id,
-      runFindingIds: { new: s.read.runFindingIds.new },
-    });
-    const cycle = getCycle(s.h.fx.db, s.cycleId)!;
-    await recordReviewEvidence(s.h.fx.db, { review, cycle, runId: s.runId, now: new Date().toISOString() });
-    expect(markers(s.h)).toHaveLength(0);
-    const restarted = s.h.restart();
-    await restarted.supervisor.tickGoal(s.h.fx.goalId);
-    finishedClean(s.h, s.cycleId);
-  });
-
-  it('repeated ticks and restarts after the review was consumed change nothing', async () => {
-    const s = await setup();
-    expect(await s.h.tick()).toBe('review_consumed');
-    for (let index = 0; index < 3; index++) {
+  it(
+    'crash after applying findings, before evidence: evidence is recorded, findings are not applied again',
+    async () => {
+      const s = await setup();
+      const review = complete(s);
+      await applyReviewFindings(s.h.fx.db, {
+        reviewId: review.id,
+        runFindingIds: { new: s.read.runFindingIds.new },
+      });
       const restarted = s.h.restart();
       await restarted.supervisor.tickGoal(s.h.fx.goalId);
-    }
-    finishedClean(s.h, s.cycleId);
-    expect(s.h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 1 });
-  });
+      finishedClean(s.h, s.cycleId);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a second consumer racing a completed review does not apply findings twice', async () => {
-    const s = await setup();
-    const review = complete(s);
-    await applyReviewFindings(s.h.fx.db, {
-      reviewId: review.id,
-      runFindingIds: { new: s.read.runFindingIds.new },
-    });
-    expect(await s.h.tick()).toBe('review_consumed');
-    finishedClean(s.h, s.cycleId);
-  });
+  it(
+    'crash after evidence, before the marker and cycle finish: nothing is duplicated',
+    async () => {
+      const s = await setup();
+      const review = complete(s);
+      await applyReviewFindings(s.h.fx.db, {
+        reviewId: review.id,
+        runFindingIds: { new: s.read.runFindingIds.new },
+      });
+      const cycle = getCycle(s.h.fx.db, s.cycleId)!;
+      await recordReviewEvidence(s.h.fx.db, { review, cycle, runId: s.runId, now: new Date().toISOString() });
+      expect(markers(s.h)).toHaveLength(0);
+      const restarted = s.h.restart();
+      await restarted.supervisor.tickGoal(s.h.fx.goalId);
+      finishedClean(s.h, s.cycleId);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'repeated ticks and restarts after the review was consumed change nothing',
+    async () => {
+      const s = await setup();
+      expect(await s.h.tick()).toBe('review_consumed');
+      for (let index = 0; index < 3; index++) {
+        const restarted = s.h.restart();
+        await restarted.supervisor.tickGoal(s.h.fx.goalId);
+      }
+      finishedClean(s.h, s.cycleId);
+      expect(s.h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_reviews').get()).toEqual({ n: 1 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a second consumer racing a completed review does not apply findings twice',
+    async () => {
+      const s = await setup();
+      const review = complete(s);
+      await applyReviewFindings(s.h.fx.db, {
+        reviewId: review.id,
+        runFindingIds: { new: s.read.runFindingIds.new },
+      });
+      expect(await s.h.tick()).toBe('review_consumed');
+      finishedClean(s.h, s.cycleId);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('readGoalReviewReport', () => {
@@ -442,64 +507,76 @@ describe('readGoalReviewReport', () => {
   };
   const finding = newFinding({ description: 'Distinct problem' });
 
-  it('returns the validated report and links each new finding to this run only', async () => {
-    const { h, runId } = await ready(reportOf({ verdict: 'pass_with_findings', newFindings: [finding] }));
-    const read = readGoalReviewReport(h.fx.db, runId);
-    expect(read.ok).toBe(true);
-    if (!read.ok) return;
-    expect(read.report.verdict).toBe('pass_with_findings');
-    const row = h.fx.db
-      .prepare('SELECT run_id FROM review_findings WHERE id = ?')
-      .get(read.runFindingIds.new[0]!) as {
-      run_id: string;
-    };
-    expect(row.run_id).toBe(runId);
-  });
+  it(
+    'returns the validated report and links each new finding to this run only',
+    async () => {
+      const { h, runId } = await ready(reportOf({ verdict: 'pass_with_findings', newFindings: [finding] }));
+      const read = readGoalReviewReport(h.fx.db, runId);
+      expect(read.ok).toBe(true);
+      if (!read.ok) return;
+      expect(read.report.verdict).toBe('pass_with_findings');
+      const row = h.fx.db
+        .prepare('SELECT run_id FROM review_findings WHERE id = ?')
+        .get(read.runFindingIds.new[0]!) as {
+        run_id: string;
+      };
+      expect(row.run_id).toBe(runId);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('never links a row of another run, and refuses a mismatching severity or a reused row', async () => {
-    const { h, runId } = await ready(reportOf({ verdict: 'pass_with_findings', newFindings: [finding] }));
-    // Move the only matching row to another run: this run now has no counterpart.
-    const other = randomUUID();
-    h.fx.db
-      .prepare(
-        `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at)
+  it(
+    'never links a row of another run, and refuses a mismatching severity or a reused row',
+    async () => {
+      const { h, runId } = await ready(reportOf({ verdict: 'pass_with_findings', newFindings: [finding] }));
+      // Move the only matching row to another run: this run now has no counterpart.
+      const other = randomUUID();
+      h.fx.db
+        .prepare(
+          `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at)
          SELECT ?, machine_id, project_id, workflow_id, '{}', 'p', 'economy', 'normal', 'completed', created_at FROM runs WHERE id = ?`,
-      )
-      .run(other, runId);
-    const stage = randomUUID();
-    h.fx.db
-      .prepare(
-        "INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status) VALUES (?, ?, 'k', 'review', 'R', 0, 'passed')",
-      )
-      .run(stage, other);
-    h.fx.db.prepare('UPDATE review_findings SET run_id = ?, stage_id = ?').run(other, stage);
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_finding_unmatched' });
-    h.fx.db.prepare('UPDATE review_findings SET run_id = ?').run(runId);
-    h.fx.db
-      .prepare(
-        "UPDATE review_findings SET stage_id = (SELECT id FROM stages WHERE run_id = ? AND kind = 'consolidate')",
-      )
-      .run(runId);
-    expect(readGoalReviewReport(h.fx.db, runId).ok).toBe(true);
-    h.fx.db.prepare("UPDATE review_findings SET severity = 'low'").run();
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_finding_mismatch' });
-  });
+        )
+        .run(other, runId);
+      const stage = randomUUID();
+      h.fx.db
+        .prepare(
+          "INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status) VALUES (?, ?, 'k', 'review', 'R', 0, 'passed')",
+        )
+        .run(stage, other);
+      h.fx.db.prepare('UPDATE review_findings SET run_id = ?, stage_id = ?').run(other, stage);
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_finding_unmatched' });
+      h.fx.db.prepare('UPDATE review_findings SET run_id = ?').run(runId);
+      h.fx.db
+        .prepare(
+          "UPDATE review_findings SET stage_id = (SELECT id FROM stages WHERE run_id = ? AND kind = 'consolidate')",
+        )
+        .run(runId);
+      expect(readGoalReviewReport(h.fx.db, runId).ok).toBe(true);
+      h.fx.db.prepare("UPDATE review_findings SET severity = 'low'").run();
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_finding_mismatch' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('refuses a non-review run, a failed consolidate stage and oversize output before parsing', async () => {
-    const { h, runId } = await ready(reportOf({ verdict: 'pass' }));
-    expect(readGoalReviewReport(h.fx.db, 'ghost')).toEqual({ ok: false, code: 'review_run_invalid' });
-    h.fx.db.prepare("UPDATE stages SET status = 'failed' WHERE run_id = ?").run(runId);
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'consolidate_not_passed' });
-    h.fx.db
-      .prepare("UPDATE stages SET status = 'passed', output_json = ? WHERE run_id = ?")
-      .run(JSON.stringify({ text: 'x'.repeat(300_000) }), runId);
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_oversize' });
-    h.fx.db.prepare('UPDATE stages SET output_json = NULL WHERE run_id = ?').run(runId);
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_output_missing' });
-    // A run that is not completed is not read either.
-    h.fx.db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(runId);
-    expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'review_run_invalid' });
-  });
+  it(
+    'refuses a non-review run, a failed consolidate stage and oversize output before parsing',
+    async () => {
+      const { h, runId } = await ready(reportOf({ verdict: 'pass' }));
+      expect(readGoalReviewReport(h.fx.db, 'ghost')).toEqual({ ok: false, code: 'review_run_invalid' });
+      h.fx.db.prepare("UPDATE stages SET status = 'failed' WHERE run_id = ?").run(runId);
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'consolidate_not_passed' });
+      h.fx.db
+        .prepare("UPDATE stages SET status = 'passed', output_json = ? WHERE run_id = ?")
+        .run(JSON.stringify({ text: 'x'.repeat(300_000) }), runId);
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_oversize' });
+      h.fx.db.prepare('UPDATE stages SET output_json = NULL WHERE run_id = ?').run(runId);
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'report_output_missing' });
+      // A run that is not completed is not read either.
+      h.fx.db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(runId);
+      expect(readGoalReviewReport(h.fx.db, runId)).toEqual({ ok: false, code: 'review_run_invalid' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('review consumption: final-review independence outcomes', () => {
@@ -514,51 +591,67 @@ describe('review consumption: final-review independence outcomes', () => {
   });
   const finalEvidence = (h: Harness) => evidence(h).filter((row) => row.criterion_key === 'final-review');
 
-  it('an established independent final pass satisfies the final verifier', async () => {
-    derive.override = () => claim(true, 'established');
-    const { h, cycleId, action } = await consume('final', reportOf({ verdict: 'pass' }));
-    expect(action).toBe('review_consumed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
-      status: 'completed',
-      independence: { established: true, policy: 'different-family' },
-    });
-    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['satisfies']);
-  });
+  it(
+    'an established independent final pass satisfies the final verifier',
+    async () => {
+      derive.override = () => claim(true, 'established');
+      const { h, cycleId, action } = await consume('final', reportOf({ verdict: 'pass' }));
+      expect(action).toBe('review_consumed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+        status: 'completed',
+        independence: { established: true, policy: 'different-family' },
+      });
+      expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['satisfies']);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('the explicit floating exception is consumed: review completed, findings applied, independence false, evidence inconclusive', async () => {
-    derive.override = () => claim(false, 'candidate_identity_unproven');
-    const { h, cycleId, action } = await consume(
-      'final',
-      reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding()] }),
-    );
-    expect(action).toBe('review_consumed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
-      status: 'completed',
-      independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
-    });
-    expect(findings(h)).toHaveLength(1);
-    expect(applied(h)).toHaveLength(1);
-    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
-    expect(h.status()).toMatchObject({ status: 'running' });
-  });
+  it(
+    'the explicit floating exception is consumed: review completed, findings applied, independence false, evidence inconclusive',
+    async () => {
+      derive.override = () => claim(false, 'candidate_identity_unproven');
+      const { h, cycleId, action } = await consume(
+        'final',
+        reportOf({ verdict: 'pass_with_findings', newFindings: [newFinding()] }),
+      );
+      expect(action).toBe('review_consumed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({
+        status: 'completed',
+        independence: { established: false, detail: { reasonCode: 'candidate_identity_unproven' } },
+      });
+      expect(findings(h)).toHaveLength(1);
+      expect(applied(h)).toHaveLength(1);
+      expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
+      expect(h.status()).toMatchObject({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a clean final pass whose independence is unestablished never mints satisfying evidence', async () => {
-    derive.override = () => claim(false, 'identity_conflict');
-    const { h, action } = await consume('final', reportOf({ verdict: 'pass' }));
-    expect(action).toBe('review_consumed');
-    expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
-  });
+  it(
+    'a clean final pass whose independence is unestablished never mints satisfying evidence',
+    async () => {
+      derive.override = () => claim(false, 'identity_conflict');
+      const { h, action } = await consume('final', reportOf({ verdict: 'pass' }));
+      expect(action).toBe('review_consumed');
+      expect(finalEvidence(h).map((row) => row.verdict)).toEqual(['inconclusive']);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('a route-integrity failure is an authority failure: the review fails closed and nothing is trusted', async () => {
-    derive.override = () => ({ ok: false, code: 'independence_reproof_independence' });
-    const { h, cycleId, action } = await consume(
-      'final',
-      reportOf({ verdict: 'pass', newFindings: [newFinding()] }),
-    );
-    expect(action).toBe('review_decision_needed');
-    expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'failed', independence: null });
-    expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_independence_unproven' });
-    expect(findings(h)).toEqual([]);
-    expect(evidence(h)).toEqual([]);
-  });
+  it(
+    'a route-integrity failure is an authority failure: the review fails closed and nothing is trusted',
+    async () => {
+      derive.override = () => ({ ok: false, code: 'independence_reproof_independence' });
+      const { h, cycleId, action } = await consume(
+        'final',
+        reportOf({ verdict: 'pass', newFindings: [newFinding()] }),
+      );
+      expect(action).toBe('review_decision_needed');
+      expect(reviewForCycle(h.fx.db, cycleId)).toMatchObject({ status: 'failed', independence: null });
+      expect(getCycle(h.fx.db, cycleId)!.outcome).toMatchObject({ code: 'review_independence_unproven' });
+      expect(findings(h)).toEqual([]);
+      expect(evidence(h)).toEqual([]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

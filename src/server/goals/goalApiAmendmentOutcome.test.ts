@@ -2,7 +2,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { GOAL_WORKFLOW_IDS } from '../../shared/goalWorkflows.js';
 import { call, goalApp } from './apiKit.js';
-import { cleanupRepoFixtures, milestone, passDeterministic, simpleDefinition } from './repoKit.js';
+import {
+  cleanupRepoFixtures,
+  milestone,
+  passDeterministic,
+  simpleDefinition,
+  REAL_GIT_TEST_TIMEOUT_MS,
+} from './repoKit.js';
 import { harness, type Harness } from './supervisorKit.js';
 
 let app: FastifyInstance | undefined;
@@ -39,35 +45,43 @@ async function runningHarness(): Promise<Harness> {
 }
 
 describe('resume_after_amendment names the outcome the persisted history proves', () => {
-  it('approved amendment: exactly amendment_approved, and the approve itself does not resume', async () => {
-    const h = await runningHarness();
-    expect((await post(h.fx.goalId, 'pause')).status).toBe(200);
-    expect(
-      (
-        await post(h.fx.goalId, 'definitions', {
-          changeSummary: 'amend',
-          definition: await changedDefinition(h.fx.goalId),
-        })
-      ).status,
-    ).toBe(201);
-    expect(await nextAction(h.fx.goalId)).toEqual({ kind: 'approve_definition', version: 2 });
-    expect((await post(h.fx.goalId, 'definitions/2/approve')).status).toBe(200);
-    expect(h.status()).toEqual({ status: 'needs_user', reason: 'amendment_in_progress' });
-    expect(await nextAction(h.fx.goalId)).toEqual({
-      kind: 'resume_after_amendment',
-      resolved: ['amendment_approved'],
-    });
-  });
+  it(
+    'approved amendment: exactly amendment_approved, and the approve itself does not resume',
+    async () => {
+      const h = await runningHarness();
+      expect((await post(h.fx.goalId, 'pause')).status).toBe(200);
+      expect(
+        (
+          await post(h.fx.goalId, 'definitions', {
+            changeSummary: 'amend',
+            definition: await changedDefinition(h.fx.goalId),
+          })
+        ).status,
+      ).toBe(201);
+      expect(await nextAction(h.fx.goalId)).toEqual({ kind: 'approve_definition', version: 2 });
+      expect((await post(h.fx.goalId, 'definitions/2/approve')).status).toBe(200);
+      expect(h.status()).toEqual({ status: 'needs_user', reason: 'amendment_in_progress' });
+      expect(await nextAction(h.fx.goalId)).toEqual({
+        kind: 'resume_after_amendment',
+        resolved: ['amendment_approved'],
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('discarded amendment: exactly amendment_discarded, and the reject itself does not resume', async () => {
-    const h = await runningHarness();
-    expect((await post(h.fx.goalId, 'pause')).status).toBe(200);
-    expect((await post(h.fx.goalId, 'definitions')).status).toBe(201);
-    expect((await post(h.fx.goalId, 'definitions/2/reject')).status).toBe(200);
-    expect(h.status()).toEqual({ status: 'needs_user', reason: 'amendment_in_progress' });
-    expect(await nextAction(h.fx.goalId)).toEqual({
-      kind: 'resume_after_amendment',
-      resolved: ['amendment_discarded'],
-    });
-  });
+  it(
+    'discarded amendment: exactly amendment_discarded, and the reject itself does not resume',
+    async () => {
+      const h = await runningHarness();
+      expect((await post(h.fx.goalId, 'pause')).status).toBe(200);
+      expect((await post(h.fx.goalId, 'definitions')).status).toBe(201);
+      expect((await post(h.fx.goalId, 'definitions/2/reject')).status).toBe(200);
+      expect(h.status()).toEqual({ status: 'needs_user', reason: 'amendment_in_progress' });
+      expect(await nextAction(h.fx.goalId)).toEqual({
+        kind: 'resume_after_amendment',
+        resolved: ['amendment_discarded'],
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

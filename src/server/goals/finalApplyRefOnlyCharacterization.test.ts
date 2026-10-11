@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 type ObjectFormat = 'sha1' | 'sha256';
 
@@ -110,166 +111,190 @@ function refTransaction(
 }
 
 describe('Git ref-only final-apply characterization', () => {
-  it('allows checkout occupancy to race between worktree snapshot and destination ref CAS', () => {
-    const fixture = createFixture();
-    const destinationRef = 'refs/heads/main';
-    const snapshot = worktreeTokens(fixture.repo);
-    expect(snapshot).not.toContain(`branch ${destinationRef}`);
+  it(
+    'allows checkout occupancy to race between worktree snapshot and destination ref CAS',
+    () => {
+      const fixture = createFixture();
+      const destinationRef = 'refs/heads/main';
+      const snapshot = worktreeTokens(fixture.repo);
+      expect(snapshot).not.toContain(`branch ${destinationRef}`);
 
-    // Deterministic interleaving: a separate Git process checks out the branch after the occupancy snapshot.
-    expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
-    expect(worktreeTokens(fixture.repo)).toContain(`branch ${destinationRef}`);
-    expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.base);
-    expect(git(fixture.linked, 'write-tree')).toBe(fixture.baseTree);
-    expect(gitResult(fixture.repo, ['switch', 'main']).status).not.toBe(0);
-    expect(gitResult(fixture.repo, ['checkout', 'main']).status).not.toBe(0);
-    expect(gitResult(fixture.repo, ['switch', '--ignore-other-worktrees', 'main']).status).toBe(0);
-    const linkedGitDir = git(fixture.linked, 'rev-parse', '--absolute-git-dir');
-    const linkedIndexLock = join(linkedGitDir, 'index.lock');
-    writeFileSync(linkedIndexLock, 'held by an unrelated checkout operation\n');
+      // Deterministic interleaving: a separate Git process checks out the branch after the occupancy snapshot.
+      expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
+      expect(worktreeTokens(fixture.repo)).toContain(`branch ${destinationRef}`);
+      expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.base);
+      expect(git(fixture.linked, 'write-tree')).toBe(fixture.baseTree);
+      expect(gitResult(fixture.repo, ['switch', 'main']).status).not.toBe(0);
+      expect(gitResult(fixture.repo, ['checkout', 'main']).status).not.toBe(0);
+      expect(gitResult(fixture.repo, ['switch', '--ignore-other-worktrees', 'main']).status).toBe(0);
+      const linkedGitDir = git(fixture.linked, 'rev-parse', '--absolute-git-dir');
+      const linkedIndexLock = join(linkedGitDir, 'index.lock');
+      writeFileSync(linkedIndexLock, 'held by an unrelated checkout operation\n');
 
-    // The porcelain branch command refuses this update, but low-level ref CAS does not inspect worktree occupancy.
-    const guardedBranchCommand = gitResult(fixture.repo, ['branch', '-f', 'main', fixture.approved]);
-    expect(guardedBranchCommand.status).not.toBe(0);
-    expect(guardedBranchCommand.stderr).toMatch(/checked out|worktree/i);
-    expect(
-      gitResult(fixture.repo, [
-        'update-ref',
+      // The porcelain branch command refuses this update, but low-level ref CAS does not inspect worktree occupancy.
+      const guardedBranchCommand = gitResult(fixture.repo, ['branch', '-f', 'main', fixture.approved]);
+      expect(guardedBranchCommand.status).not.toBe(0);
+      expect(guardedBranchCommand.stderr).toMatch(/checked out|worktree/i);
+      expect(
+        gitResult(fixture.repo, [
+          'update-ref',
+          '-m',
+          'ref-only-race-test',
+          destinationRef,
+          fixture.approved,
+          fixture.base,
+        ]).status,
+      ).toBe(0);
+      rmSync(linkedIndexLock, { force: true });
+
+      // HEAD is a symbolic ref, so it now resolves to the new commit while the checkout remains on the old index/tree.
+      expect(git(fixture.linked, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main');
+      expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
+      expect(git(fixture.linked, 'rev-parse', 'HEAD^{tree}')).toBe(fixture.approvedTree);
+      expect(git(fixture.linked, 'write-tree')).toBe(fixture.baseTree);
+      expect(readFileSync(join(fixture.linked, 'tracked.txt'), 'utf8')).toBe('BASE-TRACKED-BYTES\n');
+      expect(existsSync(join(fixture.linked, 'result.txt'))).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'checks out a ref-only update consistently when the CAS completes before checkout begins',
+    () => {
+      const fixture = createFixture();
+      const destinationRef = 'refs/heads/main';
+      expect(worktreeTokens(fixture.repo)).not.toContain(`branch ${destinationRef}`);
+      expect(
+        gitResult(fixture.repo, [
+          'update-ref',
+          '-m',
+          'ref-only-before-checkout-test',
+          destinationRef,
+          fixture.approved,
+          fixture.base,
+        ]).status,
+      ).toBe(0);
+
+      expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
+      expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
+      expect(git(fixture.linked, 'write-tree')).toBe(fixture.approvedTree);
+      expect(readFileSync(join(fixture.linked, 'tracked.txt'), 'utf8')).toBe('APPROVED-TRACKED-BYTES\n');
+      expect(readFileSync(join(fixture.linked, 'result.txt'), 'utf8')).toBe('APPROVED-RESULT-BYTES\n');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'atomically refuses a transaction when the approved source ref moved after it was read',
+    () => {
+      const fixture = createFixture();
+      const thirdCommit = git(
+        fixture.repo,
+        'commit-tree',
+        `${fixture.base}^{tree}`,
+        '-p',
+        fixture.base,
         '-m',
-        'ref-only-race-test',
-        destinationRef,
+        'external Goal movement',
+      );
+      expect(
+        gitResult(fixture.repo, ['update-ref', fixture.goalRef, thirdCommit, fixture.approved]).status,
+      ).toBe(0);
+
+      const result = refTransaction(
+        fixture.repo,
+        fixture.goalRef,
+        fixture.approved,
+        'refs/heads/main',
         fixture.approved,
         fixture.base,
-      ]).status,
-    ).toBe(0);
-    rmSync(linkedIndexLock, { force: true });
+      );
 
-    // HEAD is a symbolic ref, so it now resolves to the new commit while the checkout remains on the old index/tree.
-    expect(git(fixture.linked, 'symbolic-ref', 'HEAD')).toBe('refs/heads/main');
-    expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
-    expect(git(fixture.linked, 'rev-parse', 'HEAD^{tree}')).toBe(fixture.approvedTree);
-    expect(git(fixture.linked, 'write-tree')).toBe(fixture.baseTree);
-    expect(readFileSync(join(fixture.linked, 'tracked.txt'), 'utf8')).toBe('BASE-TRACKED-BYTES\n');
-    expect(existsSync(join(fixture.linked, 'result.txt'))).toBe(false);
-  });
+      expect(result.status).not.toBe(0);
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
+      expect(git(fixture.repo, 'rev-parse', fixture.goalRef)).toBe(thirdCommit);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('checks out a ref-only update consistently when the CAS completes before checkout begins', () => {
-    const fixture = createFixture();
-    const destinationRef = 'refs/heads/main';
-    expect(worktreeTokens(fixture.repo)).not.toContain(`branch ${destinationRef}`);
-    expect(
-      gitResult(fixture.repo, [
-        'update-ref',
+  it(
+    'atomically refuses a transaction when the destination ref moved after it was read',
+    () => {
+      const fixture = createFixture();
+      const thirdCommit = git(
+        fixture.repo,
+        'commit-tree',
+        `${fixture.base}^{tree}`,
+        '-p',
+        fixture.base,
         '-m',
-        'ref-only-before-checkout-test',
-        destinationRef,
+        'external base movement',
+      );
+      expect(
+        gitResult(fixture.repo, ['update-ref', 'refs/heads/main', thirdCommit, fixture.base]).status,
+      ).toBe(0);
+
+      const result = refTransaction(
+        fixture.repo,
+        fixture.goalRef,
+        fixture.approved,
+        'refs/heads/main',
         fixture.approved,
         fixture.base,
-      ]).status,
-    ).toBe(0);
+      );
 
-    expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
-    expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
-    expect(git(fixture.linked, 'write-tree')).toBe(fixture.approvedTree);
-    expect(readFileSync(join(fixture.linked, 'tracked.txt'), 'utf8')).toBe('APPROVED-TRACKED-BYTES\n');
-    expect(readFileSync(join(fixture.linked, 'result.txt'), 'utf8')).toBe('APPROVED-RESULT-BYTES\n');
-  });
+      expect(result.status).not.toBe(0);
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(thirdCommit);
+      expect(git(fixture.repo, 'rev-parse', fixture.goalRef)).toBe(fixture.approved);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('atomically refuses a transaction when the approved source ref moved after it was read', () => {
-    const fixture = createFixture();
-    const thirdCommit = git(
-      fixture.repo,
-      'commit-tree',
-      `${fixture.base}^{tree}`,
-      '-p',
-      fixture.base,
-      '-m',
-      'external Goal movement',
-    );
-    expect(
-      gitResult(fixture.repo, ['update-ref', fixture.goalRef, thirdCommit, fixture.approved]).status,
-    ).toBe(0);
+  it(
+    'honors the common-dir lock for a destination ref, without treating it as a worktree lock',
+    () => {
+      const fixture = createFixture();
+      const commonDir = git(fixture.repo, 'rev-parse', '--git-common-dir');
+      const lockPath = join(fixture.repo, commonDir, 'refs', 'heads', 'main.lock');
+      writeFileSync(lockPath, 'held by an unrelated ref update\n', { flag: 'wx' });
 
-    const result = refTransaction(
-      fixture.repo,
-      fixture.goalRef,
-      fixture.approved,
-      'refs/heads/main',
-      fixture.approved,
-      fixture.base,
-    );
+      const blocked = gitResult(fixture.repo, [
+        'update-ref',
+        'refs/heads/main',
+        fixture.approved,
+        fixture.base,
+      ]);
+      expect(blocked.status).not.toBe(0);
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
 
-    expect(result.status).not.toBe(0);
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
-    expect(git(fixture.repo, 'rev-parse', fixture.goalRef)).toBe(thirdCommit);
-  });
+      rmSync(lockPath, { force: true });
+      expect(
+        gitResult(fixture.repo, ['update-ref', 'refs/heads/main', fixture.approved, fixture.base]).status,
+      ).toBe(0);
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.approved);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('atomically refuses a transaction when the destination ref moved after it was read', () => {
-    const fixture = createFixture();
-    const thirdCommit = git(
-      fixture.repo,
-      'commit-tree',
-      `${fixture.base}^{tree}`,
-      '-p',
-      fixture.base,
-      '-m',
-      'external base movement',
-    );
-    expect(gitResult(fixture.repo, ['update-ref', 'refs/heads/main', thirdCommit, fixture.base]).status).toBe(
-      0,
-    );
+  it(
+    'reports stale linked-worktree metadata as prunable until explicit pruning',
+    () => {
+      const fixture = createFixture();
+      expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
+      const live = worktreeTokens(fixture.repo);
+      expect(live).toContain(`branch refs/heads/main`);
 
-    const result = refTransaction(
-      fixture.repo,
-      fixture.goalRef,
-      fixture.approved,
-      'refs/heads/main',
-      fixture.approved,
-      fixture.base,
-    );
+      // Only remove the test-created linked directory; intentionally leave Git's administrative registration behind.
+      rmSync(fixture.linked, { recursive: true, force: true });
+      const stale = worktreeTokens(fixture.repo);
+      expect(stale).toContain('prunable gitdir file points to non-existent location');
+      expect(stale).toContain('branch refs/heads/main');
 
-    expect(result.status).not.toBe(0);
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(thirdCommit);
-    expect(git(fixture.repo, 'rev-parse', fixture.goalRef)).toBe(fixture.approved);
-  });
-
-  it('honors the common-dir lock for a destination ref, without treating it as a worktree lock', () => {
-    const fixture = createFixture();
-    const commonDir = git(fixture.repo, 'rev-parse', '--git-common-dir');
-    const lockPath = join(fixture.repo, commonDir, 'refs', 'heads', 'main.lock');
-    writeFileSync(lockPath, 'held by an unrelated ref update\n', { flag: 'wx' });
-
-    const blocked = gitResult(fixture.repo, [
-      'update-ref',
-      'refs/heads/main',
-      fixture.approved,
-      fixture.base,
-    ]);
-    expect(blocked.status).not.toBe(0);
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
-
-    rmSync(lockPath, { force: true });
-    expect(
-      gitResult(fixture.repo, ['update-ref', 'refs/heads/main', fixture.approved, fixture.base]).status,
-    ).toBe(0);
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.approved);
-  });
-
-  it('reports stale linked-worktree metadata as prunable until explicit pruning', () => {
-    const fixture = createFixture();
-    expect(gitResult(fixture.repo, ['worktree', 'add', '--quiet', fixture.linked, 'main']).status).toBe(0);
-    const live = worktreeTokens(fixture.repo);
-    expect(live).toContain(`branch refs/heads/main`);
-
-    // Only remove the test-created linked directory; intentionally leave Git's administrative registration behind.
-    rmSync(fixture.linked, { recursive: true, force: true });
-    const stale = worktreeTokens(fixture.repo);
-    expect(stale).toContain('prunable gitdir file points to non-existent location');
-    expect(stale).toContain('branch refs/heads/main');
-
-    expect(gitResult(fixture.repo, ['worktree', 'prune', '--expire=now']).status).toBe(0);
-    expect(worktreeTokens(fixture.repo)).not.toContain('branch refs/heads/main');
-  });
+      expect(gitResult(fixture.repo, ['worktree', 'prune', '--expire=now']).status).toBe(0);
+      expect(worktreeTokens(fixture.repo)).not.toContain('branch refs/heads/main');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it.each(['sha1', 'sha256'] as const)(
     'creates a non-overwriting delivery ref with a reflog in %s format',
@@ -302,89 +327,102 @@ describe('Git ref-only final-apply characterization', () => {
       expect(duplicateCreate.status).not.toBe(0);
       expect(git(fixture.repo, 'rev-parse', fixture.deliveryRef)).toBe(fixture.approved);
     },
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it('does not overwrite a pre-existing delivery-ref collision', () => {
-    const fixture = createFixture();
-    const zero = '0'.repeat(40);
-    const unrelated = git(
-      fixture.repo,
-      'commit-tree',
-      `${fixture.base}^{tree}`,
-      '-p',
-      fixture.base,
-      '-m',
-      'unrelated existing delivery name',
-    );
-    expect(gitResult(fixture.repo, ['update-ref', fixture.deliveryRef, unrelated, zero]).status).toBe(0);
+  it(
+    'does not overwrite a pre-existing delivery-ref collision',
+    () => {
+      const fixture = createFixture();
+      const zero = '0'.repeat(40);
+      const unrelated = git(
+        fixture.repo,
+        'commit-tree',
+        `${fixture.base}^{tree}`,
+        '-p',
+        fixture.base,
+        '-m',
+        'unrelated existing delivery name',
+      );
+      expect(gitResult(fixture.repo, ['update-ref', fixture.deliveryRef, unrelated, zero]).status).toBe(0);
 
-    const createAttempt = gitResult(fixture.repo, [
-      'update-ref',
-      fixture.deliveryRef,
-      fixture.approved,
-      zero,
-    ]);
+      const createAttempt = gitResult(fixture.repo, [
+        'update-ref',
+        fixture.deliveryRef,
+        fixture.approved,
+        zero,
+      ]);
 
-    expect(createAttempt.status).not.toBe(0);
-    expect(git(fixture.repo, 'rev-parse', fixture.deliveryRef)).toBe(unrelated);
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
-  });
+      expect(createAttempt.status).not.toBe(0);
+      expect(git(fixture.repo, 'rev-parse', fixture.deliveryRef)).toBe(unrelated);
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.base);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('can make an unborn linked delivery checkout resolve to a new ref with an empty stale index', () => {
-    const fixture = createFixture();
-    const branch = fixture.deliveryRef.slice('refs/heads/'.length);
-    const zero = '0'.repeat(40);
-    const added = gitResult(fixture.repo, [
-      'worktree',
-      'add',
-      '--quiet',
-      '--orphan',
-      '-b',
-      branch,
-      fixture.linked,
-    ]);
-    expect(added.status).toBe(0);
-    expect(gitResult(fixture.repo, ['show-ref', '--verify', '--quiet', fixture.deliveryRef]).status).not.toBe(
-      0,
-    );
-    expect(worktreeTokens(fixture.repo)).toContain(`branch ${fixture.deliveryRef}`);
-    expect(git(fixture.linked, 'symbolic-ref', 'HEAD')).toBe(fixture.deliveryRef);
+  it(
+    'can make an unborn linked delivery checkout resolve to a new ref with an empty stale index',
+    () => {
+      const fixture = createFixture();
+      const branch = fixture.deliveryRef.slice('refs/heads/'.length);
+      const zero = '0'.repeat(40);
+      const added = gitResult(fixture.repo, [
+        'worktree',
+        'add',
+        '--quiet',
+        '--orphan',
+        '-b',
+        branch,
+        fixture.linked,
+      ]);
+      expect(added.status).toBe(0);
+      expect(
+        gitResult(fixture.repo, ['show-ref', '--verify', '--quiet', fixture.deliveryRef]).status,
+      ).not.toBe(0);
+      expect(worktreeTokens(fixture.repo)).toContain(`branch ${fixture.deliveryRef}`);
+      expect(git(fixture.linked, 'symbolic-ref', 'HEAD')).toBe(fixture.deliveryRef);
 
-    const created = gitResult(fixture.repo, [
-      'update-ref',
-      '-m',
-      'unborn-delivery-race-test',
-      fixture.deliveryRef,
-      fixture.approved,
-      zero,
-    ]);
-
-    expect(created.status).toBe(0);
-    expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
-    expect(git(fixture.linked, 'write-tree')).not.toBe(fixture.approvedTree);
-    expect(existsSync(join(fixture.linked, 'tracked.txt'))).toBe(false);
-    expect(existsSync(join(fixture.linked, 'result.txt'))).toBe(false);
-  });
-
-  it('observes a committed ref-only operation from a fresh Git process after the writer exits', () => {
-    const fixture = createFixture();
-    expect(
-      gitResult(fixture.repo, [
+      const created = gitResult(fixture.repo, [
         'update-ref',
         '-m',
-        'ref-only-restart-test',
-        'refs/heads/main',
+        'unborn-delivery-race-test',
+        fixture.deliveryRef,
         fixture.approved,
-        fixture.base,
-      ]).status,
-    ).toBe(0);
+        zero,
+      ]);
 
-    // Each git() call starts a separate process, so the ref and reflog are read after the updater exited.
-    expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.approved);
-    expect(git(fixture.repo, 'reflog', 'show', '--format=%gs', '-1', 'refs/heads/main')).toBe(
-      'ref-only-restart-test',
-    );
-    expect(git(fixture.repo, 'rev-parse', 'HEAD')).toBe(fixture.approved);
-    expect(git(fixture.repo, 'write-tree')).toBe(fixture.approvedTree);
-  });
+      expect(created.status).toBe(0);
+      expect(git(fixture.linked, 'rev-parse', 'HEAD')).toBe(fixture.approved);
+      expect(git(fixture.linked, 'write-tree')).not.toBe(fixture.approvedTree);
+      expect(existsSync(join(fixture.linked, 'tracked.txt'))).toBe(false);
+      expect(existsSync(join(fixture.linked, 'result.txt'))).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'observes a committed ref-only operation from a fresh Git process after the writer exits',
+    () => {
+      const fixture = createFixture();
+      expect(
+        gitResult(fixture.repo, [
+          'update-ref',
+          '-m',
+          'ref-only-restart-test',
+          'refs/heads/main',
+          fixture.approved,
+          fixture.base,
+        ]).status,
+      ).toBe(0);
+
+      // Each git() call starts a separate process, so the ref and reflog are read after the updater exited.
+      expect(git(fixture.repo, 'rev-parse', 'refs/heads/main')).toBe(fixture.approved);
+      expect(git(fixture.repo, 'reflog', 'show', '--format=%gs', '-1', 'refs/heads/main')).toBe(
+        'ref-only-restart-test',
+      );
+      expect(git(fixture.repo, 'rev-parse', 'HEAD')).toBe(fixture.approved);
+      expect(git(fixture.repo, 'write-tree')).toBe(fixture.approvedTree);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

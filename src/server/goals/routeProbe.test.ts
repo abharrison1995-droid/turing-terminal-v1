@@ -58,6 +58,7 @@ import {
   type ProbeHarness,
   type ProbeProfileName,
 } from './routeProbeKit.js';
+import { REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 let h: ProbeHarness;
 let calls: ProviderRunRequest[];
@@ -356,50 +357,58 @@ describe('POST /api/route-validations: request and exact identity', () => {
 // --- fixture ------------------------------------------------------------------------------------------------------------
 
 describe('validation fixture repository', () => {
-  it('is deterministic: the same content always yields the pinned tree and commit', async () => {
-    h = await probeHarness();
-    const { mkdtempSync } = await import('node:fs');
-    const { tmpdir } = await import('node:os');
-    const one = await buildFixtureRepository(join(mkdtempSync(join(tmpdir(), 'fx-a-')), 'r'));
-    const two = await buildFixtureRepository(join(mkdtempSync(join(tmpdir(), 'fx-b-')), 'r'));
-    expect(one).toEqual(two);
-    expect(one).toEqual({ commit: FIXTURE_COMMIT_SHA, tree: FIXTURE_TREE_SHA });
-  });
+  it(
+    'is deterministic: the same content always yields the pinned tree and commit',
+    async () => {
+      h = await probeHarness();
+      const { mkdtempSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const one = await buildFixtureRepository(join(mkdtempSync(join(tmpdir(), 'fx-a-')), 'r'));
+      const two = await buildFixtureRepository(join(mkdtempSync(join(tmpdir(), 'fx-b-')), 'r'));
+      expect(one).toEqual(two);
+      expect(one).toEqual({ commit: FIXTURE_COMMIT_SHA, tree: FIXTURE_TREE_SHA });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('fails closed on a changed commit, a dirty checkout or a missing repository, without repairing anything', async () => {
-    h = await probeHarness();
-    await runProbe(['orchestrator']);
-    const dir = fixtureDirectory();
-    expect(await verifyFixture()).toMatchObject({ ok: true });
-    const before = counts();
-    // A dirty checkout.
-    writeFileSync(join(dir, 'stray.txt'), 'x');
-    expect(await verifyFixture()).toEqual({ ok: false, code: 'fixture_dirty' });
-    const dirty = await h.post(probeBody(['orchestrator']));
-    expect(dirty.statusCode).toBe(503);
-    expect(dirty.json.code).toBe('fixture_unavailable');
-    expect(existsSync(join(dir, 'stray.txt'))).toBe(true);
-    execFileSync('git', ['-C', dir, 'add', '-A']);
-    // A different commit (even with identical content) is a different base.
-    execFileSync('git', [
-      '-C',
-      dir,
-      '-c',
-      'user.name=x',
-      '-c',
-      'user.email=x@x',
-      'commit',
-      '-q',
-      '-m',
-      'drift',
-    ]);
-    expect(await verifyFixture()).toEqual({ ok: false, code: 'fixture_mismatch' });
-    expect((await h.post(probeBody(['orchestrator']))).statusCode).toBe(503);
-    expect(execFileSync('git', ['-C', dir, 'log', '--format=%s', '-1'], { encoding: 'utf8' }).trim()).toBe(
-      'drift',
-    );
-    expect(counts()).toEqual(before);
-  });
+  it(
+    'fails closed on a changed commit, a dirty checkout or a missing repository, without repairing anything',
+    async () => {
+      h = await probeHarness();
+      await runProbe(['orchestrator']);
+      const dir = fixtureDirectory();
+      expect(await verifyFixture()).toMatchObject({ ok: true });
+      const before = counts();
+      // A dirty checkout.
+      writeFileSync(join(dir, 'stray.txt'), 'x');
+      expect(await verifyFixture()).toEqual({ ok: false, code: 'fixture_dirty' });
+      const dirty = await h.post(probeBody(['orchestrator']));
+      expect(dirty.statusCode).toBe(503);
+      expect(dirty.json.code).toBe('fixture_unavailable');
+      expect(existsSync(join(dir, 'stray.txt'))).toBe(true);
+      execFileSync('git', ['-C', dir, 'add', '-A']);
+      // A different commit (even with identical content) is a different base.
+      execFileSync('git', [
+        '-C',
+        dir,
+        '-c',
+        'user.name=x',
+        '-c',
+        'user.email=x@x',
+        'commit',
+        '-q',
+        '-m',
+        'drift',
+      ]);
+      expect(await verifyFixture()).toEqual({ ok: false, code: 'fixture_mismatch' });
+      expect((await h.post(probeBody(['orchestrator']))).statusCode).toBe(503);
+      expect(execFileSync('git', ['-C', dir, 'log', '--format=%s', '-1'], { encoding: 'utf8' }).trim()).toBe(
+        'drift',
+      );
+      expect(counts()).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 // --- lifecycle, records, profiles ---------------------------------------------------------------------------------------------
@@ -747,7 +756,7 @@ describe('worktree retention and database invariants', () => {
       expect(JSON.stringify(records(runId))).toBe(before);
       expect(await pruneProbeWorktree(h.db, probeId)).toEqual({ status: 'already_pruned' });
     },
-    ROUTE_PROBE_INTEGRATION_TIMEOUT_MS,
+    REAL_GIT_TEST_TIMEOUT_MS,
   );
 
   it(
