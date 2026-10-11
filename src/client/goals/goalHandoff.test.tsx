@@ -1736,7 +1736,11 @@ describe('desktop external integration confirmation', () => {
     );
     expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
-    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBeNull();
+    await waitFor(() =>
+      expect(
+        sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`),
+      ).toBeNull(),
+    );
   });
 
   it('requires a deliberate confirmation to resume an approved orphan without replaying POST automatically', async () => {
