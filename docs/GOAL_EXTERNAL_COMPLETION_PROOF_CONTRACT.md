@@ -4,6 +4,8 @@
 
 Stage 7C.2B.5D.1 adds versioned policy and immutable proof infrastructure. Stage 7C.2B.5D.1a adds fail-closed validation of approved definition content and approval lineage before completion evaluation and terminal proof acceptance. Neither stage activates version-2 Goal completion. No production service can create the version-2 completion approval or proof, no endpoint or desktop action exists, and no Goal can become completed through this contract. The document describes the implemented boundary plus the records reserved for a later stage.
 
+The D.3.0B reconciliation (CCv2r1) records the version-2 completion decisions D1-D5 in the section below. It is a documentation change only: version-2 completion remains inactive and this document makes no activation or release claim. The identifiers named as reserved in this section are specified here and are not yet implemented.
+
 ## Definition policy
 
 The discriminator lives in the existing `contract.completionPolicy` object:
@@ -47,11 +49,15 @@ The reserved action discriminator is `complete_goal_external_integration_v2`, wi
 - ancestry-only Git proof identity and explicit `contentPreservation: 'not_proven'` limitation;
 - exact user-reviewed preflight digest and same-attestation correction-chain identity.
 
+The preflight digest is domain-separated under `turing-goal-external-completion-preflight-v1` (reserved; the D.1 schema carries the field but does not yet name this domain). The correction-chain identity for an attestation with no correction (the empty chain) is the SHA-256 of `turing-goal-attestation-correction-chain-v1`, a NUL separator, and the canonical JSON `{schemaVersion:1, kind, attestationId, attestationRecordDigest, sequence:0, tipCorrectionDigest:null}`. No placeholder correction row is fabricated for the empty chain (decision D3 below). This domain is reserved and not yet implemented.
+
 Its SHA-256 digest is computed over canonical JSON under `turing-goal-external-completion-action-v2`, followed by a NUL separator. This identity is distinct from the existing prospective apply intent, `applied_externally`, and `confirm_external_integration` action. No current approval request service can issue it.
 
 ## Future proof identity
 
 The reserved immutable record has `kind: 'turing_goal_external_completion_proof'`, `schemaVersion: 1`, and `contractVersion: 2`. Its proof body binds the action decision, evaluation identities, all Git/repository identities, observation timestamp, proof limitations, and correction-chain identity. `proofDigest` covers the complete canonical body, including both observation and decision timestamps, under `turing-goal-external-completion-proof-v2` plus a NUL separator. Action and proof digests are separate identities.
+
+Destination policy `exact_attested_tip` (decision D1 below): the proof's observed destination commit and tree must equal the selected attestation's observed commit and tree. Migration 027 enforces this with its attestation-linkage trigger. Ancestry alone is not accepted for version 2. The action digest excludes `observedAt`, but the proof digest covers the complete canonical body, including `gitProof.observedAt` and the decision timestamp. `contentPreservation` remains `not_proven`.
 
 The correction-chain member records a sequence, digest, and `active_uncontested` standing at the eventual proof point. D.1 did not implement a correction ledger. Stage 7C.2B.5D.2 implements the append-only per-attestation ledger and a read-only standing read (see [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md)). No proof row binds that standing yet: proof issuance remains absent until D.3 validates the chain inside the completion transaction. The member is not an irrevocable assertion that no later correction can exist.
 
@@ -69,7 +75,19 @@ The policy projection can report `external_user_attested_v2`, but always reports
 
 The selected future completion stage must freshly verify repository/ref ancestry, correction standing and current Goal authority, then commit the completion approval, immutable proof, event, and terminal transition atomically in SQLite. Recovery must inspect persisted authority and remain observation-only; it must never infer completion from a proof row without the matching committed terminal event/state. External Git observation and SQLite cannot form one transaction, so the proof will remain point-in-time evidence and cannot prove content preservation or prevent later ref movement.
 
+## CCv2r1 decisions D1-D5 (D.3.0B)
+
+These decisions reconcile the version-2 completion contract (CCv2r1) before D.3 implementation. Each is a design decision; none activates completion.
+
+- **D1 exact attested tip.** Version-2 completion requires the destination to equal the attested tip exactly. A destination that has advanced past the attested observation is refused, not accepted by ancestry. The trade-off is explicit: destination advancement is not permitted for V1 completion, although the original design allowed it. A later change is handled by a new read-only verification and a new user `confirm_external_integration` attestation at the new tip. No attestation or completion action is rewritten.
+- **D2 version-aware handoff.** Handoff preparation selects the completion path from the validated approved policy mode (`approvedCompletionPolicyMode`). This is already implemented at `manualHandoff.ts:626`. The legacy v1 branch is unchanged.
+- **D3 empty correction chain.** An attestation with no correction uses the empty-chain identity defined above. No fabricated row is written.
+- **D4 user completion authority.** Completion uses a dedicated, proof-bound user reason (reserved name `external_completion_user_confirmed`). It is a narrowly guarded, user-initiated version-2 `running → completed` transition with its own authority. It is not a generic `user` actor edge. No supervisor or model path can complete a version-2 Goal. Version-2 completion never derives from `applied_externally` or apply-operation evidence. Legacy v1 behaviour is unchanged.
+- **D5 read-only preflight.** A Goal-scoped completion preflight is read-only. It creates no approval, proof, or terminal authority.
+
 ## Not implemented in D.1 / D.1a
+
+- Read-only completion preflight (D5) and the user completion transition (D4); both are reserved by the decisions above.
 
 - Live v2 completion decision or approval creation.
 - Proof issuance or a qualifying proof insert service.

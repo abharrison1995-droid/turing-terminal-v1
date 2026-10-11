@@ -259,3 +259,45 @@ Known limits and prerequisites recorded from the full-stage D.2 review (not rele
 - **Crash scope:** fresh SQLite reopen tests are not operating-system kill or crash qualification.
 - **Historical migration:** the 026→028 fixture does not prove full attestation-chain validity for every real historical record.
 - **Deferrals:** completion-standing integration is D.3; the user-facing correction API and UI are D.4.
+
+## Stage 7C.2B.5D.3.0B — CCv2r1 contract reconciliation
+
+This is a documentation-only reconciliation of the version-2 completion contract. It changes no code, no migration (027 is unchanged), no proof or action digest, and no hash. Version-2 completion remains inactive. This stage is not a release claim: V1 is not release-ready, and Windows remains unverified.
+
+Identifiers (reserved names are specified but not yet implemented unless marked otherwise):
+
+| Identifier                                                   | Status                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `complete_goal_external_integration_v2` action discriminator | Defined in the D.1 schema; no service issues it                     |
+| `turing-goal-external-completion-action-v2` digest domain    | Implemented                                                         |
+| `turing-goal-external-completion-proof-v2` digest domain     | Implemented                                                         |
+| `turing-goal-external-completion-preflight-v1` digest domain | Reserved; not yet implemented                                       |
+| `turing-goal-attestation-correction-chain-v1` digest domain  | Reserved; not yet implemented                                       |
+| `exact_attested_tip` destination policy (D1)                 | Specified; migration 027 binds proof destination to the attestation |
+| `external_completion_user_confirmed` user reason (D4)        | Reserved; not yet implemented                                       |
+
+Decisions:
+
+- **D1 exact attested tip.** Version-2 completion requires the destination to equal the attested tip exactly. Trade-off: destination advancement is not permitted for V1 completion, although the original design allowed it. A later change needs a new read-only verification and a new user attestation at the new tip.
+- **D2 version-aware handoff.** The completion path is selected from the validated approved policy mode (`manualHandoff.ts:626`). The legacy v1 branch is unchanged.
+- **D3 empty correction chain.** An attestation without a correction uses the defined empty-chain identity. No placeholder row is written.
+- **D4 user completion authority.** A dedicated, proof-bound user reason; not a generic `user` actor edge. No supervisor or model path, and no completion through `applied_externally` or apply-operation evidence.
+- **D5 read-only preflight.** A Goal-scoped preflight creates no approval, proof, or terminal authority.
+
+`contentPreservation` stays `not_proven`. Ancestry is not content preservation.
+
+D.3.1 closure review items. These were closed by tests only, with no production change (commit `068dd0d`, `manualHandoff.test.ts`):
+
+- A1: the approved completion-policy mode fails closed for four causes. Limit F1: the `policyMode !== null` assert in `ensureCompletionReady` (`manualHandoff.ts:626-627`) cannot be the first failing assert through any public path, so A1 pins the observable outcome and the direct mode results.
+- A2: source-ref movement refuses a previously valid observation and attestation (sha1, sha256).
+- A3: destination-ref movement is refused for version 2 without ancestry-based acceptance (sha1, sha256).
+- A4: a blocking finding after preparation refuses the handoff and the attestation (critical and high, sha1; critical, sha256). A medium finding changes authority without blocking readiness.
+- A5: a manual base integration makes the handoff stale without changing authority or evidence (sha1, sha256).
+- A6: a pre-version-2 attestation is not version-2 evidence after amendment (sha1, sha256), and a tampered contract-version field is refused (sha1).
+- A7: the format and repository-state non-mutation coverage applied across A1-A6.
+
+Observed results at commit `068dd0d`: the focused `manualHandoff.test.ts` file passes 112 of 112 tests, including 19 of 19 in the new closure describe. The full `npm test` passes 2028 of 2028 tests across 122 files. `format:check`, `lint`, `typecheck`, `build`, and `npm audit --omit=dev` (0 vulnerabilities) also pass.
+
+Known inconsistency, pinned and not changed (F2): the same stale condition maps to different states. The handoff authority and attestation validators return `stale`, while the observation validator returns `invalid` for `definition_not_approved` and `completion_not_ready`.
+
+Remaining D.3 work: the version-2 transition, the completion preflight, and the correction-standing consumer are not implemented. Completion remains disabled.

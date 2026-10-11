@@ -142,6 +142,7 @@ Read-only preflight for the selected Goal and attestation
   -> re-read current definition, evaluation, handoff, attestation, approval and correction history
   -> obtain a new read-only repository identity/ref/tree/ancestry observation
   -> sample refs again and refuse observed movement
+  -> destination commit and tree must equal the attested tip (exact_attested_tip, CCv2r1 D1)
   -> begin a short SQLite BEGIN IMMEDIATE transaction
   -> recheck Goal status, current definition/hash/approval lineage, evaluation identities,
      final review/acceptance, finding/cycle/run state, handoff, attestation/approval,
@@ -150,7 +151,7 @@ Read-only preflight for the selected Goal and attestation
   -> return the stored proof; after an uncertain response, read by exact action digest
 ```
 
-The second Git observation must be produced by the completion operation itself. The earlier attestation observation remains evidence that the user confirmed that event, not proof of present destination state. The completion proof binds the newly observed commit/tree and timestamp. If the destination changes between preflight and POST, the request refuses and the UI requires new review. If source/destination changes between the verifier's own ref samples, the verifier refuses.
+The second Git observation must be produced by the completion operation itself. The earlier attestation observation remains evidence that the user confirmed that event, not proof of present destination state. The completion-time observation is a fresh read that must equal the attested tip; the proof stores it with a new `observedAt`. A moved destination is refused at completion and is never accepted by ancestry. There is no rewrite of attestations or completion actions: the remedy is a new read-only verification and a new user `confirm_external_integration` attestation at the new tip. If the destination changes between preflight and POST, the request refuses and the UI requires new review. If source/destination changes between the verifier's own ref samples, the verifier refuses.
 
 Do not hold the SQLite writer lock while Git subprocesses run. Git may stall or time out, and SQLite and Git cannot share an atomic transaction. After Git returns, start a short immediate transaction, re-read every authoritative DB row and compare a canonical database-authority fingerprint captured before Git reads. If a concurrent DB writer changed definition pointer/hash, review, acceptance, findings, cycles/runs, attestation, correction chain, or Goal status, roll back without completion. Insert proof, its action approval, terminal state, and event in that same transaction. Use an idempotent unique action identity so a retry after a lost HTTP response reads the already committed result rather than making a second completion.
 
@@ -159,6 +160,8 @@ There remains an unavoidable Git TOCTOU interval: an external Git process can mo
 Concurrent completion POSTs serialize at the SQLite immediate transaction and unique Goal/action/proof constraints. The first valid transition wins. A second exact retry returns the already persisted proof only if all exact action/proof digests match; a different action on an already completed Goal returns the existing terminal result without minting new authority. A database rollback means no proof/action/status event is committed. If the SQLite commit succeeds but the response is lost, exact digest lookup recovers it. An unrecoverable/corrupt proof fails closed.
 
 ## 8. Immutable completion proof
+
+Note (D.3.0B, CCv2r1): the version-2 destination policy is exact-tip. The proof's observed destination commit and tree must equal the selected attestation's (migration 027 enforces this). Ancestry alone is not sufficient for version 2.
 
 The existing WeakSet-issued `CompletionEvaluation` is a useful in-process guard for legacy transitions, but cannot serve as durable version-2 evidence. Add an immutable v2 proof record, separate from mutable `finalApply.ok` read-model fields.
 
@@ -283,6 +286,8 @@ V1 does not need semantic merge equivalence, automatic repair, worktree watchers
 
 The first implementation phase should remain narrowly reviewable; do not combine policy migration, evaluator activation, terminal transition changes, and UI in one checkpoint.
 
+Stage 7C.2B.5D.3 is delivered in sub-phases under CCv2r1 (decisions D1-D5 in the proof contract). The sub-phases so far add version-2 handoff preparation and user-confirmed attestation records. None of them activates version-2 completion.
+
 ## 15. Verification plan and remaining blockers
 
 No characterization test is necessary to decide the policy: the accepted disposable `ours`-merge evidence already distinguishes ancestry from content preservation. No tests or production changes are added by this design stage. Future tests must prove:
@@ -295,6 +300,8 @@ No characterization test is necessary to decide the policy: the accepted disposa
 - Duplicate/lost-response completion is idempotently recoverable by exact digest and cannot transition twice.
 - Withdrawn/disputed/superseded proof remains historically visible and changes standing without changing terminal status or `completed_at`.
 - SHA-1 and SHA-256, Linux and Windows, immutable triggers, malformed digest, cross-Goal FKs, and database restart recovery are covered.
+
+The D.3.1 closure tests in `src/server/goals/manualHandoff.test.ts` (`version-2 handoff closure (D.3.1 review)`) pin D1 by refusing a destination that advanced past the attested observation, and do not accept it by ancestry. They also pin that a pre-version-2 attestation is not version-2 evidence after amendment. They do not exercise a completion transition, which is not implemented.
 
 Outstanding blockers are the missing v2 definition discriminator, mismatch between the attestation's hard-coded contract version and definition policy, absent durable completion proof, supervisor's automatic legacy completion caller, no final transactional recheck of the full evidence set, no correction ledger/standing model, no explicit completion action, and unverified Windows behavior. This checkpoint resolves design direction only; completion remains unimplemented and disabled.
 

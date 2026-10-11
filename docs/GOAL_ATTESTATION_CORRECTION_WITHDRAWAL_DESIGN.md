@@ -162,3 +162,10 @@ Superseded semantics: a supersession is not re-evaluated when its replacement is
 - Evidence refusal (`recordUserConfirmationEvidence`): defence in depth. The criterion-key check refuses the same approval first.
 - "Crash" in the tests is an injected SQLite abort inside a transaction, or closing and reopening the database handle. Real multi-process CAS races and operating-system crashes are not tested.
 - The 026→028 migration test uses historical-shaped fabricated digests and does not prove real chain validation of a historical attestation.
+
+D.3.0B additions (CCv2r1; documentation only):
+
+- Empty chain identity (decision D3): an attestation with no correction uses the empty-chain identity defined in the proof contract. No placeholder correction row is written. That identity is reserved and not yet implemented.
+- Preflight prerequisite: the `getAttestationCorrectionStanding` throw for a missing or invalid original (noted above) must be caught and handled explicitly by the completion preflight.
+- A correction does not rewrite the exact-tip attestation.
+- Under CCv2r1, version-2 completion requires `active_uncontested` standing and an equal correction-chain digest at the proof point. Standing alone does not authorize completion.
