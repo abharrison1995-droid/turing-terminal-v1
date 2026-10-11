@@ -3,16 +3,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   chmodSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { call, disabledSupervisor, goalApp } from './apiKit.js';
@@ -58,9 +56,17 @@ import {
   computeAttestationCorrectionRecordDigest,
 } from './attestationCorrectionDetail.js';
 import { closeReview, completeReview, createReview, getReview } from './reviews.js';
-import { cleanupRepoFixtures, goalRepoFixture, milestone, simpleDefinition } from './repoKit.js';
+import { cleanupRepoFixtures, goalRepoFixture, simpleDefinition } from './repoKit.js';
 import { createCycle } from './cycles.js';
 import { GoalStateError, transitionGoal } from './stateMachine.js';
+import {
+  acceptedFixture,
+  approveExternalObservation,
+  git,
+  integratedExternalFixture,
+  passingReport,
+  repositoryState,
+} from './goalV2TestKit.js';
 
 let app: FastifyInstance | undefined;
 afterEach(async () => {
@@ -68,9 +74,6 @@ afterEach(async () => {
   app = undefined;
   cleanupRepoFixtures();
 });
-
-const git = (repo: string, ...args: string[]) =>
-  execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
 
 async function expectInjectedRefRace(
   fx: Awaited<ReturnType<typeof acceptedFixture>>['fx'],
@@ -139,228 +142,6 @@ async function expectInjectedRefRace(
     }
     rmSync(wrapperDirectory, { recursive: true, force: true });
   }
-}
-
-function treeBytes(root: string, directory = root): Record<string, string> {
-  const output: Record<string, string> = {};
-  for (const name of readdirSync(directory)) {
-    if (directory === root && name === '.git') continue;
-    const fullPath = join(directory, name);
-    const relativePath = relative(root, fullPath).split('\\').join('/');
-    const stat = lstatSync(fullPath);
-    if (stat.isSymbolicLink()) output[relativePath] = `symlink:${readlinkSync(fullPath)}`;
-    else if (stat.isDirectory()) Object.assign(output, treeBytes(root, fullPath));
-    else output[relativePath] = readFileSync(fullPath).toString('base64');
-  }
-  return output;
-}
-
-function repositoryState(repo: string): unknown {
-  return {
-    refs: git(repo, 'show-ref'),
-    head: git(repo, 'rev-parse', 'HEAD'),
-    symbolicHead: git(repo, 'symbolic-ref', '-q', 'HEAD'),
-    index: readFileSync(join(repo, '.git', 'index')).toString('base64'),
-    indexEntries: git(repo, 'ls-files', '--stage'),
-    worktrees: git(repo, 'worktree', 'list', '--porcelain'),
-    reflogs: git(repo, 'reflog', '--all', '--format=%H%x00%gD%x00%gs'),
-    config: readFileSync(join(repo, '.git', 'config')).toString('base64'),
-    exclude: readFileSync(join(repo, '.git', 'info', 'exclude')).toString('base64'),
-    files: treeBytes(repo),
-  };
-}
-
-const passingReport = {
-  verdict: 'pass' as const,
-  criterionProgress: [
-    {
-      criterionKey: 'deliverable',
-      assessment: 'met' as const,
-      basis: 'The file exists at the reviewed tree.',
-    },
-  ],
-  existingFindings: [],
-  newFindings: [],
-  regressions: [],
-  scopeDrift: false,
-  architectureDrift: false,
-  furtherWorkJustified: false,
-};
-
-interface AcceptedFixtureOptions {
-  /** Approve the definition under the explicit version-2 external-integration completion policy. */
-  completionContractVersion2?: boolean;
-  files?: Record<string, string>;
-  omitEvidence?: boolean;
-  omitReview?: boolean;
-  omitAcceptance?: boolean;
-  orphanSource?: boolean;
-  subdir?: string;
-  outsideProjectPath?: string;
-}
-
-async function acceptedFixture(
-  objectFormat: 'sha1' | 'sha256' = 'sha1',
-  options: AcceptedFixtureOptions = {},
-) {
-  const definition = simpleDefinition({
-    criteria: [
-      {
-        key: 'deliverable',
-        statement: 'The result file exists.',
-        verification: [{ kind: 'file_exists', path: 'src/result.txt' }],
-        required: true,
-      },
-    ],
-    milestones: [
-      milestone('m1', ['deliverable'], {
-        requiredEvidence: [{ criterionKey: 'deliverable', kinds: ['artifact'] }],
-      }),
-    ],
-    policy: options.completionContractVersion2
-      ? {
-          completionContractVersion: 2,
-          integrationMode: 'external_user_attested',
-          requireFinalReview: true,
-          requireUserAcceptance: true,
-          applyToBase: 'required',
-        }
-      : { requireFinalReview: true, requireUserAcceptance: true, applyToBase: 'required' },
-    gates: { finalAcceptance: true },
-  });
-  definition.routing.independence.finalReview = 'different-family';
-  definition.review.final = true;
-  const fx = goalRepoFixture({ definition, objectFormat, subdir: options.subdir });
-  let sourceCommit = fx.sideCommit({ 'src/result.txt': 'prepared result\n', ...options.files });
-  if (options.outsideProjectPath) {
-    fx.git('checkout', '-q', '--detach', sourceCommit);
-    writeFileSync(join(fx.repo, options.outsideProjectPath), 'outside the registered project scope\n');
-    fx.git('add', '-A');
-    fx.git('commit', '-q', '-m', 'include a path outside the registered project scope');
-    sourceCommit = fx.git('rev-parse', 'HEAD');
-    fx.git('checkout', '-q', 'main');
-  }
-  if (options.orphanSource)
-    sourceCommit = fx.git('commit-tree', fx.tree(sourceCommit), '-m', 'orphan source');
-  const sourceRef = `refs/heads/turing/goal/${fx.goalId}`;
-  fx.git('update-ref', sourceRef, sourceCommit);
-  fx.db
-    .prepare('UPDATE goal_runtime SET integration_head = ? WHERE goal_id = ?')
-    .run(sourceCommit, fx.goalId);
-  if (!options.omitEvidence)
-    await recordEvidence(fx.db, {
-      goalId: fx.goalId,
-      definitionVersion: 1,
-      criterionKey: 'deliverable',
-      verifierDigest: fx.digest('deliverable'),
-      kind: 'artifact',
-      milestoneId: fx.milestoneId('m1'),
-    });
-  let reviewId: string | undefined;
-  if (!options.omitReview) {
-    const pendingReview = await createReview(fx.db, {
-      goalId: fx.goalId,
-      definitionVersion: 1,
-      reviewKind: 'final',
-    });
-    reviewId = pendingReview.id;
-    completeReview(fx.db, {
-      reviewId,
-      report: passingReport,
-      independence: {
-        established: true,
-        policy: 'different-family',
-        detail: { fixture: 'service-recorded' },
-      },
-    });
-  }
-  let acceptanceId: string | undefined;
-  if (!options.omitAcceptance) {
-    const acceptance = requestGoalApproval(fx.db, {
-      goalId: fx.goalId,
-      gate: 'final_acceptance',
-      risk: 'medium',
-      reason: 'Accept the reviewed Goal result.',
-      requestedBy: 'user',
-      detail: {
-        definitionVersion: 1,
-        definitionHash: fx.currentHash(),
-        integrationHead: sourceCommit,
-        integrationTree: fx.tree(sourceCommit),
-      },
-    });
-    decideGoalApproval(fx.db, {
-      goalId: fx.goalId,
-      approvalId: acceptance.id,
-      decision: 'approved',
-      decidedBy: 'user',
-    });
-    acceptanceId = acceptance.id;
-  }
-  if (!options.omitEvidence && !options.omitReview && !options.omitAcceptance) {
-    const completion = await evaluateCompletion(fx.db, fx.goalId);
-    expect(completion.failures.map(({ code }) => code)).toEqual([
-      options.completionContractVersion2 ? 'external_completion_not_activated' : 'final_apply_required',
-    ]);
-    expect(completion.finalReview).toMatchObject({ required: true, ok: true });
-    expect(completion.finalAcceptance).toMatchObject({ required: true, ok: true });
-    expect(completion.finalApply).toMatchObject({
-      required: true,
-      ok: false,
-      reason: options.completionContractVersion2 ? 'external_completion_not_activated' : 'not_applied',
-    });
-  }
-  return { fx, sourceCommit, sourceRef, acceptanceId, reviewId };
-}
-
-async function integratedExternalFixture(
-  objectFormat: 'sha1' | 'sha256' = 'sha1',
-  strategy: 'fast-forward' | 'ours' = 'fast-forward',
-  options: { completionContractVersion2?: boolean } = {},
-) {
-  const accepted = await acceptedFixture(objectFormat, options);
-  const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
-  if (strategy === 'fast-forward') git(accepted.fx.repo, 'merge', '--ff-only', accepted.sourceRef);
-  else
-    git(
-      accepted.fx.repo,
-      'merge',
-      '--quiet',
-      '--no-ff',
-      '-s',
-      'ours',
-      '-m',
-      'fixture discards accepted files',
-      accepted.sourceRef,
-    );
-  const observation = await buildExternalIntegrationObservation(
-    accepted.fx.db,
-    accepted.fx.goalId,
-    handoff.handoffId,
-  );
-  return { ...accepted, handoff, observation };
-}
-
-function approveExternalObservation(
-  fx: Awaited<ReturnType<typeof acceptedFixture>>['fx'],
-  observation: Awaited<ReturnType<typeof buildExternalIntegrationObservation>>,
-) {
-  const approval = requestGoalApproval(fx.db, {
-    goalId: fx.goalId,
-    gate: 'final_apply',
-    risk: 'high',
-    reason: 'Confirm this exact external Git observation.',
-    requestedBy: 'user',
-    detail: createExternalIntegrationApprovalDetail(observation),
-    externalIntegrationActionDigest: observation.actionDigest,
-  });
-  decideGoalApproval(fx.db, {
-    goalId: fx.goalId,
-    approvalId: approval.id,
-    decision: 'approved',
-    decidedBy: 'user',
-  });
-  return approval;
 }
 
 interface AmendedFixtureOptions {

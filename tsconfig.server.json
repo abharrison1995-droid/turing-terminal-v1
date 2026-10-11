@@ -21,6 +21,7 @@
     "src/server/testUtils.ts",
     "src/server/goals/testKit.ts",
     "src/server/goals/repoKit.ts",
+    "src/server/goals/goalV2TestKit.ts",
     "src/server/goals/fakeExecutor.ts",
     "src/server/goals/supervisorKit.ts",
     "src/server/goals/remediationKit.ts",
