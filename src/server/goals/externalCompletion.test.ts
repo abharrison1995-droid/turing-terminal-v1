@@ -19,6 +19,9 @@ import {
   readExternalCompletionProof,
   type ExternalCompletionProofV1,
 } from './externalCompletionProof.js';
+import { evaluateCompletion } from './completionEvaluation.js';
+import { createReview } from './reviews.js';
+import { computeExternalCompletionPreflightWithIdentity } from './externalCompletionPreflight.js';
 import { readStoredCompletion, selectCompletionDecision } from './externalCompletionTerminal.js';
 import {
   databaseSnapshot,
@@ -1042,6 +1045,183 @@ describe('external completion service: adversarial matrix', () => {
     const messageKeys = [...source.matchAll(/^ {2}([a-z_]+): '/gm)].map((match) => match[1]!);
     expect(EXTERNAL_COMPLETION_ERROR_CODES.filter((code) => !messageKeys.includes(code))).toEqual([]);
   });
+});
+
+describe('external completion service: lineage, attestation approval and base history tampers', () => {
+  /** The stored detail of one approval row, read raw so the test does not depend on a production parser. */
+  function rawApprovalDetail(fx: GoalFixture, approvalId: string): Record<string, unknown> {
+    const row = fx.db.prepare('SELECT detail_json FROM goal_approvals WHERE id = ?').get(approvalId) as {
+      detail_json: string;
+    };
+    return JSON.parse(row.detail_json) as Record<string, unknown>;
+  }
+
+  /** The preflight's own first reason, with the decision bypass the service itself uses. Read-only. */
+  async function preflightReason(fx: GoalFixture, attestationId: string) {
+    const { report } = await computeExternalCompletionPreflightWithIdentity(
+      fx.db,
+      fx.goalId,
+      { attestationId },
+      { allowRecordedDecision: true },
+    );
+    return report.outcome === 'ready' ? null : (report.reasons[0] ?? null);
+  }
+
+  it(
+    'refuses a decision whose stored definition lineage digest was tampered, with nothing written (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const approvalId = decided.recorded.approvalId;
+      const detail = rawApprovalDetail(fx, approvalId);
+      const definition = detail.definition as { lineageDigest: string };
+      expect(definition.lineageDigest).toMatch(/^[0-9a-f]{64}$/);
+      // Only the disposable decision row is changed: its identity and terminal guards are lifted for this one UPDATE.
+      fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+      fx.db
+        .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+        .run(
+          JSON.stringify({ ...detail, definition: { ...definition, lineageDigest: 'f'.repeat(64) } }),
+          approvalId,
+        );
+      const before = snapshotOf(fx, approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'decision_corrupt',
+        detail: 'digest_mismatch',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    ['gate', 'gate', 'user_confirmation'],
+    ['risk', 'risk', 'medium'],
+    ['requestedBy', 'requested_by', 'system'],
+    ['respondedAt', 'responded_at', '2020-01-01T00:00:00.000Z'],
+  ] as const)(
+    'refuses an attestation approval whose %s was tampered, with nothing written (sha1)',
+    async (_label, column, value) => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      // The attestation's own approval is the final_apply row. Its identity and terminal guards are lifted for this UPDATE.
+      fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+      fx.db.prepare(`UPDATE goal_approvals SET ${column} = ? WHERE id = ?`).run(value, decided.approval.id);
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      // Pinned from the first run: the approval no longer matches the attestation, so the correction standing read fails
+      // closed at check 6 (the same code the lost-approval case reports), before the Git observation is reached.
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'correction_standing_unavailable',
+      });
+      expect(await preflightReason(fx, decided.attestationId)).toEqual({
+        code: 'correction_standing_unavailable',
+        detail: null,
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses an attestation whose recorded base tree was tampered, with nothing written (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const stored = fx.db
+        .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+        .get(decided.attestationId) as { payload_json: string };
+      const payload = JSON.parse(stored.payload_json) as { destination: { expectedBaseTree: string } };
+      expect(payload.destination.expectedBaseTree).toMatch(/^[0-9a-f]{40}$/);
+      // The migration CHECK ties the indexed column to the payload, so the column is changed in the same disposable UPDATE.
+      fx.db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+      fx.db
+        .prepare(
+          'UPDATE goal_external_integration_attestations SET payload_json = ?, expected_base_tree = ? WHERE id = ?',
+        )
+        .run(
+          JSON.stringify({
+            ...payload,
+            destination: { ...payload.destination, expectedBaseTree: '1'.repeat(40) },
+          }),
+          '1'.repeat(40),
+          decided.attestationId,
+        );
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'attestation_invalid',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a decided Goal whose required criterion is no longer met at the source head, with completion_not_ready (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      // A real Git change, not a seam: the deliverable is deleted on the Goal's source ref after the decision. A
+      // file_exists criterion cannot be contradicted by evidence (evidence_kind_mismatch), so the head itself is changed.
+      fx.advance({ 'src/result.txt': null }, 'remove the deliverable after the decision');
+      const criterion = (await evaluateCompletion(fx.db, fx.goalId)).criteria.find(
+        (entry) => entry.key === 'deliverable',
+      );
+      // Pinned from the first run: the artifact evidence is bound to the previous tree, so the required criterion is stale.
+      expect(criterion).toMatchObject({ key: 'deliverable', required: true, state: 'stale' });
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'completion_not_ready',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a pending final review that exists before the call with preflight_refused pending_review (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      await createReview(fx.db, { goalId: fx.goalId, definitionVersion: 1, reviewKind: 'final' });
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      // The service's own pre-check (before any preflight or Git) refuses the open review, so the preflight never runs.
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'pending_review',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a base ref rewritten to an unrelated history as not integrated, with nothing written (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      git(fx.repo, 'update-ref', decided.attestation.destination.ref, fx.orphanCommit());
+      const before = snapshotOf(fx, decided.recorded.approvalId);
+
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
+        code: 'preflight_refused',
+        detail: 'destination_not_integrated',
+      });
+      expect(await preflightReason(fx, decided.attestationId)).toEqual({
+        code: 'destination_not_integrated',
+        detail: 'base_not_ancestor',
+      });
+      expectNoCompletion(fx, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('external completion service: exports', () => {

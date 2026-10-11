@@ -3,10 +3,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '../db.js';
 import { getGoalApproval, requestGoalApproval } from './approvals.js';
+import { createCycle, finalizeCycle } from './cycles.js';
 import { completeGoalFromExternalDecision, ExternalCompletionError } from './externalCompletion.js';
 import { readExternalCompletionProof } from './externalCompletionProof.js';
 import type { ExternalCompletionPreflightReport } from './externalCompletionPreflight.js';
 import { readStoredCompletion } from './externalCompletionTerminal.js';
+import { applyReviewFindings } from './findings.js';
 import {
   appendCorrectionForTest,
   databaseSnapshot,
@@ -15,17 +17,19 @@ import {
   v2DecidedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
-import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { cleanupRepoFixtures, newFinding, REAL_GIT_TEST_TIMEOUT_MS, reportOf } from './repoKit.js';
+import { completeReview, createReview } from './reviews.js';
 import { onGoalTransition } from './stateMachine.js';
 
 /**
  * Seams on the completion path, all set after the decision is recorded so the fixture itself runs unhooked.
- * `afterPreflight` runs once after the real preflight returns, before the completion transaction. `beforeValidate`
- * queues hooks that run once each inside the Git validation of the next preflight, between its two identity snapshots.
- * `alterReport` rewrites the report of every preflight while it is set. `preflightCalls` counts preflight invocations.
+ * `afterPreflight` runs once after the real preflight returns, before the completion transaction, and is awaited.
+ * `beforeValidate` queues hooks that run once each inside the Git validation of the next preflight, between its two
+ * identity snapshots. `alterReport` rewrites the report of every preflight while it is set. `preflightCalls` counts
+ * preflight invocations.
  */
 const seam = vi.hoisted(() => ({
-  afterPreflight: null as null | (() => void),
+  afterPreflight: null as null | (() => void | Promise<void>),
   beforeValidate: [] as (() => void)[],
   alterReport: null as
     null | ((report: ExternalCompletionPreflightReport) => ExternalCompletionPreflightReport),
@@ -46,7 +50,7 @@ vi.mock('./externalCompletionPreflight.js', async (importOriginal) => {
       const result = await actual.computeExternalCompletionPreflightWithIdentity(db, goalId, input, options);
       const hook = seam.afterPreflight;
       seam.afterPreflight = null;
-      hook?.();
+      await hook?.();
       const alter = seam.alterReport;
       return alter === null ? result : { ...result, report: alter(result.report) };
     },
@@ -95,6 +99,23 @@ async function refusal(attempt: Promise<unknown>): Promise<{ code: string; detai
     throw error;
   }
   throw new Error('the completion succeeded but a refusal was expected');
+}
+
+interface EventRow {
+  seq: number;
+  id: string;
+  type: string;
+  payload_json: string;
+  created_at: string;
+}
+
+/** Every event of the Goal in insertion order. Compared before and after a refusal to prove no event was written. */
+function eventLog(fx: GoalFixture): EventRow[] {
+  return fx.db
+    .prepare(
+      'SELECT rowid AS seq, id, type, payload_json, created_at FROM goal_events WHERE goal_id = ? ORDER BY rowid',
+    )
+    .all(fx.goalId) as EventRow[];
 }
 
 function goalRow(fx: GoalFixture): { status: string; completed_at: string | null } {
@@ -282,6 +303,10 @@ describe('external completion seams: Git and observation races during the comple
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 
+  // Defence in depth only. Production cannot reach decision_action_mismatch: the report digest binds every action field,
+  // so altering actionFields changes the digest and reviewed_preflight_changed refuses first. This seam keeps the digest
+  // and alters only the fields, a combination production never produces, to prove the rebuilt-action comparison still
+  // refuses if that binding were ever lost.
   it(
     'refuses a rebuilt action whose fields differ from the decided action with decision_action_mismatch (sha1)',
     async () => {
@@ -346,20 +371,161 @@ describe('external completion seams: Git and observation races during the comple
       (fx: GoalFixture, attestationId: string) => appendCorrectionForTest(fx, attestationId, 'withdraw'),
       'attestation_withdrawn',
     ],
+    // The transaction compares the identity keys 1 to 6. Their handoff fingerprint covers milestones, open findings,
+    // reviews, approvals, cycles and active runs, so each of these drifts is caught there (observed).
+    [
+      'a user skip of milestone m1 approved',
+      (fx: GoalFixture) => {
+        fx.approval('milestone_complete', {
+          action: 'skip',
+          milestoneKey: 'm1',
+          definitionVersion: 1,
+          definitionHash: fx.currentHash(),
+        });
+      },
+      'handoff_fingerprint',
+    ],
+    [
+      'a high finding opened by a milestone review',
+      async (fx: GoalFixture) => {
+        const { id } = await createReview(fx.db, {
+          goalId: fx.goalId,
+          definitionVersion: 1,
+          reviewKind: 'milestone',
+          milestoneId: fx.milestoneId('m1'),
+        });
+        completeReview(fx.db, {
+          reviewId: id,
+          report: reportOf({
+            verdict: 'pass_with_findings',
+            newFindings: [
+              newFinding({ severity: 'high', description: 'finding opened after the preflight' }),
+            ] as never,
+          }),
+        });
+        await applyReviewFindings(fx.db, { reviewId: id });
+      },
+      'handoff_fingerprint',
+    ],
+    [
+      'a pending final review',
+      async (fx: GoalFixture) => {
+        await createReview(fx.db, { goalId: fx.goalId, definitionVersion: 1, reviewKind: 'final' });
+      },
+      'handoff_fingerprint',
+    ],
+    [
+      'a replacement final acceptance approved',
+      (fx: GoalFixture) => {
+        fx.approval('final_acceptance', {
+          definitionVersion: 1,
+          definitionHash: fx.currentHash(),
+          integrationHead: fx.head(),
+          integrationTree: fx.tree(),
+        });
+      },
+      'handoff_fingerprint',
+    ],
+    [
+      'an active execution cycle',
+      (fx: GoalFixture) => {
+        createCycle(fx.db, {
+          goalId: fx.goalId,
+          kind: 'verification',
+          triggerCode: 'handoff_test',
+          milestoneKey: 'm1',
+        });
+      },
+      'handoff_fingerprint',
+    ],
+    [
+      'a non-terminal run under a finished cycle',
+      (fx: GoalFixture) => {
+        createCycle(fx.db, {
+          goalId: fx.goalId,
+          kind: 'verification',
+          triggerCode: 'handoff_test',
+          milestoneKey: 'm1',
+        });
+        const cycle = fx.db.prepare('SELECT id FROM goal_cycles WHERE goal_id = ?').get(fx.goalId) as {
+          id: string;
+        };
+        finalizeCycle(fx.db, { cycleId: cycle.id, to: 'cancelled', outcomeCode: 'handoff_test' });
+        // Foreign keys are off for this raw insert, as the terminal suite does: only the run-to-cycle link matters here.
+        fx.db.pragma('foreign_keys = OFF');
+        fx.db
+          .prepare(
+            `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at, goal_cycle_id, goal_run_purpose)
+           VALUES ('seam-open-run', 'machine', 'project', 'quick-fix', '{}', 'test', 'balanced', 'supervised', 'running', ?, ?, 'execution')`,
+          )
+          .run(new Date().toISOString(), cycle.id);
+        fx.db.pragma('foreign_keys = ON');
+      },
+      'handoff_fingerprint',
+    ],
   ] as const)(
     'refuses after the preflight when %s appears, with authority_changed_during_completion, and writes no completion (sha1)',
     async (_label, drift, detail) => {
       const decided = await v2DecidedFixture('sha1');
       const { fx } = decided;
-      seam.afterPreflight = () => drift(fx, decided.attestationId);
-      const before = databaseSnapshot(fx.db);
+      const approvalBefore = getGoalApproval(fx.db, decided.recorded.approvalId);
+      // The drift runs after the real preflight. The state it leaves is captured, and the refusal must leave exactly it.
+      const afterDrift: { state?: { db: ReturnType<typeof databaseSnapshot>; events: EventRow[] } } = {};
+      seam.afterPreflight = async () => {
+        await drift(fx, decided.attestationId);
+        afterDrift.state = { db: databaseSnapshot(fx.db), events: eventLog(fx) };
+      };
 
       const outcome = await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)));
       expect(outcome).toEqual({ code: 'authority_changed_during_completion', detail });
+      expect(afterDrift.state, 'the drift hook ran').toBeDefined();
+      expect(databaseSnapshot(fx.db)).toEqual(afterDrift.state!.db);
+      expect(eventLog(fx)).toEqual(afterDrift.state!.events);
       expect(proofCount(fx)).toBe(0);
-      expect(databaseSnapshot(fx.db).counts.goals).toBe(before.counts.goals);
       expect(goalRow(fx)).toMatchObject({ status: 'running', completed_at: null });
-      expect(getGoalApproval(fx.db, decided.recorded.approvalId)).not.toBeNull();
+      expect(fx.db.inTransaction).toBe(false);
+      // The decision approval itself is unchanged: same id, same status, same action digest, same whole row.
+      expect(getGoalApproval(fx.db, decided.recorded.approvalId)).toEqual(approvalBefore);
+      expect(getGoalApproval(fx.db, decided.recorded.approvalId)).toMatchObject({
+        id: decided.recorded.approvalId,
+        status: 'approved',
+        externalCompletionActionDigest: decided.recorded.actionDigest,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'reports completion_corrupt when a committed completion cannot be read back, and recovers it on replay (sha1)',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      // The listener runs after the transaction commits and before the read-back. It hides the proof table for that read.
+      const unsubscribe = onGoalTransition(({ db, goalId, to }) => {
+        if (goalId === fx.goalId && to === 'completed')
+          db.exec(
+            'ALTER TABLE goal_external_completion_proofs RENAME TO goal_external_completion_proofs_hidden;',
+          );
+      });
+      let outcome: { code: string; detail: string | null };
+      try {
+        outcome = await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)));
+      } finally {
+        unsubscribe();
+      }
+
+      // Pinned from the first run: the read-back fails closed as integrity_check_failed, so the caller sees completion_corrupt.
+      expect(outcome).toEqual({ code: 'completion_corrupt', detail: 'integrity_check_failed' });
+      fx.db.exec(
+        'ALTER TABLE goal_external_completion_proofs_hidden RENAME TO goal_external_completion_proofs;',
+      );
+      // The transaction did commit: the Goal is completed with its one proof, and the stored completion reads back.
+      expect(goalRow(fx)).toMatchObject({ status: 'completed' });
+      expect(proofCount(fx)).toBe(1);
+      const replay = await completeGoalFromExternalDecision(fx.db, requestFor(decided));
+      expect(replay.reused).toBe(true);
+      expect(readStoredCompletion(fx.db, fx.goalId)).toEqual(replay.completion);
+      expect(proofCount(fx)).toBe(1);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

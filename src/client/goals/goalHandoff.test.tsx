@@ -1807,7 +1807,12 @@ describe('desktop external integration confirmation', () => {
       within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Confirm external integration' }),
     );
 
-    expect(await screen.findByText(/A matching approval exists without an attestation/)).toBeInTheDocument();
+    // The default 1000 ms wait flaked at about 1.1 s under full-suite load (one failing run, 2362-test suite).
+    expect(
+      await screen.findByText(/A matching approval exists without an attestation/, undefined, {
+        timeout: 5000,
+      }),
+    ).toBeInTheDocument();
     expect(posts()).toHaveLength(1);
     expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBe(
       action.actionDigest,
