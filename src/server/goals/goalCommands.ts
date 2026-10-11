@@ -149,6 +149,15 @@ export async function decideGoalApprovalAsUser(
     const existing = getGoalApproval(db, input.approvalId);
     if (!existing) throw new GoalApprovalError('approval_not_found', 'No such Goal approval.');
     if (existing.status === 'pending') {
+      // A completion approval is decided only by its dedicated service, never by the generic approval route.
+      if (
+        existing.externalCompletionActionDigest !== undefined ||
+        existing.detail.action === 'complete_goal_external_integration_v2'
+      )
+        throw new GoalApprovalError(
+          'completion_decision_requires_dedicated_service',
+          'A completion approval is decided only through its dedicated completion decision.',
+        );
       const goal = db.prepare('SELECT status FROM goals WHERE id = ?').get(existing.goalId) as
         { status: GoalStatus } | undefined;
       if (!goal || GOAL_TERMINAL_STATUSES.includes(goal.status))

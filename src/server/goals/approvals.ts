@@ -13,6 +13,9 @@ import {
   ATTESTATION_CORRECTION_ACTION,
   parseAttestationCorrectionApprovalDetail,
 } from './attestationCorrectionDetail.js';
+import { parseExternalCompletionAction } from './externalCompletionProof.js';
+
+const EXTERNAL_COMPLETION_ACTION = 'complete_goal_external_integration_v2';
 
 export type GoalApprovalErrorCode =
   | 'goal_not_found'
@@ -24,7 +27,9 @@ export type GoalApprovalErrorCode =
   | 'manual_reconciliation_required'
   | 'invalid_intent_digest'
   | 'invalid_external_integration_action_digest'
-  | 'invalid_attestation_correction_action_digest';
+  | 'invalid_attestation_correction_action_digest'
+  | 'invalid_external_completion_action_digest'
+  | 'completion_decision_requires_dedicated_service';
 
 export class GoalApprovalError extends Error {
   constructor(
@@ -110,11 +115,23 @@ export function requestGoalApproval(
     intentDigest?: string;
     externalIntegrationActionDigest?: string;
     attestationCorrectionActionDigest?: string;
+    externalCompletionActionDigest?: string;
     now?: string;
   },
 ): GoalApproval {
   if (!GOAL_APPROVAL_GATES.includes(input.gate))
     throw new GoalApprovalError('invalid_gate', `Unknown gate "${input.gate}".`);
+  // A completion approval is the only request that may carry a completion digest. Any other digest or intent on it,
+  // and any completion digest on another action, is refused here rather than falling into the branches below.
+  if (
+    (input.externalCompletionActionDigest !== undefined ||
+      input.detail?.action === EXTERNAL_COMPLETION_ACTION) &&
+    !externalCompletionRequestMatches(input)
+  )
+    throw new GoalApprovalError(
+      'invalid_external_completion_action_digest',
+      'An external completion approval action digest is invalid. It must match its versioned high-risk user approval action.',
+    );
   const externalAction =
     input.externalIntegrationActionDigest !== undefined ||
     input.detail?.action === 'confirm_external_integration';
@@ -182,8 +199,9 @@ export function requestGoalApproval(
     db.prepare(
       `INSERT INTO goal_approvals (
          id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
-         intent_digest, external_integration_action_digest, attestation_correction_action_digest
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+         intent_digest, external_integration_action_digest, attestation_correction_action_digest,
+         external_completion_action_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
     ).run(
       id,
       input.goalId,
@@ -196,6 +214,7 @@ export function requestGoalApproval(
       input.intentDigest ?? null,
       input.externalIntegrationActionDigest ?? null,
       input.attestationCorrectionActionDigest ?? null,
+      input.externalCompletionActionDigest ?? null,
     );
     writeGoalEvent(
       db,
@@ -206,6 +225,36 @@ export function requestGoalApproval(
     );
     return getGoalApproval(db, id)!;
   })();
+}
+
+/**
+ * A completion approval is a high-risk user confirmation whose detail is exactly one valid completion action for this
+ * Goal, and whose digest column names that action's digest. It carries no other digest and no intent.
+ */
+function externalCompletionRequestMatches(input: {
+  goalId: string;
+  gate: GoalApprovalGate;
+  risk: GoalApprovalRisk;
+  requestedBy: GoalApprovalRequester;
+  detail?: Record<string, unknown>;
+  intentDigest?: string;
+  externalIntegrationActionDigest?: string;
+  attestationCorrectionActionDigest?: string;
+  externalCompletionActionDigest?: string;
+}): boolean {
+  const digest = input.externalCompletionActionDigest;
+  if (digest === undefined || !/^[0-9a-f]{64}$/.test(digest)) return false;
+  if (
+    input.gate !== 'user_confirmation' ||
+    input.risk !== 'high' ||
+    input.requestedBy !== 'user' ||
+    input.intentDigest !== undefined ||
+    input.externalIntegrationActionDigest !== undefined ||
+    input.attestationCorrectionActionDigest !== undefined
+  )
+    return false;
+  const parsed = parseExternalCompletionAction(input.detail);
+  return parsed.valid && parsed.action.goalId === input.goalId && parsed.digest === digest;
 }
 
 /**
@@ -279,5 +328,7 @@ export function bindExactGate(
     return { ok: false };
   const approval = getGoalApproval(db, named.approvalId);
   if (!approval || approval.goalId !== goalId || approval.gate !== named.gate) return { ok: false };
+  // A completion approval is never a gate the supervisor or a read model may resolve; it is inert until its consumer.
+  if (approval.externalCompletionActionDigest !== undefined) return { ok: false };
   return { ok: true, approval };
 }

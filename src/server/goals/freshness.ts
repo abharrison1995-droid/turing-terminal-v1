@@ -114,16 +114,28 @@ export async function assessEvidence(
       const approval =
         typeof approvalId === 'string'
           ? (db
-              .prepare('SELECT goal_id, gate, status, decided_by FROM goal_approvals WHERE id = ?')
+              .prepare(
+                'SELECT goal_id, gate, status, decided_by, attestation_correction_action_digest, external_completion_action_digest FROM goal_approvals WHERE id = ?',
+              )
               .get(approvalId) as
-              { goal_id: string; gate: string; status: string; decided_by: string | null } | undefined)
+              | {
+                  goal_id: string;
+                  gate: string;
+                  status: string;
+                  decided_by: string | null;
+                  attestation_correction_action_digest: string | null;
+                  external_completion_action_digest: string | null;
+                }
+              | undefined)
           : undefined;
       if (
         !approval ||
         approval.goal_id !== row.goal_id ||
         approval.gate !== 'user_confirmation' ||
         approval.decided_by !== 'user' ||
-        approval.status === 'pending'
+        approval.status === 'pending' ||
+        approval.attestation_correction_action_digest !== null ||
+        approval.external_completion_action_digest !== null
       )
         return stale('approval_missing');
       if (spec.freshness === 'any') return current();

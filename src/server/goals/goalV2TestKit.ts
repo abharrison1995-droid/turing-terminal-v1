@@ -10,6 +10,7 @@ import {
   requestAttestationCorrectionApproval,
 } from './attestationCorrection.js';
 import { evaluateCompletion } from './completionEvaluation.js';
+import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { recordEvidence } from './evidence.js';
 import {
   buildExternalIntegrationObservation,
@@ -295,6 +296,19 @@ export function v2RunningAttestedFixture(
   options: Omit<V2AttestedFixtureOptions, 'running'> = {},
 ) {
   return v2AttestedFixture(objectFormat, { ...options, running: true });
+}
+
+/**
+ * The digest of the ready preflight for an attested fixture: the value a user reviews before deciding. Throws when the
+ * preflight refuses, so a test can never review a state that the decision would refuse.
+ */
+export async function reviewedDigest(attested: { fx: GoalFixture; attestationId: string }): Promise<string> {
+  const report = await computeExternalCompletionPreflight(attested.fx.db, attested.fx.goalId, {
+    attestationId: attested.attestationId,
+  });
+  if (report.outcome !== 'ready')
+    throw new Error(`reviewedDigest: preflight refused (${report.reasons[0]?.code})`);
+  return report.digest;
 }
 
 /** Every user table's row count and a digest of its full content in rowid order: detects updates as well as inserts. */

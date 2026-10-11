@@ -278,7 +278,7 @@ export function computeMilestoneIdentityDigest(evaluation: {
   );
 }
 
-class PreflightRefusal extends Error {
+export class PreflightRefusal extends Error {
   constructor(
     readonly index: number,
     readonly code: PreflightReasonCode,
@@ -317,8 +317,16 @@ interface Progress {
   index: number;
 }
 
+export interface PreflightOptions {
+  /**
+   * Only a decision service sets this. Recorded completion approvals then no longer refuse check 4, so the preflight
+   * can name the reviewed digest of a decision that already exists. Recorded proofs still refuse.
+   */
+  allowRecordedDecision?: boolean;
+}
+
 /** Identity compared before and after the Git observation. Keys are snake_case so each name is a valid detail. */
-interface SnapshotIdentity {
+export interface SnapshotIdentity {
   goal_status: string;
   definition_version: number;
   definition_hash: string;
@@ -349,6 +357,7 @@ function readSnapshot(
   attestationId: string,
   progress: Progress,
   facts: Facts,
+  options: PreflightOptions,
 ): Snapshot {
   return db.transaction((): Snapshot => {
     progress.index = CHECK.input;
@@ -389,7 +398,7 @@ function readSnapshot(
         'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_completion_action_digest IS NOT NULL',
       )
       .get(goalId) as { n: number };
-    if (proofs.n > 0 || recordedApprovals.n > 0)
+    if (proofs.n > 0 || (recordedApprovals.n > 0 && options.allowRecordedDecision !== true))
       throw new PreflightRefusal(CHECK.prior_completion, 'completion_already_recorded', null);
 
     progress.index = CHECK.attestation;
@@ -472,11 +481,25 @@ function readSnapshot(
   })();
 }
 
-function firstDifference(before: SnapshotIdentity, after: SnapshotIdentity): string | null {
+/** The first identity key whose value differs, or null when the identities are equal. */
+export function firstDifference(before: SnapshotIdentity, after: SnapshotIdentity): string | null {
   for (const key of Object.keys(before) as (keyof SnapshotIdentity)[]) {
     if (before[key] !== after[key]) return key;
   }
   return null;
+}
+
+/**
+ * The checks 1 to 6 identity, read now and without Git. A decision transaction compares it with the identity that
+ * the reviewed preflight captured. Throws `PreflightRefusal` when a check would refuse.
+ */
+export function readPreflightSnapshotIdentity(
+  db: Db,
+  goalId: string,
+  attestationId: string,
+  options: PreflightOptions = {},
+): SnapshotIdentity {
+  return readSnapshot(db, goalId, attestationId, { index: CHECK.input }, emptyFacts(), options).identity;
 }
 
 function checksFor(failedIndex: number | null): ExternalCompletionPreflightBody['checks'] {
@@ -572,11 +595,27 @@ export async function computeExternalCompletionPreflight(
   db: Db,
   goalId: string,
   input: { attestationId: string },
+  options: PreflightOptions = {},
 ): Promise<ExternalCompletionPreflightReport> {
+  return (await computeExternalCompletionPreflightWithIdentity(db, goalId, input, options)).report;
+}
+
+/**
+ * The same preflight, plus the checks 1 to 6 identity captured before Git (null when the report is refused). A
+ * decision uses that identity to prove that nothing it depends on changed between the review and its transaction.
+ */
+export async function computeExternalCompletionPreflightWithIdentity(
+  db: Db,
+  goalId: string,
+  input: { attestationId: string },
+  options: PreflightOptions = {},
+): Promise<{ report: ExternalCompletionPreflightReport; identity: SnapshotIdentity | null }> {
   const facts = emptyFacts();
   const progress: Progress = { index: CHECK.input };
+  let identity: SnapshotIdentity | null = null;
   try {
-    const first = readSnapshot(db, goalId, input.attestationId, progress, facts);
+    const first = readSnapshot(db, goalId, input.attestationId, progress, facts, options);
+    identity = first.identity;
     const record = first.record;
 
     progress.index = CHECK.completion_evaluation;
@@ -639,7 +678,14 @@ export async function computeExternalCompletionPreflight(
     progress.index = CHECK.snapshot_after;
     let second: Snapshot;
     try {
-      second = readSnapshot(db, goalId, input.attestationId, { index: CHECK.snapshot_after }, emptyFacts());
+      second = readSnapshot(
+        db,
+        goalId,
+        input.attestationId,
+        { index: CHECK.snapshot_after },
+        emptyFacts(),
+        options,
+      );
     } catch (error) {
       if (error instanceof PreflightRefusal)
         throw new PreflightRefusal(CHECK.snapshot_after, 'observation_changed', error.code);
@@ -707,25 +753,31 @@ export async function computeExternalCompletionPreflight(
     )
       throw new PreflightRefusal(CHECK.assemble, 'preflight_internal_invalid', null);
 
-    return finish(
-      {
-        schemaVersion: SCHEMA_VERSION,
-        kind: REPORT_KIND,
-        goalId: echo(goalId),
-        attestationId: echo(input.attestationId),
-        outcome: 'ready',
-        reasons: [],
-        checks: checksFor(null),
-        facts,
-        actionFields,
-        proofLimitations: { ...PROOF_LIMITATIONS },
-        authority: { ...AUTHORITY },
-      },
-      CHECK.assemble,
-    );
+    return {
+      report: finish(
+        {
+          schemaVersion: SCHEMA_VERSION,
+          kind: REPORT_KIND,
+          goalId: echo(goalId),
+          attestationId: echo(input.attestationId),
+          outcome: 'ready',
+          reasons: [],
+          checks: checksFor(null),
+          facts,
+          actionFields,
+          proofLimitations: { ...PROOF_LIMITATIONS },
+          authority: { ...AUTHORITY },
+        },
+        CHECK.assemble,
+      ),
+      identity,
+    };
   } catch (error) {
-    if (error instanceof PreflightRefusal)
-      return refused(goalId, input.attestationId, error.index, error.code, error.detail, facts);
-    return refused(goalId, input.attestationId, progress.index, 'preflight_unavailable', null, facts);
+    // A refused report carries no identity: the caller must not treat it as a reviewed state.
+    const report =
+      error instanceof PreflightRefusal
+        ? refused(goalId, input.attestationId, error.index, error.code, error.detail, facts)
+        : refused(goalId, input.attestationId, progress.index, 'preflight_unavailable', null, facts);
+    return { report, identity: null };
   }
 }
