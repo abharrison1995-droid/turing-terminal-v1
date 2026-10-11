@@ -19,7 +19,8 @@ const KIT_FILE_NAMES = new Set([
 ]);
 
 /**
- * The D.3D allow-list of production files that may name completion-action identifiers. Each entry is checked for drift
+ * The completion-action identifier allow-list of production files. It starts as the D.3D set; D.3E commit 2 adds the
+ * proof-bound terminal writer, the only file that writes proofs or consumes decisions. Each entry is checked for drift
  * by the `only_in` rule below. `finalApplyAuthority.ts` is a refusal-only consumer (D.3E F2).
  */
 const D3D_COMPLETION_IDENTIFIER_FILES = [
@@ -28,6 +29,7 @@ const D3D_COMPLETION_IDENTIFIER_FILES = [
   'goals/externalCompletionDecision.ts',
   'goals/externalCompletionPreflight.ts',
   'goals/externalCompletionProof.ts',
+  'goals/externalCompletionTerminal.ts',
   // legacy final-apply refuses completion and correction approvals (refusal only; D.3E F2)
   'goals/finalApplyAuthority.ts',
   'goals/freshness.ts',
@@ -77,17 +79,17 @@ const RULES: readonly AuthorityRule[] = [
     // keywords. Does not cover line comments or table names built by string concatenation.
     pattern: PROOF_WRITE_SQL,
     mode: 'only_in',
-    files: [],
+    files: ['goals/externalCompletionTerminal.ts'],
     reason:
-      'No production file may write a completion proof. The allow-list stays empty until a terminal writer is added with its own review.',
+      'Only the proof-bound terminal writer may write a completion proof. Its single INSERT is reviewed with the terminal authority.',
   },
   {
     id: 'decision_reader',
     pattern: /\b(?:readExternalCompletionDecision|listExternalCompletionDecisions)\b/,
     mode: 'only_in',
-    files: ['goals/externalCompletionDecision.ts'],
+    files: ['goals/externalCompletionDecision.ts', 'goals/externalCompletionTerminal.ts'],
     reason:
-      'Only the decision module names the decision readers. No production consumer reads a decision yet.',
+      'Only the decision module and the proof-bound terminal authority name the decision readers. No other production consumer reads a decision.',
   },
   {
     id: 'decision_record',
@@ -109,8 +111,9 @@ const RULES: readonly AuthorityRule[] = [
     // Covers `status` at any position in the SET list, quoted or schema-qualified goals, and OR <conflict> forms.
     pattern: GOAL_STATUS_WRITE_SQL,
     mode: 'only_in',
-    files: ['goals/stateMachine.ts'],
-    reason: 'Only the state machine writes goal status.',
+    files: ['goals/stateMachine.ts', 'goals/externalCompletionTerminal.ts'],
+    reason:
+      'Only the state machine and the proof-bound terminal writer write goal status. The terminal writes it once, to completed, after its checks.',
   },
   {
     id: 'preflight_isolation',
@@ -172,9 +175,9 @@ describe('authority static guard: production sources', () => {
     expect(paths).not.toContain('goals/goalV2TestKit.ts');
   });
 
-  it('D3D completion identifier allow-list is exactly the reviewed file set', () => {
+  it('completion identifier allow-list is exactly the reviewed file set', () => {
     expect(ruleById('completion_identifier').files).toEqual([...D3D_COMPLETION_IDENTIFIER_FILES].sort());
-    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(8);
+    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(9);
   });
 
   for (const rule of RULES) {
@@ -280,6 +283,23 @@ describe('authority static guard: seeded violations and negative controls', () =
       'goals/externalCompletionPreflight.ts',
       'const later = readExternalCompletionDecision(db, goalId, approvalId);',
     ],
+    [
+      'proof_write',
+      'goals/activeWork.ts',
+      "db.prepare('INSERT INTO goal_external_completion_proofs (id) VALUES (?)');",
+    ],
+    [
+      'proof_write',
+      'goals/externalCompletionPreflight.ts',
+      "db.prepare('UPDATE goal_external_completion_proofs SET id = ?');",
+    ],
+    ['decision_reader', 'goals/activeWork.ts', 'const rows = listExternalCompletionDecisions(db, goalId);'],
+    [
+      'goal_status_write',
+      'goals/activeWork.ts',
+      `db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?");`,
+    ],
+    ['completion_identifier', 'goals/activeWork.ts', 'const digest = row.externalCompletionActionDigest;'],
   ];
 
   it.each(seeded)('%s flags a seeded violation in %s', (ruleId, path, source) => {
@@ -342,6 +362,26 @@ describe('authority static guard: seeded violations and negative controls', () =
       "import { buildExternalCompletionAction } from './externalCompletionProof.js';",
     ],
     ['preflight_isolation', 'goals/synthetic.ts', "import { x } from './externalCompletionDecision.js';"],
+    [
+      'proof_write',
+      'goals/externalCompletionTerminal.ts',
+      'INSERT INTO goal_external_completion_proofs (id) VALUES (?)',
+    ],
+    [
+      'decision_reader',
+      'goals/externalCompletionTerminal.ts',
+      'const read = readExternalCompletionDecision(db, goalId, approvalId);',
+    ],
+    [
+      'goal_status_write',
+      'goals/externalCompletionTerminal.ts',
+      "UPDATE goals SET status = 'completed', completed_at = ? WHERE id = ? AND status = 'running'",
+    ],
+    [
+      'completion_identifier',
+      'goals/externalCompletionTerminal.ts',
+      'const digest = row.externalCompletionActionDigest;',
+    ],
   ];
 
   it.each(controls)('%s passes its negative control in %s', (ruleId, path, source) => {

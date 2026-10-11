@@ -305,6 +305,14 @@ export type PausedReason = (typeof PAUSED_REASONS)[number];
 export type GoalTransitionReason = (typeof GOAL_TRANSITION_REASONS)[number];
 export type GoalReasonCode = NeedsUserReason | BlockedReason | PausedReason | GoalTransitionReason;
 
+/**
+ * The one reason code for a version-2 external completion. It is deliberately NOT in GOAL_TRANSITION_REASONS and not in
+ * any GOAL_TRANSITIONS row, so the generic transition path cannot name it. Only the proof-bound terminal writer
+ * (goals/externalCompletionTerminal.ts) records it.
+ */
+export const EXTERNAL_COMPLETION_REASON = 'external_completion_user_confirmed' as const;
+export type ExternalCompletionReason = typeof EXTERNAL_COMPLETION_REASON;
+
 export type GoalActor = 'user' | 'supervisor';
 
 export interface GoalTransitionRule {
@@ -470,6 +478,7 @@ export const GOAL_EVENT_TYPES = [
   'run_evidence_collected',
   'goal_authoring_completed',
   'goal_authoring_failed',
+  'external_completion_recorded',
 ] as const;
 export type GoalEventType = (typeof GOAL_EVENT_TYPES)[number];
 

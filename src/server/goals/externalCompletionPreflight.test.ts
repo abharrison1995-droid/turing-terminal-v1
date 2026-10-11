@@ -673,6 +673,16 @@ describe('external completion preflight: no writes', () => {
       ['identifier:externalCompletionTerminal', 'import_module'],
     ],
     ['bare completion module import', "import { x } from './externalCompletion.js';", ['import_module']],
+    [
+      'active work predicate import',
+      "import { activeWorkBlocker } from './activeWork.js';",
+      ['identifier:activeWorkBlocker', 'import_module'],
+    ],
+    [
+      'active work predicate call',
+      'const blocker = activeWorkBlocker(db, goalId);',
+      ['identifier:activeWorkBlocker'],
+    ],
   ])('T12b scanner flags %s with exact rules', (_label, snippet, expected) => {
     expect(scanPreflightSource(snippet)).toEqual(expected);
   });
@@ -715,7 +725,7 @@ const PREPARE_LITERAL =
   /\.prepare\s*\(\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)\s*[,)]/gs;
 const PREPARE_BRACKET = /\[\s*['"`]prepare['"`]\s*\]/;
 const IMPORT_MODULE =
-  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletion|externalCompletionDecision|externalCompletionTerminal|goalCompletionLock)\.js['"]/;
+  /from\s+['"][^'"]*\/(?:stateMachine|completion|goalCommands|approvals|events|masterEvents|webPush|externalCompletion|externalCompletionDecision|externalCompletionTerminal|goalCompletionLock|activeWork)\.js['"]/;
 const FORBIDDEN_IDENTIFIERS = [
   'transitionGoal',
   'completeGoal',
@@ -748,6 +758,7 @@ const FORBIDDEN_IDENTIFIERS = [
   'goalCompletionLock',
   'withGoalCompletionLock',
   'completeGoalFromExternalDecision',
+  'activeWorkBlocker',
 ];
 
 /** The SQL text of every `.prepare('...')` call whose argument is a single literal. */

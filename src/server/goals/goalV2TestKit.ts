@@ -4,12 +4,19 @@ import { lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } fro
 import { join, relative } from 'node:path';
 import { expect } from 'vitest';
 import type { Db } from '../db.js';
+import type { GoalApproval } from '../../shared/goals.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
 import {
   appendAttestationCorrection,
   requestAttestationCorrectionApproval,
 } from './attestationCorrection.js';
 import { evaluateCompletion } from './completionEvaluation.js';
+import { recordExternalCompletionDecision } from './externalCompletionDecision.js';
+import {
+  buildExternalCompletionProof,
+  type ExternalCompletionActionV1,
+  type ExternalCompletionProofV1,
+} from './externalCompletionProof.js';
 import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { recordEvidence } from './evidence.js';
 import {
@@ -379,4 +386,65 @@ export async function reattestAtCurrentTip(attested: Awaited<ReturnType<typeof v
     approvalId: approval.id,
   });
   return persisted.record;
+}
+
+/**
+ * A running version-2 Goal whose exact completion decision is recorded through the real decision service. The user
+ * reviews the ready preflight digest, then the decision is recorded. Test-only: it is the state a completion can consume.
+ */
+export async function v2DecidedFixture(objectFormat: 'sha1' | 'sha256' = 'sha1') {
+  const attested = await v2RunningAttestedFixture(objectFormat);
+  const digest = await reviewedDigest(attested);
+  const recorded = await recordExternalCompletionDecision(attested.fx.db, {
+    goalId: attested.fx.goalId,
+    attestationId: attested.attestationId,
+    reviewedPreflightDigest: digest,
+    acknowledgeContentNotProven: true,
+  });
+  return { ...attested, digest, recorded };
+}
+
+/**
+ * The version-2 proof body that a validated decision implies, built with the production proof builder (which computes
+ * the digest and validates the shape). Test-only mapping from the action and its approval; the observation time is the
+ * caller's. Nothing in production builds a proof yet.
+ */
+export function completionProofForDecision(
+  decision: { approval: GoalApproval; action: ExternalCompletionActionV1 },
+  observedAt: string,
+): ExternalCompletionProofV1 {
+  const { action, approval } = decision;
+  const proof = buildExternalCompletionProof({
+    schemaVersion: 1,
+    kind: 'turing_goal_external_completion_proof',
+    contractVersion: 2,
+    goalId: action.goalId,
+    definition: action.definition,
+    evaluation: {
+      integrationHead: action.source.commit,
+      integrationTree: action.source.tree,
+      verificationEvidenceDigest: action.verificationEvidenceDigest,
+      milestoneIdentityDigest: action.milestoneIdentityDigest,
+      findingIdentityDigest: action.findingIdentityDigest,
+      finalReviewId: action.review.finalReviewId,
+      finalAcceptanceApprovalId: action.review.acceptanceApprovalId,
+    },
+    handoff: action.handoff,
+    attestation: action.attestation,
+    repository: action.repository,
+    source: action.source,
+    destination: action.destination,
+    gitProof: { ...action.proof, observedAt },
+    decision: {
+      approvalId: approval.id,
+      actionDigest: action.actionDigest,
+      decidedAt: approval.respondedAt,
+      classification: 'user_confirmed_historical_external_integration',
+    },
+    proofLimitations: action.proofLimitations,
+    correctionChain: action.correctionChain,
+    userReviewedPreflightDigest: action.userReviewedPreflightDigest,
+  });
+  if (!proof) throw new Error('completionProofForDecision: the mapped body is not a valid proof');
+  return proof;
 }

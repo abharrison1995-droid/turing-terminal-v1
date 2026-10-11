@@ -213,13 +213,21 @@ export function transitionGoal(db: Db, request: TransitionRequest): { from: Goal
     return { from, to: request.to };
   });
   const result = run();
+  notifyGoalTransition(db, request.goalId, result.from, result.to);
+  return result;
+}
+
+/**
+ * Tells the registered observers that a status change has committed. Call only after the writing transaction has
+ * committed. Observers are advisory: a throwing listener is ignored and cannot alter the transition.
+ */
+export function notifyGoalTransition(db: Db, goalId: string, from: GoalStatus, to: GoalStatus): void {
   for (const listener of listeners)
     try {
-      listener({ db, goalId: request.goalId, from: result.from, to: result.to });
+      listener({ db, goalId, from, to });
     } catch {
       /* Observers are advisory. */
     }
-  return result;
 }
 
 /** Reasons a Goal that is still a draft can carry. They describe the draft; they never change its status. */

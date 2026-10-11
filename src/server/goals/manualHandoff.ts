@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
-import { GOAL_TERMINAL_STATUSES, TERMINAL_RUN_STATUSES } from '../../shared/goals.js';
+import { GOAL_TERMINAL_STATUSES } from '../../shared/goals.js';
 import type { GoalApproval } from '../../shared/goals.js';
 import type { Db } from '../db.js';
 import {
@@ -24,7 +24,7 @@ import { approvedCompletionPolicyMode } from './approvedCompletionAuthority.js';
 import { loadDefinitionVersion, verifyDefinitionHash } from './definitions.js';
 import { getGoalApproval } from './approvals.js';
 import { getReview, type GoalReviewRow } from './reviews.js';
-import { activeCycle } from './cycles.js';
+import { activeWorkBlocker } from './activeWork.js';
 import { isManualReconciliation } from './readModel.js';
 import { listVerifiers } from './verifierDigest.js';
 import { canonicalJson } from './definitionHash.js';
@@ -697,36 +697,9 @@ function ensureNoActiveWork(db: Db, goalId: string): void {
     !GOAL_TERMINAL_STATUSES.includes(goal.status as (typeof GOAL_TERMINAL_STATUSES)[number]),
     'goal_ineligible',
   );
-  assert(!isManualReconciliation(db, goalId), 'manual_reconciliation_required');
-  assert(!activeCycle(db, goalId), 'active_work');
-  const placeholders = [...TERMINAL_RUN_STATUSES].map(() => '?').join(', ');
-  assert(
-    !db
-      .prepare(
-        `SELECT 1 FROM goal_runs gr JOIN runs r ON r.id = gr.run_id
-         WHERE gr.goal_id = ? AND r.status NOT IN (${placeholders}) LIMIT 1`,
-      )
-      .get(goalId, ...TERMINAL_RUN_STATUSES),
-    'active_work',
-  );
-  assert(
-    !db.prepare("SELECT 1 FROM goal_reviews WHERE goal_id = ? AND status = 'pending' LIMIT 1").get(goalId),
-    'pending_review',
-  );
-  assert(
-    !db
-      .prepare("SELECT 1 FROM goal_integration_ops WHERE goal_id = ? AND status = 'planned' LIMIT 1")
-      .get(goalId),
-    'integration_operation_in_progress',
-  );
-  assert(
-    !db
-      .prepare(
-        "SELECT 1 FROM goal_integration_ops WHERE goal_id = ? AND op = 'apply_to_base' AND status IN ('applied','failed') LIMIT 1",
-      )
-      .get(goalId),
-    'manual_reconciliation_required',
-  );
+  // The blocker predicates live in activeWork.ts, shared with the external completion terminal (same order, same codes).
+  const blocker = activeWorkBlocker(db, goalId);
+  if (blocker !== null) throw new ManualHandoffError(blocker);
 }
 
 function validOid(value: string | null, format: ObjectFormat): value is string {

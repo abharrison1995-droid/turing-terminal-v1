@@ -228,6 +228,14 @@ export function buildExternalCompletionProof(input: unknown): ExternalCompletion
   return { ...parsed.data, proofDigest: computeExternalCompletionProofDigest(parsed.data) };
 }
 
+/**
+ * The exact `payload_json` the terminal writer stores for a validated proof: its canonical JSON, including proofDigest.
+ * Canonical form is the single serialisation that `readExternalCompletionProof` re-parses and re-digests.
+ */
+export function externalCompletionProofPayloadJson(proof: ExternalCompletionProofV1): string {
+  return canonicalJson(proof);
+}
+
 export type ParsedExternalCompletionProof =
   | { valid: true; proof: ExternalCompletionProofV1; digest: string }
   | { valid: false; reason: 'schema_invalid' | 'digest_mismatch' };
@@ -403,7 +411,7 @@ export function readExternalCompletionProof(
     const handoff = db
       .prepare(
         `SELECT handoff_digest, payload_json, definition_version, final_review_id, final_acceptance_approval_id,
-                source_commit, source_tree, base_ref, observed_base_commit, observed_base_tree
+                source_commit, source_tree, base_ref, observed_base_commit
          FROM goal_result_handoffs WHERE goal_id = ? AND id = ?`,
       )
       .get(goalId, proof.handoff.id) as
@@ -417,7 +425,6 @@ export function readExternalCompletionProof(
           source_tree: string;
           base_ref: string;
           observed_base_commit: string;
-          observed_base_tree: string;
         }
       | undefined;
     if (!handoff || handoff.handoff_digest !== proof.handoff.digest)
@@ -437,7 +444,6 @@ export function readExternalCompletionProof(
       handoff.source_tree !== proof.source.tree ||
       handoff.base_ref !== proof.destination.ref ||
       handoff.observed_base_commit !== proof.destination.recordedBaseCommit ||
-      handoff.observed_base_tree !== proof.destination.recordedBaseTree ||
       handoffPayload.definition?.version !== proof.definition.version ||
       handoffPayload.definition?.hash !== proof.definition.hash ||
       handoffPayload.definition?.approvalId !== proof.definition.approvalId ||

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.js';
 import type {
   EvidenceVerdict,
+  ExternalCompletionReason,
   FindingSeverity,
   GoalEvidenceKind,
   GoalReviewKind,
@@ -33,7 +34,8 @@ export interface GoalEventPayloads {
   state_changed: {
     from: GoalStatus;
     to: GoalStatus;
-    reasonCode: GoalReasonCode;
+    /** `external_completion_user_confirmed` only for the proof-bound terminal writer's running -> completed event. */
+    reasonCode: GoalReasonCode | ExternalCompletionReason;
     actor: 'user' | 'supervisor';
   };
   approval_requested: { approvalId: string; gate: GoalApprovalGate; risk: GoalApprovalRisk };
@@ -123,6 +125,22 @@ export interface GoalEventPayloads {
   goal_authoring_completed: { cycleId: string; runId: string; version: number; definitionHash: string };
   /** Authoring ended without a definition. `code` is an enumerated failure code; no model output is recorded. */
   goal_authoring_failed: { cycleId: string; runId: string | null; code: string };
+  /**
+   * Written by the proof-bound terminal writer in the same transaction as the proof row, before the terminal status
+   * write. Bounded identifiers, digests and timestamps only.
+   */
+  external_completion_recorded: {
+    proofId: string;
+    proofDigest: string;
+    approvalId: string;
+    actionDigest: string;
+    preflightDigest: string;
+    attestationId: string;
+    observedCommit: string;
+    observedTree: string;
+    observedAt: string;
+    completedAt: string;
+  };
 }
 
 const MAX_PAYLOAD_CHARS = 16_384;
