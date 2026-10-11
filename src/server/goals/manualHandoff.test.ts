@@ -19,6 +19,7 @@ import { call, disabledSupervisor, goalApp } from './apiKit.js';
 import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { decideGoalApprovalAsUser } from './goalCommands.js';
 import { evaluateCompletion } from './completionEvaluation.js';
+import { approvedCompletionPolicyMode } from './approvedCompletionAuthority.js';
 import { beginAmendment, approveDefinition, createGoalDraft, loadDefinitionVersion } from './definitions.js';
 import { recordEvidence } from './evidence.js';
 import type { GoalDefinition } from '../../shared/goals.js';
@@ -29,6 +30,7 @@ import {
   getManualHandoffProjection,
   prepareManualHandoff,
   validateManualHandoff,
+  validateManualHandoffAuthorityForExternalIntegration,
 } from './manualHandoff.js';
 import {
   buildExternalIntegrationObservation,
@@ -3758,4 +3760,577 @@ describe('version-2 handoff preparation (D.3.1)', () => {
       fx.db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(fx.goalId),
     ).toEqual({ n: 0 });
   });
+});
+
+type ClosureFixture = Awaited<ReturnType<typeof acceptedFixture>>['fx'];
+
+describe('version-2 handoff closure (D.3.1 review)', () => {
+  const FORMATS = ['sha1', 'sha256'] as const;
+
+  async function v2Prepared(objectFormat: 'sha1' | 'sha256') {
+    const accepted = await acceptedFixture(objectFormat, { completionContractVersion2: true });
+    const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
+    return { ...accepted, handoff };
+  }
+  const handoffCount = (db: Db, goalId: string) =>
+    db.prepare('SELECT COUNT(*) AS n FROM goal_result_handoffs WHERE goal_id = ?').get(goalId);
+  const attestationCount = (db: Db, goalId: string) =>
+    db
+      .prepare('SELECT COUNT(*) AS n FROM goal_external_integration_attestations WHERE goal_id = ?')
+      .get(goalId);
+  const proofCount = (db: Db, goalId: string) =>
+    db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs WHERE goal_id = ?').get(goalId);
+  const goalStatus = (db: Db, goalId: string) =>
+    db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId);
+  const handoffRow = (db: Db, handoffId: string) =>
+    db.prepare('SELECT payload_json, handoff_digest FROM goal_result_handoffs WHERE id = ?').get(handoffId);
+
+  function blockingFinding(severity: 'critical' | 'high' | 'medium') {
+    return {
+      severity,
+      category: 'correctness',
+      description: `A ${severity} finding recorded after handoff preparation.`,
+      evidence: 'A deterministic test finding.',
+      affectedFiles: ['src/result.txt'],
+      remediation: 'Resolve it.',
+    };
+  }
+
+  async function recordMilestoneFindings(fx: ClosureFixture, severity: 'critical' | 'high' | 'medium') {
+    const review = await createReview(fx.db, {
+      goalId: fx.goalId,
+      definitionVersion: 1,
+      reviewKind: 'milestone',
+      milestoneId: fx.milestoneId('m1'),
+    });
+    completeReview(fx.db, {
+      reviewId: review.id,
+      report: {
+        ...passingReport,
+        verdict: 'pass_with_findings',
+        newFindings: [blockingFinding(severity)],
+      },
+    });
+    await applyReviewFindings(fx.db, { reviewId: review.id });
+  }
+
+  it.each([
+    'no approved version',
+    'non-current version',
+    'corrupted definition hash',
+    'invalid approval lineage',
+  ] as const)(
+    'A1 fails closed when the approved completion-policy mode is unavailable (%s) and refuses handoff preparation',
+    async (cause) => {
+      if (cause === 'no approved version') {
+        const unapproved = goalRepoFixture({ approved: false });
+        expect(approvedCompletionPolicyMode(unapproved.db, unapproved.goalId, 1)).toBeNull();
+        const before = repositoryState(unapproved.repo);
+        await expect(prepareManualHandoff(unapproved.db, unapproved.goalId)).rejects.toMatchObject({
+          code: 'definition_not_approved',
+        });
+        expect(handoffCount(unapproved.db, unapproved.goalId)).toEqual({ n: 0 });
+        expect(repositoryState(unapproved.repo)).toEqual(before);
+        return;
+      }
+
+      const { fx } = await acceptedFixture('sha1', { completionContractVersion2: true });
+      // Control: the untouched version-2 approved authority yields the version-2 mode before any corruption.
+      expect(approvedCompletionPolicyMode(fx.db, fx.goalId, 1)).toBe('external_user_attested_v2');
+      let expectedCode: 'definition_not_approved' | 'completion_not_ready';
+
+      if (cause === 'non-current version') {
+        // A second approved version becomes current; version 1 keeps its own valid mode but is no longer current.
+        const revised = structuredClone(fx.definition);
+        revised.contract.outcome = 'The same version-2 result under a second approved version.';
+        const proposal = beginAmendment(fx.db, {
+          goalId: fx.goalId,
+          actor: 'user',
+          changeSummary: 'Second approved version for the completion-mode test.',
+          definition: revised,
+        });
+        approveDefinition(fx.db, {
+          goalId: fx.goalId,
+          version: proposal.version,
+          expectedDefinitionHash: proposal.definitionHash,
+          actor: 'user',
+        });
+        expect(approvedCompletionPolicyMode(fx.db, fx.goalId, proposal.version)).toBe(
+          'external_user_attested_v2',
+        );
+        expect(approvedCompletionPolicyMode(fx.db, fx.goalId, 1)).toBeNull();
+        expectedCode = 'completion_not_ready';
+      } else if (cause === 'corrupted definition hash') {
+        dropDefinitionImmutabilityTrigger(fx.db);
+        fx.db
+          .prepare(
+            'UPDATE goal_definition_versions SET definition_hash = ? WHERE goal_id = ? AND version = 1',
+          )
+          .run('f'.repeat(64), fx.goalId);
+        expect(approvedCompletionPolicyMode(fx.db, fx.goalId, 1)).toBeNull();
+        expectedCode = 'definition_not_approved';
+      } else {
+        dropApprovalIdentityTriggers(fx.db);
+        const approvalId = loadDefinitionVersion(fx.db, fx.goalId, 1)!.approvalId;
+        const approval = getGoalApproval(fx.db, approvalId)!;
+        fx.db
+          .prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?')
+          .run(JSON.stringify({ ...approval.detail, definitionHash: 'f'.repeat(64) }), approvalId);
+        expect(approvedCompletionPolicyMode(fx.db, fx.goalId, 1)).toBeNull();
+        expectedCode = 'definition_not_approved';
+      }
+
+      const before = repositoryState(fx.repo);
+      await expect(prepareManualHandoff(fx.db, fx.goalId)).rejects.toMatchObject({ code: expectedCode });
+      expect(handoffCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(repositoryState(fx.repo)).toEqual(before);
+    },
+  );
+
+  it.each(FORMATS)(
+    'A2 refuses a previously valid observation and attestation after the Goal source ref moves (%s)',
+    async (objectFormat) => {
+      const { fx, handoff, observation } = await integratedExternalFixture(objectFormat, 'fast-forward', {
+        completionContractVersion2: true,
+      });
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toMatchObject({ state: 'valid', observation: { actionDigest: observation.actionDigest } });
+      const approval = approveExternalObservation(fx, observation);
+      const persisted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      const attestationId = persisted.record.attestationId;
+      expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId)).toMatchObject({
+        state: 'current',
+      });
+
+      const statusBefore = goalStatus(fx.db, fx.goalId);
+      const rowBefore = handoffRow(fx.db, handoff.handoffId);
+      const replacement = fx.git(
+        'commit-tree',
+        observation.source.tree,
+        '-p',
+        handoff.target.observedBaseCommit,
+        '-m',
+        'same source tree under a different source commit',
+      );
+      fx.git('update-ref', handoff.source.goalRef, replacement);
+      const moved = repositoryState(fx.repo);
+
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'stale', code: 'source_changed' });
+      expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId)).toMatchObject({
+        state: 'stale',
+        reason: { code: 'source_changed' },
+      });
+      // A second approval for the same action digest is impossible (unique index); reuse the first one. Validation
+      // runs before any approval lookup, so the refusal under test is still the observation's own.
+      await expect(
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation,
+          approvalId: approval.id,
+        }),
+      ).rejects.toMatchObject({ code: 'source_changed' });
+      expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+      expect(handoffRow(fx.db, handoff.handoffId)).toEqual(rowBefore);
+      expect(goalStatus(fx.db, fx.goalId)).toEqual(statusBefore);
+      expect(proofCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(repositoryState(fx.repo)).toEqual(moved);
+    },
+  );
+
+  it.each(FORMATS)(
+    'A3 refuses destination-ref movement for version 2 without ancestry-based acceptance (%s)',
+    async (objectFormat) => {
+      const { fx, handoff, observation } = await integratedExternalFixture(objectFormat, 'fast-forward', {
+        completionContractVersion2: true,
+      });
+      const approval = approveExternalObservation(fx, observation);
+      const persisted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      const attestationId = persisted.record.attestationId;
+      const assertValidBaseline = async () => {
+        expect(
+          await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+        ).toMatchObject({ state: 'valid' });
+        expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId)).toMatchObject({
+          state: 'current',
+        });
+      };
+      const moveBase = (commit: string) => fx.git('update-ref', handoff.target.baseRef, commit);
+      await assertValidBaseline();
+
+      // (a) Advance: the destination moves to a descendant of the attested tip (D1 core).
+      const later = fx.git(
+        'commit-tree',
+        observation.destination.observedTree,
+        '-p',
+        observation.destination.observedCommit,
+        '-m',
+        'later destination change',
+      );
+      moveBase(later);
+      const advanced = repositoryState(fx.repo);
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'stale', code: 'observation_changed' });
+      const historical = await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId);
+      expect(historical).toMatchObject({
+        state: 'historical',
+        reason: { code: 'destination_advanced_after_observation' },
+      });
+      expect(historical.currentObservation).not.toBeNull();
+      expect(historical.currentObservation!.actionDigest).not.toBe(observation.actionDigest);
+      await expect(
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation,
+          approvalId: approval.id,
+        }),
+      ).rejects.toMatchObject({ code: 'observation_changed' });
+      expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+      const fresh = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+      expect(fresh.actionDigest).not.toBe(observation.actionDigest);
+      await expect(
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation: fresh,
+          approvalId: approval.id,
+        }),
+      ).rejects.toMatchObject({ code: 'approval_mismatch' });
+      expect(repositoryState(fx.repo)).toEqual(advanced);
+      moveBase(observation.destination.observedCommit);
+      await assertValidBaseline();
+
+      // (b) Base reset to a commit that does not contain the source.
+      moveBase(observation.destination.expectedBaseCommit);
+      const notAncestor = repositoryState(fx.repo);
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'not_integrated', code: 'source_not_ancestor' });
+      expect(repositoryState(fx.repo)).toEqual(notAncestor);
+      moveBase(observation.destination.observedCommit);
+      await assertValidBaseline();
+
+      // (c) Base replaced by an unrelated root commit.
+      const unrelated = fx.git(
+        'commit-tree',
+        observation.destination.expectedBaseTree,
+        '-m',
+        'unrelated root',
+      );
+      moveBase(unrelated);
+      const unrelatedState = repositoryState(fx.repo);
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'not_integrated', code: 'base_not_ancestor' });
+      expect(repositoryState(fx.repo)).toEqual(unrelatedState);
+      moveBase(observation.destination.observedCommit);
+      await assertValidBaseline();
+
+      // (d) Destination ref deleted. HEAD is first pointed at a holder branch at the same commit so that the
+      // repository state stays readable (deleting the checked-out branch would leave HEAD unborn).
+      fx.git(
+        'update-ref',
+        'refs/heads/turing/holder-for-deleted-base',
+        observation.destination.observedCommit,
+      );
+      fx.git('symbolic-ref', 'HEAD', 'refs/heads/turing/holder-for-deleted-base');
+      fx.git('update-ref', '-d', handoff.target.baseRef);
+      const deleted = repositoryState(fx.repo);
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'stale', code: 'destination_ref_missing' });
+      expect(repositoryState(fx.repo)).toEqual(deleted);
+      expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+    },
+  );
+
+  it.each([
+    { severity: 'critical', objectFormat: 'sha1' },
+    { severity: 'high', objectFormat: 'sha1' },
+    { severity: 'critical', objectFormat: 'sha256' },
+  ] as const)(
+    'A4a refuses an un-merged handoff after a $severity finding ($objectFormat)',
+    async ({ severity, objectFormat }) => {
+      const { fx, handoff } = await v2Prepared(objectFormat);
+      expect(await validateManualHandoff(fx.db, fx.goalId, handoff.handoffId)).toMatchObject({
+        state: 'current',
+        reason: null,
+      });
+      await recordMilestoneFindings(fx, severity);
+      const before = repositoryState(fx.repo);
+      expect(await validateManualHandoff(fx.db, fx.goalId, handoff.handoffId)).toMatchObject({
+        state: 'stale',
+        reason: { code: 'findings_blocked' },
+      });
+      expect(
+        await validateManualHandoffAuthorityForExternalIntegration(fx.db, fx.goalId, handoff.handoffId),
+      ).toEqual({ state: 'stale', code: 'completion_not_ready' });
+      await expect(prepareManualHandoff(fx.db, fx.goalId)).rejects.toMatchObject({
+        code: 'completion_not_ready',
+      });
+      expect(handoffCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+      expect(repositoryState(fx.repo)).toEqual(before);
+    },
+  );
+
+  it('A4b refuses an integrated, attested version-2 handoff after a blocking finding (sha1)', async () => {
+    const { fx, handoff, observation } = await integratedExternalFixture('sha1', 'fast-forward', {
+      completionContractVersion2: true,
+    });
+    const approval = approveExternalObservation(fx, observation);
+    const persisted = await persistExternalIntegrationAttestation(fx.db, {
+      goalId: fx.goalId,
+      handoffId: handoff.handoffId,
+      observation,
+      approvalId: approval.id,
+    });
+    expect(
+      await validateExternalIntegrationAttestation(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({
+      state: 'current',
+    });
+    await recordMilestoneFindings(fx, 'critical');
+    const before = repositoryState(fx.repo);
+    expect(
+      await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+    ).toEqual({ state: 'invalid', code: 'completion_not_ready' });
+    expect(
+      await validateExternalIntegrationAttestation(fx.db, fx.goalId, persisted.record.attestationId),
+    ).toMatchObject({ state: 'stale', reason: { code: 'completion_not_ready' } });
+    await expect(
+      persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      }),
+    ).rejects.toMatchObject({ code: 'completion_not_ready' });
+    expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+    expect(repositoryState(fx.repo)).toEqual(before);
+  });
+
+  it('A4c keeps a medium non-blocking finding ready but changes findings identity, so authority is stale (sha1)', async () => {
+    const { fx, handoff } = await v2Prepared('sha1');
+    await recordMilestoneFindings(fx, 'medium');
+    const before = repositoryState(fx.repo);
+    expect(
+      await validateManualHandoffAuthorityForExternalIntegration(fx.db, fx.goalId, handoff.handoffId),
+    ).toEqual({ state: 'stale', code: 'completion_authority_changed' });
+    expect(repositoryState(fx.repo)).toEqual(before);
+  });
+
+  it.each(FORMATS)(
+    'A5 treats a manual base integration as stale without changing authority or evidence (%s)',
+    async (objectFormat) => {
+      const { fx, handoff } = await v2Prepared(objectFormat);
+      expect(await validateManualHandoff(fx.db, fx.goalId, handoff.handoffId)).toMatchObject({
+        state: 'current',
+        reason: null,
+      });
+      const statusBefore = goalStatus(fx.db, fx.goalId);
+      const rowBefore = handoffRow(fx.db, handoff.handoffId);
+      fx.git('merge', '--ff-only', handoff.source.goalRef);
+      const integrated = repositoryState(fx.repo);
+
+      expect(await validateManualHandoff(fx.db, fx.goalId, handoff.handoffId)).toMatchObject({
+        state: 'stale',
+        reason: { code: 'base_diverged' },
+      });
+      expect(handoffRow(fx.db, handoff.handoffId)).toEqual(rowBefore);
+      expect(String((rowBefore as { payload_json: string }).payload_json)).toContain(handoff.handoffDigest);
+      expect(await getManualHandoffProjection(fx.db, fx.goalId, handoff.handoffId)).toMatchObject({
+        state: 'stale',
+      });
+
+      const authority = await validateManualHandoffAuthorityForExternalIntegration(
+        fx.db,
+        fx.goalId,
+        handoff.handoffId,
+      );
+      expect(authority).toMatchObject({ state: 'valid' });
+
+      const fingerprint = (value: Awaited<ReturnType<typeof validateExternalIntegrationObservation>>) =>
+        value.state === 'valid'
+          ? {
+              state: value.state,
+              actionDigest: value.observation.actionDigest,
+              authorityFingerprint: value.authorityFingerprint,
+              databaseFingerprint: value.databaseFingerprint,
+            }
+          : value;
+      const firstObservation = await buildExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId);
+      const secondObservation = await buildExternalIntegrationObservation(
+        fx.db,
+        fx.goalId,
+        handoff.handoffId,
+      );
+      expect(secondObservation.actionDigest).toBe(firstObservation.actionDigest);
+      const firstValidation = await validateExternalIntegrationObservation(
+        fx.db,
+        fx.goalId,
+        handoff.handoffId,
+        firstObservation,
+      );
+      const secondValidation = await validateExternalIntegrationObservation(
+        fx.db,
+        fx.goalId,
+        handoff.handoffId,
+        secondObservation,
+      );
+      expect(fingerprint(firstValidation)).toMatchObject({ state: 'valid' });
+      expect(fingerprint(secondValidation)).toEqual(fingerprint(firstValidation));
+
+      expect(repositoryState(fx.repo)).toEqual(integrated);
+      expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(proofCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(goalStatus(fx.db, fx.goalId)).toEqual(statusBefore);
+
+      // Negative control: moving the Goal source ref makes the same handoff stale, so staleness follows preconditions.
+      const replacement = fx.git(
+        'commit-tree',
+        handoff.source.tree,
+        '-p',
+        handoff.target.observedBaseCommit,
+        '-m',
+        'same source tree under a different source commit',
+      );
+      fx.git('update-ref', handoff.source.goalRef, replacement);
+      expect(
+        await validateManualHandoffAuthorityForExternalIntegration(fx.db, fx.goalId, handoff.handoffId),
+      ).toEqual({ state: 'stale', code: 'source_changed' });
+    },
+  );
+
+  it.each(FORMATS)(
+    'A6a refuses a historical pre-version-2 attestation as version-2 evidence after amendment (%s)',
+    async (objectFormat) => {
+      const { fx, handoff, observation } = await integratedExternalFixture(objectFormat);
+      const approval = approveExternalObservation(fx, observation);
+      const persisted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      const oldId = persisted.record.attestationId;
+      expect(persisted.record.completionContractVersion).toBe(2);
+
+      const version2 = structuredClone(fx.definition);
+      version2.contract.completionPolicy.completionContractVersion = 2;
+      version2.contract.completionPolicy.integrationMode = 'external_user_attested';
+      const amendment = beginAmendment(fx.db, {
+        goalId: fx.goalId,
+        actor: 'user',
+        definition: version2,
+        changeSummary: 'Opt into completion contract version 2 after an attestation was recorded.',
+      });
+      approveDefinition(fx.db, { goalId: fx.goalId, version: amendment.version, actor: 'user' });
+      const statusBefore = goalStatus(fx.db, fx.goalId);
+      const before = repositoryState(fx.repo);
+
+      expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, oldId)).toMatchObject({
+        state: 'stale',
+        reason: { code: 'definition_not_approved' },
+      });
+      expect(await getExternalIntegrationProjection(fx.db, fx.goalId, oldId)).toMatchObject({
+        state: 'stale',
+        claim: 'not_verified',
+      });
+      expect(
+        await validateExternalIntegrationObservation(fx.db, fx.goalId, handoff.handoffId, observation),
+      ).toEqual({ state: 'invalid', code: 'definition_not_approved' });
+      await expect(
+        persistExternalIntegrationAttestation(fx.db, {
+          goalId: fx.goalId,
+          handoffId: handoff.handoffId,
+          observation,
+          approvalId: approval.id,
+        }),
+      ).rejects.toMatchObject({ code: 'definition_not_approved' });
+      expect(attestationCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+
+      await expect(prepareManualHandoff(fx.db, fx.goalId)).rejects.toMatchObject({
+        code: 'completion_not_ready',
+      });
+      expect(handoffCount(fx.db, fx.goalId)).toEqual({ n: 1 });
+      const evaluation = await evaluateCompletion(fx.db, fx.goalId);
+      expect(evaluation.finalApply).toMatchObject({
+        required: true,
+        ok: false,
+        reason: 'external_completion_not_activated',
+      });
+      expect(proofCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(goalStatus(fx.db, fx.goalId)).toEqual(statusBefore);
+      expect(repositoryState(fx.repo)).toEqual(before);
+    },
+  );
+
+  it.each([
+    { label: 'version 1', payloadVersion: 1, columnVersion: 1 },
+    { label: 'absent', payloadVersion: undefined, columnVersion: 2 },
+  ] as const)(
+    'A6b refuses a tampered attestation whose completion contract version is $label (sha1)',
+    async ({ payloadVersion, columnVersion }) => {
+      const { fx, handoff, observation } = await integratedExternalFixture('sha1', 'fast-forward', {
+        completionContractVersion2: true,
+      });
+      const approval = approveExternalObservation(fx, observation);
+      const persisted = await persistExternalIntegrationAttestation(fx.db, {
+        goalId: fx.goalId,
+        handoffId: handoff.handoffId,
+        observation,
+        approvalId: approval.id,
+      });
+      const attestationId = persisted.record.attestationId;
+      expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId)).toMatchObject({
+        state: 'current',
+      });
+      const before = repositoryState(fx.repo);
+
+      // Bypasses immutability and the column CHECK only to prove the zod literal rejects a non-version-2 payload.
+      fx.db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+      fx.db.exec('PRAGMA ignore_check_constraints = ON;');
+      try {
+        const row = fx.db
+          .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+          .get(attestationId) as { payload_json: string };
+        const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+        if (payloadVersion === undefined) delete payload.completionContractVersion;
+        else payload.completionContractVersion = payloadVersion;
+        fx.db
+          .prepare(
+            'UPDATE goal_external_integration_attestations SET payload_json = ?, completion_contract_version = ? WHERE id = ?',
+          )
+          .run(JSON.stringify(payload), columnVersion, attestationId);
+      } finally {
+        fx.db.exec('PRAGMA ignore_check_constraints = OFF;');
+      }
+
+      expect(await validateExternalIntegrationAttestation(fx.db, fx.goalId, attestationId)).toMatchObject({
+        state: 'invalid',
+        reason: { code: 'attestation_invalid' },
+      });
+      expect(await getExternalIntegrationProjection(fx.db, fx.goalId, attestationId)).toMatchObject({
+        state: 'invalid',
+        claim: 'not_verified',
+      });
+      expect(proofCount(fx.db, fx.goalId)).toEqual({ n: 0 });
+      expect(repositoryState(fx.repo)).toEqual(before);
+    },
+  );
 });
