@@ -1827,7 +1827,7 @@ describe('desktop external integration confirmation', () => {
       `"${action.actionDigest}"`,
       `"${action.actionDigest}"`,
     ]);
-  });
+  }, 15_000);
 
   it('keeps an uncertain action locked when bounded recovery history may omit the digest', async () => {
     const record = handoff();

@@ -902,7 +902,7 @@ describe('external completion service: adversarial matrix', () => {
   );
 
   it(
-    'refuses a Goal whose attestation approval is no longer approved with attestation_invalid (sha1)',
+    'refuses a Goal whose attestation approval is no longer approved with correction_standing_unavailable (sha1)',
     async () => {
       const decided = await v2DecidedFixture('sha1');
       const { fx } = decided;

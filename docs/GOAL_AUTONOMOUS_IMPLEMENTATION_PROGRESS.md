@@ -231,8 +231,24 @@ Limits that must be stated at D.2 acceptance:
   `completion_corrupt/integrity_check_failed`.
 - Commit 4 documentation: `a6d73f8` (contract design, proof contract, V1_READINESS D4 row; Haiku, gate format, lint and typecheck
   only). A lead follow-up corrects the stale identifier-table rows in `docs/V1_READINESS.md`.
-- Next action: push, hosted CI on the exact pushed SHA, then the final whole-path D.3E review (Sonnet Medium) against the 21-row matrix.
-  D.3E is not accepted until that review passes. D.3F, D.3G, D.4 and the Model Opportunity Layer have not started.
+- Commit 3c, coverage gaps and contract-doc correction: `a3199cc`, amended before push to `b769eb0` (corrected commit body).
+  Adds service-path tests for decision lineage, attestation approval gate, risk, requester and respondedAt tampers, base tree and
+  base history, pending final review, deleted deliverable, post-preflight drift (milestone, finding, acceptance, active cycle and
+  non-terminal run), and committed-completion read-back. Replaces a vacuous approval assertion. Corrects the design doc (as-implemented
+  observation note under §7, rows 4, 9, 12, 21, G1-G3 and G5-G7 statuses, coverage gaps). Reasons for not-producible cases are in the design doc.
+- Full gate on the exact `b769eb0` tree: format, lint, typecheck, build, `npm audit --omit=dev` 0, `npm test` 133 files and 2362 tests passed.
+- First full `npm test` run on the 3c tree FAILED one test: `goalHandoff.test.tsx` "requires a deliberate confirmation to resume an approved orphan"
+  (a `findByText` wait exceeded the default 1000 ms at about 1.1 s under full-suite load). The file passed 3 of 3 in isolation and the
+  second full run passed. The first failing run is recorded here, not treated as a pass. Fixed in the same commit by a per-call
+  5000 ms wait and a 15000 ms per-test timeout on that one test; no global timeout changed.
+- Final whole-path review on `b769eb0` (Sonnet Medium): PASS WITH NON-BLOCKING FINDINGS, no blocking findings. Non-blocking findings:
+  a stale test title (fixed), a stale line reference (fixed), an inaccurate row-12 enforcement label (fixed), a stale V1_READINESS
+  active-work statement (fixed), this progress record not updated (this entry), a per-test timeout not aligned with the enclosed wait
+  (fixed), and an evidence-invalidation drift gap not named in the coverage list (fixed).
+- Hosted CI on `b769eb0` (run 38174971561): in progress when this entry was written. Its result is not recorded here until observed.
+- Next action: after the follow-up commit that fixes the review findings is pushed, hosted CI on that exact SHA, then a Sonnet Medium
+  re-review of it. D.3E is not accepted until CI is green on the exact SHA and that review passes. D.3F, D.3G, D.4 and the Model
+  Opportunity Layer have not started.
 
 ## Remediation iterations
 
