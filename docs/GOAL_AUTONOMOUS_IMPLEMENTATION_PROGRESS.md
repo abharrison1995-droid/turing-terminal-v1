@@ -345,6 +345,29 @@ D.3G status. The D.3 parent-stage Sonnet review ran on `8f7f68f`: PASS WITH NON-
 
 Windows, physical iPhone, live Tailscale and live provider validation remain PENDING. D.4 and later stages have not started.
 
+### D.4A authenticated completion API: ACCEPTED on `3cdc888` (lead record)
+
+Commits, in order: `b011fac` (shared If-Match parser), `34bd58d` (read-only preflight and status routes), `cfc739d` (user completion decision POST), `e2abffd` (completion POST by exact action digest), `3cdc888` (status derived from the completion standing; guard allow-lists narrowed to the D.4A route callers). The plan is `scratchpad/d4a_plan.md` (Sonnet Medium).
+
+Routes: `GET /api/goals/:goalId/completion-preflight?attestationId=` (read-only, ETag = report digest); `POST /api/goals/:goalId/completion-decision` (If-Match = reviewed preflight digest, strict body, user decision only); `POST /api/goals/:goalId/completion` (If-Match = exact action digest of a stored decision; the attestation and reviewed digest come from that stored row, never from the request); `GET /api/goals/:goalId/completion[?actionDigest=]` (read-only status).
+
+Corrections made during the stage, all disclosed:
+
+- T3 (slice 3): a digest made stale by a correction returns `409 preflight_refused` (`attestation_disputed`), not the planned `412`. The correction check refuses the disputed attestation before the digest comparison (`externalCompletionPreflight.ts`). Still no write. The 412 path stays pinned by the substituted-digest test.
+- Status defect (caught by the static guard, not by behaviour tests): the first status GET derived `state` from the historical stored completion, which still reads `completed` after a dispute or withdrawal. Fixed in `3cdc888`: `state` comes from the completion standing (`completed` only when uncontested; `contested` for other v2 standings; `legacy` for v1). The status record carries no `preflightDigest`. The POST response keeps it.
+- Guard allow-lists: `goalAuthorityStaticGuard.test.ts` now names `goals/externalCompletionApi.ts` (decision reader, read-only), and `goals/goalRoutes.ts` (decision recorder, completion service). The guard reasons said "no route caller yet". This is the stage that adds those callers. Reviewed as narrow, not a loosening.
+
+Evidence: full gate on `3cdc888` green (format, lint, typecheck, `npm test` 140 files / 2496 tests, build, `npm audit --omit=dev` 0 vulnerabilities, migrations diff empty). Independent Sonnet Medium review: `VERDICT: PASS WITH NON-BLOCKING`, no blocking findings. Hosted CI on `3cdc888`: run 38227589845, success.
+
+Non-blocking follow-ups (not blocking D.4A):
+
+1. The generic approval route returns `200 changed:false` for an already-approved completion approval. It writes nothing. Optional hardening: refuse completion rows there regardless of status.
+2. A second independent attestation cannot complete once any completion decision exists (preflight refuses; pinned by T11). Conservative and fail-closed. Revisit in D.4C/D.4E.
+3. `toCompletionRecord` returns no record when `completedAt` is null. Not reachable for a valid version-2 completion, per the terminal reader's agreement check.
+4. Preflight can return `429 verification_busy` under load (shared verification slot). Clients should retry.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Stage D.4B (desktop completion UI) not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
