@@ -8,6 +8,7 @@ import type {
 } from '../../shared/goalApi';
 import { ApiError } from '../api';
 import { ConfirmPanel } from './DefinitionParts';
+import { GoalCompletion } from './GoalCompletion';
 import { goalsApi } from './api';
 import { formatTime, shortHash } from './presentation';
 import { useLoad } from './useLoad';
@@ -1122,6 +1123,18 @@ export function GoalExternalIntegration({
           )}
         </section>
       )}
+
+      {selectedAttestationId &&
+        pendingDigest === null &&
+        currentProjection?.state === 'current' &&
+        projectionMatchesSelected && (
+          <GoalCompletion
+            key={`${goalId}:${selectedAttestationId}`}
+            goalId={goalId}
+            attestationId={selectedAttestationId}
+            refresh={refresh}
+          />
+        )}
 
       {reviewedConfirmation && (
         <ConfirmPanel

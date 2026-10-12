@@ -716,6 +716,36 @@
 .goal-external-current {
   color: var(--info);
 }
+/* Completion review (desktop, Handoff tab). Neutral text for qualified states; amber for contested; red for invalid. */
+.goal-completion {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+  max-width: 80ch;
+}
+.goal-completion > p,
+.goal-completion-state,
+.goal-completion-qualifier,
+.goal-completion-preservation,
+.goal-completion-limitation {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-completion h4 {
+  margin: 0;
+}
+.goal-completion-state {
+  font-weight: var(--fw-semibold);
+}
+.goal-completion-contested {
+  color: var(--amber);
+}
+.goal-completion-invalid {
+  color: var(--red);
+}
+.goal-completion-limitation {
+  color: var(--ink-2);
+}
 .goal-external-historical,
 .goal-external-stale,
 .goal-external-not_integrated,

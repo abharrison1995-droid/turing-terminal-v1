@@ -163,6 +163,30 @@ export function standingPresentation(status: GoalExternalCompletionStatus): Stan
   }
 }
 
+const CORRECTION_COPY: Record<string, string> = {
+  active_uncontested: 'Uncontested',
+  disputed: 'Disputed by you',
+  withdrawn: 'Withdrawn by you',
+  superseded: 'Superseded by you',
+  invalid: 'Invalid',
+};
+
+/** The plain name of an attestation's correction standing. An unknown value is never printed raw. */
+export function correctionStandingCopy(value: string | null): string {
+  if (value === null) return 'Not available';
+  return Object.prototype.hasOwnProperty.call(CORRECTION_COPY, value)
+    ? CORRECTION_COPY[value]!
+    : 'Not recognised';
+}
+
+/**
+ * The limitation line for the panel. Only the exact known value gets the full sentence; anything else is named as
+ * unrecognised, never repaired into a success.
+ */
+export function limitationCopy(value: unknown): string {
+  return value === 'not_proven' ? COMPLETION_COPY.limitation : contentPreservationCopy(value);
+}
+
 /** True when the Goal's own state is settled, so no completion control belongs in the panel any more. */
 export function isSettledState(status: GoalExternalCompletionStatus): boolean {
   return (
