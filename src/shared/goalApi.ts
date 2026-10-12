@@ -917,6 +917,20 @@ export interface GoalExternalCompletionDecisionRecorded {
   reused: boolean;
 }
 
+/**
+ * Response of the correction decision POST (201 when new, 200 when reused). `correctionId` and `sequence` are present
+ * only for an approved decision. `completionStanding` is the Goal's standing after the decision.
+ */
+export interface GoalAttestationCorrectionDecisionRecorded {
+  approvalId: string;
+  status: 'approved' | 'denied';
+  actionDigest: string;
+  correctionId: string | null;
+  sequence: number | null;
+  reused: boolean;
+  completionStanding: GoalCompletionStanding;
+}
+
 /** Response of the completion POST (201 when new, 200 when reused). */
 export interface GoalExternalCompletionCompleted {
   reused: boolean;

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { GoalDefinition } from '../../shared/goals.js';
 import type {
   GoalApiError,
+  GoalAttestationCorrectionDecisionRecorded,
   GoalCompletionStanding,
   GoalExternalCompletionCompleted,
   GoalExternalCompletionDecisionRecorded,
@@ -23,7 +24,10 @@ import {
   AttestationCorrectionError,
   getAttestationCorrectionStanding,
   listAttestationCorrectionHistory,
+  type AttestationCorrectionErrorCode,
 } from './attestationCorrection.js';
+import { decideAttestationCorrectionAsUser } from './attestationCorrectionDecision.js';
+import { ATTESTATION_CORRECTION_KINDS } from './attestationCorrectionDetail.js';
 import { FinalApplyAuthorityError } from './finalApplyAuthority.js';
 import {
   buildExternalIntegrationObservation,
@@ -293,6 +297,41 @@ export function externalCompletionError(error: unknown, reply: FastifyReply) {
   });
 }
 
+/**
+ * The HTTP status of every code of the correction service. The Record type makes a new correction error code a compile
+ * error until it is given a status here.
+ */
+const ATTESTATION_CORRECTION_STATUS: Record<AttestationCorrectionErrorCode, number> = {
+  goal_not_found: 404,
+  attestation_not_found: 404,
+  attestation_invalid: 422,
+  correction_chain_invalid: 422,
+  replacement_invalid: 422,
+  explanation_invalid: 400,
+  approval_required: 409,
+  approval_mismatch: 409,
+  correction_action_mismatch: 409,
+  correction_chain_changed: 409,
+  correction_transition_not_allowed: 409,
+  idempotency_conflict: 409,
+  persistence_failed: 503,
+};
+
+/**
+ * Maps a correction decision failure to its status and a bounded body. A Goal-approval refusal (for example
+ * `approval_not_found`, `already_decided` or `goal_terminal`) keeps its generic mapping. Any other failure is a generic
+ * 503 with no stack and no service message.
+ */
+function attestationCorrectionDecisionError(error: unknown, reply: FastifyReply) {
+  if (error instanceof AttestationCorrectionError)
+    return send(reply, ATTESTATION_CORRECTION_STATUS[error.code], { error: error.message, code: error.code });
+  if (error instanceof GoalApprovalError) return domainError(error, reply);
+  return send(reply, 503, {
+    error: 'The attestation correction could not be recorded safely.',
+    code: 'attestation_correction_unavailable',
+  });
+}
+
 function parse<T>(
   schema: z.ZodType<T>,
   value: unknown,
@@ -388,6 +427,21 @@ const completionStatusQuery = z.strictObject({
     .regex(/^[0-9a-f]{64}$/)
     .optional(),
 });
+const attestationCorrectionDecisionParams = z.strictObject({
+  goalId: z.string().uuid(),
+  approvalId: z.string().uuid(),
+});
+// The client names the decision and, for an approval, the one attested target and kind it reviewed. It never sends an
+// actor, a digest of its own, a status or a Goal transition: the digest comes from If-Match and the actor is fixed.
+const attestationCorrectionDecisionBody = z.discriminatedUnion('decision', [
+  z.strictObject({
+    decision: z.literal('approved'),
+    attestationId: z.string().uuid(),
+    correctionKind: z.enum(ATTESTATION_CORRECTION_KINDS),
+    explanation: z.string().max(10_000).nullable(),
+  }),
+  z.strictObject({ decision: z.literal('denied'), note }),
+]);
 const handoffListQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(50).optional(),
   offset: z.coerce.number().int().min(0).max(100_000).optional(),
@@ -950,6 +1004,63 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       return status;
     } catch (error) {
       return externalCompletionError(error, reply);
+    }
+  });
+
+  // --- Post-attestation correction decision (D.4C) --------------------------------------------------------------------
+
+  // The user's decision on one reviewed correction approval. It decides only that approval and, for an approval, appends
+  // exactly that correction. It never starts or resumes the Goal, never touches the completion or Git, and returns the
+  // Goal's standing after the decision. The reviewed action digest comes from If-Match only.
+  app.post('/api/goals/:goalId/attestation-corrections/:approvalId/decision', async (request, reply) => {
+    const params = attestationCorrectionDecisionParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal or approval identity.', code: 'invalid_request' });
+    const body = parse(attestationCorrectionDecisionBody, request.body, reply);
+    if (!body.ok) return reply;
+    const { goalId, approvalId } = params.data;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    const digest = readQuotedDigestPrecondition(
+      request,
+      reply,
+      'Review the reviewed correction action before recording the decision.',
+    );
+    if (digest === undefined) return reply;
+    try {
+      const data = body.data;
+      const result = decideAttestationCorrectionAsUser(
+        db,
+        data.decision === 'approved'
+          ? {
+              goalId,
+              approvalId,
+              reviewedActionDigest: digest,
+              decision: 'approved',
+              attestationId: data.attestationId,
+              correctionKind: data.correctionKind,
+              explanation: data.explanation,
+            }
+          : {
+              goalId,
+              approvalId,
+              reviewedActionDigest: digest,
+              decision: 'denied',
+              ...(data.note ? { note: data.note } : {}),
+            },
+      );
+      const response: GoalAttestationCorrectionDecisionRecorded = {
+        approvalId: result.approvalId,
+        status: result.status,
+        actionDigest: result.actionDigest,
+        correctionId: result.correctionId,
+        sequence: result.sequence,
+        reused: result.reused,
+        completionStanding: readGoalCompletionStanding(db, goalId),
+      };
+      return reply.code(result.reused ? 200 : 201).send(response);
+    } catch (error) {
+      return attestationCorrectionDecisionError(error, reply);
     }
   });
 
