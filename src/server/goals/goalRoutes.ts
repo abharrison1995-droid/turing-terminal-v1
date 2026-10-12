@@ -4,6 +4,8 @@ import type { GoalDefinition } from '../../shared/goals.js';
 import type {
   GoalApiError,
   GoalCompletionStanding,
+  GoalExternalCompletionPreflightResponse,
+  GoalExternalCompletionStatus,
   GoalFinalApplyPreflightView,
   GoalManualHandoffListResponse,
   GoalManualHandoffPrepared,
@@ -40,6 +42,8 @@ import {
   parseDefinitionPrecondition,
   rejectDefinition,
 } from './definitions.js';
+import { readExternalCompletionStatus } from './externalCompletionApi.js';
+import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { GoalFindingError } from './findings.js';
 import { getManualHandoffProjection, ManualHandoffError, prepareManualHandoff } from './manualHandoff.js';
 import { abandonGoal, decideFindingAsUser, decideGoalApprovalAsUser, pauseGoal } from './goalCommands.js';
@@ -282,6 +286,13 @@ const externalAttestationParams = z.strictObject({
 });
 const externalIntegrationDecisionBody = z.strictObject({
   decision: z.literal('confirm_external_integration'),
+});
+const completionPreflightQuery = z.strictObject({ attestationId: z.string().uuid() });
+const completionStatusQuery = z.strictObject({
+  actionDigest: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
 });
 const handoffListQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(50).optional(),
@@ -717,6 +728,56 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       return reply.code(result.reusedAttestation ? 200 : 201).send(result);
     } catch (error) {
       return externalIntegrationError(error, reply);
+    }
+  });
+
+  // --- Version-2 external completion: read-only preflight and status (no decision, completion or proof is written) ----
+
+  app.get('/api/goals/:goalId/completion-preflight', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
+    const query = parse(completionPreflightQuery, request.query, reply);
+    if (!query.ok) return reply;
+    const goalId = params.data.goalId;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    try {
+      // A refused report is returned as data with 200; only an unexpected failure reaches the catch.
+      const report = await computeExternalCompletionPreflight(db, goalId, {
+        attestationId: query.data.attestationId,
+      });
+      const response: GoalExternalCompletionPreflightResponse = { preflight: report };
+      return reply.header('etag', `"${report.digest}"`).send(response);
+    } catch {
+      return send(reply, 503, {
+        error: 'External completion could not be verified safely.',
+        code: 'external_completion_unavailable',
+      });
+    }
+  });
+
+  app.get('/api/goals/:goalId/completion', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
+    const query = parse(completionStatusQuery, request.query, reply);
+    if (!query.ok) return reply;
+    const goalId = params.data.goalId;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    try {
+      const status: GoalExternalCompletionStatus = readExternalCompletionStatus(
+        db,
+        goalId,
+        query.data.actionDigest ?? null,
+      );
+      return status;
+    } catch {
+      return send(reply, 503, {
+        error: 'External completion state could not be read safely.',
+        code: 'external_completion_unavailable',
+      });
     }
   });
 

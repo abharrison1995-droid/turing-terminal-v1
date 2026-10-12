@@ -795,3 +795,114 @@ export interface GoalFinalApplyPreflightView {
   appliedExternallySupported: false;
   manualReconciliationRequired: boolean;
 }
+
+// --- Version-2 external completion (authenticated API; no completion is made by any read) --------------------------
+
+/** One preflight check's name, in the fixed order the report lists them. */
+export type GoalExternalCompletionPreflightCheckName =
+  | 'input'
+  | 'goal_status'
+  | 'definition'
+  | 'prior_completion'
+  | 'attestation'
+  | 'correction_standing'
+  | 'snapshot_before'
+  | 'completion_evaluation'
+  | 'git_observation'
+  | 'snapshot_after'
+  | 'assemble';
+
+/**
+ * The preflight report exactly as the service computes it. A refused report is data (HTTP 200), not an error. `digest`
+ * is the report's own digest; a completion decision must name it in If-Match. `actionFields` is null for a refusal.
+ */
+export interface GoalExternalCompletionPreflightReport {
+  schemaVersion: number;
+  kind: string;
+  goalId: string;
+  attestationId: string;
+  outcome: 'ready' | 'refused';
+  reasons: Array<{ code: string; detail: string | null }>;
+  checks: Array<{ name: GoalExternalCompletionPreflightCheckName; status: 'passed' | 'failed' | 'skipped' }>;
+  facts: {
+    goalStatus: string | null;
+    definitionVersion: number | null;
+    definitionHash: string | null;
+    lineageDigest: string | null;
+    mode: 'legacy_v1' | 'external_user_attested_v2' | null;
+    handoffId: string | null;
+    handoffDigest: string | null;
+    attestationActionDigest: string | null;
+    attestationRecordDigest: string | null;
+    correctionStanding: 'active_uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'invalid' | null;
+    correctionSequence: number | null;
+    destinationRef: string | null;
+    attestedCommit: string | null;
+    attestedTree: string | null;
+    freshCommit: string | null;
+    freshTree: string | null;
+    objectFormat: 'sha1' | 'sha256' | null;
+  };
+  actionFields: Record<string, unknown> | null;
+  proofLimitations: {
+    contentPreservation: 'not_proven';
+    goalCompletion: 'not_completed_by_preflight';
+    destinationPolicy: 'exact_attested_tip';
+  };
+  authority: { mintsApproval: false; mintsProof: false; mintsTerminalAuthority: false };
+  digest: string;
+}
+
+export interface GoalExternalCompletionPreflightResponse {
+  preflight: GoalExternalCompletionPreflightReport;
+}
+
+/** One completion decision row of a Goal. Invalid rows carry no digest, attestation or status. */
+export interface GoalExternalCompletionDecisionView {
+  approvalId: string;
+  actionDigest: string | null;
+  attestationId: string | null;
+  status: 'approved' | null;
+  valid: boolean;
+  invalidReason: string | null;
+}
+
+/** The stored proof identity of a completed version-2 Goal. Historical identity: consult `completionStanding`. */
+export interface GoalExternalCompletionRecord {
+  proofId: string;
+  proofDigest: string;
+  approvalId: string;
+  actionDigest: string;
+  preflightDigest: string;
+  observedAt: string;
+  completedAt: string;
+}
+
+/**
+ * Read-only status. `state` describes the whole Goal: `invalid` when any stored decision row or the stored completion
+ * fails verification, `completed` when a verified completion exists, `decided` when a valid decision is waiting, and
+ * `not_completed` otherwise. With `actionDigest`, `decisions` and `completion` are filtered to that exact action.
+ */
+export interface GoalExternalCompletionStatus {
+  goalId: string;
+  state: 'not_completed' | 'decided' | 'completed' | 'invalid';
+  decisions: GoalExternalCompletionDecisionView[];
+  completion: GoalExternalCompletionRecord | null;
+  completionStanding: GoalCompletionStanding;
+}
+
+/** Response of the completion decision POST (201 when new, 200 when reused). */
+export interface GoalExternalCompletionDecisionRecorded {
+  approvalId: string;
+  actionDigest: string;
+  preflightDigest: string;
+  status: 'approved';
+  reused: boolean;
+}
+
+/** Response of the completion POST (201 when new, 200 when reused). */
+export interface GoalExternalCompletionCompleted {
+  reused: boolean;
+  completion: GoalExternalCompletionRecord;
+  completionStanding: GoalCompletionStanding;
+}
