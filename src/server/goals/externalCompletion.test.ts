@@ -902,7 +902,7 @@ describe('external completion service: adversarial matrix', () => {
   );
 
   it(
-    'refuses a Goal whose attestation approval is no longer approved with correction_standing_unavailable (sha1)',
+    'refuses a Goal whose attestation approval is no longer approved with completion_history_invalid (sha1)',
     async () => {
       const decided = await v2DecidedFixture('sha1');
       const { fx } = decided;
@@ -914,10 +914,11 @@ describe('external completion service: adversarial matrix', () => {
       fx.db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(attestation.approval_id);
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
-      // The attestation's standing check reports the lost approval as correction_standing_unavailable (observed).
+      // Slice 2a: the Goal's own completion row fails the classifier (its standing read is unavailable), so check 4
+      // refuses with completion_history_invalid before the attestation's standing check is reached.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
-        detail: 'correction_standing_unavailable',
+        detail: 'completion_history_invalid',
       });
       expectNoCompletion(fx, before);
     },
@@ -1110,15 +1111,15 @@ describe('external completion service: lineage, attestation approval and base hi
       fx.db.prepare(`UPDATE goal_approvals SET ${column} = ? WHERE id = ?`).run(value, decided.approval.id);
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
-      // Pinned from the first run: the approval no longer matches the attestation, so the correction standing read fails
-      // closed at check 6 (the same code the lost-approval case reports), before the Git observation is reached.
+      // Slice 2a: the approval no longer matches the attestation, so the Goal's own completion row fails the classifier at
+      // check 4. The reason's detail is the classifier's integrity code, and the Git observation is never reached.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
-        detail: 'correction_standing_unavailable',
+        detail: 'completion_history_invalid',
       });
       expect(await preflightReason(fx, decided.attestationId)).toEqual({
-        code: 'correction_standing_unavailable',
-        detail: null,
+        code: 'completion_history_invalid',
+        detail: 'correction_standing_unavailable',
       });
       expectNoCompletion(fx, before);
     },
@@ -1151,9 +1152,10 @@ describe('external completion service: lineage, attestation approval and base hi
         );
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
+      // Slice 2a: the Goal's own completion row is class 5 (its attestation cannot be read), so check 4 refuses first.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
-        detail: 'attestation_invalid',
+        detail: 'completion_history_invalid',
       });
       expectNoCompletion(fx, before);
     },

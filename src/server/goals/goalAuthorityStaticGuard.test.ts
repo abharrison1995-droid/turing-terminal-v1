@@ -214,9 +214,9 @@ const RULES: readonly AuthorityRule[] = [
     id: 'classifier_entry',
     pattern: /\bclassifyCompletionAuthority\b/,
     mode: 'only_in',
-    files: ['goals/completionAuthorityPolicy.ts'],
+    files: ['goals/completionAuthorityPolicy.ts', 'goals/externalCompletionPreflight.ts'],
     reason:
-      'Only the completion authority classifier module names its entry point. Slice 1 has no caller; a later slice that adds one must extend this list in the same commit.',
+      'Only the completion authority classifier module and the public preflight name its entry point. Slice 2a adds the preflight caller; a later caller must extend this list in the same commit.',
   },
   {
     id: 'classifier_not_writer',
@@ -532,11 +532,6 @@ describe('authority static guard: seeded violations and negative controls', () =
       "export const reason = 'external_completion_user_confirmed';",
     ],
     ['classifier_entry', 'goals/synthetic.ts', 'const result = classifyCompletionAuthority(db, goalId, id);'],
-    [
-      'classifier_entry',
-      'goals/externalCompletionPreflight.ts',
-      "import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';",
-    ],
     ['classifier_not_writer', 'goals/completionAuthorityPolicy.ts', 'await requestGoalApproval(db, input);'],
     [
       'classifier_not_writer',
@@ -796,6 +791,11 @@ describe('authority static guard: seeded violations and negative controls', () =
       'computeExternalCompletionPreflight(db, goalId, input, { allowRecordedDecision: true });',
     ],
     ['allow_recorded_decision_callers', 'goals/synthetic.ts', 'const label = "recorded decision";'],
+    [
+      'classifier_entry',
+      'goals/externalCompletionPreflight.ts',
+      "import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';",
+    ],
   ];
 
   it.each(controls)('%s passes its negative control in %s', (ruleId, path, source) => {

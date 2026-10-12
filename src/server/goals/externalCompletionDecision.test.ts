@@ -619,7 +619,7 @@ describe('external completion decision: authority and copies', () => {
       const attested = await v2RunningAttestedFixture('sha1');
       const db = attested.fx.db;
       const goalId = attested.fx.goalId;
-      const { approval } = await seedCompletion(attested);
+      const { approval, action } = await seedCompletion(attested);
       const before = capture(attested);
 
       expect(
@@ -640,15 +640,6 @@ describe('external completion decision: authority and copies', () => {
       ).rejects.toMatchObject({ code: 'completion_decision_requires_dedicated_service' });
       expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending' });
 
-      const action = await rebuiltAction(
-        attested,
-        await computeExternalCompletionPreflight(
-          db,
-          goalId,
-          { attestationId: attested.attestationId },
-          { allowRecordedDecision: true },
-        ),
-      );
       for (const [requestedBy, gate, risk] of [
         ['supervisor', 'user_confirmation', 'high'],
         ['system', 'user_confirmation', 'high'],
@@ -847,7 +838,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
   );
 
   it(
-    'D17b ignores a valid decision that names another attestation',
+    'D17b refuses a decision while a completion row names an attestation that does not exist',
     async () => {
       const attested = await v2RunningAttestedFixture('sha1');
       const db = attested.fx.db;
@@ -879,21 +870,21 @@ describe('external completion decision: reuse, corruption and inert checks', () 
         externalCompletionActionDigest: foreignAction.actionDigest,
       });
       decideGoalApproval(db, { goalId, approvalId: other.id, decision: 'approved', decidedBy: 'user' });
+      const before = capture(attested);
 
-      const result = await recordExternalCompletionDecision(
-        db,
-        decisionInput(goalId, attested.attestationId, digest),
+      // The fabricated attestation is class 5 history: the decision for the real attestation is refused, not ignored.
+      await expectDecisionRefusal(
+        recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest)),
+        'preflight_refused',
+        'completion_history_invalid',
       );
-      expect(result).toMatchObject({ reused: false, status: 'approved' });
-      expect(result.approvalId).not.toBe(other.id);
+      expectNoChange(attested, before);
       expect(readExternalCompletionDecision(db, goalId, other.id)).toMatchObject({
         state: 'valid',
         action: { attestation: { id: foreign } },
       });
-      expect(listExternalCompletionDecisions(db, goalId).map((entry) => entry.state)).toEqual([
-        'valid',
-        'valid',
-      ]);
+      // Only the foreign row exists: the refused decision wrote nothing.
+      expect(listExternalCompletionDecisions(db, goalId).map((entry) => entry.state)).toEqual(['valid']);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

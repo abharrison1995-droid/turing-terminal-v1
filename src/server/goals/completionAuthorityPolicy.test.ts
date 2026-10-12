@@ -10,6 +10,7 @@ import { buildExternalCompletionAction } from './externalCompletionProof.js';
 import {
   computeEmptyCorrectionChainIdentity,
   computeExternalCompletionPreflight,
+  readPreflightSnapshotIdentity,
 } from './externalCompletionPreflight.js';
 import {
   appendCorrectionForTest,
@@ -221,9 +222,11 @@ describe('completion authority classifier: classes', () => {
         eligible: false,
       });
       expect(result.entries[0]?.correctionTipDigest).toMatch(/^[0-9a-f]{64}$/);
-      // Slice 1 changes no preflight behaviour: a recorded decision still refuses the other attestation today.
+      // Slice 2a: a corrected decision for another attestation no longer blocks a fresh B at check 4. The fixture then
+      // reaches a Git refusal, because the destination was restored to its prior tip after B was observed.
       const preflight = await computeExternalCompletionPreflight(db, goalId, { attestationId: otherId });
-      expect(preflight.reasons[0]?.code).toBe('completion_already_recorded');
+      expect(preflight.reasons[0]?.code).toBe('destination_advanced_after_observation');
+      expect(preflight.checks.find((check) => check.status === 'failed')?.name).not.toBe('prior_completion');
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
@@ -780,6 +783,154 @@ describe('completion authority classifier: policy digest', () => {
       const after = classifyCompletionAuthority(db, goalId, decided.attestationId);
       expect(after.class).toBe(6);
       expect(after.policyDigest).not.toBe(before.policyDigest);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('completion authority classifier: the public preflight by class (D.4R Slice 2a)', () => {
+  it(
+    'class 3: a fresh attestation is ready when the only decision is for another attestation and that decision is corrected',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      moveDestination(decided, 'destination moved for a fresh attestation');
+      const fresh = await reattestAtCurrentTip(decided);
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      expect(classifyCompletionAuthority(db, goalId, fresh.attestationId)).toMatchObject({ class: 3 });
+      const report = await computeExternalCompletionPreflight(db, goalId, {
+        attestationId: fresh.attestationId,
+      });
+      expect(report.outcome).toBe('ready');
+      expect(report.actionFields).not.toBeNull();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'class 4: another attestation has an eligible decision, so the public and option calls both refuse with competing_decision and write nothing',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      const otherId = await anotherAttestation(decided);
+      expect(classifyCompletionAuthority(db, goalId, otherId)).toMatchObject({ class: 4 });
+      const before = databaseSnapshot(db);
+      const publicReport = await computeExternalCompletionPreflight(db, goalId, { attestationId: otherId });
+      const optionReport = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: otherId },
+        { allowRecordedDecision: true },
+      );
+      for (const report of [publicReport, optionReport]) {
+        expect(report).toMatchObject({
+          outcome: 'refused',
+          actionFields: null,
+          reasons: [{ code: 'completion_already_recorded', detail: 'competing_decision' }],
+        });
+      }
+      expect(databaseSnapshot(db)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'class 5: a pending completion row makes the public and option calls both refuse with completion_history_invalid and write nothing',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { db, goalId } = attested.fx;
+      seedCompletionRow(db, goalId, await completionBody(attested), false);
+      expect(classifyCompletionAuthority(db, goalId, attested.attestationId)).toMatchObject({
+        class: 5,
+        reason: 'approval_fields_invalid',
+      });
+      const before = databaseSnapshot(db);
+      const publicReport = await computeExternalCompletionPreflight(db, goalId, {
+        attestationId: attested.attestationId,
+      });
+      const optionReport = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      for (const report of [publicReport, optionReport]) {
+        expect(report).toMatchObject({
+          outcome: 'refused',
+          actionFields: null,
+          reasons: [{ code: 'completion_history_invalid', detail: 'approval_fields_invalid' }],
+        });
+      }
+      expect(databaseSnapshot(db)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the option accepts class 2 only: the decided attestation is refused without the option and ready with it',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      expect(classifyCompletionAuthority(db, goalId, decided.attestationId)).toMatchObject({ class: 2 });
+      const publicReport = await computeExternalCompletionPreflight(db, goalId, {
+        attestationId: decided.attestationId,
+      });
+      expect(publicReport).toMatchObject({
+        outcome: 'refused',
+        reasons: [{ code: 'completion_already_recorded', detail: null }],
+      });
+      const optionReport = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: decided.attestationId },
+        { allowRecordedDecision: true },
+      );
+      expect(optionReport.outcome).toBe('ready');
+      expect(optionReport.actionFields).not.toBeNull();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the option never waives a terminal proof: class 6 is refused with completion_already_recorded by both calls',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      insertProofRow(db, goalId);
+      expect(classifyCompletionAuthority(db, goalId, decided.attestationId)).toMatchObject({ class: 6 });
+      const before = databaseSnapshot(db);
+      for (const options of [{}, { allowRecordedDecision: true }]) {
+        const report = await computeExternalCompletionPreflight(
+          db,
+          goalId,
+          { attestationId: decided.attestationId },
+          options,
+        );
+        expect(report).toMatchObject({
+          outcome: 'refused',
+          reasons: [{ code: 'completion_already_recorded', detail: null }],
+        });
+      }
+      expect(databaseSnapshot(db)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the policy keys of the identity change when another attestation correction changes',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      moveDestination(decided, 'destination moved for a fresh attestation');
+      const fresh = await reattestAtCurrentTip(decided);
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      const before = readPreflightSnapshotIdentity(db, goalId, fresh.attestationId);
+      expect(before).toMatchObject({ policy_class: '3' });
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'withdraw');
+      const after = readPreflightSnapshotIdentity(db, goalId, fresh.attestationId);
+      expect(after).toMatchObject({ policy_class: '3' });
+      expect(after.policy_digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(after.policy_digest).not.toBe(before.policy_digest);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

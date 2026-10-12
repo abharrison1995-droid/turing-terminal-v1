@@ -1003,7 +1003,7 @@ describe('external completion (R3)', () => {
   );
 
   it(
-    'T11 pinned: R2 accepts a decision for another attestation Y while X is approved and unconsumed; only Y completes',
+    'T11 pinned: R2 refuses a decision for another attestation Y while X is approved and unconsumed (competing decision)',
     async () => {
       const attested = await v2RunningAttestedFixture('sha1');
       const { fx } = attested;
@@ -1014,13 +1014,15 @@ describe('external completion (R3)', () => {
       advanceDestination(fx.repo, 'second-tip.txt');
       const attestationY = await reattestAtCurrentTip(attested);
 
-      // Observed: once a completion decision exists, the read-only preflight refuses every attestation of the Goal.
+      // Observed: while X's decision is eligible, the read-only preflight refuses Y as a competing decision.
       const readPreflightY = await get<GoalExternalCompletionPreflightResponse>(
         preflightUrl(fx.goalId, attestationY.attestationId),
       );
       expect(readPreflightY.body.preflight.outcome).toBe('refused');
       expect(readPreflightY.body.preflight.reasons[0]?.code).toBe('completion_already_recorded');
-      // So the digest for Y comes from the same preflight the decision service uses (allowRecordedDecision), not from R1.
+      expect(readPreflightY.body.preflight.reasons[0]?.detail).toBe('competing_decision');
+      // The digest for Y comes from the same preflight the decision service uses (allowRecordedDecision). That option
+      // never waives a competing decision, so this digest belongs to a refused report.
       const digestY = (
         await computeExternalCompletionPreflight(
           fx.db,
@@ -1042,38 +1044,28 @@ describe('external completion (R3)', () => {
       });
       expect(wholeState(fx)).toEqual(beforeX);
 
-      // Observed: R2 accepts a decision for Y while X is approved (decision classification ignores other attestations).
-      const recordedY = await call(
-        app,
-        'POST',
-        decisionUrl(fx.goalId),
-        {
-          decision: 'record_completion_decision',
-          attestationId: attestationY.attestationId,
-          acknowledgeContentNotProven: true,
-        },
-        { 'if-match': `"${digestY}"` },
-      );
-      expect(recordedY.status).toBe(201);
-      expect(completionApprovals(fx).map((row) => row.id)).toEqual([
-        decidedX.approvalId,
-        recordedY.body.approvalId,
-      ]);
-
-      // Y completes. X's digest then names a Goal completed by another attestation's decision: completion_conflict.
-      const completedY = await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
-        'if-match': `"${recordedY.body.actionDigest}"`,
-      });
-      expect(completedY.status).toBe(201);
-      expect(completedY.body.completion.approvalId).toBe(recordedY.body.approvalId);
-      const beforeConflict = wholeState(fx);
+      // Slice 2a: R2 refuses a decision for Y while X's eligible decision exists. The option does not waive class 4.
+      const beforeY = wholeState(fx);
       expect(
-        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
-          'if-match': `"${decidedX.actionDigest}"`,
-        }),
-      ).toMatchObject({ status: 409, body: { code: 'completion_conflict' } });
-      expect(wholeState(fx)).toEqual(beforeConflict);
-      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+        await call(
+          app,
+          'POST',
+          decisionUrl(fx.goalId),
+          {
+            decision: 'record_completion_decision',
+            attestationId: attestationY.attestationId,
+            acknowledgeContentNotProven: true,
+          },
+          { 'if-match': `"${digestY}"` },
+        ),
+      ).toMatchObject({
+        status: 409,
+        // The decision transaction maps the refusal by its error code, so the detail is the code (2b adds the mapping).
+        body: { code: 'preflight_refused', detail: 'completion_already_recorded' },
+      });
+      expect(wholeState(fx)).toEqual(beforeY);
+      expect(completionApprovals(fx).map((row) => row.id)).toEqual([decidedX.approvalId]);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

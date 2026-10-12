@@ -9,7 +9,11 @@ import { getGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { createCycle, finalizeCycle } from './cycles.js';
 import { writeGoalEvent } from './events.js';
-import { readPreflightSnapshotIdentity, type SnapshotIdentity } from './externalCompletionPreflight.js';
+import {
+  PreflightRefusal,
+  readPreflightSnapshotIdentity,
+  type SnapshotIdentity,
+} from './externalCompletionPreflight.js';
 import {
   consumeExternalCompletionDecision,
   EXTERNAL_COMPLETION_TERMINAL_ERROR_CODES,
@@ -88,6 +92,17 @@ function refusal(attempt: () => unknown): ExternalCompletionTerminalError {
     throw error;
   }
   throw new Error('the call succeeded but a refusal was expected');
+}
+
+/** The preflight refusal an identity read raises. Fails the test when the read succeeds or raises something else. */
+function preflightRefusal(attempt: () => unknown): PreflightRefusal {
+  try {
+    attempt();
+  } catch (error) {
+    if (error instanceof PreflightRefusal) return error;
+    throw error;
+  }
+  throw new Error('the identity read succeeded but a refusal was expected');
 }
 
 function stateRefusal(attempt: () => unknown): GoalStateError {
@@ -348,30 +363,33 @@ describe('external completion terminal: T-TX3 the bypass table (transitionGoal c
 });
 
 describe('external completion terminal: T-TX4 an approval that changes inside the transaction', () => {
-  // The identity snapshot does not carry the approval's status, so the TX's own re-read is what refuses a change made
-  // after the snapshot was captured. The refusal is the same whether the snapshot was captured before or after the change.
+  // Slice 2a: a denied decision row is class 5, so the terminal's own identity read refuses before the approval status
+  // is checked. The refusal therefore names completion_history_invalid, not approval_status. A snapshot captured after
+  // the change cannot be read at all, so both variants consume with the identity captured before the change.
   it.each([
     ['captured before the change', 'before'],
     ['captured after the change', 'after'],
   ] as const)(
-    'T-TX4 refuses the consume with approval_status when the approval was %s',
+    'T-TX4 refuses the consume with completion_history_invalid when the approval was %s',
     async (_label, when) => {
       const { db, goalId, attestationId, approvalId, decision, proof, expected: captured } = await decided();
       db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
       db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(approvalId);
       expect(getGoalApproval(db, approvalId)).toMatchObject({ status: 'denied' });
-      const expected =
-        when === 'before'
-          ? captured
-          : readPreflightSnapshotIdentity(db, goalId, attestationId, { allowRecordedDecision: true });
       const before = databaseSnapshot(db);
 
-      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
+      expect(refusal(() => consumeInTransaction(db, decision, proof, captured))).toMatchObject({
         code: 'authority_changed_during_completion',
-        detail: 'approval_status',
+        detail: 'completion_history_invalid',
       });
       expect(databaseSnapshot(db)).toEqual(before);
       expect(readStoredCompletion(db, goalId)).toEqual({ state: 'not_completed' });
+      if (when === 'after')
+        expect(
+          preflightRefusal(() =>
+            readPreflightSnapshotIdentity(db, goalId, attestationId, { allowRecordedDecision: true }),
+          ),
+        ).toMatchObject({ code: 'completion_history_invalid' });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Db } from '../db.js';
 import { canonicalJson } from './definitionHash.js';
 import { readApprovedCompletionAuthority } from './approvedCompletionAuthority.js';
+import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import {
   attestationCorrectionStandingAllowsCompletion,
@@ -61,6 +62,7 @@ export const PREFLIGHT_REASON_CODES = [
   'definition_not_approved',
   'definition_not_v2',
   'completion_already_recorded',
+  'completion_history_invalid',
   'attestation_not_found',
   'attestation_invalid',
   'attestation_definition_mismatch',
@@ -338,6 +340,8 @@ export interface SnapshotIdentity {
   handoff_fingerprint: string;
   proof_rows: number;
   completion_approval_rows: number;
+  policy_class: string;
+  policy_digest: string;
 }
 
 interface Snapshot {
@@ -399,7 +403,15 @@ function readSnapshot(
         'SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND external_completion_action_digest IS NOT NULL',
       )
       .get(goalId) as { n: number };
-    if (proofs.n > 0 || (recordedApprovals.n > 0 && options.allowRecordedDecision !== true))
+    // The classifier reads the same transaction, so its policy digest describes the state this snapshot is built on.
+    const completion = classifyCompletionAuthority(db, goalId, attestationId);
+    if (completion.class === 6)
+      throw new PreflightRefusal(CHECK.prior_completion, 'completion_already_recorded', null);
+    if (completion.class === 5)
+      throw new PreflightRefusal(CHECK.prior_completion, 'completion_history_invalid', completion.reason);
+    if (completion.class === 4)
+      throw new PreflightRefusal(CHECK.prior_completion, 'completion_already_recorded', 'competing_decision');
+    if (completion.class === 2 && options.allowRecordedDecision !== true)
       throw new PreflightRefusal(CHECK.prior_completion, 'completion_already_recorded', null);
 
     progress.index = CHECK.attestation;
@@ -477,6 +489,8 @@ function readSnapshot(
       handoff_fingerprint: manualHandoffAttestationDatabaseFingerprint(db, goalId),
       proof_rows: proofs.n,
       completion_approval_rows: recordedApprovals.n,
+      policy_class: String(completion.class),
+      policy_digest: completion.policyDigest,
     };
     return { identity, definition, record, handoff, emptyChain };
   })();
