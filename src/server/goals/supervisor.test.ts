@@ -869,6 +869,122 @@ describe('completion authority', () => {
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 
+  /** A version-2 Goal whose final review passed and whose user acceptance and final apply are not yet recorded. */
+  async function v2AwaitingAcceptance() {
+    const definition = simpleDefinition({
+      milestones: [milestone('m1', ['build', 'tests'])],
+      policy: {
+        completionContractVersion: 2,
+        integrationMode: 'external_user_attested',
+        requireFinalReview: true,
+        requireUserAcceptance: true,
+        applyToBase: 'required',
+      },
+    });
+    definition.review.final = true;
+    const h = harness({ definition });
+    await passDeterministic(h.fx);
+    const review = await createReview(h.fx.db, {
+      goalId: h.fx.goalId,
+      definitionVersion: 1,
+      reviewKind: 'final',
+    });
+    completeReview(h.fx.db, {
+      reviewId: review.id,
+      report: reportOf(),
+      independence: { established: true, policy: h.fx.definition.routing.independence.finalReview },
+    });
+    return h;
+  }
+
+  it(
+    'requests the final_acceptance gate for a version-2 Goal whose only other failure is external_completion_not_activated',
+    async () => {
+      const h = await v2AwaitingAcceptance();
+      await h.start();
+      expect(await h.tick()).toBe('gate_requested');
+      expect(h.status()).toEqual({ status: 'needs_user', reason: 'gate_pending' });
+      const approvals = pendingGoalApprovals(h.fx.db, h.fx.goalId);
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0]).toMatchObject({
+        gate: 'final_acceptance',
+        detail: {
+          definitionVersion: 1,
+          definitionHash: h.fx.currentHash(),
+          integrationTree: h.fx.tree(),
+          integrationHead: h.fx.head(),
+        },
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'after the user accepts, a version-2 Goal parks at completion_pending without completing or writing a proof',
+    async () => {
+      const h = await v2AwaitingAcceptance();
+      await h.start();
+      expect(await h.tick()).toBe('gate_requested');
+      const [approval] = pendingGoalApprovals(h.fx.db, h.fx.goalId);
+      decideGoalApproval(h.fx.db, {
+        goalId: h.fx.goalId,
+        approvalId: approval!.id,
+        decision: 'approved',
+        decidedBy: 'user',
+      });
+      expect(await h.tick()).toBe('resumed');
+      const goalRowBefore = h.fx.db.prepare('SELECT * FROM goals WHERE id = ?').get(h.fx.goalId);
+      expect(await h.supervisor.tickGoal(h.fx.goalId)).toEqual({
+        action: 'completion_pending',
+        goalId: h.fx.goalId,
+        code: 'external_completion_not_activated',
+      });
+      expect(h.status()).toEqual({ status: 'running', reason: 'gate_resolved' });
+      // The completion_pending tick itself changes no goals column: the whole row is equal to its pre-tick value.
+      expect(h.fx.db.prepare('SELECT * FROM goals WHERE id = ?').get(h.fx.goalId)).toEqual(goalRowBefore);
+      expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({
+        n: 0,
+      });
+      expect(
+        listGoalEvents(h.fx.db, h.fx.goalId).some(
+          (event) => event.type === 'state_changed' && event.payload.to === 'completed',
+        ),
+      ).toBe(false);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'negative control: a version-1 Goal with the same user-terminal shape keeps its gate and never carries the version-2 marker',
+    async () => {
+      const definition = simpleDefinition({
+        milestones: [milestone('m1', ['build', 'tests'])],
+        policy: { requireFinalReview: true, requireUserAcceptance: true, applyToBase: 'required' },
+      });
+      definition.review.final = true;
+      const h = harness({ definition });
+      await passDeterministic(h.fx);
+      const review = await createReview(h.fx.db, {
+        goalId: h.fx.goalId,
+        definitionVersion: 1,
+        reviewKind: 'final',
+      });
+      completeReview(h.fx.db, {
+        reviewId: review.id,
+        report: reportOf(),
+        independence: { established: true, policy: h.fx.definition.routing.independence.finalReview },
+      });
+      await h.start();
+      expect(await h.tick()).toBe('gate_requested');
+      const failureCodes = listGoalEvents(h.fx.db, h.fx.goalId)
+        .filter((event) => event.type === 'completion_evaluated')
+        .at(-1)!.payload.failureCodes;
+      expect(failureCodes).toEqual(['final_acceptance_missing', 'final_apply_required']);
+      expect(failureCodes).not.toContain('external_completion_not_activated');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
   it('never writes the completed status itself (static check of every supervisor module)', () => {
     const directory = join(process.cwd(), 'src', 'server', 'goals');
     for (const file of [

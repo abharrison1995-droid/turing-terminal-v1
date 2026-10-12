@@ -906,11 +906,17 @@ export class GoalSupervisor {
         return { action: 'completed', goalId };
       }
       // Final acceptance is requested only when it is the sole thing left for the user (final apply may also remain).
+      // A version-2 Goal's external-completion marker is accepted here only under its own v2 signal; it never completes.
       const evaluation = outcome.evaluation;
+      const v2Marker = evaluation.finalApply.reason === 'external_completion_not_activated';
       if (
         evaluation.finalAcceptance.required &&
         !evaluation.finalAcceptance.ok &&
-        evaluation.failures.every((failure) => TERMINAL_USER_FAILURES.has(failure.code))
+        evaluation.failures.every(
+          (failure) =>
+            TERMINAL_USER_FAILURES.has(failure.code) ||
+            (v2Marker && failure.code === 'external_completion_not_activated'),
+        )
       ) {
         const approvalId = this.requestGate(
           goalId,
