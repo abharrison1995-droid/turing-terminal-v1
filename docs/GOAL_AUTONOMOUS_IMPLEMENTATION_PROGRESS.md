@@ -391,6 +391,28 @@ Non-blocking follow-ups:
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4C (correction authority) not started.
 
+### D.4C post-completion correction authority: ACCEPTED on `55fed93` (lead record)
+
+Commits, in order: `29bb14a` (generic route refuses every correction approval with `correction_decision_requires_dedicated_service`), `883ad0c` (one existing D.3F expectation updated to that code), `caf1b83` (dedicated user correction-decision service, one outer transaction), `3da78be` (authenticated route `POST /api/goals/:goalId/attestation-corrections/:approvalId/decision`), `55fed93` (static guard rule for the new service). Plan: `scratchpad/d4c_plan.md` (Sonnet Medium).
+
+Behaviour: the route accepts one strict decision (approved or denied) for one approval. The gate is the existing correction approval, which the service decides as the user and then appends. The If-Match digest is the reviewed action digest. A stale chain, a mismatched action, or a second disallowed correction is refused, and nothing is written. A completed Goal's stored completion, its completion time, its proof and its events are untouched; only the correction standing changes. A withdrawal of attestation A leaves an independent attestation B active.
+
+Deviations and changes (disclosed):
+
+- The plan's claim that `idempotency_conflict` is reachable was wrong. Migration 028's unique index on the correction action digest already covers it, so the code path is defensive only.
+- `883ad0c` changes one existing assertion in `manualHandoff.test.ts`: a completed Goal's generic refusal now reports the dedicated code instead of `goal_terminal`. The pending-status and empty-history assertions are unchanged. Independent review judged this legitimate and not a weakening.
+- The route is not reachable end to end until D.4D adds the request route, as planned. The decision is exercised by tests that create the gate through the service.
+
+Evidence: full gate on `55fed93` green (format, lint, typecheck, `npm test` 144 files / 2639 tests, build, `npm audit --omit=dev` 0, migrations diff empty). Independent review of `d58345e..55fed93`: `VERDICT: PASS WITH NON-BLOCKING`, no blocking findings. Hosted CI on `55fed93`: run 38243466534, success.
+
+Non-blocking follow-ups:
+
+1. The route's generic 503 fallback (`attestation_correction_unavailable`) has no test. Add one in D.4D.
+2. After the decision commits, the route reads the completion standing. If that read threw, the client would get 503 although the decision persisted. A retry returns `reused: true`, so nothing is lost. Edge case only.
+3. The plan did not name the existing test whose expectation changed (see deviations above).
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4D (correction request route and interface) not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
