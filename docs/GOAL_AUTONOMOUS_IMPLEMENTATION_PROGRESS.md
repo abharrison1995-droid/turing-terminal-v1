@@ -533,6 +533,34 @@ Deviations and residual risks:
 3. Client copy: "A completion has already been recorded" overstates a competing decision, and `completion_history_invalid` falls to generic copy. Fixed in Slice 3.
 4. The stored CI cancellation history for `211f900` is not visible in the run list, which shows one run. Earlier cancellation notes are not cited as evidence in this record.
 
+### D.4R Slice 2b: decision recording follows completion authority class: ACCEPTED on `215a2da` (lead record)
+
+Commit: `215a2da` (parent `fcb629c`, which records the Slice 0, 1 and 2a acceptance). Reconciliation: `scratchpad/d4r_s2b_brief.md` (Sonnet 5.5 Medium, GO). Implementer: Haiku 5.5 High (uncommitted working tree; the lead gated and committed). Independent review: Sonnet 5.5 Medium (`scratchpad/d4r_s2b_review.md`).
+
+Behaviour: the decision transaction runs the classifier first, before the identity compare and before any write. Class 1 and class 3 record. Class 2 reuses only the decision for the selected attestation, and a different digest for it is `decision_conflict`. Class 4 refuses with `competing_decision` (409). The pre-Git path maps a preflight `competing_decision` detail explicitly, so the code is no longer lost (finding F3 is fixed). Class 5 and class 6 refuse before any write. `classifyCompletionRows` no longer skips other-attestation decisions. `allowRecordedDecision` is not widened and no migration was added.
+
+Flipped and added tests:
+
+- Flipped: `externalCompletionApi.test.ts` T11, the Y POST now asserts 409 `competing_decision` with no `detail`. The status table gains `competing_decision: 409`.
+- Added: `externalCompletionDecision.test.ts` D22 (class 4 refused before Git, nothing changes) and D23 (dispute and withdraw variants: B records, A's row unchanged, repeat returns the existing decision with `reused: true`).
+- Added: `externalCompletionDecisionSeams.test.ts` D11b (class 4 raced after the Git read is refused as `competing_decision`, which shows the classifier runs before the identity compare) and D11c (class 5 raced after the Git read is refused as `completion_history_invalid`).
+- Static guard: `classifier_entry` gains `externalCompletionDecision.ts`, as the reconciliation required. This is the only guard change.
+
+Evidence:
+
+- Gate on the working tree, run by the lead: format, lint and typecheck exit 0; `npm test` 152 files and 2,907 tests passed; build exit 0; `npm audit --omit=dev` 0 vulnerabilities. Logs are in `scratchpad/d4r_s2b_lead_*.log`.
+- Hosted CI on `215a2da`: run 38309687759, success.
+- Independent review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, no blocking findings.
+
+Deviations and residual risks:
+
+1. The in-transaction class 5 reports `completion_history_invalid` (preflight class 5 code), not `decision_corrupt`. This matches the pre-Git path. This is a product choice the owner should confirm.
+2. Class 2 reuse does not require the own decision to be eligible. A race that disputes A after A's decision can return A's existing, now-ineligible decision. The review found no double-authority path. Slice 2c must show the terminal refuses that decision, as a test.
+3. Test gaps from review: no test drives the UNIQUE-violation path to class 4 or 5, and the supersede variant of D23 is missing. Carry to Slice 2c or Slice 4.
+4. Finding for the D17 title (now stale wording) is cosmetic.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 2c (terminal classifier-driven) not started.
+
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 2b (decision recording and reuse gating) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open.
 
 ## Remediation iterations
