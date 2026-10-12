@@ -982,10 +982,10 @@ describe('external completion (R3)', () => {
       expect(completionApprovals(fx).map((row) => row.id)).toEqual([decidedB.approvalId, seededA.id]);
       const before = wholeState(fx);
 
-      // Observed, not the planned "B completes": the terminal writer requires exactly one valid decision per attestation
-      // (externalCompletionTerminal.ts, sameAttestation !== 1), so B is refused with decision_conflict after Git, inside a
-      // transaction that rolls back. A's reviewed digest is not the current preflight, so A is refused earlier with 412
-      // reviewed_preflight_changed (externalCompletion.ts, the reviewed digest comparison). Neither is consumed.
+      // Observed, not the planned "B completes": the terminal writer requires exactly one own classifier entry for the
+      // attestation (externalCompletionTerminal.ts, own-count !== 1), so B is refused with decision_conflict after Git,
+      // inside a transaction that rolls back. A's reviewed digest is not the current preflight, so A is refused earlier
+      // with 412 reviewed_preflight_changed (externalCompletion.ts, the reviewed digest comparison). Neither is consumed.
       expect(
         await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
           'if-match': `"${decidedB.actionDigest}"`,

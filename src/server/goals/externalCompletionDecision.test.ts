@@ -846,7 +846,7 @@ describe('external completion decision: authority and copies', () => {
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 
-  it.each(['dispute', 'withdraw'] as const)(
+  it.each(['dispute', 'withdraw', 'supersede'] as const)(
     'D23 records a decision for a second attestation once the first is corrected (%s), then reuses it',
     async (kind) => {
       const decided = await v2DecidedFixture('sha1');
@@ -856,9 +856,17 @@ describe('external completion decision: authority and copies', () => {
       const firstRow = db
         .prepare('SELECT * FROM goal_approvals WHERE id = ?')
         .get(decided.recorded.approvalId);
-      appendCorrectionForTest(fx, decided.attestationId, kind);
-      git(fx.repo, 'update-ref', decided.handoff.target.baseRef, moveTip(decided));
-      const second = await reattestAtCurrentTip(decided);
+      let second: Awaited<ReturnType<typeof reattestAtCurrentTip>>;
+      if (kind === 'supersede') {
+        // A supersede names its replacement, so the replacement is attested at the moved tip before the correction.
+        git(fx.repo, 'update-ref', decided.handoff.target.baseRef, moveTip(decided));
+        second = await reattestAtCurrentTip(decided);
+        appendCorrectionForTest(fx, decided.attestationId, kind, second.attestationId);
+      } else {
+        appendCorrectionForTest(fx, decided.attestationId, kind);
+        git(fx.repo, 'update-ref', decided.handoff.target.baseRef, moveTip(decided));
+        second = await reattestAtCurrentTip(decided);
+      }
       const digest = await reviewedDigest({ fx, attestationId: second.attestationId });
 
       const recorded = await recordExternalCompletionDecision(

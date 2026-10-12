@@ -24,6 +24,8 @@ import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
  */
 const seam = vi.hoisted(() => ({
   afterPreflight: null as null | ((db: Db, goalId: string) => void),
+  /** Runs once after the decision transaction's identity read returns, inside that transaction (D11d, D11e). */
+  afterIdentity: null as null | ((db: Db, goalId: string) => void),
   beforeValidate: [] as ((db: Db, goalId: string) => void)[],
   preflightCalls: 0,
 }));
@@ -42,6 +44,18 @@ vi.mock('./externalCompletionPreflight.js', async (importOriginal) => {
       const result = await actual.computeExternalCompletionPreflightWithIdentity(db, goalId, input, options);
       const hook = seam.afterPreflight;
       seam.afterPreflight = null;
+      hook?.(db, goalId);
+      return result;
+    },
+    readPreflightSnapshotIdentity: (
+      db: Db,
+      goalId: string,
+      attestationId: string,
+      options?: Parameters<typeof actual.readPreflightSnapshotIdentity>[3],
+    ) => {
+      const result = actual.readPreflightSnapshotIdentity(db, goalId, attestationId, options);
+      const hook = seam.afterIdentity;
+      seam.afterIdentity = null;
       hook?.(db, goalId);
       return result;
     },
@@ -65,6 +79,7 @@ vi.mock('./externalIntegration.js', async (importOriginal) => {
 
 afterEach(() => {
   seam.afterPreflight = null;
+  seam.afterIdentity = null;
   seam.beforeValidate = [];
   seam.preflightCalls = 0;
   cleanupRepoFixtures();
@@ -349,6 +364,119 @@ describe('external completion decision: authority race between Git and commit', 
       expect(error).toMatchObject({ code: 'preflight_refused', detail: 'completion_history_invalid' });
       // The refused decision wrote nothing: the only completion row is the race row.
       expect(completionRowIds(db, goalId)).toEqual([seeded]);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion decision: UNIQUE-violation path inside the decision transaction', () => {
+  it(
+    'D11d a pending row with the same action digest committed inside the transaction refuses as completion_history_invalid and rolls back',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const report = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      const action = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: report.digest,
+      })!;
+      const before = databaseSnapshot(db);
+
+      // Written after the identity read and before the decision's own write: the write trips the unique index, and the
+      // re-classification sees a pending row, which is class 5.
+      seam.afterIdentity = (hookDb, hookGoalId) => {
+        requestGoalApproval(hookDb, {
+          goalId: hookGoalId,
+          gate: 'user_confirmation',
+          risk: 'high',
+          reason: 'Pending completion row committed inside the decision transaction.',
+          requestedBy: 'user',
+          detail: { ...action },
+          externalCompletionActionDigest: action.actionDigest,
+        });
+      };
+      const error = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: attested.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(seam.afterIdentity).toBeNull();
+      expect(error).toBeInstanceOf(ExternalCompletionDecisionError);
+      expect(error).toMatchObject({ code: 'preflight_refused', detail: 'completion_history_invalid' });
+      // The hook's row was written inside the transaction, so the refusal rolls it back with everything else.
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(completionRowIds(db, goalId)).toEqual([]);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'D11e an approved same-digest row and an approved eligible decision for the first attestation, committed inside the transaction, refuse as competing_decision',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      // The competing decision names the first attestation, built from its preflight before the destination moves.
+      const first = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      const firstAction = buildExternalCompletionAction({
+        ...first.actionFields!,
+        userReviewedPreflightDigest: first.digest,
+      })!;
+      git(attested.fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
+      const second = await reattestAtCurrentTip(attested);
+      const digest = await reviewedDigest({ fx: attested.fx, attestationId: second.attestationId });
+      const report = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: second.attestationId },
+        { allowRecordedDecision: true },
+      );
+      const action = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: report.digest,
+      })!;
+      const before = databaseSnapshot(db);
+
+      // Both rows are written inside the transaction, after the identity read. The same-digest row trips the unique
+      // index, and the re-classification finds an eligible competitor on the first attestation: class 4.
+      seam.afterIdentity = (hookDb, hookGoalId) => {
+        seedApprovedCompletion(hookDb, hookGoalId, action);
+        seedApprovedCompletion(hookDb, hookGoalId, firstAction);
+      };
+      const error = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: second.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(seam.afterIdentity).toBeNull();
+      expect(error).toBeInstanceOf(ExternalCompletionDecisionError);
+      expect(error).toMatchObject({ code: 'competing_decision', detail: null });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(completionRowIds(db, goalId)).toEqual([]);
       expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
     },
     REAL_GIT_TEST_TIMEOUT_MS,

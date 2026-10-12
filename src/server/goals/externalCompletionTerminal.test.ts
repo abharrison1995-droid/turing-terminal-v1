@@ -24,9 +24,18 @@ import {
   type ValidatedCompletionDecision,
 } from './externalCompletionTerminal.js';
 import type { ExternalCompletionProofV1 } from './externalCompletionProof.js';
+import { recordExternalCompletionDecision } from './externalCompletionDecision.js';
 import { buildManualHandoffSnapshot } from './manualHandoff.js';
 import { createGoalDraft } from './definitions.js';
-import { completionProofForDecision, databaseSnapshot, v2DecidedFixture } from './goalV2TestKit.js';
+import {
+  appendCorrectionForTest,
+  completionProofForDecision,
+  databaseSnapshot,
+  git,
+  reattestAtCurrentTip,
+  reviewedDigest,
+  v2DecidedFixture,
+} from './goalV2TestKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS, simpleDefinition } from './repoKit.js';
 import { createReview } from './reviews.js';
 import { GoalStateError, transitionGoal, type TransitionRequest } from './stateMachine.js';
@@ -875,6 +884,143 @@ describe('external completion terminal: the read-only proof row count', () => {
       });
       expect(externalCompletionProofRowCount(db, second.goalId)).toBe(0);
       expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+/** Moves the destination base ref to a commit that keeps the attested tree, as the decision tests do. */
+function moveTip(attested: Awaited<ReturnType<typeof v2DecidedFixture>>): string {
+  return git(
+    attested.fx.repo,
+    'commit-tree',
+    attested.attestation.destination.observedTree,
+    '-p',
+    attested.attestation.destination.observedCommit,
+    '-m',
+    'destination moved after observation',
+  );
+}
+
+describe('external completion terminal: Slice 2c the classifier decides which decision may complete', () => {
+  it(
+    'B1 completes with the eligible second decision and one proof when the first decision is corrected',
+    async () => {
+      const first = await v2DecidedFixture('sha1');
+      const { fx } = first;
+      const db = fx.db;
+      const goalId = fx.goalId;
+      appendCorrectionForTest(fx, first.attestationId, 'dispute');
+      git(fx.repo, 'update-ref', first.handoff.target.baseRef, moveTip(first));
+      const second = await reattestAtCurrentTip(first);
+      const digest = await reviewedDigest({ fx, attestationId: second.attestationId });
+      const recorded = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: second.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      });
+      const decision = selectCompletionDecision(db, goalId, recorded.approvalId);
+      const proof = completionProofForDecision(decision, OBSERVED_AT);
+      const expected = readPreflightSnapshotIdentity(db, goalId, second.attestationId, {
+        allowRecordedDecision: true,
+      });
+
+      expect(consumeInTransaction(db, decision, proof, expected)).toEqual({
+        from: 'running',
+        to: 'completed',
+        proofId: expect.any(String),
+      });
+      expect(readStoredCompletion(db, goalId)).toMatchObject({
+        state: 'completed',
+        approvalId: recorded.approvalId,
+        actionDigest: decision.action.actionDigest,
+      });
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
+
+      // A second consume of the same Goal is refused by the terminal status, and writes nothing.
+      const before = databaseSnapshot(db);
+      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
+        code: 'goal_not_running',
+        detail: 'completed',
+      });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'B2 refuses a stale first decision once a second decision for another attestation is recorded, and writes nothing',
+    async () => {
+      const first = await v2DecidedFixture('sha1');
+      const { fx } = first;
+      const db = fx.db;
+      const goalId = fx.goalId;
+      const stale = selectCompletionDecision(db, goalId, first.recorded.approvalId);
+      const staleProof = completionProofForDecision(stale, OBSERVED_AT);
+      const staleExpected = readPreflightSnapshotIdentity(db, goalId, first.attestationId, {
+        allowRecordedDecision: true,
+      });
+
+      appendCorrectionForTest(fx, first.attestationId, 'dispute');
+      git(fx.repo, 'update-ref', first.handoff.target.baseRef, moveTip(first));
+      const second = await reattestAtCurrentTip(first);
+      const digest = await reviewedDigest({ fx, attestationId: second.attestationId });
+      await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: second.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      });
+
+      const before = databaseSnapshot(db);
+      expect(refusal(() => consumeInTransaction(db, stale, staleProof, staleExpected))).toMatchObject({
+        code: 'authority_changed_during_completion',
+        detail: 'completion_already_recorded',
+      });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(readStoredCompletion(db, goalId)).toEqual({ state: 'not_completed' });
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(0);
+      expect(goalStatus(db, goalId)).toEqual({ status: 'running' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each([
+    ['dispute', 'attestation_disputed'],
+    ['withdraw', 'attestation_withdrawn'],
+    ['supersede', 'attestation_superseded'],
+  ] as const)(
+    'B3 refuses the only decision once its attestation is %s after the identity was captured, and writes nothing',
+    async (kind, detail) => {
+      const attested = await v2DecidedFixture('sha1');
+      const { fx } = attested;
+      const db = fx.db;
+      const goalId = fx.goalId;
+      const attestationId = attested.attestationId;
+      const decision = selectCompletionDecision(db, goalId, attested.recorded.approvalId);
+      const proof = completionProofForDecision(decision, OBSERVED_AT);
+      const expected = readPreflightSnapshotIdentity(db, goalId, attestationId, {
+        allowRecordedDecision: true,
+      });
+
+      let replacementAttestationId: string | null = null;
+      if (kind === 'supersede') {
+        // A superseding correction names a replacement attestation for the same Goal, so one is attested first.
+        git(fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
+        replacementAttestationId = (await reattestAtCurrentTip(attested)).attestationId;
+      }
+      appendCorrectionForTest(fx, attestationId, kind, replacementAttestationId);
+
+      const before = databaseSnapshot(db);
+      expect(refusal(() => consumeInTransaction(db, decision, proof, expected))).toMatchObject({
+        code: 'authority_changed_during_completion',
+        detail,
+      });
+      expect(databaseSnapshot(db)).toEqual(before);
+      expect(readStoredCompletion(db, goalId)).toEqual({ state: 'not_completed' });
+      expect(externalCompletionProofRowCount(db, goalId)).toBe(0);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

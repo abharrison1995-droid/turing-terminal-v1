@@ -3,11 +3,9 @@ import { EXTERNAL_COMPLETION_REASON, type GoalApproval, type GoalStatus } from '
 import type { Db } from '../db.js';
 import { activeWorkBlocker } from './activeWork.js';
 import { getGoalApproval } from './approvals.js';
+import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { writeGoalEvent } from './events.js';
-import {
-  listExternalCompletionDecisions,
-  readExternalCompletionDecision,
-} from './externalCompletionDecision.js';
+import { readExternalCompletionDecision } from './externalCompletionDecision.js';
 import {
   externalCompletionProofPayloadJson,
   parseExternalCompletionProof,
@@ -117,6 +115,9 @@ export type StoredCompletion =
  * Consumes one validated decision and terminally completes its running Goal, atomically. Must run inside an open
  * transaction. Refuses with a typed error and writes nothing when any check fails. On success it writes exactly two
  * goal_events rows (`external_completion_recorded`, then `state_changed`) and one proof row.
+ *
+ * The consumer re-classifies the Goal's completion authority inside the transaction (class 2 only, with exactly one own
+ * eligible entry that is this decision). It does not count rows by hand.
  */
 export function consumeExternalCompletionDecision(
   db: Db,
@@ -188,16 +189,27 @@ export function consumeExternalCompletionDecision(
   if (row.externalCompletionActionDigest !== action.actionDigest)
     throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'action_digest');
 
-  let sameAttestation = 0;
-  for (const stored of listExternalCompletionDecisions(db, goalId)) {
-    if (stored.state !== 'valid')
-      throw new ExternalCompletionTerminalError(
-        'decision_corrupt',
-        stored.state === 'invalid' ? stored.reason : 'not_found',
-      );
-    if (stored.action.attestation.id === attestationId) sameAttestation += 1;
-  }
-  if (sameAttestation !== 1) throw new ExternalCompletionTerminalError('decision_conflict', null);
+  // The classifier re-reads the completion authority inside this transaction. Consume proceeds only in class 2 with
+  // exactly one own entry for the selected attestation, that entry being this decision and eligible. An ineligible
+  // decision on another attestation is tolerated (class 2 or 3), and an eligible one there is class 4 and refused.
+  const classification = classifyCompletionAuthority(db, goalId, attestationId);
+  if (classification.class === 6)
+    throw new ExternalCompletionTerminalError('completion_already_recorded', null);
+  if (classification.class === 5)
+    throw new ExternalCompletionTerminalError('decision_corrupt', classification.reason ?? 'history_invalid');
+  if (classification.class === 4)
+    throw new ExternalCompletionTerminalError('authority_changed_during_completion', 'policy_class');
+  if (classification.class !== 2) throw new ExternalCompletionTerminalError('decision_not_found', null);
+  const own = classification.entries.filter((entry) => entry.attestationId === attestationId);
+  if (own.length !== 1) throw new ExternalCompletionTerminalError('decision_conflict', null);
+  const [ownEntry] = own;
+  if (ownEntry.decisionId !== decision.approval.id || ownEntry.actionDigest !== action.actionDigest)
+    throw new ExternalCompletionTerminalError('decision_conflict', null);
+  if (!ownEntry.eligible)
+    throw new ExternalCompletionTerminalError(
+      'authority_changed_during_completion',
+      'own_decision_ineligible',
+    );
 
   if (
     validProof.goalId !== goalId ||
