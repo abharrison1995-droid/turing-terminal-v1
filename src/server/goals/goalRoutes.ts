@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { GoalDefinition } from '../../shared/goals.js';
 import type {
@@ -177,6 +177,32 @@ function externalIntegrationError(error: unknown, reply: FastifyReply) {
     error: 'External integration could not be verified or recorded safely.',
     code: 'external_integration_unavailable',
   });
+}
+
+/**
+ * Reads the single quoted lowercase SHA-256 If-Match value that binds a write to one reviewed digest. A missing header
+ * sends 428 and a malformed one sends 400; both return undefined so the caller can stop. Duplicate, weak (`W/`) and
+ * unquoted values fail the same regular expression.
+ */
+function readQuotedDigestPrecondition(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  requiredMessage: string,
+): string | undefined {
+  const ifMatch = request.headers['if-match'];
+  if (ifMatch === undefined) {
+    send(reply, 428, { error: requiredMessage, code: 'reviewed_action_precondition_required' });
+    return undefined;
+  }
+  const digest = typeof ifMatch === 'string' ? /^"([0-9a-f]{64})"$/.exec(ifMatch)?.[1] : undefined;
+  if (!digest) {
+    send(reply, 400, {
+      error: 'The reviewed action digest must be one quoted SHA-256 value.',
+      code: 'reviewed_action_precondition_invalid',
+    });
+    return undefined;
+  }
+  return digest;
 }
 
 function parse<T>(
@@ -677,18 +703,12 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         code: 'handoff_not_found',
       });
 
-    const ifMatch = request.headers['if-match'];
-    if (ifMatch === undefined)
-      return send(reply, 428, {
-        error: 'Review the current Git observation before confirming it.',
-        code: 'reviewed_action_precondition_required',
-      });
-    const digest = typeof ifMatch === 'string' ? /^"([0-9a-f]{64})"$/.exec(ifMatch)?.[1] : undefined;
-    if (!digest)
-      return send(reply, 400, {
-        error: 'The reviewed action digest must be one quoted SHA-256 value.',
-        code: 'reviewed_action_precondition_invalid',
-      });
+    const digest = readQuotedDigestPrecondition(
+      request,
+      reply,
+      'Review the current Git observation before confirming it.',
+    );
+    if (digest === undefined) return reply;
 
     try {
       const result = await withExternalIntegrationVerificationSlot(goalId, () =>
