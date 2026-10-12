@@ -1,12 +1,8 @@
 import { z } from 'zod';
 import type { Db } from '../db.js';
 import type { GoalApproval } from '../../shared/goals.js';
-import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
-import {
-  buildExternalCompletionAction,
-  parseExternalCompletionAction,
-  type ExternalCompletionActionV1,
-} from './externalCompletionProof.js';
+import { decideGoalApproval, requestGoalApproval } from './approvals.js';
+import { buildExternalCompletionAction } from './externalCompletionProof.js';
 import {
   computeExternalCompletionPreflightWithIdentity,
   firstDifference,
@@ -14,8 +10,17 @@ import {
   readPreflightSnapshotIdentity,
   type SnapshotIdentity,
 } from './externalCompletionPreflight.js';
+import { completionRows, validateCompletionApproval } from './externalCompletionDecisionRows.js';
 import { isManualReconciliation } from './readModel.js';
 import { withGoalCompletionLock } from './goalCompletionLock.js';
+
+// The readers live in the leaf module externalCompletionDecisionRows.ts; these re-exports keep every importer unchanged.
+export {
+  listExternalCompletionDecisions,
+  readExternalCompletionDecision,
+  type ExternalCompletionDecisionInvalidReason,
+  type ExternalCompletionDecisionRead,
+} from './externalCompletionDecisionRows.js';
 
 /**
  * The explicit user decision that a reviewed external completion may proceed. It records one approved, high-risk
@@ -81,92 +86,6 @@ export interface ExternalCompletionDecisionResult {
   preflightDigest: string;
   status: 'approved';
   reused: boolean;
-}
-
-/** Why a stored completion approval is not a valid decision. Each value is a snake_case detail. */
-export type ExternalCompletionDecisionInvalidReason =
-  'not_completion_approval' | 'schema_invalid' | 'digest_mismatch' | 'approval_fields_invalid';
-
-export type ExternalCompletionDecisionRead =
-  | { state: 'not_found' }
-  | { state: 'invalid'; approvalId: string; reason: ExternalCompletionDecisionInvalidReason }
-  | { state: 'valid'; approval: GoalApproval; action: ExternalCompletionActionV1 };
-
-type Validation =
-  | { valid: true; action: ExternalCompletionActionV1 }
-  | { valid: false; reason: ExternalCompletionDecisionInvalidReason };
-
-/** Reads one approval row; an unparseable row returns null rather than throwing. */
-function readApproval(db: Db, approvalId: string): GoalApproval | null {
-  try {
-    return getGoalApproval(db, approvalId) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** Every row of this Goal that is, or claims to be, a completion decision. */
-function completionRows(db: Db, goalId: string): { id: string; approval: GoalApproval | null }[] {
-  const ids = db
-    .prepare(
-      `SELECT id FROM goal_approvals
-       WHERE goal_id = ?
-         AND (external_completion_action_digest IS NOT NULL
-              OR detail_json LIKE '%complete_goal_external_integration_v2%')
-       ORDER BY created_at, rowid`,
-    )
-    .all(goalId) as { id: string }[];
-  return ids.map(({ id }) => ({ id, approval: readApproval(db, id) }));
-}
-
-/** A row is a valid decision only when every field the consumer relies on matches exactly. */
-function validateCompletionApproval(approval: GoalApproval | null): Validation {
-  if (!approval) return { valid: false, reason: 'schema_invalid' };
-  if (approval.externalCompletionActionDigest === undefined)
-    return { valid: false, reason: 'not_completion_approval' };
-  const parsed = parseExternalCompletionAction(approval.detail);
-  if (!parsed.valid) return { valid: false, reason: parsed.reason };
-  if (parsed.digest !== approval.externalCompletionActionDigest)
-    return { valid: false, reason: 'digest_mismatch' };
-  if (
-    approval.gate !== 'user_confirmation' ||
-    approval.risk !== 'high' ||
-    approval.requestedBy !== 'user' ||
-    approval.status !== 'approved' ||
-    approval.decidedBy !== 'user' ||
-    approval.respondedAt === null ||
-    approval.intentDigest !== undefined ||
-    approval.externalIntegrationActionDigest !== undefined ||
-    approval.attestationCorrectionActionDigest !== undefined ||
-    parsed.action.goalId !== approval.goalId
-  )
-    return { valid: false, reason: 'approval_fields_invalid' };
-  return { valid: true, action: parsed.action };
-}
-
-/** Reads one completion decision of a Goal. Read-only; it never repairs or trusts an invalid row. */
-export function readExternalCompletionDecision(
-  db: Db,
-  goalId: string,
-  approvalId: string,
-): ExternalCompletionDecisionRead {
-  const owner = db.prepare('SELECT goal_id FROM goal_approvals WHERE id = ?').get(approvalId) as
-    { goal_id: string } | undefined;
-  if (!owner || owner.goal_id !== goalId) return { state: 'not_found' };
-  const approval = readApproval(db, approvalId);
-  const checked = validateCompletionApproval(approval);
-  if (!checked.valid) return { state: 'invalid', approvalId, reason: checked.reason };
-  return { state: 'valid', approval: approval!, action: checked.action };
-}
-
-/** Every completion decision row of a Goal, valid or invalid, in creation order. */
-export function listExternalCompletionDecisions(db: Db, goalId: string): ExternalCompletionDecisionRead[] {
-  return completionRows(db, goalId).map(({ id, approval }) => {
-    const checked = validateCompletionApproval(approval);
-    return checked.valid
-      ? { state: 'valid', approval: approval!, action: checked.action }
-      : { state: 'invalid', approvalId: id, reason: checked.reason };
-  });
 }
 
 function assertNoCorruptRows(db: Db, goalId: string): void {

@@ -25,8 +25,11 @@ const KIT_FILE_NAMES = new Set([
  */
 const D3D_COMPLETION_IDENTIFIER_FILES = [
   'goals/approvals.ts',
+  // D.4R Slice 1: the read-only classifier and the leaf module that reads completion-decision rows.
+  'goals/completionAuthorityPolicy.ts',
   'goals/evidence.ts',
   'goals/externalCompletionDecision.ts',
+  'goals/externalCompletionDecisionRows.ts',
   'goals/externalCompletionPreflight.ts',
   'goals/externalCompletionProof.ts',
   'goals/externalCompletionTerminal.ts',
@@ -74,6 +77,23 @@ const GOAL_STATUS_WRITE_SQL = new RegExp(
   'i',
 );
 
+/**
+ * The read-only classifier and its row reader name no writer, no SQL write statement and no statement runner. Writers
+ * are named with word boundaries; SQL uses the same whitespace-or-block-comment gap as the rules above.
+ */
+const CLASSIFIER_WRITE_PATTERN = new RegExp(
+  String.raw`\b(?:requestGoalApproval|decideGoalApproval|recordExternalCompletionDecision|completeGoalFromExternalDecision|consumeExternalCompletionDecision|appendAttestationCorrection|requestAttestationCorrectionApproval|writeGoalEvent|transitionGoal)\b` +
+    String.raw`|\b(?:insert${SQL_GAP}into|replace${SQL_GAP}into|update${SQL_GAP}\w+${SQL_GAP}set|delete${SQL_GAP}from)\b` +
+    String.raw`|\.run\(|\.exec\(`,
+  'i',
+);
+/**
+ * Imports of the modules the classifier must not depend on (the preflight, the writers, the locks and the routes),
+ * and the identifiers that reach into the preflight or the internal recorded-decision option.
+ */
+const CLASSIFIER_ISOLATION_PATTERN =
+  /from\s+["'][^"']*\/(?:externalCompletionPreflight|externalCompletionDecision|externalCompletionTerminal|externalCompletion|externalCompletionApi|goalCompletionLock|goalRoutes)\.js["']|\b(?:computeExternalCompletionPreflight|computeEmptyCorrectionChainIdentity|readPreflightSnapshotIdentity|allowRecordedDecision)\b/;
+
 const RULES: readonly AuthorityRule[] = [
   {
     id: 'proof_write',
@@ -93,6 +113,8 @@ const RULES: readonly AuthorityRule[] = [
     files: [
       'goals/externalCompletionApi.ts',
       'goals/externalCompletionDecision.ts',
+      // Defines the readers that the decision module re-exports (D.4R Slice 1).
+      'goals/externalCompletionDecisionRows.ts',
       'goals/externalCompletionTerminal.ts',
       'goals/externalCompletion.ts',
     ],
@@ -188,6 +210,43 @@ const RULES: readonly AuthorityRule[] = [
     files: ['goals/externalCompletionPreflight.ts'],
     reason: 'The preflight is read-only and cannot depend on the modules that write completion decisions.',
   },
+  {
+    id: 'classifier_entry',
+    pattern: /\bclassifyCompletionAuthority\b/,
+    mode: 'only_in',
+    files: ['goals/completionAuthorityPolicy.ts'],
+    reason:
+      'Only the completion authority classifier module names its entry point. Slice 1 has no caller; a later slice that adds one must extend this list in the same commit.',
+  },
+  {
+    id: 'classifier_not_writer',
+    pattern: CLASSIFIER_WRITE_PATTERN,
+    mode: 'never_in',
+    files: ['goals/completionAuthorityPolicy.ts', 'goals/externalCompletionDecisionRows.ts'],
+    reason:
+      'The classifier and the completion-decision row reader are read-only: they name no writer, no SQL write statement and no statement runner.',
+  },
+  {
+    id: 'classifier_isolation',
+    pattern: CLASSIFIER_ISOLATION_PATTERN,
+    mode: 'never_in',
+    files: ['goals/completionAuthorityPolicy.ts', 'goals/externalCompletionDecisionRows.ts'],
+    reason:
+      'The classifier and the row reader are leaf modules: they cannot import the preflight, the decision writer, the terminal, the locks or the routes, and they cannot reach the preflight identity or the recorded-decision option.',
+  },
+  {
+    id: 'allow_recorded_decision_callers',
+    pattern: /\ballowRecordedDecision\b/,
+    mode: 'only_in',
+    // Pins the current callers. This slice changes no behaviour: the option keeps its meaning in these three modules.
+    files: [
+      'goals/externalCompletionDecision.ts',
+      'goals/externalCompletionPreflight.ts',
+      'goals/externalCompletionTerminal.ts',
+    ],
+    reason:
+      'Only the three completion modules that name the internal recorded-decision option may name it. A new caller must be reviewed and added here.',
+  },
 ];
 
 function ruleById(id: string): AuthorityRule {
@@ -264,7 +323,7 @@ describe('authority static guard: production sources', () => {
 
   it('completion identifier allow-list is exactly the reviewed file set', () => {
     expect(ruleById('completion_identifier').files).toEqual([...D3D_COMPLETION_IDENTIFIER_FILES].sort());
-    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(9);
+    expect(D3D_COMPLETION_IDENTIFIER_FILES).toHaveLength(11);
   });
 
   for (const rule of RULES) {
@@ -472,6 +531,77 @@ describe('authority static guard: seeded violations and negative controls', () =
       'shared/synthetic.ts',
       "export const reason = 'external_completion_user_confirmed';",
     ],
+    ['classifier_entry', 'goals/synthetic.ts', 'const result = classifyCompletionAuthority(db, goalId, id);'],
+    [
+      'classifier_entry',
+      'goals/externalCompletionPreflight.ts',
+      "import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';",
+    ],
+    ['classifier_not_writer', 'goals/completionAuthorityPolicy.ts', 'await requestGoalApproval(db, input);'],
+    [
+      'classifier_not_writer',
+      'goals/externalCompletionDecisionRows.ts',
+      'transitionGoal(db, goalId, "completed");',
+    ],
+    [
+      'classifier_not_writer',
+      'goals/completionAuthorityPolicy.ts',
+      "db.prepare('INSERT INTO goal_events (id) VALUES (?)');",
+    ],
+    ['classifier_not_writer', 'goals/completionAuthorityPolicy.ts', "db.prepare('DELETE FROM goal_events');"],
+    [
+      'classifier_not_writer',
+      'goals/externalCompletionDecisionRows.ts',
+      "db.prepare('REPLACE INTO goal_events (id) VALUES (?)');",
+    ],
+    [
+      'classifier_not_writer',
+      'goals/completionAuthorityPolicy.ts',
+      "db.prepare('UPDATE goal_events SET id = ?');",
+    ],
+    ['classifier_not_writer', 'goals/completionAuthorityPolicy.ts', "db.prepare('select 1').run();"],
+    ['classifier_not_writer', 'goals/externalCompletionDecisionRows.ts', 'db.exec("PRAGMA foreign_keys");'],
+    [
+      'classifier_isolation',
+      'goals/completionAuthorityPolicy.ts',
+      "import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';",
+    ],
+    [
+      'classifier_isolation',
+      'goals/externalCompletionDecisionRows.ts',
+      "import { x } from './externalCompletionTerminal.js';",
+    ],
+    [
+      'classifier_isolation',
+      'goals/completionAuthorityPolicy.ts',
+      "import { withGoalCompletionLock } from './goalCompletionLock.js';",
+    ],
+    ['classifier_isolation', 'goals/completionAuthorityPolicy.ts', "import { x } from './goalRoutes.js';"],
+    [
+      'classifier_isolation',
+      'goals/externalCompletionDecisionRows.ts',
+      "import { x } from './externalCompletionDecision.js';",
+    ],
+    [
+      'classifier_isolation',
+      'goals/completionAuthorityPolicy.ts',
+      'const id = computeEmptyCorrectionChainIdentity({ attestationId, attestationRecordDigest });',
+    ],
+    [
+      'classifier_isolation',
+      'goals/externalCompletionDecisionRows.ts',
+      'const snapshot = readPreflightSnapshotIdentity(db, goalId, attestationId);',
+    ],
+    [
+      'allow_recorded_decision_callers',
+      'goals/completionAuthorityPolicy.ts',
+      'const options = { allowRecordedDecision: true };',
+    ],
+    [
+      'allow_recorded_decision_callers',
+      'goals/synthetic.ts',
+      'computeExternalCompletionPreflight(db, goalId, input, { allowRecordedDecision: true });',
+    ],
   ];
 
   it.each(seeded)('%s flags a seeded violation in %s', (ruleId, path, source) => {
@@ -627,6 +757,45 @@ describe('authority static guard: seeded violations and negative controls', () =
     ],
     ['completion_reason', 'goals/events.ts', 'external_completion_recorded: {'],
     ['completion_reason', 'goals/synthetic.ts', 'const label = "external completion recorded";'],
+    [
+      'classifier_entry',
+      'goals/completionAuthorityPolicy.ts',
+      'export function classifyCompletionAuthority(db: Db, goalId: string) {}',
+    ],
+    ['classifier_entry', 'goals/synthetic.ts', 'const label = "completion authority";'],
+    [
+      'classifier_not_writer',
+      'goals/completionAuthorityPolicy.ts',
+      "db.prepare('SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ?').get(goalId);",
+    ],
+    ['classifier_not_writer', 'goals/synthetic.ts', "db.prepare('INSERT INTO goal_events (id) VALUES (?)');"],
+    [
+      'classifier_not_writer',
+      'goals/externalCompletionDecisionRows.ts',
+      'const label = "update the goal row";',
+    ],
+    [
+      'classifier_isolation',
+      'goals/externalCompletionDecisionRows.ts',
+      "import { getGoalApproval } from './approvals.js';",
+    ],
+    [
+      'classifier_isolation',
+      'goals/completionAuthorityPolicy.ts',
+      "import { x } from './externalCompletionDecisionRows.js';",
+    ],
+    [
+      'classifier_isolation',
+      'goals/externalCompletionPreflight.ts',
+      "import { x } from './externalCompletionDecision.js';",
+    ],
+    ['classifier_isolation', 'goals/synthetic.ts', 'const v = allowRecordedDecision;'],
+    [
+      'allow_recorded_decision_callers',
+      'goals/externalCompletionTerminal.ts',
+      'computeExternalCompletionPreflight(db, goalId, input, { allowRecordedDecision: true });',
+    ],
+    ['allow_recorded_decision_callers', 'goals/synthetic.ts', 'const label = "recorded decision";'],
   ];
 
   it.each(controls)('%s passes its negative control in %s', (ruleId, path, source) => {
