@@ -11,6 +11,7 @@ import type {
 } from '../../shared/goalApi.js';
 import { call, disabledSupervisor, goalApp } from './apiKit.js';
 import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
+import { completeGoal } from './completion.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import {
   completeGoalFromExternalDecision,
@@ -35,7 +36,13 @@ import {
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
-import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import {
+  cleanupRepoFixtures,
+  goalRepoFixture,
+  passDeterministic,
+  REAL_GIT_TEST_TIMEOUT_MS,
+  simpleDefinition,
+} from './repoKit.js';
 import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 import { externalCompletionError, externalCompletionStatus } from './goalRoutes.js';
 
@@ -191,6 +198,7 @@ describe('external completion status GET (read-only)', () => {
       expect(completed.body.state).toBe('completed');
       const stored = readStoredCompletion(fx.db, fx.goalId);
       expect(stored.state).toBe('completed');
+      // R4 reads the completion identity from the standing, which has no preflight digest. The POST response keeps it.
       expect(completed.body.completion).toEqual(
         stored.state === 'completed'
           ? {
@@ -198,12 +206,13 @@ describe('external completion status GET (read-only)', () => {
               proofDigest: stored.proofDigest,
               approvalId: stored.approvalId,
               actionDigest: stored.actionDigest,
-              preflightDigest: stored.preflightDigest,
+              attestationId,
               observedAt: stored.observedAt,
               completedAt: stored.completedAt,
             }
           : null,
       );
+      expect(completed.body.completion).not.toHaveProperty('preflightDigest');
       expect(completed.body.completionStanding).toEqual(readGoalCompletionStanding(fx.db, fx.goalId));
       expect(wholeState(fx)).toEqual(before);
 
@@ -917,7 +926,17 @@ describe('external completion (R3)', () => {
       );
       expect(status.status).toBe(200);
       expect(status.body.state).toBe('completed');
-      expect(status.body.completion).toEqual(first.body.completion);
+      // R4's record is the POST identity without preflightDigest (the standing does not carry it).
+      expect(status.body.completion).toEqual({
+        proofId: first.body.completion.proofId,
+        proofDigest: first.body.completion.proofDigest,
+        approvalId: first.body.completion.approvalId,
+        actionDigest: first.body.completion.actionDigest,
+        attestationId: attested.attestationId,
+        observedAt: first.body.completion.observedAt,
+        completedAt: first.body.completion.completedAt,
+      });
+      expect(status.body.completion).not.toHaveProperty('preflightDigest');
       expect(status.body.completion.proofId).toBe(proofId);
       expect(status.body.completionStanding).toEqual(readGoalCompletionStanding(fx.db, fx.goalId));
     },
@@ -1193,6 +1212,119 @@ describe('external completion (R3)', () => {
       ).toBe(201);
       await refusedAt(decided.actionDigest);
       expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+// --- The R4 status after a correction and for a version-1 completion ------------------------------------------------------
+
+describe('external completion status after a correction and for a legacy completion (R4)', () => {
+  it(
+    'R4 a version-2 completion disputed afterwards is contested: the identity stays, the success claim does not',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      const completedResponse = await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+        'if-match': `"${decided.actionDigest}"`,
+      });
+      expect(completedResponse.status).toBe(201);
+      const completion = completedResponse.body.completion as GoalExternalCompletionCompleted['completion'];
+
+      // Before this fix R4 answered `completed` here, which the standing contradicts. It is now `contested`.
+      appendCorrectionForTest(fx, attestationId, 'dispute');
+      const before = wholeState(fx);
+      const response = await get<GoalExternalCompletionStatus>(`/api/goals/${fx.goalId}/completion`);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        goalId: fx.goalId,
+        state: 'contested',
+        decisions: [
+          {
+            approvalId: decided.approvalId,
+            actionDigest: decided.actionDigest,
+            attestationId,
+            status: 'approved',
+            valid: true,
+            invalidReason: null,
+          },
+        ],
+        completion: {
+          proofId: completion.proofId,
+          proofDigest: completion.proofDigest,
+          approvalId: completion.approvalId,
+          actionDigest: completion.actionDigest,
+          attestationId,
+          observedAt: completion.observedAt,
+          completedAt: completion.completedAt,
+        },
+        completionStanding: readGoalCompletionStanding(fx.db, fx.goalId),
+      });
+      expect(response.body.completionStanding).toMatchObject({
+        kind: 'v2',
+        standing: 'disputed',
+        claim: { unqualifiedSuccessAllowed: false, trustedForDownstream: false },
+      });
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'R4 a version-1 completion reports legacy, not invalid',
+    async () => {
+      // The legacy fixture of the completion standing tests: a version-1 completion made by the real completeGoal path.
+      const fx = goalRepoFixture({ definition: simpleDefinition() });
+      fx.db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(fx.goalId);
+      fx.advance({ 'src/work.ts': 'w' });
+      await passDeterministic(fx);
+      expect((await completeGoal(fx.db, fx.goalId)).completed).toBe(true);
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const before = wholeState(fx);
+
+      const response = await get<GoalExternalCompletionStatus>(`/api/goals/${fx.goalId}/completion`);
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        goalId: fx.goalId,
+        state: 'legacy',
+        decisions: [],
+        completion: null,
+        completionStanding: { kind: 'legacy', standing: 'historical_legacy' },
+      });
+      expect(response.body.completionStanding).toEqual(readGoalCompletionStanding(fx.db, fx.goalId));
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'R4 a completion record has exactly the standing identity keys, and never a preflightDigest',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      expect(
+        (
+          await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+            'if-match': `"${decided.actionDigest}"`,
+          })
+        ).status,
+      ).toBe(201);
+
+      const response = await get<GoalExternalCompletionStatus>(`/api/goals/${fx.goalId}/completion`);
+      expect(response.body.state).toBe('completed');
+      expect(Object.keys(response.body.completion ?? {}).sort()).toEqual([
+        'actionDigest',
+        'approvalId',
+        'attestationId',
+        'completedAt',
+        'observedAt',
+        'proofDigest',
+        'proofId',
+      ]);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

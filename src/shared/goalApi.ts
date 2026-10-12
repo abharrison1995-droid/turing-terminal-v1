@@ -879,15 +879,32 @@ export interface GoalExternalCompletionRecord {
 }
 
 /**
- * Read-only status. `state` describes the whole Goal: `invalid` when any stored decision row or the stored completion
- * fails verification, `completed` when a verified completion exists, `decided` when a valid decision is waiting, and
- * `not_completed` otherwise. With `actionDigest`, `decisions` and `completion` are filtered to that exact action.
+ * The completion identity that R4 reports, read from the completion standing. It has no `preflightDigest`: the standing
+ * does not carry the preflight that was reviewed. The POST response keeps `GoalExternalCompletionRecord` for that field.
+ */
+export interface GoalExternalCompletionStatusRecord {
+  proofId: string;
+  proofDigest: string;
+  approvalId: string;
+  actionDigest: string;
+  attestationId: string;
+  observedAt: string;
+  completedAt: string;
+}
+
+/**
+ * Read-only status. `state` describes the whole Goal and is derived from the decision rows and `completionStanding`, not
+ * from the historical stored completion. `invalid` when any decision row or the standing is invalid; `completed` only for
+ * a version-2 completion with uncontested standing; `contested` for a version-2 completion that a later correction
+ * disputed, withdrew, superseded or left for reconciliation; `legacy` for a version-1 completion; `decided` when a valid
+ * decision is waiting; `not_completed` otherwise. With `actionDigest`, `decisions` and `completion` are filtered to that
+ * exact action.
  */
 export interface GoalExternalCompletionStatus {
   goalId: string;
-  state: 'not_completed' | 'decided' | 'completed' | 'invalid';
+  state: 'not_completed' | 'decided' | 'completed' | 'contested' | 'legacy' | 'invalid';
   decisions: GoalExternalCompletionDecisionView[];
-  completion: GoalExternalCompletionRecord | null;
+  completion: GoalExternalCompletionStatusRecord | null;
   completionStanding: GoalCompletionStanding;
 }
 

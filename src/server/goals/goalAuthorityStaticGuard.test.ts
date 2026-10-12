@@ -91,26 +91,29 @@ const RULES: readonly AuthorityRule[] = [
     mode: 'only_in',
     // externalCompletion.ts reads the decision to replay a stored completion and to re-check it before the terminal write.
     files: [
+      'goals/externalCompletionApi.ts',
       'goals/externalCompletionDecision.ts',
       'goals/externalCompletionTerminal.ts',
       'goals/externalCompletion.ts',
     ],
     reason:
-      'Only the decision module, the proof-bound terminal authority and the atomic completion service name the decision readers. No other production consumer reads a decision.',
+      'Only the decision module, the proof-bound terminal authority and the atomic completion service name the decision readers. The read-only D.4A status and lookup adapter may read a decision. No other production consumer reads a decision.',
   },
   {
     id: 'decision_record',
     pattern: /\brecordExternalCompletionDecision\b/,
     mode: 'only_in',
-    files: ['goals/externalCompletionDecision.ts'],
-    reason: 'Only the decision module names the decision recorder. It has no production caller yet.',
+    files: ['goals/externalCompletionDecision.ts', 'goals/goalRoutes.ts'],
+    reason:
+      'Only the decision module names the decision recorder. The D.4A route layer is the only caller besides the decision module.',
   },
   {
     id: 'completion_service',
     pattern: /\bcompleteGoalFromExternalDecision\b/,
     mode: 'only_in',
-    files: ['goals/externalCompletion.ts'],
-    reason: 'Only the atomic version-2 completion service names its entry point. It has no route caller yet.',
+    files: ['goals/externalCompletion.ts', 'goals/goalRoutes.ts'],
+    reason:
+      'Only the atomic version-2 completion service names its entry point. The D.4A route layer is the only route caller.',
   },
   {
     id: 'completion_consume',

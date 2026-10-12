@@ -1,17 +1,19 @@
 import type { Db } from '../db.js';
 import type {
+  GoalCompletionStanding,
   GoalExternalCompletionDecisionView,
-  GoalExternalCompletionRecord,
   GoalExternalCompletionStatus,
+  GoalExternalCompletionStatusRecord,
 } from '../../shared/goalApi.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import { ExternalCompletionError } from './externalCompletion.js';
 import { listExternalCompletionDecisions } from './externalCompletionDecision.js';
-import { readStoredCompletion } from './externalCompletionTerminal.js';
 
 /**
- * HTTP shaping for the version-2 completion routes. Every function here is read-only: it calls three existing readers and
- * reshapes their output. It owns no authority, writes nothing, and never repairs or trusts an invalid stored row.
+ * HTTP shaping for the version-2 completion routes. Every function here is read-only: it calls existing readers and
+ * reshapes their output. It owns no authority, writes nothing, and never repairs or trusts an invalid stored row. The
+ * status is derived from the completion standing, never from the historical stored completion, which can still read as
+ * completed after a correction.
  */
 
 /** A listed row is either valid or invalid; `not_found` is only a single-row read result and never appears here. */
@@ -41,6 +43,24 @@ function toDecisionView(row: ListedDecision): GoalExternalCompletionDecisionView
 }
 
 /**
+ * The completion identity of a Goal whose standing is a version-2 completion with a valid proof, read from the standing.
+ * Null otherwise. The standing does not carry the reviewed preflight digest, so this record has none.
+ */
+function toCompletionRecord(standing: GoalCompletionStanding): GoalExternalCompletionStatusRecord | null {
+  if (standing.kind !== 'v2' || standing.proof.state !== 'valid' || standing.status.completedAt === null)
+    return null;
+  return {
+    proofId: standing.proof.proofId,
+    proofDigest: standing.proof.proofDigest,
+    approvalId: standing.proof.approvalId,
+    actionDigest: standing.proof.actionDigest,
+    attestationId: standing.proof.attestationId,
+    observedAt: standing.proof.observedAt,
+    completedAt: standing.status.completedAt,
+  };
+}
+
+/**
  * The completion status of one Goal, read-only. `actionDigest`, when given, filters `decisions` and `completion` to the one
  * exact action; `state` still describes the whole Goal, so a filter that matches nothing is not an error.
  */
@@ -52,31 +72,24 @@ export function readExternalCompletionStatus(
   const views = listExternalCompletionDecisions(db, goalId).flatMap((row) =>
     row.state === 'not_found' ? [] : [toDecisionView(row)],
   );
-  const stored = readStoredCompletion(db, goalId);
+  const standing = readGoalCompletionStanding(db, goalId);
   const hasInvalidDecision = views.some((view) => !view.valid);
   const hasValidDecision = views.some((view) => view.valid);
 
   const state: GoalExternalCompletionStatus['state'] =
-    hasInvalidDecision || stored.state === 'invalid'
+    hasInvalidDecision || standing.kind === 'invalid'
       ? 'invalid'
-      : stored.state === 'completed'
+      : standing.kind === 'v2' && standing.standing === 'uncontested'
         ? 'completed'
-        : hasValidDecision
-          ? 'decided'
-          : 'not_completed';
+        : standing.kind === 'v2'
+          ? 'contested'
+          : standing.kind === 'legacy'
+            ? 'legacy'
+            : hasValidDecision
+              ? 'decided'
+              : 'not_completed';
 
-  const completion: GoalExternalCompletionRecord | null =
-    stored.state === 'completed'
-      ? {
-          proofId: stored.proofId,
-          proofDigest: stored.proofDigest,
-          approvalId: stored.approvalId,
-          actionDigest: stored.actionDigest,
-          preflightDigest: stored.preflightDigest,
-          observedAt: stored.observedAt,
-          completedAt: stored.completedAt,
-        }
-      : null;
+  const completion = toCompletionRecord(standing);
 
   return {
     goalId,
@@ -89,7 +102,7 @@ export function readExternalCompletionStatus(
       completion !== null && (actionDigest === null || completion.actionDigest === actionDigest)
         ? completion
         : null,
-    completionStanding: readGoalCompletionStanding(db, goalId),
+    completionStanding: standing,
   };
 }
 
