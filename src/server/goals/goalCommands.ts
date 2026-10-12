@@ -14,6 +14,7 @@ import {
   pendingGoalApprovals,
   requestGoalApproval,
 } from './approvals.js';
+import { ATTESTATION_CORRECTION_ACTION } from './attestationCorrectionDetail.js';
 import { activeCycle, finalizeCycle } from './cycles.js';
 import { loadDefinitionVersion } from './definitions.js';
 import { decideFinding, getGoalFinding, GoalFindingError, type GoalFinding } from './findings.js';
@@ -148,6 +149,15 @@ export async function decideGoalApprovalAsUser(
   return db.transaction(() => {
     const existing = getGoalApproval(db, input.approvalId);
     if (!existing) throw new GoalApprovalError('approval_not_found', 'No such Goal approval.');
+    // A correction approval is decided only by its dedicated correction service, whatever its status or Goal state.
+    if (
+      existing.attestationCorrectionActionDigest !== undefined ||
+      existing.detail.action === ATTESTATION_CORRECTION_ACTION
+    )
+      throw new GoalApprovalError(
+        'correction_decision_requires_dedicated_service',
+        'A correction approval is decided only through its dedicated correction decision.',
+      );
     if (existing.status === 'pending') {
       // A completion approval is decided only by its dedicated service, never by the generic approval route.
       if (

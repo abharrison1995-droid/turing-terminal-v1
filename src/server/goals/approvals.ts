@@ -29,7 +29,8 @@ export type GoalApprovalErrorCode =
   | 'invalid_external_integration_action_digest'
   | 'invalid_attestation_correction_action_digest'
   | 'invalid_external_completion_action_digest'
-  | 'completion_decision_requires_dedicated_service';
+  | 'completion_decision_requires_dedicated_service'
+  | 'correction_decision_requires_dedicated_service';
 
 export class GoalApprovalError extends Error {
   constructor(
