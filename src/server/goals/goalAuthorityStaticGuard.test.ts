@@ -124,6 +124,23 @@ const RULES: readonly AuthorityRule[] = [
       'Only the dedicated correction decision service names its entry point. The D.4C route layer is the only caller.',
   },
   {
+    id: 'correction_request_service',
+    pattern: /\brequestAttestationCorrectionAsUser\b/,
+    mode: 'only_in',
+    files: ['goals/attestationCorrectionRequest.ts', 'goals/goalRoutes.ts'],
+    reason:
+      'Only the dedicated correction request service names its entry point. The D.4D route layer is the only caller.',
+  },
+  {
+    id: 'correction_raw_creator',
+    // The raw creator inserts a pending correction approval without the request service's CAS and duplicate checks.
+    pattern: /\brequestAttestationCorrectionApproval\b/,
+    mode: 'only_in',
+    files: ['goals/attestationCorrection.ts', 'goals/attestationCorrectionRequest.ts'],
+    reason:
+      'Only the correction ledger and the dedicated request service may call the raw correction approval creator. No route or read calls it directly.',
+  },
+  {
     id: 'completion_consume',
     pattern: /\b(?:consumeExternalCompletionDecision|selectCompletionDecision)\b/,
     mode: 'only_in',
@@ -266,6 +283,37 @@ describe('authority static guard: production sources', () => {
   }
 });
 
+/** Every function that writes a correction, a Goal approval, a completion decision or a completion. */
+const WRITER_NAMES = [
+  'requestAttestationCorrectionAsUser',
+  'requestAttestationCorrectionApproval',
+  'decideAttestationCorrectionAsUser',
+  'appendAttestationCorrection',
+  'requestGoalApproval',
+  'decideGoalApproval',
+  'recordExternalCompletionDecision',
+  'completeGoalFromExternalDecision',
+] as const;
+
+describe('authority static guard: the correction history read is read-only', () => {
+  const routes = readFileSync(join(SERVER_ROOT, 'goals/goalRoutes.ts'), 'utf8');
+  // The GET handler sits between its own comment and the D.4D request comment; the text in between is the handler.
+  const start = routes.indexOf('// Read-only correction history and standing.');
+  const end = routes.indexOf('// Correction request (D.4D).');
+  const readHandler = routes.slice(start, end);
+
+  it('locates the correction history GET handler (non-vacuous)', () => {
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(readHandler).toContain('app.get(');
+    expect(readHandler).toContain('listAttestationCorrectionHistory');
+  });
+
+  it.each(WRITER_NAMES)('the GET handler names no writer: %s', (name) => {
+    expect(readHandler).not.toMatch(new RegExp(`\\b${name}\\b`));
+  });
+});
+
 describe('authority static guard: seeded violations and negative controls', () => {
   const seeded: [rule: string, path: string, source: string][] = [
     [
@@ -388,6 +436,26 @@ describe('authority static guard: seeded violations and negative controls', () =
       'app.post(path, () => decideAttestationCorrectionAsUser(db, body));',
     ],
     [
+      'correction_request_service',
+      'goals/activeWork.ts',
+      'await requestAttestationCorrectionAsUser(db, input);',
+    ],
+    [
+      'correction_request_service',
+      'goals/routes.ts',
+      'app.post(path, () => requestAttestationCorrectionAsUser(db, body));',
+    ],
+    [
+      'correction_raw_creator',
+      'goals/activeWork.ts',
+      'const created = requestAttestationCorrectionApproval(db, input);',
+    ],
+    [
+      'correction_raw_creator',
+      'goals/goalRoutes.ts',
+      'return requestAttestationCorrectionApproval(db, input);',
+    ],
+    [
       'completion_consume',
       'goals/externalCompletionDecision.ts',
       'selectCompletionDecision(db, goalId, approvalId);',
@@ -500,6 +568,36 @@ describe('authority static guard: seeded violations and negative controls', () =
       'correction_decision_service',
       'goals/goalRoutes.ts',
       'return decideAttestationCorrectionAsUser(db, input);',
+    ],
+    [
+      'correction_request_service',
+      'goals/attestationCorrectionRequest.ts',
+      'export function requestAttestationCorrectionAsUser() {}',
+    ],
+    [
+      'correction_request_service',
+      'goals/goalRoutes.ts',
+      'return requestAttestationCorrectionAsUser(db, input);',
+    ],
+    [
+      'correction_request_service',
+      'goals/synthetic.ts',
+      'const label = "request attestation correction as user";',
+    ],
+    [
+      'correction_raw_creator',
+      'goals/attestationCorrection.ts',
+      'export function requestAttestationCorrectionApproval() {}',
+    ],
+    [
+      'correction_raw_creator',
+      'goals/attestationCorrectionRequest.ts',
+      'const { approval } = requestAttestationCorrectionApproval(db, input);',
+    ],
+    [
+      'correction_raw_creator',
+      'goals/synthetic.ts',
+      'const label = "request attestation correction approval";',
     ],
     [
       'correction_decision_service',
