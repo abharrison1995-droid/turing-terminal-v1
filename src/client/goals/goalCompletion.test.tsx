@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -15,7 +15,18 @@ import type {
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
 import { GoalsPage } from './GoalsPage';
-import { calls, detail, detailRoutes, openGoal, posts, refuse, type Routes, serve } from './testKit';
+import {
+  calls,
+  detail,
+  detailRoutes,
+  item,
+  openGoal,
+  posts,
+  preview,
+  refuse,
+  type Routes,
+  serve,
+} from './testKit';
 
 const source = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -316,6 +327,7 @@ async function completionSection() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('desktop completion review (read-only)', () => {
@@ -754,5 +766,109 @@ describe('completion is never sent without a click', () => {
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
     await waitFor(() => expect(completionWrites()).toHaveLength(1));
     expect(decisionWrites()).toHaveLength(1);
+  });
+
+  it('a 5-second timer advance with a recorded decision does not complete the Goal', async () => {
+    serveHandoff(
+      { status: completionStatus('decided', { decisions: [decisionRow] }) },
+      {
+        'POST /api/goals/goal-1/completion': () => created({ reused: false }),
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(completionWrites()).toHaveLength(0);
+
+    // Only the timer advance runs on the fake clock. The clicks run on real timers, because the testing library's
+    // user-event wrapper waits on a setTimeout that a fake clock never fires.
+    vi.useFakeTimers();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    vi.useRealTimers();
+    expect(completionWrites()).toHaveLength(0);
+    expect(section.getByRole('checkbox')).toHaveProperty('checked', false);
+
+    await user.click(section.getByRole('checkbox'));
+    expect(section.getByRole('button', { name: 'Complete Goal' })).toHaveProperty('disabled', false);
+    expect(completionWrites()).toHaveLength(0);
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    await waitFor(() => expect(completionWrites()).toHaveLength(1));
+    expect(decisionWrites()).toHaveLength(0);
+  });
+
+  it('switching to another Goal does not complete the Goal, during or after the switch', async () => {
+    const second = { ...handoff('handoff-goal-b'), goalId: 'goal-2' };
+    serveHandoff(
+      { status: completionStatus('decided', { decisions: [decisionRow] }) },
+      {
+        '/api/goals': () => ({
+          goals: [item(), item({ id: 'goal-2', title: 'Second Goal' })],
+          total: 2,
+          limit: 50,
+        }),
+        '/api/goals/goal-2': () => ({ goal: detail({ id: 'goal-2', title: 'Second Goal' }) }),
+        '/api/goals/goal-2/preview': () => ({ preview: { ...preview(), goalId: 'goal-2' } }),
+        '/api/goals/goal-2/handoffs': () => history(second.handoffId),
+        [`/api/goals/goal-2/handoffs/${second.handoffId}`]: () => ({ projection: handoffProjection(second) }),
+        [`/api/goals/goal-2/handoffs/${second.handoffId}/external-integration`]: () => ({
+          ...storedStatus(second),
+          goalId: 'goal-2',
+        }),
+        [`/api/goals/goal-2/handoffs/${second.handoffId}/external-integration/attestations/${ATTESTATION}`]:
+          () => ({ projection: attestationProjection(second) }),
+        '/api/goals/goal-2/completion': () => completionStatus('not_completed'),
+        '/api/goals/goal-2/completion-preflight': () => ({ preflight: preflight() }),
+        'POST /api/goals/goal-1/completion': () => created({ reused: false }),
+        'POST /api/goals/goal-2/completion': () => created({ reused: false }),
+      },
+    );
+    const anyCompletionPosts = () => posts().filter((call) => call.path.endsWith('/completion'));
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    let section = await completionSection();
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(anyCompletionPosts()).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
+    expect(anyCompletionPosts()).toHaveLength(0);
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    section = await completionSection();
+    await section.findByRole('button', { name: 'Record completion decision' });
+    expect(anyCompletionPosts()).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    section = await completionSection();
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(anyCompletionPosts()).toHaveLength(0);
+    expect(decisionWrites()).toHaveLength(0);
+  });
+
+  it('a decision already recorded before the page loads does not complete the Goal on mount', async () => {
+    serveHandoff(
+      { status: completionStatus('decided', { decisions: [decisionRow] }) },
+      {
+        'POST /api/goals/goal-1/completion': () => created({ reused: false }),
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByRole('button', { name: 'Complete Goal' })).toHaveProperty('disabled', true);
+    expect(section.getByRole('checkbox')).toHaveProperty('checked', false);
+    expect(section.queryByRole('button', { name: 'Record completion decision' })).toBeNull();
+    expect(completionWrites()).toHaveLength(0);
+    expect(posts()).toEqual([]);
   });
 });
