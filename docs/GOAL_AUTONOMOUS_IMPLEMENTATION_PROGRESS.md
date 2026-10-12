@@ -298,6 +298,33 @@ D.3F ACCEPTED on `9b442a1` under the stage rule, with the residuals above. A fol
 
 Not done: D.3G, D.4, the Model Opportunity Layer, V1 hardening and V1 qualification have not started. Physical Windows, iPhone, live Tailscale and live provider gates remain pending.
 
+### D.3G complete backend lifecycle qualification (lead record; D.3 parent-stage review pending)
+
+Plan: `d3g_plan.md` (Sonnet). Commits on `feature/grand-project-goal-engine`, each with hosted CI green on its exact SHA and an independent Sonnet review:
+
+- `49d2f87` test kit only: `objectFormat` on `realRunHarness`; a `merge` strategy on `integratedExternalFixture`. CI success (run 38197644580). Sonnet review: PASS.
+- `81dab46` normal two-parent merge completion (sha1 and sha256) and the `merge -s ours` disclosure (sha1). CI success (run 38200966386). Sonnet review: PASS WITH NON-BLOCKING FINDINGS.
+- `fa9c37e` post-completion destination movement, repeated requests, v1 beside v2, and cross-Goal isolation. CI success (run 38204773368). Sonnet review: PASS WITH NON-BLOCKING FINDINGS.
+- `4f1e4c3` restart, injected write faults (proof insert, recorded event, terminal update, state event) with reopen and retry, and after-commit replay. CI success (run 38208083892). Sonnet review: PASS.
+- `4c6f94a` PRODUCTION FIX, found by the real-execution test. The supervisor never requested the final-acceptance gate for a version-2 Goal: `external_completion_not_activated` was not a user-terminal failure, so the Goal parked in `completion_pending` and acceptance was unreachable. The fix accepts that one code for the gate only under its own v2 signal (`finalApply.reason`). Completion still goes only through `completeGoal` and the external decision. CI success (run 38212307619). Authority review: PASS. Non-blocking: no test for a v2 Goal with an extra non-user-terminal failure, which the condition correctly refuses.
+- `5559f15` real-execution v2 lifecycle (sha1 and sha256) through the real supervisor, the real approve, decision and handoff routes, real Git, attestation, completion, reopen, and a corrected completion (dispute). Plus a same-family refusal (sha1). CI success (run 38216120808). Sonnet review: PASS WITH NON-BLOCKING FINDINGS (header disclaimer missing, now added; route-validation seeding not listed as a fake, now listed; old supervisor not explicitly stopped before restart).
+
+Coverage, mapped to the 13 lifecycle steps and 13 required conditions in the owner's D.3G text: all are covered by named tests in `externalCompletionLifecycle.test.ts` and `goalLifecycleQualification.test.ts`, plus the existing D.3E/D.3F suites. The same-family refusal is observed as `review_queue_error` with `plan_unavailable`; it is attributed to the family check only by contrast with the passing different-family run, not proven.
+
+Residuals and gaps, stated as found:
+
+- Cross-Goal isolation in one database is NOT producible with the fixtures: a second Goal in the same project needs an accepted final review, and producing that through the fixtures would require the independence bypass. The claim is tested with two databases only, and the test says so.
+- Destination movement after completion is refused with `goal_not_running` (detail `completed`), because the status check runs before the completion-already-recorded check. This is the observed code.
+- The restart is a fresh supervisor and app on the same data root after the old ones are no longer used. It does not kill a process, and the old supervisor is not explicitly stopped.
+- Crash durability is simulated only through injected write faults and reopen. OS-level crash durability, WAL recovery after a killed process, and partial-fsync behaviour are NOT proven.
+- SHA-256 is covered in the real-execution path (sha256 merge), and the supervisor fix was found by the sha1 path.
+- Settings row: openDatabase re-seeds `goal_builtin_workflow_conflicts` on every open, so reopen comparisons exclude `settings.updated_at` only; key and value are still compared.
+- The `ours` completion reads `unqualifiedSuccessAllowed: true` with `contentPreservation: not_proven`. This is an OBSERVED value, pending an owner decision on whether a not-proven content-preservation completion may read as unqualified success. It is not treated as intended behaviour.
+- The v2 gate condition has no test for a v2 Goal with an extra non-user-terminal failure (non-blocking).
+- Windows, physical iPhone, live Tailscale and live provider validation remain PENDING. No test here cites a fake provider as live evidence.
+
+D.3G is not yet accepted. The D.3 parent-stage Sonnet review (after all subphases) is required before D.4 begins.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.

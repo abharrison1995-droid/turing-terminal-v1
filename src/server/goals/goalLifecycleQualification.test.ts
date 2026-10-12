@@ -12,11 +12,16 @@ import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 import type { ProviderCapabilities, ProviderStatus } from '../../shared/types.js';
 
 /**
- * Real-execution lifecycle qualification of one version-2 Goal. The ONLY fake is `providers.js` (the provider process
- * boundary) and the deterministic provider response texts it returns. The supervisor, the RunEngine, the broker, the
+ * Real-execution lifecycle qualification of one version-2 Goal. The fakes are the provider process boundary
+ * (`providers.js`, with deterministic provider response texts) and the route-validation rows seeded by
+ * `seedFakeRouteValidations`, which stand in for a live provider probe. The supervisor, the RunEngine, the broker, the
  * verifier, the review and acceptance gates, the approve/start/decision/handoff/attest HTTP routes, the correction and
  * completion services, Git and SQLite are all real. No test code calls `acceptedFixture`, `completeReview`, or writes a
  * Goal table directly. The restart drives a fresh supervisor and a fresh app on the same database.
+ *
+ * NOT PROVEN HERE: OS-level crash durability (no process is killed mid-write), WAL recovery after a killed process,
+ * partial-fsync behaviour, Windows path/ref/common-dir semantics, physical iPhone, live Tailscale, and live provider
+ * validation. The old supervisor is not explicitly stopped before the restart; the fresh one is what drives the rest.
  */
 vi.mock('../providers.js', () => ({
   discoverProviders: vi.fn(async () => []),
