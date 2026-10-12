@@ -1,7 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
+  GoalExternalCompletionCompleted,
   GoalExternalCompletionDecisionRecorded,
   GoalExternalCompletionPreflightResponse,
   GoalExternalCompletionStatus,
@@ -25,12 +28,15 @@ import { readStoredCompletion } from './externalCompletionTerminal.js';
 import {
   appendCorrectionForTest,
   databaseSnapshot,
+  git,
+  reattestAtCurrentTip,
   repositoryState,
   reviewedDigest,
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 import { externalCompletionError, externalCompletionStatus } from './goalRoutes.js';
 
 /**
@@ -744,4 +750,450 @@ describe('external completion error mapping (T15)', () => {
       body: { code: 'completion_read_failed', detail: 'decision_read' },
     });
   });
+});
+
+// --- The explicit completion (R3) -------------------------------------------------------------------------------------
+
+type Attested = Awaited<ReturnType<typeof v2RunningAttestedFixture>>;
+
+const completionUrl = (goalId: string) => `/api/goals/${goalId}/completion`;
+const completeBody = { decision: 'complete_goal', acknowledgeContentNotProven: true };
+
+/** Records the user decision through R2 for the ready preflight, and returns the decision response (R2's action digest). */
+async function decideOverHttp(app: FastifyInstance, attested: Attested) {
+  const digest = await reviewedDigest(attested);
+  const response = await call(
+    app,
+    'POST',
+    decisionUrl(attested.fx.goalId),
+    {
+      decision: 'record_completion_decision',
+      attestationId: attested.attestationId,
+      acknowledgeContentNotProven: true,
+    },
+    { 'if-match': `"${digest}"` },
+  );
+  expect(response.status).toBe(201);
+  return response.body as GoalExternalCompletionDecisionRecorded;
+}
+
+/** The Goal's status and the reason code that completed it, read directly from the table. */
+function goalStatusRow(fx: GoalFixture) {
+  return fx.db.prepare('SELECT status, status_reason_code FROM goals WHERE id = ?').get(fx.goalId) as {
+    status: string;
+    status_reason_code: string | null;
+  };
+}
+
+/** Moves the destination branch by one commit made outside Turing, the way the lifecycle tests do. Returns the new tip. */
+function advanceDestination(repo: string, fileName: string): string {
+  writeFileSync(join(repo, fileName), `${fileName}\n`);
+  git(repo, 'add', fileName);
+  git(repo, 'commit', '-q', '-m', `user commit ${fileName}`);
+  return git(repo, 'rev-parse', 'main');
+}
+
+describe('external completion (R3)', () => {
+  it(
+    'T8 completion refused without a decision: 404 decision_not_found, no write; header errors are refused without a write',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      const before = wholeState(fx);
+
+      // A random digest names no decision; so does a preflight digest, which is not an action digest.
+      for (const named of [randomBytes(32).toString('hex'), digest]) {
+        expect(
+          await call(app, 'POST', completionUrl(fx.goalId), completeBody, { 'if-match': `"${named}"` }),
+        ).toMatchObject({ status: 404, body: { code: 'decision_not_found' } });
+      }
+      expect(await call(app, 'POST', completionUrl(fx.goalId), completeBody, {})).toMatchObject({
+        status: 428,
+        body: { code: 'reviewed_action_precondition_required' },
+      });
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, { 'if-match': 'not-a-digest' }),
+      ).toMatchObject({ status: 400, body: { code: 'reviewed_action_precondition_invalid' } });
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+          'if-match': `"${digest.toUpperCase()}"`,
+        }),
+      ).toMatchObject({ status: 400, body: { code: 'reviewed_action_precondition_invalid' } });
+
+      expect(wholeState(fx)).toEqual(before);
+      expect(goalStatusRow(fx).status).toBe('running');
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T9 completion happy path: 201, one proof, Goal completed by the user-confirmed reason, ids equal the stored completion',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      // Read before the decision: once a completion decision exists, the default preflight refuses every attestation
+      // with completion_already_recorded (externalCompletionPreflight.ts, plan section 0).
+      const digest = await reviewedDigest(attested);
+      const decided = await decideOverHttp(app, attested);
+
+      const response = await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+        'if-match': `"${decided.actionDigest}"`,
+      });
+      expect(response.status).toBe(201);
+      const body = response.body as GoalExternalCompletionCompleted;
+      const stored = readStoredCompletion(fx.db, fx.goalId);
+      expect(stored.state).toBe('completed');
+      expect(body).toEqual({
+        reused: false,
+        completion: {
+          proofId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          proofDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          approvalId: decided.approvalId,
+          actionDigest: decided.actionDigest,
+          preflightDigest: digest,
+          observedAt: expect.any(String),
+          completedAt: expect.any(String),
+        },
+        completionStanding: readGoalCompletionStanding(fx.db, fx.goalId),
+      });
+      if (stored.state !== 'completed') throw new Error('unreachable');
+      expect(body.completion).toEqual({
+        proofId: stored.proofId,
+        proofDigest: stored.proofDigest,
+        approvalId: stored.approvalId,
+        actionDigest: stored.actionDigest,
+        preflightDigest: stored.preflightDigest,
+        observedAt: stored.observedAt,
+        completedAt: stored.completedAt,
+      });
+      expect(goalStatusRow(fx)).toEqual({
+        status: 'completed',
+        status_reason_code: EXTERNAL_COMPLETION_REASON,
+      });
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T10 completion repeat, destination movement after completion, and R4 by action digest all return the same completion',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      const request = { 'if-match': `"${decided.actionDigest}"` };
+      const first = await call(app, 'POST', completionUrl(fx.goalId), completeBody, request);
+      expect(first.status).toBe(201);
+      const proofId = first.body.completion.proofId as string;
+
+      // A repeat with the same digest writes nothing (the replay answers first, before any Git).
+      const beforeRepeat = wholeState(fx);
+      const repeat = await call(app, 'POST', completionUrl(fx.goalId), completeBody, request);
+      expect(repeat.status).toBe(200);
+      expect(repeat.body).toEqual({ ...first.body, reused: true });
+      expect(wholeState(fx)).toEqual(beforeRepeat);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+
+      // Pinned: the destination branch moves after completion. The stored completion still replays, with no write to Turing.
+      const databaseBeforeMove = databaseSnapshot(fx.db);
+      const movedTip = advanceDestination(fx.repo, 'after-completion.txt');
+      expect(git(fx.repo, 'rev-parse', 'main')).toBe(movedTip);
+      const afterMove = await call(app, 'POST', completionUrl(fx.goalId), completeBody, request);
+      expect(afterMove.status).toBe(200);
+      expect(afterMove.body).toEqual({ ...first.body, reused: true });
+      expect(databaseSnapshot(fx.db)).toEqual(databaseBeforeMove);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+
+      // R4 names the same completion for this exact action digest.
+      const status = await call(
+        app,
+        'GET',
+        `/api/goals/${fx.goalId}/completion?actionDigest=${decided.actionDigest}`,
+      );
+      expect(status.status).toBe(200);
+      expect(status.body.state).toBe('completed');
+      expect(status.body.completion).toEqual(first.body.completion);
+      expect(status.body.completion.proofId).toBe(proofId);
+      expect(status.body.completionStanding).toEqual(readGoalCompletionStanding(fx.db, fx.goalId));
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T11 pending A and B for one attestation: neither completes; B is decision_conflict, A is reviewed_preflight_changed, nothing written (pinned)',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      // B is the real decision for the current ready preflight, recorded through R2.
+      const decidedB = await decideOverHttp(app, attested);
+      // A is a second approved decision for the same attestation with a different reviewed digest, seeded through the
+      // approval primitives as T7 does. Its action is internally consistent, so it is a valid stored decision.
+      const report = await computeExternalCompletionPreflight(
+        fx.db,
+        fx.goalId,
+        { attestationId },
+        { allowRecordedDecision: true },
+      );
+      const otherAction = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: 'f'.repeat(64),
+      })!;
+      const seededA = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Second decision for the same attestation.',
+        requestedBy: 'user',
+        detail: { ...otherAction },
+        externalCompletionActionDigest: otherAction.actionDigest,
+      });
+      decideGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        approvalId: seededA.id,
+        decision: 'approved',
+        decidedBy: 'user',
+      });
+      expect(completionApprovals(fx).map((row) => row.id)).toEqual([decidedB.approvalId, seededA.id]);
+      const before = wholeState(fx);
+
+      // Observed, not the planned "B completes": the terminal writer requires exactly one valid decision per attestation
+      // (externalCompletionTerminal.ts, sameAttestation !== 1), so B is refused with decision_conflict after Git, inside a
+      // transaction that rolls back. A's reviewed digest is not the current preflight, so A is refused earlier with 412
+      // reviewed_preflight_changed (externalCompletion.ts, the reviewed digest comparison). Neither is consumed.
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+          'if-match': `"${decidedB.actionDigest}"`,
+        }),
+      ).toMatchObject({ status: 409, body: { code: 'decision_conflict' } });
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+          'if-match': `"${otherAction.actionDigest}"`,
+        }),
+      ).toMatchObject({ status: 412, body: { code: 'reviewed_preflight_changed' } });
+      expect(wholeState(fx)).toEqual(before);
+      expect(goalStatusRow(fx).status).toBe('running');
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T11 pinned: R2 accepts a decision for another attestation Y while X is approved and unconsumed; only Y completes',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decidedX = await decideOverHttp(app, attested);
+      // The destination moves, so X no longer matches the tip. Y attests the new tip. A second attestation cannot be made
+      // at the same tip (UNIQUE goal_approvals external_integration_action_digest), so the tip must move first.
+      advanceDestination(fx.repo, 'second-tip.txt');
+      const attestationY = await reattestAtCurrentTip(attested);
+
+      // Observed: once a completion decision exists, the read-only preflight refuses every attestation of the Goal.
+      const readPreflightY = await get<GoalExternalCompletionPreflightResponse>(
+        preflightUrl(fx.goalId, attestationY.attestationId),
+      );
+      expect(readPreflightY.body.preflight.outcome).toBe('refused');
+      expect(readPreflightY.body.preflight.reasons[0]?.code).toBe('completion_already_recorded');
+      // So the digest for Y comes from the same preflight the decision service uses (allowRecordedDecision), not from R1.
+      const digestY = (
+        await computeExternalCompletionPreflight(
+          fx.db,
+          fx.goalId,
+          { attestationId: attestationY.attestationId },
+          { allowRecordedDecision: true },
+        )
+      ).digest;
+
+      // X is now refused at its fresh preflight: the destination moved away from its decided tip.
+      const beforeX = wholeState(fx);
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+          'if-match': `"${decidedX.actionDigest}"`,
+        }),
+      ).toMatchObject({
+        status: 409,
+        body: { code: 'preflight_refused', detail: 'destination_advanced_after_observation' },
+      });
+      expect(wholeState(fx)).toEqual(beforeX);
+
+      // Observed: R2 accepts a decision for Y while X is approved (decision classification ignores other attestations).
+      const recordedY = await call(
+        app,
+        'POST',
+        decisionUrl(fx.goalId),
+        {
+          decision: 'record_completion_decision',
+          attestationId: attestationY.attestationId,
+          acknowledgeContentNotProven: true,
+        },
+        { 'if-match': `"${digestY}"` },
+      );
+      expect(recordedY.status).toBe(201);
+      expect(completionApprovals(fx).map((row) => row.id)).toEqual([
+        decidedX.approvalId,
+        recordedY.body.approvalId,
+      ]);
+
+      // Y completes. X's digest then names a Goal completed by another attestation's decision: completion_conflict.
+      const completedY = await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+        'if-match': `"${recordedY.body.actionDigest}"`,
+      });
+      expect(completedY.status).toBe(201);
+      expect(completedY.body.completion.approvalId).toBe(recordedY.body.approvalId);
+      const beforeConflict = wholeState(fx);
+      expect(
+        await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+          'if-match': `"${decidedX.actionDigest}"`,
+        }),
+      ).toMatchObject({ status: 409, body: { code: 'completion_conflict' } });
+      expect(wholeState(fx)).toEqual(beforeConflict);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'T12 completion refused after the destination moved writes nothing and the Goal stays running (%s)',
+    async (format) => {
+      const attested = await v2RunningAttestedFixture(format);
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      advanceDestination(fx.repo, 'moved-before-completion.txt');
+      const before = wholeState(fx);
+
+      // Observed (plan expected destination_changed or reviewed_preflight_changed): the fresh preflight refuses first, with
+      // detail destination_advanced_after_observation. The service's own destination comparison is never reached here.
+      const response = await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+        'if-match': `"${decided.actionDigest}"`,
+      });
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({
+        code: 'preflight_refused',
+        detail: 'destination_advanced_after_observation',
+      });
+      expect(wholeState(fx)).toEqual(before);
+      expect(goalStatusRow(fx).status).toBe('running');
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T13 completion body: a missing decision, or any extra key (attestationId, decidedBy, actor), is 400 invalid_request with no write',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      const header = { 'if-match': `"${decided.actionDigest}"` };
+      const before = wholeState(fx);
+
+      const invalidBodies = [
+        { acknowledgeContentNotProven: true },
+        { ...completeBody, decision: 'record_completion_decision' },
+        { ...completeBody, attestationId },
+        { ...completeBody, decidedBy: 'user' },
+        { ...completeBody, decidedBy: 'supervisor' },
+        { ...completeBody, actor: 'user' },
+      ];
+      for (const body of invalidBodies)
+        expect(
+          await call(app, 'POST', completionUrl(fx.goalId), body, header),
+          JSON.stringify(body),
+        ).toMatchObject({
+          status: 400,
+          body: { code: 'invalid_request' },
+        });
+      expect(wholeState(fx)).toEqual(before);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T13 the generic approval route refuses a pending completion approval; an approved one is an idempotent no-op (pinned)',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      const before = wholeState(fx);
+
+      // Observed: the dedicated-service refusal (goalCommands.ts, inside `existing.status === 'pending'`) applies only to a
+      // pending row. An approved completion row falls through to decideGoalApproval, which reports no change. No write.
+      expect(
+        await call(app, 'POST', `/api/goal-approvals/${decided.approvalId}/decision`, {
+          decision: 'approved',
+        }),
+      ).toMatchObject({
+        status: 200,
+        body: { approvalId: decided.approvalId, changed: false, status: 'approved' },
+      });
+      expect(wholeState(fx)).toEqual(before);
+      expect(completionApprovals(fx).map((row) => row.status)).toEqual(['approved']);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T16 rest: every refused completion POST, at each state, leaves the whole state unchanged',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const refusedAt = async (digest: string | null) => {
+        const header = digest === null ? {} : { 'if-match': `"${digest}"` };
+        const before = wholeState(fx);
+        const unknown = randomBytes(32).toString('hex');
+        // Refusals that need no decision: a missing or malformed header, and an unknown digest.
+        expect((await call(app!, 'POST', completionUrl(fx.goalId), completeBody, {})).status).toBe(428);
+        expect(
+          (await call(app!, 'POST', completionUrl(fx.goalId), completeBody, { 'if-match': 'x' })).status,
+        ).toBe(400);
+        expect(
+          (await call(app!, 'POST', completionUrl(fx.goalId), completeBody, { 'if-match': `"${unknown}"` }))
+            .status,
+        ).toBe(404);
+        if (digest !== null) {
+          expect(
+            (
+              await call(
+                app!,
+                'POST',
+                completionUrl(fx.goalId),
+                { ...completeBody, acknowledgeContentNotProven: false },
+                header,
+              )
+            ).body.code,
+          ).toBe('acknowledgement_required');
+        }
+        expect(wholeState(fx)).toEqual(before);
+      };
+
+      // not_completed: no decision exists.
+      await refusedAt(null);
+      // decided: one valid decision waits.
+      const decided = await decideOverHttp(app, attested);
+      await refusedAt(decided.actionDigest);
+      // completed: the stored completion stands; a refused acknowledgement still writes nothing.
+      expect(
+        (
+          await call(app, 'POST', completionUrl(fx.goalId), completeBody, {
+            'if-match': `"${decided.actionDigest}"`,
+          })
+        ).status,
+      ).toBe(201);
+      await refusedAt(decided.actionDigest);
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

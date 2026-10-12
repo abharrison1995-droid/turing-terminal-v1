@@ -4,6 +4,7 @@ import type { GoalDefinition } from '../../shared/goals.js';
 import type {
   GoalApiError,
   GoalCompletionStanding,
+  GoalExternalCompletionCompleted,
   GoalExternalCompletionDecisionRecorded,
   GoalExternalCompletionPreflightResponse,
   GoalExternalCompletionStatus,
@@ -43,8 +44,12 @@ import {
   parseDefinitionPrecondition,
   rejectDefinition,
 } from './definitions.js';
-import { readExternalCompletionStatus } from './externalCompletionApi.js';
-import { ExternalCompletionError, type ExternalCompletionErrorCode } from './externalCompletion.js';
+import { findDecisionByActionDigest, readExternalCompletionStatus } from './externalCompletionApi.js';
+import {
+  completeGoalFromExternalDecision,
+  ExternalCompletionError,
+  type ExternalCompletionErrorCode,
+} from './externalCompletion.js';
 import {
   ExternalCompletionDecisionError,
   recordExternalCompletionDecision,
@@ -372,6 +377,10 @@ const completionDecisionBody = z.strictObject({
   attestationId: z.string().uuid(),
   acknowledgeContentNotProven: z.boolean(),
   note: z.string().min(1).max(500).optional(),
+});
+const completionBody = z.strictObject({
+  decision: z.literal('complete_goal'),
+  acknowledgeContentNotProven: z.boolean(),
 });
 const completionStatusQuery = z.strictObject({
   actionDigest: z
@@ -848,6 +857,51 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         preflightDigest: result.preflightDigest,
         status: result.status,
         reused: result.reused,
+      };
+      return reply.code(result.reused ? 200 : 201).send(response);
+    } catch (error) {
+      return externalCompletionError(error, reply);
+    }
+  });
+
+  // The explicit "Complete Goal" step. The client names only the exact action digest of a recorded decision; the attestation
+  // and the reviewed preflight digest are read from that stored decision, never from the request.
+  app.post('/api/goals/:goalId/completion', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
+    const body = parse(completionBody, request.body, reply);
+    if (!body.ok) return reply;
+    const goalId = params.data.goalId;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    const digest = readQuotedDigestPrecondition(
+      request,
+      reply,
+      'Record the completion decision and name its action digest before completing the Goal.',
+    );
+    if (digest === undefined) return reply;
+    try {
+      const decision = findDecisionByActionDigest(db, goalId, digest);
+      const result = await completeGoalFromExternalDecision(db, {
+        goalId,
+        attestationId: decision.attestationId,
+        reviewedPreflightDigest: decision.reviewedPreflightDigest,
+        acknowledgeContentNotProven: body.data.acknowledgeContentNotProven,
+      });
+      const { completion } = result;
+      const response: GoalExternalCompletionCompleted = {
+        reused: result.reused,
+        completion: {
+          proofId: completion.proofId,
+          proofDigest: completion.proofDigest,
+          approvalId: completion.approvalId,
+          actionDigest: completion.actionDigest,
+          preflightDigest: completion.preflightDigest,
+          observedAt: completion.observedAt,
+          completedAt: completion.completedAt,
+        },
+        completionStanding: readGoalCompletionStanding(db, goalId),
       };
       return reply.code(result.reused ? 200 : 201).send(response);
     } catch (error) {

@@ -5,6 +5,7 @@ import type {
   GoalExternalCompletionStatus,
 } from '../../shared/goalApi.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
+import { ExternalCompletionError } from './externalCompletion.js';
 import { listExternalCompletionDecisions } from './externalCompletionDecision.js';
 import { readStoredCompletion } from './externalCompletionTerminal.js';
 
@@ -90,4 +91,36 @@ export function readExternalCompletionStatus(
         : null,
     completionStanding: readGoalCompletionStanding(db, goalId),
   };
+}
+
+/** The stored decision that one exact action digest names. Every value is read from the stored, validated row. */
+export interface DecisionByActionDigest {
+  approvalId: string;
+  actionDigest: string;
+  attestationId: string;
+  reviewedPreflightDigest: string;
+}
+
+/**
+ * The one completion decision whose exact action digest is `digest`. The client supplies only the digest; the attestation
+ * and the reviewed preflight digest come from the stored row. Any invalid row on the Goal fails closed, as the service does.
+ */
+export function findDecisionByActionDigest(db: Db, goalId: string, digest: string): DecisionByActionDigest {
+  let found: DecisionByActionDigest | null = null;
+  for (const row of listExternalCompletionDecisions(db, goalId)) {
+    if (row.state !== 'valid')
+      throw new ExternalCompletionError(
+        'decision_corrupt',
+        row.state === 'invalid' ? row.reason : 'not_found',
+      );
+    if (row.action.actionDigest === digest)
+      found = {
+        approvalId: row.approval.id,
+        actionDigest: row.action.actionDigest,
+        attestationId: row.action.attestation.id,
+        reviewedPreflightDigest: row.action.userReviewedPreflightDigest,
+      };
+  }
+  if (found === null) throw new ExternalCompletionError('decision_not_found', null);
+  return found;
 }
