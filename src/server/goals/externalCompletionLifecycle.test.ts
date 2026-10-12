@@ -1,8 +1,14 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Db } from '../db.js';
 import { getGoalApproval } from './approvals.js';
+import { completeGoal } from './completion.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
+import { createGoalDraft, approveDefinition } from './definitions.js';
+import { recordEvidence } from './evidence.js';
 import { completeGoalFromExternalDecision, ExternalCompletionError } from './externalCompletion.js';
 import {
   ExternalCompletionDecisionError,
@@ -13,14 +19,19 @@ import { computeExternalCompletionPreflight } from './externalCompletionPrefligh
 import { readStoredCompletion } from './externalCompletionTerminal.js';
 import { persistExternalIntegrationAttestation } from './externalIntegration.js';
 import {
+  appendCorrectionForTest,
   approveExternalObservation,
   databaseSnapshot,
   git,
   integratedExternalFixture,
   repositoryState,
+  reviewedDigest,
+  v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
-import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { BUILD, cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS, simpleDefinition, TESTS } from './repoKit.js';
+import { transitionGoal } from './stateMachine.js';
+import { verifierDigest } from './verifierDigest.js';
 import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
 
 /**
@@ -177,6 +188,114 @@ async function readyDigest(attested: { fx: GoalFixture; attestationId: string })
   return report.digest;
 }
 
+interface RepoState {
+  refs: string;
+  symbolicHead: string;
+  config: string;
+  exclude: string;
+  worktrees: string;
+  files: Record<string, string>;
+}
+
+const repoState = (repo: string): RepoState => repositoryState(repo) as RepoState;
+
+/** Ref name to commit for every ref in the repository, from `git show-ref`. */
+function refMap(repo: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const line of git(repo, 'show-ref').split('\n')) {
+    const [sha, name] = line.split(' ');
+    map[name!] = sha!;
+  }
+  return map;
+}
+
+/** The stored proof rows of a Goal, serialised: a byte comparison of what the proof table holds for it. */
+function proofRowsJson(db: Db, goalId: string): string {
+  return JSON.stringify(
+    db.prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ? ORDER BY rowid').all(goalId),
+  );
+}
+
+/**
+ * A digest of every row that belongs to one Goal: its `goals` row, and every row of every table with a `goal_id`
+ * column, in rowid order. Tables without `goal_id` are not Goal-scoped and are not included.
+ */
+function goalScopedDigests(db: Db, goalId: string): Record<string, string> {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+    .all() as { name: string }[];
+  const digests: Record<string, string> = {};
+  for (const { name } of tables) {
+    const columns = (db.prepare(`PRAGMA table_info("${name}")`).all() as { name: string }[]).map(
+      (column) => column.name,
+    );
+    let rows: unknown[] | null = null;
+    if (name === 'goals') rows = db.prepare('SELECT * FROM goals WHERE id = ? ORDER BY rowid').all(goalId);
+    else if (columns.includes('goal_id'))
+      rows = db.prepare(`SELECT * FROM "${name}" WHERE goal_id = ? ORDER BY rowid`).all(goalId);
+    if (rows !== null) digests[name] = createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+  }
+  return digests;
+}
+
+/**
+ * A running version-2 Goal, reviewed and decided through the real services, then completed. Returns the request that
+ * produced the completion, so a test can repeat that exact request.
+ */
+async function decideAndComplete(attested: Awaited<ReturnType<typeof runningAttested>>) {
+  const digest = await readyDigest(attested);
+  const request = {
+    goalId: attested.fx.goalId,
+    attestationId: attested.attestationId,
+    reviewedPreflightDigest: digest,
+    acknowledgeContentNotProven: true,
+  };
+  await recordExternalCompletionDecision(attested.fx.db, request);
+  const completed = await completeGoalFromExternalDecision(attested.fx.db, request);
+  return { request, completed };
+}
+
+/**
+ * A version-1 Goal in the same database and project as `fx`, completed through the real `completeGoal` path. Its setup
+ * mirrors goalRepoFixture for its own Goal: an approved definition, its own Goal ref and runtime head, and a running
+ * status. A version-1 completion needs no final review, so no independence fixture is involved.
+ */
+async function completeLegacyGoal(fx: GoalFixture): Promise<string> {
+  const definition = simpleDefinition();
+  const { goalId } = createGoalDraft(fx.db, { projectId: fx.projectId, title: 'Legacy G', definition });
+  approveDefinition(fx.db, { goalId, version: 1, actor: 'user' });
+  const work = fx.sideCommit({ 'src/work.ts': 'legacy work\n' });
+  git(fx.repo, 'update-ref', `refs/heads/turing/goal/${goalId}`, work);
+  fx.db
+    .prepare(
+      'UPDATE goal_runtime SET integration_head = ?, goal_branch = ?, base_branch = ?, base_commit = ? WHERE goal_id = ?',
+    )
+    .run(work, `turing/goal/${goalId}`, 'main', fx.baseCommit, goalId);
+  transitionGoal(fx.db, {
+    goalId,
+    to: 'running',
+    reasonCode: 'user_start',
+    actor: 'user',
+    preconditions: [{ code: 'preflight', ok: true }],
+  });
+  const tree = git(fx.repo, 'rev-parse', `${work}^{tree}`);
+  for (const [criterion, kind] of [
+    [BUILD, 'build_result'],
+    [TESTS, 'test_result'],
+  ] as const)
+    await recordEvidence(fx.db, {
+      goalId,
+      definitionVersion: 1,
+      criterionKey: criterion.key,
+      verifierDigest: verifierDigest(criterion.key, criterion.verification[0]!),
+      kind,
+      verdict: 'satisfies',
+      subjectTree: tree,
+    });
+  expect(await completeGoal(fx.db, goalId)).toMatchObject({ completed: true });
+  return goalId;
+}
+
 describe('external completion lifecycle: normal merge (Q3)', () => {
   it.each(FORMATS)(
     'completes a normal two-parent merge with the merge commit as the proven destination (%s)',
@@ -304,6 +423,8 @@ describe('external completion lifecycle: merge -s ours disclosure (Q2)', () => {
         standing: 'uncontested',
         status: { goalStatus: 'completed' },
         claim: {
+          // Observed value, pending an owner decision on whether a not_proven content-preservation completion may read as
+          // unqualified success. Do not treat as intended behaviour.
           unqualifiedSuccessAllowed: true,
           trustedForDownstream: true,
           qualifier: 'none',
@@ -319,6 +440,192 @@ describe('external completion lifecycle: merge -s ours disclosure (Q2)', () => {
       const probe = spawnSync('git', ['-C', fx.repo, 'cat-file', '-e', 'main:src/result.txt']);
       expect(probe.status).toBe(128);
       expect(String(probe.stderr)).toContain("path 'src/result.txt' does not exist in 'main'");
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: destination movement after completion (Q4)', () => {
+  it.each(FORMATS)(
+    'keeps the proof, completed_at, standing and replay unchanged when main advances after completion (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      const { request, completed } = await decideAndComplete(attested);
+      expect(completed.reused).toBe(false);
+
+      const replayBefore = await completeGoalFromExternalDecision(fx.db, request);
+      expect(replayBefore).toEqual({ reused: true, completion: completed.completion });
+      const proofId = proofRows(fx.db, fx.goalId)[0]!.id;
+      const proofBytes = proofRowsJson(fx.db, fx.goalId);
+      const completedAt = goalRow(fx.db, fx.goalId).completed_at;
+      const standing = readGoalCompletionStanding(fx.db, fx.goalId);
+      const mergeCommit = git(fx.repo, 'rev-parse', 'main');
+      const refsBefore = refMap(fx.repo);
+      const repoBefore = repoState(fx.repo);
+
+      // The user's own commit on main, made outside Turing. Only main may move, and the file is the only addition.
+      writeFileSync(join(fx.repo, 'after-completion.txt'), 'user commit after completion\n');
+      git(fx.repo, 'add', 'after-completion.txt');
+      git(fx.repo, 'commit', '-q', '-m', 'user commit after completion');
+      const userCommit = git(fx.repo, 'rev-parse', 'main');
+      expect(userCommit).not.toBe(mergeCommit);
+      expect(refMap(fx.repo)).toEqual({ ...refsBefore, 'refs/heads/main': userCommit });
+      const movedFull = repositoryState(fx.repo);
+      const moved = repoState(fx.repo);
+      expect(moved.symbolicHead).toBe(repoBefore.symbolicHead);
+      expect(moved.config).toBe(repoBefore.config);
+      expect(moved.exclude).toBe(repoBefore.exclude);
+      // The worktree listing prints HEAD's commit, which is the user's commit now; nothing else in it may change.
+      expect(moved.worktrees).toBe(repoBefore.worktrees.split(mergeCommit).join(userCommit));
+      expect(moved.files).toEqual({
+        ...repoBefore.files,
+        'after-completion.txt': Buffer.from('user commit after completion\n').toString('base64'),
+      });
+
+      // Turing reads only after the move: the replay, the standing and a new preflight.
+      const databaseBefore = databaseSnapshot(fx.db);
+      const replayAfter = await completeGoalFromExternalDecision(fx.db, request);
+      expect(replayAfter).toEqual({ reused: true, completion: completed.completion });
+      expect(proofRows(fx.db, fx.goalId).map((row) => row.id)).toEqual([proofId]);
+      expect(proofRowsJson(fx.db, fx.goalId)).toBe(proofBytes);
+      expect(goalRow(fx.db, fx.goalId).completed_at).toBe(completedAt);
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toEqual(standing);
+
+      // A new preflight for the same attestation refuses. The Goal is completed, so the refusal is at the goal-status
+      // check, one step before the completion-already-recorded check (T7 reaches that code only for a running Goal).
+      const report = await computeExternalCompletionPreflight(fx.db, fx.goalId, {
+        attestationId: attested.attestationId,
+      });
+      expect(report.outcome).toBe('refused');
+      expect(report.reasons).toEqual([{ code: 'goal_not_running', detail: 'completed' }]);
+
+      expect(databaseSnapshot(fx.db)).toEqual(databaseBefore);
+      expect(repositoryState(fx.repo)).toEqual(movedFull);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: cross-Goal isolation (Q5, two databases; same-database NOT producible)', () => {
+  // A same-database claim was NOT producible. A second Goal in the same database needs its own handoff, and a handoff
+  // needs an accepted final review and acceptance (buildManualHandoffSnapshot, ensureCompletionReady). Only the kit's
+  // acceptance fixture records that review, with fixture independence, and this slice does not use that bypass. The
+  // second Goal therefore lives in its own database, so the claim below is weaker: it shows that a correction in one
+  // database leaves a second database untouched, not that one database's Goals are isolated from each other.
+  it.each(FORMATS)(
+    'a dispute in one database leaves a running Goal in another database untouched (two databases, %s)',
+    async (format) => {
+      const completedGoal = await runningAttested(format, 'merge');
+      await decideAndComplete(completedGoal);
+
+      const other = await v2RunningAttestedFixture(format);
+      const otherDigest = await reviewedDigest(other);
+      const otherDatabase = databaseSnapshot(other.fx.db);
+      const otherStanding = readGoalCompletionStanding(other.fx.db, other.fx.goalId);
+      const otherPreflight = await computeExternalCompletionPreflight(other.fx.db, other.fx.goalId, {
+        attestationId: other.attestationId,
+      });
+      expect(otherStanding).toMatchObject({ kind: 'not_completed', standing: null });
+
+      appendCorrectionForTest(completedGoal.fx, completedGoal.attestationId, 'dispute');
+      expect(readGoalCompletionStanding(completedGoal.fx.db, completedGoal.fx.goalId)).toMatchObject({
+        kind: 'v2',
+        standing: 'disputed',
+      });
+
+      expect(databaseSnapshot(other.fx.db)).toEqual(otherDatabase);
+      expect(readGoalCompletionStanding(other.fx.db, other.fx.goalId)).toEqual(otherStanding);
+      expect(await reviewedDigest(other)).toBe(otherDigest);
+      expect(
+        await computeExternalCompletionPreflight(other.fx.db, other.fx.goalId, {
+          attestationId: other.attestationId,
+        }),
+      ).toEqual(otherPreflight);
+
+      // The other database never held the first Goal's attestation, so its preflight refuses that id by exact code.
+      const foreign = await computeExternalCompletionPreflight(other.fx.db, other.fx.goalId, {
+        attestationId: completedGoal.attestationId,
+      });
+      expect(foreign.outcome).toBe('refused');
+      expect(foreign.reasons).toEqual([{ code: 'attestation_not_found', detail: null }]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: version 1 beside version 2 (Q6)', () => {
+  it.each(FORMATS)(
+    'keeps a completed version-1 Goal in the same database unchanged by a version-2 dispute (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      await decideAndComplete(attested);
+      const v2Before = readGoalCompletionStanding(fx.db, fx.goalId);
+      expect(v2Before).toMatchObject({
+        kind: 'v2',
+        standing: 'uncontested',
+        claim: { unqualifiedSuccessAllowed: true, trustedForDownstream: true, qualifier: 'none' },
+      });
+
+      const legacyId = await completeLegacyGoal(fx);
+      const legacyStanding = readGoalCompletionStanding(fx.db, legacyId);
+      expect(legacyStanding).toMatchObject({
+        kind: 'legacy',
+        standing: 'historical_legacy',
+        claim: {
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'legacy_not_v2_attested',
+        },
+      });
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toEqual(v2Before);
+      const legacyRows = goalScopedDigests(fx.db, legacyId);
+      expect(Object.keys(legacyRows)).toEqual(
+        expect.arrayContaining(['goals', 'goal_events', 'goal_approvals']),
+      );
+
+      appendCorrectionForTest(fx, attested.attestationId, 'dispute');
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
+        kind: 'v2',
+        standing: 'disputed',
+      });
+      expect(goalScopedDigests(fx.db, legacyId)).toEqual(legacyRows);
+      expect(readGoalCompletionStanding(fx.db, legacyId)).toEqual(legacyStanding);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: repeated requests across a correction (Q8)', () => {
+  it.each(FORMATS)(
+    'replays the original completion three times and refuses an exact repeated decision, after a dispute (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      const { request, completed } = await decideAndComplete(attested);
+      const proofId = proofRows(fx.db, fx.goalId)[0]!.id;
+      appendCorrectionForTest(fx, attested.attestationId, 'dispute');
+
+      const before = databaseSnapshot(fx.db);
+      const eventsBefore = goalEvents(fx.db, fx.goalId);
+      for (let repeat = 0; repeat < 3; repeat += 1)
+        expect(await completeGoalFromExternalDecision(fx.db, request)).toEqual({
+          reused: true,
+          completion: completed.completion,
+        });
+      expect(databaseSnapshot(fx.db)).toEqual(before);
+      expect(goalEvents(fx.db, fx.goalId)).toEqual(eventsBefore);
+      expect(proofRows(fx.db, fx.goalId).map((row) => row.id)).toEqual([proofId]);
+
+      // D17 defines `decision_conflict` for a different decision on the same attestation while the Goal is running. An
+      // exact repeat after completion is not a conflict: the decision service refuses at its preflight, because the
+      // Goal is no longer running. The refusal writes nothing.
+      expect(await refusal(recordExternalCompletionDecision(fx.db, request))).toEqual({
+        code: 'preflight_refused',
+        detail: 'goal_not_running',
+      });
+      expect(databaseSnapshot(fx.db)).toEqual(before);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
