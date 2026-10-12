@@ -1,16 +1,29 @@
 import { randomUUID } from 'node:crypto';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import type {
+  GoalExternalCompletionDecisionRecorded,
   GoalExternalCompletionPreflightResponse,
   GoalExternalCompletionStatus,
 } from '../../shared/goalApi.js';
-import { disabledSupervisor, goalApp } from './apiKit.js';
+import { call, disabledSupervisor, goalApp } from './apiKit.js';
+import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
-import { completeGoalFromExternalDecision } from './externalCompletion.js';
-import { recordExternalCompletionDecision } from './externalCompletionDecision.js';
+import {
+  completeGoalFromExternalDecision,
+  EXTERNAL_COMPLETION_ERROR_CODES,
+  ExternalCompletionError,
+} from './externalCompletion.js';
+import {
+  EXTERNAL_COMPLETION_DECISION_ERROR_CODES,
+  ExternalCompletionDecisionError,
+  recordExternalCompletionDecision,
+} from './externalCompletionDecision.js';
+import { buildExternalCompletionAction } from './externalCompletionProof.js';
+import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { readStoredCompletion } from './externalCompletionTerminal.js';
 import {
+  appendCorrectionForTest,
   databaseSnapshot,
   repositoryState,
   reviewedDigest,
@@ -18,6 +31,7 @@ import {
   type GoalFixture,
 } from './goalV2TestKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { externalCompletionError, externalCompletionStatus } from './goalRoutes.js';
 
 /**
  * HTTP tests for the version-2 completion routes, through `app.inject` on the production Fastify app. Each test uses the
@@ -281,4 +295,453 @@ describe('no GET mutation across the completion routes', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+});
+
+// --- The user's completion decision (R2) ---------------------------------------------------------------------------------
+
+const FORMATS = ['sha1', 'sha256'] as const;
+
+const decisionUrl = (goalId: string) => `/api/goals/${goalId}/completion-decision`;
+
+/** Counts every row of one table that belongs to a Goal, for assertions that name a table. */
+function countRows(fx: GoalFixture, table: string): number {
+  return (fx.db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number }).n;
+}
+
+function completionApprovals(fx: GoalFixture) {
+  return fx.db
+    .prepare(
+      `SELECT id, gate, risk, requested_by, decided_by, status, external_completion_action_digest
+       FROM goal_approvals WHERE goal_id = ? AND external_completion_action_digest IS NOT NULL ORDER BY rowid`,
+    )
+    .all(fx.goalId) as {
+    id: string;
+    gate: string;
+    risk: string;
+    requested_by: string;
+    decided_by: string | null;
+    status: string;
+    external_completion_action_digest: string;
+  }[];
+}
+
+describe('external completion decision (R2)', () => {
+  it.each(FORMATS)(
+    'T3 decision requires If-Match (%s)',
+    async (format) => {
+      const attested = await v2RunningAttestedFixture(format);
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      const body = {
+        decision: 'record_completion_decision',
+        attestationId,
+        acknowledgeContentNotProven: true,
+      };
+      const before = wholeState(fx);
+
+      expect(await call(app, 'POST', decisionUrl(fx.goalId), body)).toMatchObject({
+        status: 428,
+        body: { code: 'reviewed_action_precondition_required' },
+      });
+      expect(
+        await call(app, 'POST', decisionUrl(fx.goalId), body, { 'if-match': 'not-a-digest' }),
+      ).toMatchObject({
+        status: 400,
+        body: { code: 'reviewed_action_precondition_invalid' },
+      });
+      expect(
+        await call(app, 'POST', decisionUrl(fx.goalId), body, { 'if-match': `"${digest.toUpperCase()}"` }),
+      ).toMatchObject({ status: 400, body: { code: 'reviewed_action_precondition_invalid' } });
+      for (const extra of [{ decidedBy: 'user' }, { actor: 'user' }, { attestationDigest: 'a'.repeat(64) }]) {
+        expect(
+          await call(
+            app,
+            'POST',
+            decisionUrl(fx.goalId),
+            { ...body, ...extra },
+            { 'if-match': `"${digest}"` },
+          ),
+        ).toMatchObject({ status: 400, body: { code: 'invalid_request' } });
+      }
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'T3 a digest of another ready preflight is refused with 412 (%s)',
+    async (format) => {
+      const attested = await v2RunningAttestedFixture(format);
+      const other = await v2RunningAttestedFixture(format);
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const substituted = await reviewedDigest(other);
+      const before = wholeState(fx);
+
+      expect(
+        await call(
+          app,
+          'POST',
+          decisionUrl(fx.goalId),
+          { decision: 'record_completion_decision', attestationId, acknowledgeContentNotProven: true },
+          { 'if-match': `"${substituted}"` },
+        ),
+      ).toMatchObject({ status: 412, body: { code: 'reviewed_preflight_changed' } });
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  // The plan expected 412 `reviewed_preflight_changed` for a digest made stale by a correction. The code refuses the
+  // disputed attestation at its correction-standing check (externalCompletionPreflight.ts), before the digest is compared,
+  // so the observed response is 409 `preflight_refused` with detail `attestation_disputed`. 412 is pinned by the
+  // substituted-digest test above. Pinned as observed; no write either way.
+  it(
+    'T3 a digest made stale by a correction is refused with 409 preflight_refused (attestation_disputed)',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const staleDigest = await reviewedDigest(attested);
+      appendCorrectionForTest(fx, attestationId, 'dispute');
+      const before = wholeState(fx);
+
+      expect(
+        await call(
+          app,
+          'POST',
+          decisionUrl(fx.goalId),
+          { decision: 'record_completion_decision', attestationId, acknowledgeContentNotProven: true },
+          { 'if-match': `"${staleDigest}"` },
+        ),
+      ).toMatchObject({
+        status: 409,
+        body: { code: 'preflight_refused', detail: 'attestation_disputed' },
+      });
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T4 acknowledgement required',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      const before = wholeState(fx);
+
+      expect(
+        await call(
+          app,
+          'POST',
+          decisionUrl(fx.goalId),
+          { decision: 'record_completion_decision', attestationId, acknowledgeContentNotProven: false },
+          { 'if-match': `"${digest}"` },
+        ),
+      ).toMatchObject({ status: 400, body: { code: 'acknowledgement_required' } });
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'T5 decision happy path records one approval and completes nothing (%s)',
+    async (format) => {
+      const attested = await v2RunningAttestedFixture(format);
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      const before = wholeState(fx);
+      const eventsBefore = fx.db
+        .prepare('SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ?')
+        .get(fx.goalId);
+
+      const response = await call(
+        app,
+        'POST',
+        decisionUrl(fx.goalId),
+        {
+          decision: 'record_completion_decision',
+          attestationId,
+          acknowledgeContentNotProven: true,
+          note: 'Reviewed.',
+        },
+        { 'if-match': `"${digest}"` },
+      );
+      expect(response.status).toBe(201);
+      const body = response.body as GoalExternalCompletionDecisionRecorded;
+      expect(body).toEqual({
+        approvalId: body.approvalId,
+        actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        preflightDigest: digest,
+        status: 'approved',
+        reused: false,
+      });
+
+      const approvals = completionApprovals(fx);
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0]).toMatchObject({
+        id: body.approvalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        requested_by: 'user',
+        decided_by: 'user',
+        status: 'approved',
+        external_completion_action_digest: body.actionDigest,
+      });
+      expect(
+        fx.db.prepare('SELECT status, completed_at FROM goals WHERE id = ?').get(fx.goalId),
+      ).toMatchObject({
+        status: 'running',
+        completed_at: null,
+      });
+      expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);
+      const added = fx.db
+        .prepare('SELECT type FROM goal_events WHERE goal_id = ? ORDER BY rowid')
+        .all(fx.goalId)
+        .slice((eventsBefore as { n: number }).n) as { type: string }[];
+      expect(added.map((event) => event.type)).toEqual(['approval_requested', 'approval_decided']);
+      expect(repositoryState(fx.repo)).toEqual(before.repo);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'T6 decision repeat reuses the same approval and writes nothing (%s)',
+    async (format) => {
+      const attested = await v2RunningAttestedFixture(format);
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      const request = {
+        decision: 'record_completion_decision',
+        attestationId,
+        acknowledgeContentNotProven: true,
+      };
+      const first = await call(app, 'POST', decisionUrl(fx.goalId), request, { 'if-match': `"${digest}"` });
+      expect(first.status).toBe(201);
+      const before = wholeState(fx);
+
+      const again = await call(app, 'POST', decisionUrl(fx.goalId), request, { 'if-match': `"${digest}"` });
+      expect(again.status).toBe(200);
+      expect(again.body).toEqual({ ...first.body, reused: true });
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T7 decision conflict is refused and nothing is merged',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      // A different approved decision for the same attestation, seeded through the approval primitives as the decision
+      // tests do (D17). Production cannot otherwise hold two digests for one attestation.
+      const report = await computeExternalCompletionPreflight(
+        fx.db,
+        fx.goalId,
+        { attestationId },
+        { allowRecordedDecision: true },
+      );
+      const conflicting = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: 'f'.repeat(64),
+      })!;
+      const seeded = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Conflicting decision for the same attestation.',
+        requestedBy: 'user',
+        detail: { ...conflicting },
+        externalCompletionActionDigest: conflicting.actionDigest,
+      });
+      decideGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        approvalId: seeded.id,
+        decision: 'approved',
+        decidedBy: 'user',
+      });
+      const before = wholeState(fx);
+
+      expect(
+        await call(
+          app,
+          'POST',
+          decisionUrl(fx.goalId),
+          { decision: 'record_completion_decision', attestationId, acknowledgeContentNotProven: true },
+          { 'if-match': `"${digest}"` },
+        ),
+      ).toMatchObject({ status: 409, body: { code: 'decision_conflict' } });
+      expect(wholeState(fx)).toEqual(before);
+      expect(completionApprovals(fx).map((row) => row.id)).toEqual([seeded.id]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'T13 the generic approval route cannot decide a pending completion approval',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const digest = await reviewedDigest(attested);
+      // A pending completion approval, seeded through the approval primitive. The decision service never leaves one pending.
+      const report = await computeExternalCompletionPreflight(
+        fx.db,
+        fx.goalId,
+        { attestationId },
+        { allowRecordedDecision: true },
+      );
+      const action = buildExternalCompletionAction({
+        ...report.actionFields!,
+        userReviewedPreflightDigest: digest,
+      })!;
+      const pending = requestGoalApproval(fx.db, {
+        goalId: fx.goalId,
+        gate: 'user_confirmation',
+        risk: 'high',
+        reason: 'Pending completion decision.',
+        requestedBy: 'user',
+        detail: { ...action },
+        externalCompletionActionDigest: action.actionDigest,
+      });
+      const before = wholeState(fx);
+
+      expect(
+        await call(app, 'POST', `/api/goal-approvals/${pending.id}/decision`, { decision: 'approved' }),
+      ).toMatchObject({ status: 409, body: { code: 'completion_decision_requires_dedicated_service' } });
+      expect(getGoalApproval(fx.db, pending.id)?.status).toBe('pending');
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+// --- Status mapping and the bounded error body (T15) ---------------------------------------------------------------------
+
+/** A reply that records what the mapper sends, for the mapper's unit assertions. */
+function recordingReply() {
+  const reply = {
+    statusCode: 0,
+    body: undefined as unknown,
+    code(status: number) {
+      this.statusCode = status;
+      return this;
+    },
+    send(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+  return reply;
+}
+
+describe('external completion error mapping (T15)', () => {
+  it('T15 every completion service code has one explicit HTTP status', () => {
+    // The expected table is written out here, separately from the route file, so that a changed status fails this test.
+    const expected: Record<string, number> = {
+      decision_input_invalid: 400,
+      completion_input_invalid: 400,
+      acknowledgement_required: 400,
+      goal_not_found: 404,
+      decision_not_found: 404,
+      reviewed_preflight_changed: 412,
+      decision_corrupt: 422,
+      completion_corrupt: 422,
+      proof_invalid: 422,
+      completion_proof_required: 422,
+      completion_busy: 429,
+      decision_persistence_failed: 503,
+      completion_persistence_failed: 503,
+      completion_read_failed: 503,
+      completion_internal_state: 503,
+      manual_reconciliation_required: 409,
+      preflight_refused: 409,
+      authority_changed_during_decision: 409,
+      authority_changed_during_completion: 409,
+      decision_conflict: 409,
+      completion_conflict: 409,
+      completion_already_recorded: 409,
+      goal_not_running: 409,
+      goal_work_in_flight: 409,
+      destination_changed: 409,
+      decision_action_mismatch: 409,
+      proof_action_mismatch: 409,
+    };
+    const codes = [
+      ...new Set([...EXTERNAL_COMPLETION_ERROR_CODES, ...EXTERNAL_COMPLETION_DECISION_ERROR_CODES]),
+    ];
+    expect([...codes].sort()).toEqual(Object.keys(expected).sort());
+    for (const code of codes) expect(externalCompletionStatus(code, null), code).toBe(expected[code]);
+  });
+
+  it('T15 a preflight refusal takes its status from the refusal detail', () => {
+    const detailStatus: Record<string, number> = {
+      goal_not_found: 404,
+      attestation_not_found: 404,
+      verification_busy: 429,
+      git_unavailable: 503,
+      preflight_unavailable: 503,
+      attestation_invalid: 422,
+      observation_changed: 409,
+    };
+    for (const [detail, status] of Object.entries(detailStatus))
+      expect(externalCompletionStatus('preflight_refused', detail), detail).toBe(status);
+    expect(externalCompletionStatus('preflight_refused', null)).toBe(409);
+  });
+
+  it('T15 a bounded detail is returned and an unbounded one is dropped', () => {
+    const reply = recordingReply();
+    externalCompletionError(
+      new ExternalCompletionDecisionError('preflight_refused', 'observation_changed'),
+      reply as unknown as FastifyReply,
+    );
+    expect(reply).toMatchObject({
+      statusCode: 409,
+      body: {
+        code: 'preflight_refused',
+        detail: 'observation_changed',
+        error: expect.any(String),
+      },
+    });
+    const unbounded = recordingReply();
+    externalCompletionError(
+      new ExternalCompletionError('completion_conflict', 'Not A Snake Detail!'),
+      unbounded as unknown as FastifyReply,
+    );
+    expect(unbounded.statusCode).toBe(409);
+    expect(unbounded.body).not.toHaveProperty('detail');
+  });
+
+  it('T15 an unexpected failure is a generic 503 with no stack, SQL or service text', () => {
+    const reply = recordingReply();
+    externalCompletionError(
+      new Error('SQLITE_ERROR: no such table goal_external_completion_proofs at /private/db/path.sqlite'),
+      reply as unknown as FastifyReply,
+    );
+    expect(reply.statusCode).toBe(503);
+    expect(reply.body).toEqual({
+      error: 'External completion could not be verified or recorded safely.',
+      code: 'external_completion_unavailable',
+    });
+    expect(JSON.stringify(reply.body)).not.toMatch(/SQLITE|private|stack|goal_external/);
+  });
+
+  it('T15 a service refusal is never a generic 503', () => {
+    const reply = recordingReply();
+    externalCompletionError(
+      new ExternalCompletionError('completion_read_failed', 'decision_read'),
+      reply as unknown as FastifyReply,
+    );
+    expect(reply).toMatchObject({
+      statusCode: 503,
+      body: { code: 'completion_read_failed', detail: 'decision_read' },
+    });
+  });
 });

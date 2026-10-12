@@ -4,6 +4,7 @@ import type { GoalDefinition } from '../../shared/goals.js';
 import type {
   GoalApiError,
   GoalCompletionStanding,
+  GoalExternalCompletionDecisionRecorded,
   GoalExternalCompletionPreflightResponse,
   GoalExternalCompletionStatus,
   GoalFinalApplyPreflightView,
@@ -43,6 +44,12 @@ import {
   rejectDefinition,
 } from './definitions.js';
 import { readExternalCompletionStatus } from './externalCompletionApi.js';
+import { ExternalCompletionError, type ExternalCompletionErrorCode } from './externalCompletion.js';
+import {
+  ExternalCompletionDecisionError,
+  recordExternalCompletionDecision,
+  type ExternalCompletionDecisionErrorCode,
+} from './externalCompletionDecision.js';
 import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { GoalFindingError } from './findings.js';
 import { getManualHandoffProjection, ManualHandoffError, prepareManualHandoff } from './manualHandoff.js';
@@ -209,6 +216,78 @@ function readQuotedDigestPrecondition(
   return digest;
 }
 
+type ExternalCompletionCode = ExternalCompletionErrorCode | ExternalCompletionDecisionErrorCode;
+
+/**
+ * The HTTP status of every code of both completion services. The Record type makes a new service code a compile error
+ * until it is given a status here. `preflight_refused` is 409 unless its detail is in PREFLIGHT_REFUSED_STATUS.
+ */
+const EXTERNAL_COMPLETION_STATUS: Record<ExternalCompletionCode, number> = {
+  decision_input_invalid: 400,
+  completion_input_invalid: 400,
+  acknowledgement_required: 400,
+  goal_not_found: 404,
+  decision_not_found: 404,
+  reviewed_preflight_changed: 412,
+  decision_corrupt: 422,
+  completion_corrupt: 422,
+  proof_invalid: 422,
+  completion_proof_required: 422,
+  completion_busy: 429,
+  decision_persistence_failed: 503,
+  completion_persistence_failed: 503,
+  completion_read_failed: 503,
+  completion_internal_state: 503,
+  manual_reconciliation_required: 409,
+  preflight_refused: 409,
+  authority_changed_during_decision: 409,
+  authority_changed_during_completion: 409,
+  decision_conflict: 409,
+  completion_conflict: 409,
+  completion_already_recorded: 409,
+  goal_not_running: 409,
+  goal_work_in_flight: 409,
+  destination_changed: 409,
+  decision_action_mismatch: 409,
+  proof_action_mismatch: 409,
+};
+
+const PREFLIGHT_REFUSED_STATUS: ReadonlyMap<string, number> = new Map([
+  ['goal_not_found', 404],
+  ['attestation_not_found', 404],
+  ['verification_busy', 429],
+  ['git_unavailable', 503],
+  ['preflight_unavailable', 503],
+  ['attestation_invalid', 422],
+]);
+
+const COMPLETION_DETAIL = /^[a-z0-9_]{1,100}$/;
+
+/** The HTTP status for a completion service code, with the detail that refines `preflight_refused`. */
+export function externalCompletionStatus(code: ExternalCompletionCode, detail: string | null): number {
+  if (code === 'preflight_refused' && detail !== null) return PREFLIGHT_REFUSED_STATUS.get(detail) ?? 409;
+  return EXTERNAL_COMPLETION_STATUS[code];
+}
+
+/**
+ * Maps a completion service error to its status and a bounded body. Any other failure is a generic 503 with no stack, no
+ * SQL and no service message, so an unexpected fault never reaches the client.
+ */
+export function externalCompletionError(error: unknown, reply: FastifyReply) {
+  if (error instanceof ExternalCompletionDecisionError || error instanceof ExternalCompletionError) {
+    const detail = error.detail !== null && COMPLETION_DETAIL.test(error.detail) ? error.detail : null;
+    return send(reply, externalCompletionStatus(error.code, detail), {
+      error: error.message,
+      code: error.code,
+      ...(detail !== null ? { detail } : {}),
+    });
+  }
+  return send(reply, 503, {
+    error: 'External completion could not be verified or recorded safely.',
+    code: 'external_completion_unavailable',
+  });
+}
+
 function parse<T>(
   schema: z.ZodType<T>,
   value: unknown,
@@ -288,6 +367,12 @@ const externalIntegrationDecisionBody = z.strictObject({
   decision: z.literal('confirm_external_integration'),
 });
 const completionPreflightQuery = z.strictObject({ attestationId: z.string().uuid() });
+const completionDecisionBody = z.strictObject({
+  decision: z.literal('record_completion_decision'),
+  attestationId: z.string().uuid(),
+  acknowledgeContentNotProven: z.boolean(),
+  note: z.string().min(1).max(500).optional(),
+});
 const completionStatusQuery = z.strictObject({
   actionDigest: z
     .string()
@@ -731,7 +816,46 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     }
   });
 
-  // --- Version-2 external completion: read-only preflight and status (no decision, completion or proof is written) ----
+  // --- Version-2 external completion ----------------------------------------------------------------------------------
+
+  // The user's decision for one reviewed preflight. It records one approved approval and completes nothing.
+  app.post('/api/goals/:goalId/completion-decision', async (request, reply) => {
+    const params = goalIdParams.safeParse(request.params);
+    if (!params.success)
+      return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
+    const body = parse(completionDecisionBody, request.body, reply);
+    if (!body.ok) return reply;
+    const goalId = params.data.goalId;
+    if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+      return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+    const digest = readQuotedDigestPrecondition(
+      request,
+      reply,
+      'Review the current completion preflight before recording the decision.',
+    );
+    if (digest === undefined) return reply;
+    try {
+      const result = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: body.data.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: body.data.acknowledgeContentNotProven,
+        ...(body.data.note ? { note: body.data.note } : {}),
+      });
+      const response: GoalExternalCompletionDecisionRecorded = {
+        approvalId: result.approvalId,
+        actionDigest: result.actionDigest,
+        preflightDigest: result.preflightDigest,
+        status: result.status,
+        reused: result.reused,
+      };
+      return reply.code(result.reused ? 200 : 201).send(response);
+    } catch (error) {
+      return externalCompletionError(error, reply);
+    }
+  });
+
+  // --- Read-only preflight and status (no decision, completion or proof is written) -----------------------------------
 
   app.get('/api/goals/:goalId/completion-preflight', async (request, reply) => {
     const params = goalIdParams.safeParse(request.params);
@@ -749,11 +873,8 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       });
       const response: GoalExternalCompletionPreflightResponse = { preflight: report };
       return reply.header('etag', `"${report.digest}"`).send(response);
-    } catch {
-      return send(reply, 503, {
-        error: 'External completion could not be verified safely.',
-        code: 'external_completion_unavailable',
-      });
+    } catch (error) {
+      return externalCompletionError(error, reply);
     }
   });
 
@@ -773,11 +894,8 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         query.data.actionDigest ?? null,
       );
       return status;
-    } catch {
-      return send(reply, 503, {
-        error: 'External completion state could not be read safely.',
-        code: 'external_completion_unavailable',
-      });
+    } catch (error) {
+      return externalCompletionError(error, reply);
     }
   });
 
