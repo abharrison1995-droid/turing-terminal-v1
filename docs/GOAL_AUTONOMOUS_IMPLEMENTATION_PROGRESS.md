@@ -441,6 +441,40 @@ Non-blocking follow-ups:
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4E (unknown-outcome recovery) not started.
 
+### D.4E unknown-outcome recovery: ACCEPTED on `ec66162` (lead record)
+
+Commits: `dd4cf39` (server recovery tests: lost response, real in-transaction fault via SQLite trigger, post-commit read fault, invalid row, 21-attestation truncation), `b30d660` (pure client recovery model and response-shape guard; `call()` gains opt-in `requireBody`), `2d2893d` (completion wiring), `ec66162` (correction wiring). Plan: `scratchpad/d4e_plan.md` (Sonnet Medium). Implementation: Haiku. No server production behaviour change; the stage is tests and client code only.
+
+Behaviour: after an unknown outcome (lost response, 5xx, unreadable 2xx body) the UI shows "Turing could not confirm the result" and reads the saved state. It never auto-retries and never sets a timer. Nothing is stored locally. A recorded decision is shown as saved; a completion or correction is shown as saved only after a read confirms it. A held completion digest is never re-sent after a changed review. A held correction explanation is reopened only when the chain position still matches; otherwise the UI shows "history changed" and sends nothing. The attestation list is capped at 20 and the UI now says so when the list is truncated, never "clean" or "no other".
+
+Changed existing assertions (both reviewed as legitimate):
+
+- `goalCompletion.test.tsx`: the `external_completion_unavailable` row (503 showing "Do not assume it failed or succeeded") is replaced by the recovery tests. A 503 is now an unknown outcome read back from the saved state.
+- `goalCorrection.test.tsx`: the unreadable-request sentence is replaced by the plan's wording ("cannot confirm whether yours was saved. Do not send it again.").
+
+Deviations (disclosed):
+
+- The client `call()` and `UnreadableResponseError` live in `src/client/api.ts`; the write wrappers are in `src/client/goals/api.ts`.
+- The no-timer check is a static file scan in `unknownOutcome.test.ts`, not a write-only test assertion.
+- Component recovery tests were appended to the existing `goalCompletion.test.tsx` and `goalCorrection.test.tsx`, not a new `unknownOutcomeRecovery.test.tsx`.
+- Request again blocks only the held request while a pending row is unreadable. Blocking all requests broke the existing "no raw code or field name" test.
+
+Evidence:
+
+- Full gate on `ec66162`: format, lint, typecheck, `npm test` 151 files / 2,826 tests, build, `npm audit --omit=dev` 0 vulnerabilities, migrations diff against `160fa2b` empty.
+- Hosted CI on `ec66162`: run 38262588176, `gate` job success (including `npm test`, build, and `npm audit --omit=dev`).
+- Independent review of `6a51bf3..ec66162` (Sonnet Medium): `VERDICT: PASS WITH NON-BLOCKING`, no blocking findings. Review file: `scratchpad/d4e_review.md`.
+
+Non-blocking follow-ups:
+
+1. `COMPLETION_RECOVERY_COPY.completeAbsent` is unreachable when the read shows `decided`. The text shown then is accurate but loses the "may still finish" caution after an unconfirmed Complete. Tighten in D.4F.
+2. Adopting a pending correction gate does not compare chain position. The server still checks the explanation digest, so this is safe but looser than the plan wording. Tighten in D.4F.
+3. The post-commit read-fault test (S6) stubs the standing reader and has no completion-decision variant. Cover later.
+4. `npm ci` (full tree, not production) reports two critical advisories in dev-only dependencies. The production audit is clean. Record for a dependency review before V1 hardening.
+5. The cross-attestation stuck-Goal question (a Goal can be left unable to complete if the decided attestation is later corrected) is still an open owner decision. D.4E did not change it.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4F (accessibility and mobile) not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
