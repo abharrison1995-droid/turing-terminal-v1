@@ -746,6 +746,20 @@
 .goal-completion-limitation {
   color: var(--ink-2);
 }
+.goal-completion-action,
+.goal-completion-refusal {
+  display: grid;
+  gap: var(--s-2);
+  justify-items: start;
+  min-width: 0;
+}
+.goal-completion-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
 .goal-external-historical,
 .goal-external-stale,
 .goal-external-not_integrated,

@@ -401,6 +401,20 @@ describe('phone Goal cockpit', () => {
     expect(screen.getByRole('button', { name: 'Start Goal' })).toBeTruthy();
   });
 
+  it('shows no completion review and no completion control on the phone cockpit', async () => {
+    setCompact(true);
+    serve(detailRoutes(detail({ status: 'running', nextAction: { kind: 'wait_for_turing' } })));
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+    await screen.findByLabelText('Next action');
+    expect(screen.queryByRole('tab', { name: 'Handoff' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Completion review' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record completion decision' })).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
   it('opens one exact Goal EventSource, refreshes on events, closes on selection change, and ignores errors', async () => {
     setCompact(true);
     installEventSource();

@@ -39,6 +39,7 @@ export const COMPLETION_COPY = {
   completeHelp: 'Completing the Goal uses the decision recorded above. Nothing else is changed.',
   reviewChanged: 'The review changed; read it again before recording a decision.',
   refreshReview: 'Refresh review',
+  checkAgain: 'Check again',
   recordedNotCompleted: 'Your completion decision is recorded. The Goal is not completed yet.',
   recording: 'Recording your decision…',
   completing: 'Completing the Goal…',

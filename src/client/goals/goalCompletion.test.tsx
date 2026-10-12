@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -15,7 +15,7 @@ import type {
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
 import { GoalsPage } from './GoalsPage';
-import { calls, detail, detailRoutes, openGoal, posts, refuse, serve } from './testKit';
+import { calls, detail, detailRoutes, openGoal, posts, refuse, type Routes, serve } from './testKit';
 
 const source = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -273,13 +273,17 @@ const decisionRow = {
 };
 
 /** Serves the Handoff tab with one current attestation and the completion routes given. */
-function serveHandoff(completion: {
-  status: GoalExternalCompletionStatus | (() => unknown);
-  preflight?: GoalExternalCompletionPreflightReport | (() => unknown);
-}) {
+function serveHandoff(
+  completion: {
+    status: GoalExternalCompletionStatus | (() => unknown);
+    preflight?: GoalExternalCompletionPreflightReport | (() => unknown);
+  },
+  extra: Routes = {},
+) {
   const record = handoff();
   serve(
     detailRoutes(detail(), {
+      ...extra,
       '/api/goals/goal-1/handoffs': () => history(),
       [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({ projection: handoffProjection(record) }),
       [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () => storedStatus(record),
@@ -302,9 +306,11 @@ async function openHandoffTab(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
 }
 
-/** The completion section, once it has finished its reads. */
+/** The completion section, once it has finished its reads (aria-busy is false only then). */
 async function completionSection() {
-  return within(await screen.findByRole('region', { name: 'Completion review' }));
+  const region = await screen.findByRole('region', { name: 'Completion review' });
+  await waitFor(() => expect(region.getAttribute('aria-busy')).toBe('false'));
+  return within(region);
 }
 
 afterEach(() => {
@@ -313,7 +319,7 @@ afterEach(() => {
 });
 
 describe('desktop completion review (read-only)', () => {
-  it('renders a ready review with exact identities and the limitation, and offers no write control', async () => {
+  it('renders a ready review with exact identities and the limitation, and offers only the record control, disabled until acknowledged', async () => {
     serveHandoff({ status: completionStatus('not_completed') });
     const user = userEvent.setup();
     render(<GoalsPage />);
@@ -334,7 +340,9 @@ describe('desktop completion review (read-only)', () => {
     ).toBeTruthy();
     expect(section.getByText('Uncontested')).toBeTruthy();
     expect(section.getByText('No blockers in this review.')).toBeTruthy();
-    expect(section.queryAllByRole('button')).toEqual([]);
+    const buttons = section.queryAllByRole('button');
+    expect(buttons.map((button) => button.textContent)).toEqual(['Record completion decision']);
+    expect(buttons[0]).toHaveProperty('disabled', true);
     expect(posts()).toEqual([]);
   });
 
@@ -453,5 +461,298 @@ describe('desktop completion review (read-only)', () => {
     );
     expect(section.queryByText(/completion_read_failed/)).toBeNull();
     expect(section.queryByText(/Server text/)).toBeNull();
+  });
+});
+
+const created = (body: unknown) => new Response(JSON.stringify(body), { status: 201 });
+
+const decisionRecorded = () => ({
+  approvalId: 'approval-completion',
+  actionDigest: ACTION,
+  preflightDigest: PREFLIGHT_DIGEST,
+  status: 'approved',
+  reused: false,
+});
+
+const completedRecord = {
+  proofId: 'proof-1',
+  proofDigest: '9'.repeat(64),
+  approvalId: 'approval-completion',
+  actionDigest: ACTION,
+  attestationId: ATTESTATION,
+  observedAt: '2026-10-09T12:30:00.000Z',
+  completedAt: '2026-10-09T12:40:00.000Z',
+};
+
+/** A Goal whose saved status moves only when an accepted write lands, as the server does. */
+function statefulGoal() {
+  const goal = { phase: 'open' as 'open' | 'decided' | 'completed' };
+  const routes: Routes = {
+    'POST /api/goals/goal-1/completion-decision': () => {
+      goal.phase = 'decided';
+      return created(decisionRecorded());
+    },
+    'POST /api/goals/goal-1/completion': () => {
+      goal.phase = 'completed';
+      return created({ reused: false });
+    },
+  };
+  const status = () =>
+    goal.phase === 'open'
+      ? completionStatus('not_completed')
+      : goal.phase === 'decided'
+        ? completionStatus('decided', { decisions: [decisionRow] })
+        : completionStatus('completed', { completion: completedRecord });
+  return { routes, status };
+}
+
+const decisionWrites = () => posts().filter((call) => call.path === '/api/goals/goal-1/completion-decision');
+const completionWrites = () => posts().filter((call) => call.path === '/api/goals/goal-1/completion');
+
+describe('desktop completion controls', () => {
+  it('keeps Complete Goal out of the review until a decision is recorded', async () => {
+    serveHandoff({ status: completionStatus('not_completed') });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByRole('button', { name: 'Record completion decision' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
+  it('records a decision only after its acknowledgement, with the reviewed digest as If-Match and no completion request', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const record = await section.findByRole('button', { name: 'Record completion decision' });
+    expect(record).toHaveProperty('disabled', true);
+    await user.click(section.getByRole('checkbox'));
+    expect(record).toHaveProperty('disabled', false);
+    await user.click(record);
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(posts()).toHaveLength(1);
+    const [sent] = posts();
+    expect(sent?.path).toBe('/api/goals/goal-1/completion-decision');
+    expect(sent?.headers['if-match']).toBe(`"${PREFLIGHT_DIGEST}"`);
+    expect(sent?.body).toEqual({
+      decision: 'record_completion_decision',
+      attestationId: ATTESTATION,
+      acknowledgeContentNotProven: true,
+    });
+  });
+
+  it('completes only after its own acknowledgement, with the recorded action digest, and then shows the saved state', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    let section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    const complete = await section.findByRole('button', { name: 'Complete Goal' });
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    expect(complete).toHaveProperty('disabled', true);
+    await user.click(section.getByRole('checkbox'));
+    expect(complete).toHaveProperty('disabled', false);
+    await user.click(complete);
+    expect(await section.findByText('Completed on your decision')).toBeTruthy();
+    section = await completionSection();
+    expect(section.getByText('Content preservation: not proven.')).toBeTruthy();
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(posts().map((call) => call.path)).toEqual([
+      '/api/goals/goal-1/completion-decision',
+      '/api/goals/goal-1/completion',
+    ]);
+    expect(completionWrites()[0]?.headers['if-match']).toBe(`"${ACTION}"`);
+    expect(completionWrites()[0]?.body).toEqual({
+      decision: 'complete_goal',
+      acknowledgeContentNotProven: true,
+    });
+  });
+
+  it('a double click on either control sends one request', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    let section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.dblClick(section.getByRole('button', { name: 'Record completion decision' }));
+    await section.findByRole('button', { name: 'Complete Goal' });
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    expect(decisionWrites()).toHaveLength(1);
+    section = await completionSection();
+    await user.click(section.getByRole('checkbox'));
+    await user.dblClick(section.getByRole('button', { name: 'Complete Goal' }));
+    await waitFor(() => expect(completionWrites()).toHaveLength(1));
+    expect(decisionWrites()).toHaveLength(1);
+  });
+
+  it('a review that changed after a refused record resets the acknowledgement, and the next record sends the new digest', async () => {
+    const digests = [PREFLIGHT_DIGEST, '8'.repeat(64)];
+    let reads = 0;
+    let writes = 0;
+    serveHandoff(
+      {
+        status: completionStatus('not_completed'),
+        preflight: () => ({
+          preflight: preflight({ digest: digests[Math.min(reads++, digests.length - 1)] }),
+        }),
+      },
+      {
+        'POST /api/goals/goal-1/completion-decision': () =>
+          writes++ === 0
+            ? refuse(412, 'Server text that must not show.', 'reviewed_preflight_changed')
+            : created(decisionRecorded()),
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    expect((await section.findByRole('alert')).textContent).toBe(
+      'The destination or Goal changed since you reviewed it. Nothing was recorded. Review the refreshed summary.',
+    );
+    await section.findByText('8'.repeat(64));
+    expect(section.getByRole('checkbox')).not.toHaveProperty('checked', true);
+    expect(section.getByRole('button', { name: 'Record completion decision' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+    expect(decisionWrites()).toHaveLength(1);
+
+    await user.click(section.getByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await waitFor(() => expect(decisionWrites()).toHaveLength(2));
+    expect(decisionWrites().map((call) => call.headers['if-match'])).toEqual([
+      `"${PREFLIGHT_DIGEST}"`,
+      `"${'8'.repeat(64)}"`,
+    ]);
+  });
+
+  it.each([
+    [
+      'reviewed_action_precondition_required',
+      428,
+      'Turing did not send a reviewed digest, so nothing was recorded. Refresh and review again.',
+      true,
+    ],
+    ['acknowledgement_required', 400, 'Tick the acknowledgement first.', false],
+    [
+      'destination_changed',
+      409,
+      'The destination branch moved since your review. Nothing was recorded. Review again.',
+      true,
+    ],
+    [
+      'completion_conflict',
+      409,
+      'A different completion decision already exists for this Goal. Refresh to see it.',
+      true,
+    ],
+    ['decision_not_found', 404, 'No recorded decision matches. Record the completion decision again.', true],
+    ['proof_invalid', 422, 'Stored completion records failed a check. Nothing was changed.', false],
+    ['completion_busy', 429, 'Another completion request is in progress. Try again shortly.', false],
+    [
+      'external_completion_unavailable',
+      503,
+      'Turing could not confirm the result. Do not assume it failed or succeeded. Refresh to read the saved state.',
+      true,
+    ],
+  ] as const)(
+    'a refused record shows its plain message and never the raw code (%s)',
+    async (code, status, message, offersRefresh) => {
+      serveHandoff(
+        { status: completionStatus('not_completed') },
+        {
+          'POST /api/goals/goal-1/completion-decision': () =>
+            refuse(status, 'Server text that must not show.', code),
+        },
+      );
+      const user = userEvent.setup();
+      render(<GoalsPage />);
+      await openHandoffTab(user);
+      const section = await completionSection();
+      await user.click(await section.findByRole('checkbox'));
+      await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+      expect((await section.findByRole('alert')).textContent).toBe(message);
+      expect(section.queryByText(new RegExp(code))).toBeNull();
+      expect(section.queryByText(/Server text/)).toBeNull();
+      expect(section.queryByRole('button', { name: 'Refresh review' }) !== null).toBe(offersRefresh);
+      expect(decisionWrites()).toHaveLength(1);
+    },
+  );
+});
+
+/** A minimal stand-in for the browser's EventSource, so the desktop cockpit's refresh events can be emitted. */
+class MinimalEventSource {
+  static instances: MinimalEventSource[] = [];
+  readonly listeners = new Map<string, Array<(event: Event) => void>>();
+
+  constructor(readonly url: string) {
+    MinimalEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    const callback =
+      typeof listener === 'function' ? listener : (event: Event) => listener.handleEvent(event);
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]);
+  }
+
+  close(): void {}
+
+  emit(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(new Event(type));
+  }
+}
+
+describe('completion is never sent without a click', () => {
+  it('sends no completion request through mount, refresh events, tab switches and a recorded decision', async () => {
+    MinimalEventSource.instances = [];
+    vi.stubGlobal('EventSource', MinimalEventSource);
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    await (await completionSection()).findByRole('button', { name: 'Record completion decision' });
+    expect(completionWrites()).toHaveLength(0);
+    expect(decisionWrites()).toHaveLength(0);
+
+    const statusReads = () => calls.filter((call) => call.path === '/api/goals/goal-1/completion').length;
+    const before = statusReads();
+    MinimalEventSource.instances[MinimalEventSource.instances.length - 1]!.emit('state_changed');
+    await waitFor(() => expect(statusReads()).toBeGreaterThan(before));
+    expect(completionWrites()).toHaveLength(0);
+
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    let section = await completionSection();
+    expect(completionWrites()).toHaveLength(0);
+    expect(decisionWrites()).toHaveLength(0);
+
+    await user.click(section.getByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(decisionWrites()).toHaveLength(1);
+    expect(completionWrites()).toHaveLength(0);
+
+    section = await completionSection();
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    await user.click(section.getByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    await waitFor(() => expect(completionWrites()).toHaveLength(1));
+    expect(decisionWrites()).toHaveLength(1);
   });
 });
