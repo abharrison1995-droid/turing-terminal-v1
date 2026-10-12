@@ -210,7 +210,7 @@ See [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTI
 
 Before completion, a correction that disputes, withdraws, or supersedes the exact selected attestation makes that attestation ineligible. Completion must re-read the correction chain inside the final SQLite transaction, so a stale preflight cannot race past an earlier committed correction. Another uncorrected attestation remains independently eligible; no Goal-wide “latest wins” rule applies.
 
-After completion, the Goal remains historically `completed` with its original timestamp and proof. The read model gains a derived `completionStanding` such as `uncontested`, `disputed`, `withdrawn`, `superseded`, or `unverified`, plus whether reconciliation is needed. A corrected proof is never displayed as an unqualified green success. A later attestation does not rewrite the old completion proof or automatically restore its standing. If more work is needed, the user creates and approves a separate repair/reconciliation Goal; the original terminal Goal is not reopened. There is no current cross-Goal dependency engine. Any later consumer that relies on completion must consult standing as well as terminal status.
+After completion, the Goal remains historically `completed` with its original timestamp and proof. The read model gains a derived `completionStanding` such as `uncontested`, `disputed`, `withdrawn`, `superseded`, `reconciliation_required`, or `invalid_unverified`, plus whether reconciliation is needed. A corrected proof is never displayed as an unqualified green success. A later attestation does not rewrite the old completion proof or automatically restore its standing. If more work is needed, the user creates and approves a separate repair/reconciliation Goal; the original terminal Goal is not reopened. There is no current cross-Goal dependency engine. Any later consumer that relies on completion must consult standing as well as terminal status.
 
 ## 10. Compatibility matrix
 
@@ -235,7 +235,8 @@ Add a read-only completion projection that keeps separate:
 
 - `goalStatus`: historical state-machine status (`completed` remains terminal).
 - `completionProofState`: `legacy`, `valid`, `invalid`, or `missing`.
-- `completionStanding`: `uncontested`, `disputed`, `withdrawn`, `superseded`, `reconciliation_required`, or `unverified`.
+- `completionStanding`: `uncontested`, `disputed`, `withdrawn`, `superseded`, `reconciliation_required`, `invalid_unverified`, or `historical_legacy`. The standing is `null` only for a Goal that is not completed.
+- Implemented in Stage 7C.2B.5D.3F: `readGoalCompletionStanding` (read-only) and the additive `completionStanding` field on `GET /api/goals/:goalId`. See the D.3F record in `GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md`.
 - `completionClaim`: exact bounded wording that the user accepted a result and Turing observed source history at a timestamp; never `content_preserved`.
 - `trustedForDownstream`: false for disputed, withdrawn, superseded, missing, or invalid v2 proof; a future dependent workflow must explicitly require this projection.
 
@@ -250,7 +251,7 @@ Current supervisors do not execute Goals because production remains `DisabledGoa
 | Missing attestation, wrong Goal, wrong handoff, wrong repository                   | Refuse; no completion action/proof/status transition. Scope all lookups by Goal and handoff.                                                         |
 | Legacy `applied_externally` or prospective apply approval presented                | Refuse v2; preserve legacy records unchanged.                                                                                                        |
 | Pending, denied, system-decided, malformed, or wrong-digest approval               | Refuse; only exact approved user decision qualifies.                                                                                                 |
-| Invalid attestation/proof/correction digest or tampered payload                    | `invalid`/`unverified`; no repair or success inference.                                                                                              |
+| Invalid attestation/proof/correction digest or tampered payload                    | `invalid_unverified` standing; no repair or success inference.                                                                                       |
 | Withdrawn, disputed, or superseded selected attestation                            | Refuse new completion. An independent uncorrected attestation may be selected only after fresh user review.                                          |
 | Correction committed during preflight/POST                                         | Final transaction sees correction-chain digest change and rolls back; user reviews a new candidate.                                                  |
 | Source ref movement/deletion or wrong source/tree                                  | Refuse stale/invalid. Do not retarget or use an old reachable object alone.                                                                          |

@@ -169,3 +169,16 @@ D.3.0B additions (CCv2r1; documentation only):
 - Preflight prerequisite: the `getAttestationCorrectionStanding` throw for a missing or invalid original (noted above) must be caught and handled explicitly by the completion preflight.
 - A correction does not rewrite the exact-tip attestation.
 - Under CCv2r1, version-2 completion requires `active_uncontested` standing and an equal correction-chain digest at the proof point. Standing alone does not authorize completion.
+
+## Stage 7C.2B.5D.3F implementation status
+
+Historical completion standing is implemented as a read-only projection (`src/server/goals/completionStanding.ts`). It derives standing from the immutable completion proof and the append-only correction chain, and it never writes.
+
+- Attestation correction standings (D.2): `active_uncontested`, `disputed`, `withdrawn`, `superseded`, `invalid`. Goal-level standing is derived from them: `uncontested`, `disputed`, `withdrawn`, `superseded`, `reconciliation_required` (a superseded attestation whose replacement is not `active_uncontested`), `invalid_unverified`, or `historical_legacy`.
+- A correction after completion changes only the derived standing and the correction-timestamp fields. It does not change `status`, `completed_at`, the proof, or the Goal's reopening state, and it does not invent a replacement.
+- An independent valid attestation B is judged on its own correction chain. Withdrawing attestation A does not invalidate B.
+- Attesting after completion is refused with `goal_ineligible`. A correction recorded before completion makes its attestation ineligible for the completion preflight.
+- `otherAttestations` lists at most 20 entries and carries an explicit truncation flag.
+- Exposed as the additive `completionStanding` field on `GET /api/goals/:goalId`. No correction write route or UI exists in D.3F; those are D.4.
+
+Limits and open items are recorded in the D.3F section of `GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md`.
