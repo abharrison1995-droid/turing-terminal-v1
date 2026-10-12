@@ -333,7 +333,17 @@ Residuals and gaps, stated as found:
 - The v2 gate condition has no test for a v2 Goal with an extra non-user-terminal failure (non-blocking).
 - Windows, physical iPhone, live Tailscale and live provider validation remain PENDING. No test here cites a fake provider as live evidence.
 
-D.3G is not yet accepted. The D.3 parent-stage Sonnet review (after all subphases) is required before D.4 begins.
+D.3G status. The D.3 parent-stage Sonnet review ran on `8f7f68f`: PASS WITH NON-BLOCKING FINDINGS, no blocking finding, migrations unchanged from `3e6848a`. Its findings were that the first record overstated coverage, and that one file comment claimed no fixture bypass when the scenarios use the acceptance fixture. Both are corrected in `ff56c14`, which is comment and docs only. Hosted CI on `ff56c14` (run 38219269533) is green on the exact SHA. `8f7f68f`'s CI run was cancelled because `ff56c14` superseded it; it is not a failure.
+
+**D.3 ACCEPTED on `ff56c14`** under the stage rule: the parent-stage Sonnet review (on `8f7f68f`, plus the comment-only delta) passed with non-blocking findings, and hosted CI is green on the exact SHA. Accepted with the disclosed limits above, and with these OPEN OWNER DECISIONS, which are not settled by this record:
+
+1. Whether the `externalCompletionLifecycle.test.ts` scenarios (normal merge, `ours`, destination movement, repeats, v1 beside v2, cross-Goal, restart and faults) must be re-run through the real supervisor. Today they seed review and acceptance through the acceptance fixture with fixture independence. Only `goalLifecycleQualification.test.ts` runs review and acceptance through the supervisor.
+2. Whether a completion with `contentPreservation: not_proven` may read as `unqualifiedSuccessAllowed: true`. The current value is pinned as observed and is not treated as intended.
+3. Withdraw and supersede after real execution are not covered in the real-execution path (they are covered in the completion-standing service suite).
+4. The duplicate `goal_ineligible` assertion from D.3F is still present.
+5. The v2 gate condition has no test for a v2 Goal with an extra non-user-terminal failure.
+
+Windows, physical iPhone, live Tailscale and live provider validation remain PENDING. D.4 and later stages have not started.
 
 ## Remediation iterations
 
