@@ -1,5 +1,5 @@
 import type { Db } from '../db.js';
-import { getGoalApproval, GoalApprovalError } from './approvals.js';
+import { getGoalApproval, GoalApprovalError, pendingGoalApprovals } from './approvals.js';
 import {
   AttestationCorrectionError,
   buildAttestationCorrectionAction,
@@ -148,4 +148,52 @@ export function requestAttestationCorrectionAsUser(
       'The correction request could not be recorded safely.',
     );
   }
+}
+
+/** A correction request awaiting the user's decision, as the read route shows it. It never carries the explanation text. */
+export interface PendingAttestationCorrectionRequest {
+  approvalId: string;
+  actionDigest: string;
+  correctionKind: AttestationCorrectionKind;
+  reasonCode: AttestationCorrectionReasonCode;
+  sequence: number;
+  previousCorrectionDigest: string | null;
+  replacementAttestationId: string | null;
+  /** True when the decision must re-send the same explanation, because the reviewed action carries one. */
+  explanationRequired: boolean;
+  requestedAt: string;
+}
+
+/**
+ * Read-only: the pending correction requests for one attestation, plus a count of pending correction rows of this Goal
+ * whose stored detail does not verify. An unreadable row is counted, never repaired and never shown as a request.
+ */
+export function listPendingAttestationCorrectionRequests(
+  db: Db,
+  goalId: string,
+  attestationId: string,
+): { pending: PendingAttestationCorrectionRequest[]; pendingUnreadableCount: number } {
+  const pending: PendingAttestationCorrectionRequest[] = [];
+  let pendingUnreadableCount = 0;
+  for (const approval of pendingGoalApprovals(db, goalId)) {
+    if (approval.attestationCorrectionActionDigest === undefined) continue;
+    const detail = parseAttestationCorrectionApprovalDetail(approval.detail);
+    if (!detail) {
+      pendingUnreadableCount += 1;
+      continue;
+    }
+    if (detail.attestationId !== attestationId) continue;
+    pending.push({
+      approvalId: approval.id,
+      actionDigest: detail.actionDigest,
+      correctionKind: detail.correctionKind,
+      reasonCode: detail.reasonCode,
+      sequence: detail.sequence,
+      previousCorrectionDigest: detail.previousCorrectionDigest,
+      replacementAttestationId: detail.replacementAttestationId,
+      explanationRequired: detail.explanationDigest !== null,
+      requestedAt: approval.createdAt,
+    });
+  }
+  return { pending, pendingUnreadableCount };
 }

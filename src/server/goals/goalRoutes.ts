@@ -22,12 +22,20 @@ import { GoalApprovalError } from './approvals.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import {
   AttestationCorrectionError,
+  getAttestationCorrectionChainPosition,
   getAttestationCorrectionStanding,
   listAttestationCorrectionHistory,
   type AttestationCorrectionErrorCode,
 } from './attestationCorrection.js';
 import { decideAttestationCorrectionAsUser } from './attestationCorrectionDecision.js';
-import { ATTESTATION_CORRECTION_KINDS } from './attestationCorrectionDetail.js';
+import {
+  ATTESTATION_CORRECTION_KINDS,
+  ATTESTATION_CORRECTION_REASON_CODES,
+} from './attestationCorrectionDetail.js';
+import {
+  listPendingAttestationCorrectionRequests,
+  requestAttestationCorrectionAsUser,
+} from './attestationCorrectionRequest.js';
 import { FinalApplyAuthorityError } from './finalApplyAuthority.js';
 import {
   buildExternalIntegrationObservation,
@@ -320,18 +328,30 @@ const ATTESTATION_CORRECTION_STATUS: Record<AttestationCorrectionErrorCode, numb
 };
 
 /**
- * Maps a correction decision failure to its status and a bounded body. A Goal-approval refusal (for example
+ * Maps a correction service failure to its status and a bounded body. A Goal-approval refusal (for example
  * `approval_not_found`, `already_decided` or `goal_terminal`) keeps its generic mapping. Any other failure is a generic
- * 503 with no stack and no service message.
+ * 503 with no stack and no service message; `unavailable` is the one sentence that 503 carries.
  */
-function attestationCorrectionDecisionError(error: unknown, reply: FastifyReply) {
+function attestationCorrectionFailure(error: unknown, reply: FastifyReply, unavailable: string) {
   if (error instanceof AttestationCorrectionError)
     return send(reply, ATTESTATION_CORRECTION_STATUS[error.code], { error: error.message, code: error.code });
   if (error instanceof GoalApprovalError) return domainError(error, reply);
   return send(reply, 503, {
-    error: 'The attestation correction could not be recorded safely.',
+    error: unavailable,
     code: 'attestation_correction_unavailable',
   });
+}
+
+function attestationCorrectionDecisionError(error: unknown, reply: FastifyReply) {
+  return attestationCorrectionFailure(
+    error,
+    reply,
+    'The attestation correction could not be recorded safely.',
+  );
+}
+
+function attestationCorrectionRequestError(error: unknown, reply: FastifyReply) {
+  return attestationCorrectionFailure(error, reply, 'The correction request could not be recorded safely.');
 }
 
 function parse<T>(
@@ -444,6 +464,23 @@ const attestationCorrectionDecisionBody = z.discriminatedUnion('decision', [
   }),
   z.strictObject({ decision: z.literal('denied'), note }),
 ]);
+// The reviewed chain position is not in this body; it arrives only as If-Match. The replacement is named here, because a
+// supersession's replacement is part of the reviewed action. No actor, digest, status or approval identity is accepted.
+const attestationCorrectionRequestBody = z
+  .strictObject({
+    correctionKind: z.enum(ATTESTATION_CORRECTION_KINDS),
+    reasonCode: z.enum(ATTESTATION_CORRECTION_REASON_CODES),
+    explanation: z.string().max(10_000).nullable(),
+    replacementAttestationId: z.string().uuid().nullable(),
+  })
+  .superRefine((body, context) => {
+    if ((body.correctionKind === 'supersede') !== (body.replacementAttestationId !== null))
+      context.addIssue({
+        code: 'custom',
+        path: ['replacementAttestationId'],
+        message: 'Only a supersession names a replacement attestation, and it must name one.',
+      });
+  });
 const handoffListQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(50).optional(),
   offset: z.coerce.number().int().min(0).max(100_000).optional(),
@@ -833,7 +870,23 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
       try {
         const standing = getAttestationCorrectionStanding(db, goalId, attestationId);
         const corrections = listAttestationCorrectionHistory(db, goalId, attestationId);
-        return { goalId, handoffId, attestationId, standing, corrections };
+        // The position is the If-Match value a request must send; `pending` lists requests awaiting the user's decision.
+        const chainPosition = getAttestationCorrectionChainPosition(db, goalId, attestationId);
+        const { pending, pendingUnreadableCount } = listPendingAttestationCorrectionRequests(
+          db,
+          goalId,
+          attestationId,
+        );
+        return {
+          goalId,
+          handoffId,
+          attestationId,
+          standing,
+          corrections,
+          chainPosition,
+          pending,
+          pendingUnreadableCount,
+        };
       } catch (error) {
         if (error instanceof AttestationCorrectionError)
           return send(reply, 409, {
@@ -841,6 +894,51 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
             code: error.code,
           });
         throw error;
+      }
+    },
+  );
+
+  // Correction request (D.4D). Creates at most one pending high-risk approval for one reviewed action. It decides nothing,
+  // changes no Goal, completion or Git state, and the reviewed chain position comes from If-Match only.
+  app.post(
+    '/api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections',
+    async (request, reply) => {
+      const params = externalAttestationParams.safeParse(request.params);
+      if (!params.success)
+        return send(reply, 400, { error: 'Invalid Goal attestation identity.', code: 'invalid_request' });
+      const body = parse(attestationCorrectionRequestBody, request.body, reply);
+      if (!body.ok) return reply;
+      const { goalId, handoffId, attestationId } = params.data;
+      if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(goalId))
+        return send(reply, 404, { error: 'The Goal does not exist.', code: 'goal_not_found' });
+      const scoped = db
+        .prepare(
+          `SELECT 1 FROM goal_external_integration_attestations
+           WHERE goal_id = ? AND handoff_id = ? AND id = ?`,
+        )
+        .get(goalId, handoffId, attestationId);
+      if (!scoped)
+        return send(reply, 404, {
+          error: 'The attestation does not exist for this Goal and handoff.',
+          code: 'attestation_not_found',
+        });
+      const position = readQuotedDigestPrecondition(
+        request,
+        reply,
+        'Review the current correction history before requesting a correction.',
+      );
+      if (position === undefined) return reply;
+      try {
+        const result = requestAttestationCorrectionAsUser(db, {
+          goalId,
+          handoffId,
+          attestationId,
+          expectedChainPosition: position,
+          ...body.data,
+        });
+        return reply.code(result.reused ? 200 : 201).send(result);
+      } catch (error) {
+        return attestationCorrectionRequestError(error, reply);
       }
     },
   );
