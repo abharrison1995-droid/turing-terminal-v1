@@ -379,6 +379,132 @@ export interface GoalCompletionView {
   finalApply: { required: boolean; ok: boolean; basis: string | null; reason: string | null };
 }
 
+/**
+ * Mirror of the server's completion standing (`src/server/goals/completionStanding.ts`). The shared layer cannot import
+ * the server, so the vocabulary is copied here. The detail route checks that the server reader's result is assignable to
+ * this type at compile time, so the response cannot drift silently from this mirror in the server-to-shared direction.
+ */
+export type GoalCompletionStandingReason =
+  | 'attestation_disputed'
+  | 'attestation_withdrawn'
+  | 'attestation_superseded'
+  | 'replacement_not_uncontested'
+  | 'attestation_unavailable'
+  | 'legacy_completion'
+  | 'reason_code_unclassifiable'
+  | 'legacy_policy_unverified'
+  | 'legacy_with_proof_row'
+  | 'proof_without_completion'
+  | 'proof_integrity_failed'
+  | 'chain_identity_mismatch'
+  | 'correction_time_invalid'
+  | 'correction_mapping_unclassifiable'
+  | 'integrity_check_failed';
+
+export interface GoalCompletionStandingClaim {
+  unqualifiedSuccessAllowed: boolean;
+  trustedForDownstream: boolean;
+  qualifier:
+    | 'none'
+    | 'disputed_by_user'
+    | 'withdrawn_by_user'
+    | 'superseded_by_user'
+    | 'replacement_failed'
+    | 'proof_unverified'
+    | 'legacy_not_v2_attested'
+    | 'not_completed';
+  contentPreservation: 'not_proven' | 'not_applicable';
+}
+
+export type GoalCompletionStandingProof =
+  | {
+      state: 'valid';
+      proofId: string;
+      proofDigest: string;
+      attestationId: string;
+      attestationRecordDigest: string;
+      approvalId: string;
+      actionDigest: string;
+      observedAt: string;
+      chainAtProof: { sequence: 0; digest: string; standing: 'active_uncontested' };
+    }
+  | { state: 'invalid'; reason: string }
+  | { state: 'legacy_no_proof' };
+
+export interface GoalCompletionStandingTip {
+  correctionId: string;
+  kind: 'dispute' | 'withdraw' | 'supersede';
+  sequence: number;
+  correctionDigest: string;
+  decidedAt: string;
+  replacementAttestationId: string | null;
+}
+
+export interface GoalCompletionStandingCorrection {
+  attestationId: string;
+  standing: 'active_uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'invalid' | 'unavailable';
+  correctionCount: number;
+  tip: GoalCompletionStandingTip | null;
+  correctedAfterCompletion: boolean | null;
+  invalidCode: string | null;
+  replacement: { attestationId: string; standing: GoalCompletionStandingCorrection['standing'] } | null;
+}
+
+export interface GoalCompletionStandingClassification {
+  trust: 'trusted' | 'qualified' | 'untrusted';
+  reconciliation: 'none' | 'required';
+  reasons: GoalCompletionStandingReason[];
+}
+
+export interface GoalCompletionStandingOtherAttestation {
+  attestationId: string;
+  recordDigest: string;
+  standing: GoalCompletionStandingCorrection['standing'];
+  isReplacementOfProofAttestation: boolean;
+  restoresCompletion: false;
+}
+
+interface GoalCompletionStandingBase {
+  schemaVersion: 1;
+  goalId: string;
+  status: { goalStatus: GoalStatus; completedAt: string | null; reasonCode: string | null };
+  claim: GoalCompletionStandingClaim;
+}
+
+/**
+ * The Goal-level completion standing, a discriminated union on `kind`. `standing` is null only for a Goal that is not
+ * completed. Only a version-2 Goal with `uncontested` standing is trusted; the claim says so, not the stored status.
+ */
+export type GoalCompletionStanding =
+  | (GoalCompletionStandingBase & { kind: 'not_completed'; standing: null })
+  | (GoalCompletionStandingBase & {
+      kind: 'v2';
+      standing: 'uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'reconciliation_required';
+      proof: Extract<GoalCompletionStandingProof, { state: 'valid' }>;
+      correction: GoalCompletionStandingCorrection;
+      classification: GoalCompletionStandingClassification;
+      otherAttestations: GoalCompletionStandingOtherAttestation[];
+      otherAttestationsTruncated: boolean;
+    })
+  | (GoalCompletionStandingBase & {
+      kind: 'legacy';
+      standing: 'historical_legacy';
+      proof: { state: 'legacy_no_proof' };
+      correction: null;
+      classification: GoalCompletionStandingClassification;
+      otherAttestations: [];
+      otherAttestationsTruncated: false;
+    })
+  | (GoalCompletionStandingBase & {
+      kind: 'invalid';
+      standing: 'invalid_unverified';
+      proof: GoalCompletionStandingProof;
+      correction: GoalCompletionStandingCorrection | null;
+      classification: GoalCompletionStandingClassification;
+      otherAttestations: [];
+      otherAttestationsTruncated: false;
+    });
+
 export interface GoalChildRunBrief {
   id: string;
   purpose: string;
@@ -414,6 +540,11 @@ export interface GoalDetail extends GoalListItem {
   pendingApprovals: GoalApprovalView[];
   completion: GoalCompletionView | null;
   flags: GoalFlags;
+  /**
+   * Additive. Set only by the Goal detail route (`GET /api/goals/:goalId`), which composes it from the completion standing
+   * reader. The read model's `getGoalDetail` does not set it, so it is optional on this type.
+   */
+  completionStanding?: GoalCompletionStanding;
 }
 
 export interface GoalRouteResolutionSummary {

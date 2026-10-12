@@ -131,8 +131,11 @@ export class CompletionStandingError extends Error {
 }
 
 /**
- * The closed reasons the trust classification may carry. Each reason is produced by at least one derivation path of
- * the reader, and each has a test that observes it.
+ * The closed reasons the trust classification may carry. Thirteen are produced through the database, and each has a test
+ * that observes it. Two have a derivation path in the reader but are not producible through the database, so no test
+ * observes them as produced: `correction_mapping_unclassifiable` and `chain_identity_mismatch`. Test G2 in
+ * completionStandingService.test.ts shows the first is refused earlier by `correction_chain_invalid`, and test G3 shows
+ * the second is refused earlier by `completion_approval_mismatch`. Both tests assert the reason is absent.
  */
 export const COMPLETION_STANDING_REASONS = [
   'attestation_disputed',
@@ -299,6 +302,11 @@ export function readGoalCompletionStanding(db: Db, goalId: string): GoalCompleti
   })();
 }
 
+/**
+ * Accepted deviation: a SQLite fault on this single goals-row read throws the raw error to the caller. Only
+ * `goal_not_found` is a domain throw. A missing or corrupt goals row has no status to report, so throwing is fail-closed:
+ * nothing is returned as a standing, and so nothing can read as a success.
+ */
 function readGoalRow(db: Db, goalId: string): GoalRow {
   const row = db
     .prepare(

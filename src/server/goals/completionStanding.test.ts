@@ -263,8 +263,9 @@ describe('completion standing: pure fallback for an impossible pairing', () => {
   });
 
   it('pure classifier fallback (not DB state): an invalid-kind uncontested pairing (through a cast) is untrusted and never a success', () => {
-    // The classifier emits claims only, never a reason code. The reader's correction_mapping_unclassifiable is asserted
-    // through the DB in completionStandingService.test.ts; this test asserts only the fail-closed claim of the pairing.
+    // The classifier emits claims only, never a reason code, so this test covers the fail-closed claim of the pairing and
+    // nothing else. The DB path to the reader's correction_mapping_unclassifiable is not producible (test G2 in
+    // completionStandingService.test.ts), so no DB test asserts that reason is produced.
     const impossible = { kind: 'invalid', standing: 'uncontested' } as unknown as CompletionStandingFacts;
     expect(classifyCompletionStanding(impossible)).toEqual({
       unqualifiedSuccessAllowed: false,

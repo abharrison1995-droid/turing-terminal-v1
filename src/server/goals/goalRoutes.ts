@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { GoalDefinition } from '../../shared/goals.js';
 import type {
   GoalApiError,
+  GoalCompletionStanding,
   GoalFinalApplyPreflightView,
   GoalManualHandoffListResponse,
   GoalManualHandoffPrepared,
@@ -13,6 +14,7 @@ import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
 import { GoalApprovalError } from './approvals.js';
+import { readGoalCompletionStanding } from './completionStanding.js';
 import {
   AttestationCorrectionError,
   getAttestationCorrectionStanding,
@@ -278,7 +280,12 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
 
   app.get('/api/goals/:goalId', async (request, reply) => {
     try {
-      return { goal: await getGoalDetail(db, goalIdOf(request), workflowContexts(db)) };
+      const goalId = goalIdOf(request);
+      const detail = await getGoalDetail(db, goalId, workflowContexts(db));
+      // Composed here rather than in readModel.ts, which would close an import cycle through the completion standing's
+      // dependencies. A missing Goal throws in getGoalDetail first, so the reader is never called for it.
+      const completionStanding: GoalCompletionStanding = readGoalCompletionStanding(db, goalId);
+      return { goal: { ...detail, completionStanding } };
     } catch (error) {
       return domainError(error, reply);
     }
