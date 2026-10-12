@@ -3686,9 +3686,11 @@ describe('external integration attestation corrections', () => {
       const { fx, attestation } = await attestedFixture();
       const reviewed = requestCorrection(fx, attestation.attestationId);
       fx.db.prepare("UPDATE goals SET status = 'completed' WHERE id = ?").run(fx.goalId);
+      // D.4C: the generic route refuses every correction approval with its dedicated code before the terminal check
+      // (goalCommands.ts). The refusal and its no-write outcome are unchanged; only the code the plan names is new.
       await expect(
         decideGoalApprovalAsUser(fx.db, { approvalId: reviewed.approval.id, decision: 'approved' }),
-      ).rejects.toMatchObject({ code: 'goal_terminal' });
+      ).rejects.toMatchObject({ code: 'correction_decision_requires_dedicated_service' });
       expect(getGoalApproval(fx.db, reviewed.approval.id)).toMatchObject({ status: 'pending' });
       expect(listAttestationCorrectionHistory(fx.db, fx.goalId, attestation.attestationId)).toEqual([]);
     },
