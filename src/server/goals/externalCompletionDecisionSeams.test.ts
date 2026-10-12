@@ -1,11 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '../db.js';
-import { requestGoalApproval } from './approvals.js';
+import { decideGoalApproval, requestGoalApproval } from './approvals.js';
 import {
   ExternalCompletionDecisionError,
   recordExternalCompletionDecision,
 } from './externalCompletionDecision.js';
-import { databaseSnapshot, reviewedDigest, v2RunningAttestedFixture } from './goalV2TestKit.js';
+import { buildExternalCompletionAction } from './externalCompletionProof.js';
+import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
+import {
+  databaseSnapshot,
+  git,
+  reattestAtCurrentTip,
+  reviewedDigest,
+  v2RunningAttestedFixture,
+} from './goalV2TestKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 
 /**
@@ -60,6 +69,49 @@ afterEach(() => {
   seam.preflightCalls = 0;
   cleanupRepoFixtures();
 });
+
+/** Moves the destination base ref to a commit that keeps the attested tree, as the decision test does. */
+function moveTip(attested: Awaited<ReturnType<typeof v2RunningAttestedFixture>>): string {
+  return git(
+    attested.fx.repo,
+    'commit-tree',
+    attested.attestation.destination.observedTree,
+    '-p',
+    attested.attestation.destination.observedCommit,
+    '-m',
+    'destination moved after observation',
+  );
+}
+
+function completionRowIds(db: Db, goalId: string): string[] {
+  return (
+    db
+      .prepare(
+        `SELECT id FROM goal_approvals WHERE goal_id = ? AND external_completion_action_digest IS NOT NULL
+         ORDER BY created_at, rowid`,
+      )
+      .all(goalId) as { id: string }[]
+  ).map((row) => row.id);
+}
+
+/** Requests and user-approves one completion decision row, as a competing or conflicting writer would. */
+function seedApprovedCompletion(
+  db: Db,
+  goalId: string,
+  action: NonNullable<ReturnType<typeof buildExternalCompletionAction>>,
+): string {
+  const approval = requestGoalApproval(db, {
+    goalId,
+    gate: 'user_confirmation',
+    risk: 'high',
+    reason: 'Completion decision committed between Git and commit.',
+    requestedBy: 'user',
+    detail: { ...action },
+    externalCompletionActionDigest: action.actionDigest,
+  });
+  decideGoalApproval(db, { goalId, approvalId: approval.id, decision: 'approved', decidedBy: 'user' });
+  return approval.id;
+}
 
 describe('external completion decision: authority race between Git and commit', () => {
   it(
@@ -205,6 +257,99 @@ describe('external completion decision: authority race between Git and commit', 
           }
         ).n,
       ).toBe(beforeApprovals + 2);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'D11b a competing decision committed between Git and commit refuses as competing_decision, not as an authority race',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      // The competing decision names the first attestation, built from its preflight before the destination moves.
+      const first = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      const firstAction = buildExternalCompletionAction({
+        ...first.actionFields!,
+        userReviewedPreflightDigest: first.digest,
+      })!;
+      git(attested.fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
+      const second = await reattestAtCurrentTip(attested);
+      const digest = await reviewedDigest({ fx: attested.fx, attestationId: second.attestationId });
+
+      let competing: string | null = null;
+      seam.afterPreflight = (raceDb, raceGoalId) => {
+        competing = seedApprovedCompletion(raceDb, raceGoalId, firstAction);
+      };
+      const error = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: second.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      // The classifier runs before the snapshot comparison, so the competing row is reported as the competing decision.
+      // Without that order the comparison would name the completion row count as an authority change instead.
+      expect(seam.afterPreflight).toBeNull();
+      expect(error).toBeInstanceOf(ExternalCompletionDecisionError);
+      expect(error).toMatchObject({ code: 'competing_decision', detail: null });
+      expect(completionRowIds(db, goalId)).toEqual([competing]);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'D11c a completion row for a fabricated attestation committed between Git and commit refuses as completion_history_invalid',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const db = attested.fx.db;
+      const goalId = attested.fx.goalId;
+      const digest = await reviewedDigest(attested);
+      const report = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attested.attestationId },
+        { allowRecordedDecision: true },
+      );
+      // The same fabricated-attestation construction as D17b, written in the window after the Git read.
+      const foreign = randomUUID();
+      const fields = report.actionFields as Record<string, Record<string, unknown>>;
+      const foreignAction = buildExternalCompletionAction({
+        ...fields,
+        attestation: { ...fields.attestation, id: foreign },
+        correctionChain: { ...fields.correctionChain, attestationId: foreign },
+        userReviewedPreflightDigest: 'e'.repeat(64),
+      })!;
+
+      let seeded: string | null = null;
+      seam.afterPreflight = (raceDb, raceGoalId) => {
+        seeded = seedApprovedCompletion(raceDb, raceGoalId, foreignAction);
+      };
+      const error = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: attested.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      }).then(
+        () => null,
+        (caught: unknown) => caught,
+      );
+
+      expect(seam.afterPreflight).toBeNull();
+      expect(error).toBeInstanceOf(ExternalCompletionDecisionError);
+      expect(error).toMatchObject({ code: 'preflight_refused', detail: 'completion_history_invalid' });
+      // The refused decision wrote nothing: the only completion row is the race row.
+      expect(completionRowIds(db, goalId)).toEqual([seeded]);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

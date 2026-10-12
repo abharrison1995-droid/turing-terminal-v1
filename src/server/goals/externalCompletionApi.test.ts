@@ -681,6 +681,7 @@ describe('external completion error mapping (T15)', () => {
       authority_changed_during_decision: 409,
       authority_changed_during_completion: 409,
       decision_conflict: 409,
+      competing_decision: 409,
       completion_conflict: 409,
       completion_already_recorded: 409,
       goal_not_running: 409,
@@ -1046,23 +1047,20 @@ describe('external completion (R3)', () => {
 
       // Slice 2a: R2 refuses a decision for Y while X's eligible decision exists. The option does not waive class 4.
       const beforeY = wholeState(fx);
-      expect(
-        await call(
-          app,
-          'POST',
-          decisionUrl(fx.goalId),
-          {
-            decision: 'record_completion_decision',
-            attestationId: attestationY.attestationId,
-            acknowledgeContentNotProven: true,
-          },
-          { 'if-match': `"${digestY}"` },
-        ),
-      ).toMatchObject({
-        status: 409,
-        // The decision transaction maps the refusal by its error code, so the detail is the code (2b adds the mapping).
-        body: { code: 'preflight_refused', detail: 'completion_already_recorded' },
-      });
+      const refusedY = await call(
+        app,
+        'POST',
+        decisionUrl(fx.goalId),
+        {
+          decision: 'record_completion_decision',
+          attestationId: attestationY.attestationId,
+          acknowledgeContentNotProven: true,
+        },
+        { 'if-match': `"${digestY}"` },
+      );
+      // Slice 2b: the decision service reports the competing decision by its own code, with no detail.
+      expect(refusedY).toMatchObject({ status: 409, body: { code: 'competing_decision' } });
+      expect(refusedY.body).not.toHaveProperty('detail');
       expect(wholeState(fx)).toEqual(beforeY);
       expect(completionApprovals(fx).map((row) => row.id)).toEqual([decidedX.approvalId]);
       expect(countRows(fx, 'goal_external_completion_proofs')).toBe(0);

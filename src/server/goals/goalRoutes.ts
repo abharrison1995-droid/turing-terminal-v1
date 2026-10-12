@@ -260,6 +260,7 @@ const EXTERNAL_COMPLETION_STATUS: Record<ExternalCompletionCode, number> = {
   authority_changed_during_decision: 409,
   authority_changed_during_completion: 409,
   decision_conflict: 409,
+  competing_decision: 409,
   completion_conflict: 409,
   completion_already_recorded: 409,
   goal_not_running: 409,

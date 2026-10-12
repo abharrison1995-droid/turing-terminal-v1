@@ -10,6 +10,7 @@ import {
   readPreflightSnapshotIdentity,
   type SnapshotIdentity,
 } from './externalCompletionPreflight.js';
+import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { completionRows, validateCompletionApproval } from './externalCompletionDecisionRows.js';
 import { isManualReconciliation } from './readModel.js';
 import { withGoalCompletionLock } from './goalCompletionLock.js';
@@ -43,6 +44,7 @@ export const EXTERNAL_COMPLETION_DECISION_ERROR_CODES = [
   'reviewed_preflight_changed',
   'authority_changed_during_decision',
   'decision_conflict',
+  'competing_decision',
   'decision_corrupt',
   'decision_persistence_failed',
 ] as const;
@@ -58,6 +60,8 @@ const MESSAGES: Record<ExternalCompletionDecisionErrorCode, string> = {
   reviewed_preflight_changed: 'The reviewed preflight digest no longer matches the current preflight.',
   authority_changed_during_decision: 'Goal authority changed during the completion decision.',
   decision_conflict: 'A different completion decision already exists for this attestation.',
+  competing_decision:
+    'Another attestation already has an eligible completion decision, so no new decision can be recorded.',
   decision_corrupt: 'A stored completion decision is invalid, so no new decision can be recorded.',
   decision_persistence_failed: 'The completion decision could not be recorded.',
 };
@@ -95,27 +99,38 @@ function assertNoCorruptRows(db: Db, goalId: string): void {
   }
 }
 
+/** What the classifier allows the decision to do: return an existing approval, or record a new one. */
+type AuthorityOutcome = { reuse: string } | { record: true };
+
 /**
- * Inside the decision transaction: a corrupt row refuses everything, a different decision for this attestation refuses,
- * an identical decision is returned for reuse, and a decision for another attestation is ignored.
+ * Classifies the Goal's completion authority for this decision (completionAuthorityPolicy.ts). Class 6 and class 5
+ * refuse as the preflight refuses them. Class 4 refuses as a competing decision, and the option never waives it. Class 2
+ * reuses the exact decision the Goal already holds for this attestation, and refuses a different one as a conflict.
+ * Classes 1 and 3 may record. Reuse is reachable only through class 2.
  */
-function classifyCompletionRows(
+function authorityOutcome(
   db: Db,
   goalId: string,
   attestationId: string,
   actionDigest: string,
-): GoalApproval | null {
-  let exact: GoalApproval | null = null;
-  let conflict = false;
-  for (const { approval } of completionRows(db, goalId)) {
-    const checked = validateCompletionApproval(approval);
-    if (!checked.valid) throw new ExternalCompletionDecisionError('decision_corrupt', checked.reason);
-    if (checked.action.attestation.id !== attestationId) continue;
-    if (checked.action.actionDigest === actionDigest) exact = approval;
-    else conflict = true;
+): AuthorityOutcome {
+  const classification = classifyCompletionAuthority(db, goalId, attestationId);
+  if (classification.class === 6)
+    throw new ExternalCompletionDecisionError('preflight_refused', 'completion_already_recorded');
+  if (classification.class === 5)
+    throw new ExternalCompletionDecisionError('preflight_refused', 'completion_history_invalid');
+  if (classification.class === 4) throw new ExternalCompletionDecisionError('competing_decision', null);
+  if (classification.class === 2) {
+    const own = classification.entries.filter((entry) => entry.attestationId === attestationId);
+    if (own.some((entry) => entry.actionDigest !== actionDigest))
+      throw new ExternalCompletionDecisionError('decision_conflict', null);
+    const exact = own.find((entry) => entry.actionDigest === actionDigest);
+    // Class 2 always carries an own entry, and every own entry matches or conflicts, so this is unreachable. Refuse
+    // rather than record if it ever is.
+    if (exact) return { reuse: exact.decisionId };
+    throw new ExternalCompletionDecisionError('decision_conflict', null);
   }
-  if (conflict) throw new ExternalCompletionDecisionError('decision_conflict', null);
-  return exact;
+  return { record: true };
 }
 
 function isUniqueViolation(error: unknown): boolean {
@@ -169,8 +184,13 @@ async function recordLocked(
   assertNoCorruptRows(db, input.goalId);
 
   const { report, identity } = await observeReviewedPreflight(db, input.goalId, input.attestationId);
-  if (report.outcome !== 'ready' || identity === null)
-    throw new ExternalCompletionDecisionError('preflight_refused', report.reasons[0]?.code ?? null);
+  if (report.outcome !== 'ready' || identity === null) {
+    const reason = report.reasons[0];
+    // Preflight check 4 names a competing eligible decision by detail. The decision service reports it by its own code.
+    if (reason?.code === 'completion_already_recorded' && reason.detail === 'competing_decision')
+      throw new ExternalCompletionDecisionError('competing_decision', null);
+    throw new ExternalCompletionDecisionError('preflight_refused', reason?.code ?? null);
+  }
   if (report.digest !== input.reviewedPreflightDigest)
     throw new ExternalCompletionDecisionError('reviewed_preflight_changed', null);
   const action = buildExternalCompletionAction({
@@ -181,17 +201,14 @@ async function recordLocked(
     throw new ExternalCompletionDecisionError('preflight_refused', 'preflight_internal_invalid');
 
   const reviewed: SnapshotIdentity = identity;
-  const result = (approval: GoalApproval, reused: boolean): ExternalCompletionDecisionResult => ({
-    approvalId: approval.id,
+  const result = (approvalId: string, reused: boolean): ExternalCompletionDecisionResult => ({
+    approvalId,
     actionDigest: action.actionDigest,
     preflightDigest: report.digest,
     status: 'approved',
     reused,
   });
 
-  // The exact-duplicate lookup runs before the snapshot comparison: the snapshot counts completion approval rows, so a
-  // second call that captured its identity before the first call committed would otherwise be refused instead of
-  // returned as a reuse. An exact match was built from this call's fresh Git observation, so reuse stays correct.
   const write = db.transaction((): GoalApproval => {
     const approval = requestGoalApproval(db, {
       goalId: input.goalId,
@@ -213,10 +230,13 @@ async function recordLocked(
   });
 
   // BEGIN IMMEDIATE: a cross-connection writer cannot make this deferred read upgrade fail with SQLITE_BUSY_SNAPSHOT.
+  // The classifier runs first, before the snapshot comparison: a competing decision or corrupt history must refuse with
+  // its own reason, and an exact duplicate must reuse, even though the snapshot counts completion rows and would
+  // otherwise refuse a second call that captured its identity before the first call committed.
   return db
     .transaction((): ExternalCompletionDecisionResult => {
-      const exact = classifyCompletionRows(db, input.goalId, input.attestationId, action.actionDigest);
-      if (exact) return result(exact, true);
+      const outcome = authorityOutcome(db, input.goalId, input.attestationId, action.actionDigest);
+      if ('reuse' in outcome) return result(outcome.reuse, true);
 
       let current: SnapshotIdentity;
       try {
@@ -237,12 +257,12 @@ async function recordLocked(
         approval = write();
       } catch (error) {
         if (isUniqueViolation(error)) {
-          const again = classifyCompletionRows(db, input.goalId, input.attestationId, action.actionDigest);
-          if (again) return result(again, true);
+          const again = authorityOutcome(db, input.goalId, input.attestationId, action.actionDigest);
+          if ('reuse' in again) return result(again.reuse, true);
         }
         throw new ExternalCompletionDecisionError('decision_persistence_failed', null);
       }
-      return result(approval, false);
+      return result(approval.id, false);
     })
     .immediate();
 }

@@ -12,6 +12,7 @@ import {
   appendAttestationCorrection,
   requestAttestationCorrectionApproval,
 } from './attestationCorrection.js';
+import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { completeGoal } from './completion.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { buildExternalCompletionAction, parseExternalCompletionAction } from './externalCompletionProof.js';
@@ -39,6 +40,7 @@ import {
   reattestAtCurrentTip,
   repositoryState,
   reviewedDigest,
+  v2DecidedFixture,
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
@@ -808,6 +810,93 @@ describe('external completion decision: authority and copies', () => {
         null,
       );
       expectNoChange(attested, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'D22 refuses a decision for a second attestation as a competing decision while the first is eligible, and records nothing',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const db = decided.fx.db;
+      const goalId = decided.fx.goalId;
+      git(decided.fx.repo, 'update-ref', decided.handoff.target.baseRef, moveTip(decided));
+      const second = await reattestAtCurrentTip(decided);
+      // The second attestation's preflight is refused as a competing decision, so this digest belongs to a refused
+      // report. The refusal comes before any digest comparison, so the digest value is not what is being tested.
+      const refusedDigest = (
+        await computeExternalCompletionPreflight(
+          db,
+          goalId,
+          { attestationId: second.attestationId },
+          { allowRecordedDecision: true },
+        )
+      ).digest;
+      const before = capture(decided);
+
+      await expectDecisionRefusal(
+        recordExternalCompletionDecision(db, decisionInput(goalId, second.attestationId, refusedDigest)),
+        'competing_decision',
+        null,
+      );
+      expectNoChange(decided, before);
+      expect(completionRows(db, goalId).map((row) => row.id)).toEqual([decided.recorded.approvalId]);
+      expect(proofCount(db)).toBe(0);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(['dispute', 'withdraw'] as const)(
+    'D23 records a decision for a second attestation once the first is corrected (%s), then reuses it',
+    async (kind) => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      const db = fx.db;
+      const goalId = fx.goalId;
+      const firstRow = db
+        .prepare('SELECT * FROM goal_approvals WHERE id = ?')
+        .get(decided.recorded.approvalId);
+      appendCorrectionForTest(fx, decided.attestationId, kind);
+      git(fx.repo, 'update-ref', decided.handoff.target.baseRef, moveTip(decided));
+      const second = await reattestAtCurrentTip(decided);
+      const digest = await reviewedDigest({ fx, attestationId: second.attestationId });
+
+      const recorded = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, second.attestationId, digest),
+      );
+      expect(recorded).toMatchObject({ status: 'approved', reused: false, preflightDigest: digest });
+      expect(completionRows(db, goalId).map((row) => row.id)).toEqual([
+        decided.recorded.approvalId,
+        recorded.approvalId,
+      ]);
+      // The corrected decision is untouched: the new decision is a new row, not an edit of the old one.
+      expect(
+        db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(decided.recorded.approvalId),
+      ).toEqual(firstRow);
+      expect(readExternalCompletionDecision(db, goalId, recorded.approvalId)).toMatchObject({
+        state: 'valid',
+        action: { attestation: { id: second.attestationId } },
+      });
+      // Only the new decision is eligible. The corrected one stays a valid row that cannot complete the Goal.
+      const classification = classifyCompletionAuthority(db, goalId, second.attestationId);
+      expect(classification).toMatchObject({ class: 2, proofIds: [] });
+      expect(
+        classification.entries.find((entry) => entry.decisionId === decided.recorded.approvalId),
+      ).toMatchObject({ attestationId: decided.attestationId, eligible: false });
+      expect(classification.entries.find((entry) => entry.decisionId === recorded.approvalId)).toMatchObject({
+        attestationId: second.attestationId,
+        eligible: true,
+      });
+      expect(proofCount(db)).toBe(0);
+      expect(goalState(db, goalId)).toEqual({ status: 'running', completedAt: null });
+
+      const repeat = await recordExternalCompletionDecision(
+        db,
+        decisionInput(goalId, second.attestationId, digest),
+      );
+      expect(repeat).toEqual({ ...recorded, reused: true });
+      expect(completionRows(db, goalId)).toHaveLength(2);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

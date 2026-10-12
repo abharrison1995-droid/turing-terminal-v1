@@ -214,9 +214,13 @@ const RULES: readonly AuthorityRule[] = [
     id: 'classifier_entry',
     pattern: /\bclassifyCompletionAuthority\b/,
     mode: 'only_in',
-    files: ['goals/completionAuthorityPolicy.ts', 'goals/externalCompletionPreflight.ts'],
+    files: [
+      'goals/completionAuthorityPolicy.ts',
+      'goals/externalCompletionPreflight.ts',
+      'goals/externalCompletionDecision.ts',
+    ],
     reason:
-      'Only the completion authority classifier module and the public preflight name its entry point. Slice 2a adds the preflight caller; a later caller must extend this list in the same commit.',
+      'Only the completion authority classifier module, the public preflight, and the decision service name its entry point. Slice 2a adds the preflight caller; Slice 2b adds the decision caller, which classifies inside its transaction. A later caller must extend this list in the same commit.',
   },
   {
     id: 'classifier_not_writer',
