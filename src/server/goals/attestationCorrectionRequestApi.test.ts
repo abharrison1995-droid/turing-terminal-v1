@@ -614,6 +614,43 @@ describe('correction request route: competing requests and refusals', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+
+  it(
+    'a pending correction gate on a completed Goal is refused by the generic route and changes nothing',
+    async () => {
+      // Fixture: completed() path (v2DecidedFixture, then the real completion service). Real Git. The gate is requested through the D.4D route.
+      const decided = await v2DecidedFixture('sha1');
+      await completeGoalFromExternalDecision(decided.fx.db, {
+        goalId: decided.fx.goalId,
+        attestationId: decided.attestationId,
+        reviewedPreflightDigest: decided.digest,
+        acknowledgeContentNotProven: true,
+      });
+      const { fx } = decided;
+      app = goalApp(fx.db);
+      const url = requestUrl(fx.goalId, decided.handoff.handoffId, decided.attestationId);
+      const position = await reviewedPosition(app, decided);
+      const requested = await call(app, 'POST', url, dispute, quoted(position));
+      expect(requested.status).toBe(201);
+      const goalBefore = fx.db.prepare('SELECT status, completed_at FROM goals WHERE id = ?').get(fx.goalId);
+      expect(goalBefore).toEqual({ status: 'completed', completed_at: expect.any(String) });
+      const before = databaseSnapshot(fx.db);
+
+      // The generic approval route is not the correction decision; it refuses before any status check or write.
+      const refused = await call(app, 'POST', `/api/goal-approvals/${requested.body.approvalId}/decision`, {
+        decision: 'approved',
+      });
+
+      expect(refused.status).toBe(409);
+      expect(refused.body.code).toBe('correction_decision_requires_dedicated_service');
+      expect(databaseSnapshot(fx.db)).toEqual(before);
+      expect(fx.db.prepare('SELECT status, completed_at FROM goals WHERE id = ?').get(fx.goalId)).toEqual(
+        goalBefore,
+      );
+      expect((await call(app, 'GET', url)).body.pending).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('correction history route: read-only additions', () => {

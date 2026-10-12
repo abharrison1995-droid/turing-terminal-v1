@@ -1,15 +1,34 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   GoalAttestationCorrectionHistory,
   GoalAttestationCorrectionPendingRequest,
   GoalAttestationCorrectionRequested,
+  GoalCompletionStanding,
+  GoalExternalCompletionStatus,
+  GoalExternalIntegrationAttestationProjection,
+  GoalExternalIntegrationObservation,
+  GoalExternalIntegrationStoredStatus,
+  GoalManualHandoffProjection,
+  GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
+import { GoalsPage } from './GoalsPage';
 import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
-import { calls, posts, refuse, serve, type Routes } from './testKit';
+import {
+  calls,
+  detail,
+  detailRoutes,
+  item,
+  openGoal,
+  posts,
+  preview,
+  refuse,
+  serve,
+  type Routes,
+} from './testKit';
 
 const GOAL = 'goal-1';
 const HANDOFF = 'handoff-v2';
@@ -387,5 +406,333 @@ describe('correction controls: decisions', () => {
       /correctionKind|reasonCode|approvalId|chainPosition|actionDigest|replacementAttestationId/,
     );
     expect(text).toContain('A correction request could not be read. It is not shown and it is not acted on.');
+  });
+});
+
+/*
+ * The correction controls render inside the desktop Goal page's Handoff tab, so the server-event and switch cases mount
+ * the whole page. The fixtures below are the minimum that tab reads; they mirror goalCompletion.test.tsx.
+ */
+
+const GOAL_B = 'goal-2';
+const HANDOFF_B = 'handoff-goal-b';
+const PAGE_COMMIT = '2'.repeat(40);
+const PAGE_BASE = '3'.repeat(40);
+const PAGE_TREE = '4'.repeat(40);
+const PAGE_HANDOFF_DIGEST = '5'.repeat(64);
+const GATE_TEXT = 'A correction is waiting for your decision';
+
+function pageHandoff(handoffId: string, goalId: string): GoalManualIntegrationHandoff {
+  return {
+    schemaVersion: 1,
+    kind: 'turing_goal_manual_integration_handoff',
+    handoffId,
+    goalId,
+    definition: {
+      version: 2,
+      hash: 'e'.repeat(64),
+      approvalId: 'definition-approval-2',
+      approvalIdentityDigest: 'f'.repeat(64),
+    },
+    finalAcceptance: { approvalId: 'acceptance-2', identityDigest: '1'.repeat(64) },
+    repository: { projectId: 'project-1', identity: '2'.repeat(64), objectFormat: 'sha1', scope: 'src/**' },
+    source: { goalRef: `refs/heads/turing/goal/${goalId}`, commit: PAGE_COMMIT, tree: PAGE_TREE },
+    target: {
+      baseBranch: 'main',
+      baseRef: 'refs/heads/main',
+      observedBaseCommit: PAGE_BASE,
+      observedBaseTree: '6'.repeat(40),
+    },
+    completion: { identityDigest: '4'.repeat(64), findingsIdentityDigest: '5'.repeat(64) },
+    review: {
+      finalReviewId: 'review-2',
+      reviewIdentityDigest: '6'.repeat(64),
+      evidenceIdentityDigest: '7'.repeat(64),
+      evidence: [
+        {
+          evidenceId: 'evidence-2',
+          criterionKey: 'build',
+          verifierDigest: '8'.repeat(64),
+          kind: 'build',
+          verdict: 'satisfies',
+          identityDigest: '9'.repeat(64),
+        },
+      ],
+      changedPathDigest: 'a'.repeat(64),
+      changedPathCount: 1,
+      changedPathSummaryDigest: 'b'.repeat(64),
+      diffPreviewLimit: 12_000,
+      diffStatDigest: 'c'.repeat(64),
+      diffStatTruncated: false,
+      diffPreviewDigest: 'd'.repeat(64),
+      diffPreviewTruncated: false,
+    },
+    projection: {
+      changedPaths: ['src/result.ts'],
+      changedPathsTruncated: false,
+      diffStat: ' src/result.ts | 1 +',
+      diffPreview: '+export const answer = 42;',
+      inspectionCommands: [`git show --stat ${PAGE_COMMIT}`],
+      manualIntegrationRequired: true,
+      warning: 'Turing prepared this result but did not apply it.',
+    },
+    createdAt: '2026-10-09T12:00:00.000Z',
+    handoffDigest: PAGE_HANDOFF_DIGEST,
+  };
+}
+
+function pageProjection(record: GoalManualIntegrationHandoff): GoalManualHandoffProjection {
+  return {
+    state: 'current',
+    label: 'Ready for manual integration',
+    handoff: record,
+    reason: null,
+    actualApplication: 'not_performed_by_turing',
+    goalCompletion: 'not_completed_by_handoff',
+  };
+}
+
+function pageHistory(handoffId: string) {
+  return {
+    handoffs: [
+      {
+        handoffId,
+        createdAt: '2026-10-09T12:00:00.000Z',
+        definitionVersion: 2,
+        sourceCommit: PAGE_COMMIT,
+        handoffDigest: PAGE_HANDOFF_DIGEST,
+      },
+    ],
+    limit: 50,
+    nextOffset: null,
+  };
+}
+
+function pageStoredStatus(record: GoalManualIntegrationHandoff): GoalExternalIntegrationStoredStatus {
+  return {
+    goalId: record.goalId,
+    handoffId: record.handoffId,
+    hasAttestation: true,
+    attestations: [
+      {
+        attestationId: ATT,
+        actionDigest: 'f'.repeat(64),
+        recordDigest: 'a'.repeat(64),
+        approvalId: 'approval-external',
+        observedAt: '2026-10-09T12:30:00.000Z',
+        decidedAt: '2026-10-09T12:31:00.000Z',
+      },
+    ],
+    approvals: [],
+    limit: 20,
+    attestationsHaveMore: false,
+    approvalsHaveMore: false,
+  };
+}
+
+function pageAttestation(record: GoalManualIntegrationHandoff): GoalExternalIntegrationAttestationProjection {
+  const observation: GoalExternalIntegrationObservation = {
+    schemaVersion: 1,
+    kind: 'turing_goal_external_integration_observation',
+    goalId: record.goalId,
+    completionContractVersion: 2,
+    handoff: { id: record.handoffId, digest: record.handoffDigest },
+    definition: { version: 2, hash: record.definition.hash, approvalId: record.definition.approvalId },
+    review: {
+      finalReviewId: record.review.finalReviewId,
+      acceptanceApprovalId: record.finalAcceptance.approvalId,
+      evidenceIdentityDigest: record.review.evidenceIdentityDigest,
+    },
+    repository: {
+      projectId: record.repository.projectId,
+      identity: record.repository.identity,
+      scope: record.repository.scope,
+      objectFormat: record.repository.objectFormat,
+    },
+    source: { ref: record.source.goalRef, commit: PAGE_COMMIT, tree: PAGE_TREE },
+    destination: {
+      ref: record.target.baseRef,
+      expectedBaseCommit: PAGE_BASE,
+      expectedBaseTree: record.target.observedBaseTree,
+      observedCommit: PAGE_COMMIT,
+      observedTree: PAGE_TREE,
+    },
+    proof: {
+      mode: 'source_history_observed',
+      sourceAncestor: true,
+      baseAncestor: true,
+      verifierVersion: 1,
+      evidenceDigest: 'a'.repeat(64),
+    },
+    observedAt: '2026-10-09T12:30:00.000Z',
+    actionDigest: 'f'.repeat(64),
+  };
+  return {
+    state: 'current',
+    record: {
+      ...observation,
+      kind: 'turing_goal_external_integration_attestation',
+      attestationId: ATT,
+      approvalId: 'approval-external',
+      decision: {
+        value: 'confirm_external_integration',
+        decidedBy: 'user',
+        decidedAt: '2026-10-09T12:31:00.000Z',
+      },
+      recordDigest: 'a'.repeat(64),
+    },
+    reason: null,
+    claim: 'source_history_observed_at_recorded_time',
+    contentPreservation: 'not_proven',
+    goalCompletion: 'not_completed_by_attestation',
+  } as unknown as GoalExternalIntegrationAttestationProjection;
+}
+
+function pageCompletion(goalId: string): GoalExternalCompletionStatus {
+  return {
+    goalId,
+    state: 'not_completed',
+    decisions: [],
+    completion: null,
+    // Only the claim is read by the completion panel's copy.
+    completionStanding: {
+      claim: {
+        unqualifiedSuccessAllowed: true,
+        trustedForDownstream: false,
+        qualifier: 'none',
+        contentPreservation: 'not_proven',
+      },
+    } as unknown as GoalCompletionStanding,
+  };
+}
+
+/** A minimal stand-in for the browser's EventSource, so the desktop Goal page's refresh events can be emitted. */
+class PageEventSource {
+  static instances: PageEventSource[] = [];
+  readonly listeners = new Map<string, Array<(event: Event) => void>>();
+
+  constructor(readonly url: string) {
+    PageEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    const callback =
+      typeof listener === 'function' ? listener : (event: Event) => listener.handleEvent(event);
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), callback]);
+  }
+
+  close(): void {}
+
+  emit(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener(new Event(type));
+  }
+}
+
+/** The Goal page with the Handoff tab serving one current attestation whose correction gate is pending. */
+function servePage(extra: Routes = {}) {
+  const record = pageHandoff(HANDOFF, GOAL);
+  const pendingGate = history({ pending: [pendingRow()] });
+  serve(
+    detailRoutes(detail(), {
+      '/api/goals/goal-1/handoffs': () => pageHistory(HANDOFF),
+      [`/api/goals/goal-1/handoffs/${HANDOFF}`]: () => ({ projection: pageProjection(record) }),
+      [`/api/goals/goal-1/handoffs/${HANDOFF}/external-integration`]: () => pageStoredStatus(record),
+      [`/api/goals/goal-1/handoffs/${HANDOFF}/external-integration/attestations/${ATT}`]: () => ({
+        projection: pageAttestation(record),
+      }),
+      [CORRECTIONS]: () => pendingGate,
+      '/api/goals/goal-1/completion': () => pageCompletion(GOAL),
+      ...extra,
+    }),
+  );
+}
+
+async function openPageHandoffTab(user: ReturnType<typeof userEvent.setup>) {
+  await openGoal(user);
+  await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
+  await screen.findByRole('group', { name: GATE_TEXT });
+}
+
+describe('correction requests are never sent by server events, tab switches or Goal switches', () => {
+  it('a server event for the Goal sends no correction request or decision', async () => {
+    PageEventSource.instances = [];
+    vi.stubGlobal('EventSource', PageEventSource);
+    servePage();
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openPageHandoffTab(user);
+    expect(posts()).toHaveLength(0);
+
+    const reads = () => calls.filter((call) => call.path === CORRECTIONS).length;
+    const before = reads();
+    PageEventSource.instances[PageEventSource.instances.length - 1]!.emit('external_integration_corrected');
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    // Let any follow-up work from the refresh settle before counting writes.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 100)));
+
+    expect(screen.getByRole('group', { name: GATE_TEXT })).toBeTruthy();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('switching tabs and back sends no correction request or decision', async () => {
+    servePage();
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openPageHandoffTab(user);
+
+    const reads = () => calls.filter((call) => call.path === CORRECTIONS).length;
+    const before = reads();
+    await user.click(screen.getByRole('tab', { name: 'Overview' }));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await screen.findByRole('group', { name: GATE_TEXT });
+
+    expect(reads()).toBeGreaterThan(before);
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('switching to another Goal sends no correction request or decision, during or after the switch', async () => {
+    const second = pageHandoff(HANDOFF_B, GOAL_B);
+    servePage({
+      '/api/goals': () => ({
+        goals: [item(), item({ id: GOAL_B, title: 'Second Goal' })],
+        total: 2,
+        limit: 50,
+      }),
+      [`/api/goals/${GOAL_B}`]: () => ({ goal: detail({ id: GOAL_B, title: 'Second Goal' }) }),
+      [`/api/goals/${GOAL_B}/preview`]: () => ({ preview: { ...preview(), goalId: GOAL_B } }),
+      [`/api/goals/${GOAL_B}/handoffs`]: () => pageHistory(HANDOFF_B),
+      [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}`]: () => ({ projection: pageProjection(second) }),
+      [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration`]: () => ({
+        ...pageStoredStatus(second),
+        goalId: GOAL_B,
+      }),
+      [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration/attestations/${ATT}`]: () => ({
+        projection: pageAttestation(second),
+      }),
+      [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration/attestations/${ATT}/corrections`]:
+        () => ({
+          ...history({ pending: [pendingRow()] }),
+          goalId: GOAL_B,
+          handoffId: HANDOFF_B,
+        }),
+      [`/api/goals/${GOAL_B}/completion`]: () => pageCompletion(GOAL_B),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openPageHandoffTab(user);
+    expect(posts()).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
+    expect(posts()).toHaveLength(0);
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await screen.findByRole('group', { name: GATE_TEXT });
+    expect(posts()).toHaveLength(0);
+
+    await user.click(screen.getByRole('button', { name: 'All Goals' }));
+    await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
+    await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await screen.findByRole('group', { name: GATE_TEXT });
+    expect(posts()).toHaveLength(0);
   });
 });
