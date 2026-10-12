@@ -4,6 +4,11 @@ import type {
   GoalDefinitionFull,
   GoalDefinitionSummary,
   GoalDefinitionValidation,
+  GoalAttestationCorrectionDecisionRecorded,
+  GoalAttestationCorrectionHistory,
+  GoalAttestationCorrectionKind,
+  GoalAttestationCorrectionReasonCode,
+  GoalAttestationCorrectionRequested,
   GoalDetail,
   GoalEventsResponse,
   GoalEvidenceResponse,
@@ -141,6 +146,53 @@ export const goalsApi = {
     post<GoalExternalCompletionCompleted>(
       `${goalPath(goalId)}/completion`,
       { decision: 'complete_goal', acknowledgeContentNotProven },
+      ifMatch(actionDigest),
+    ),
+
+  // --- Attestation corrections (D.4D). The read changes nothing. Each write is one request on one explicit click. ---------
+  /** Read-only: the verified history, the chain position a request must send, and the requests awaiting a decision. */
+  correctionHistory: (goalId: string, handoffId: string, attestationId: string) =>
+    call<GoalAttestationCorrectionHistory>(
+      `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attestations/${encodeURIComponent(attestationId)}/corrections`,
+    ),
+  /** Requests one correction. If-Match is the chain position the user reviewed, from the last read. */
+  requestCorrection: (
+    goalId: string,
+    handoffId: string,
+    attestationId: string,
+    chainPosition: string,
+    body: {
+      correctionKind: GoalAttestationCorrectionKind;
+      reasonCode: GoalAttestationCorrectionReasonCode;
+      explanation: string | null;
+      replacementAttestationId: string | null;
+    },
+  ) =>
+    post<GoalAttestationCorrectionRequested>(
+      `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attestations/${encodeURIComponent(attestationId)}/corrections`,
+      body,
+      ifMatch(chainPosition),
+    ),
+  /**
+   * Decides one pending correction request on the D.4C route. If-Match is that request's exact action digest. The
+   * explanation must be re-sent for an approval whose request carried one; the server re-checks it.
+   */
+  decideCorrection: (
+    goalId: string,
+    approvalId: string,
+    actionDigest: string,
+    body:
+      | {
+          decision: 'approved';
+          attestationId: string;
+          correctionKind: GoalAttestationCorrectionKind;
+          explanation: string | null;
+        }
+      | { decision: 'denied' },
+  ) =>
+    post<GoalAttestationCorrectionDecisionRecorded>(
+      `${goalPath(goalId)}/attestation-corrections/${encodeURIComponent(approvalId)}/decision`,
+      body,
       ifMatch(actionDigest),
     ),
 

@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { GOAL_ATTESTATION_CORRECTION_REASON_CODES } from '../../shared/goalApi.js';
 import { getGoalApproval } from './approvals.js';
 import { getAttestationCorrectionChainPosition } from './attestationCorrection.js';
+import { ATTESTATION_CORRECTION_REASON_CODES } from './attestationCorrectionDetail.js';
 import { decideAttestationCorrectionAsUser } from './attestationCorrectionDecision.js';
 import {
   requestAttestationCorrectionAsUser,
@@ -526,4 +528,11 @@ describe('correction request service: a completed Goal', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+});
+
+// The client copies the reason-code list, because the browser cannot import server code. This test keeps the two equal.
+describe('correction reason codes: client copy matches the server', () => {
+  it('the shared list equals the server list, in the same order', () => {
+    expect([...GOAL_ATTESTATION_CORRECTION_REASON_CODES]).toEqual([...ATTESTATION_CORRECTION_REASON_CODES]);
+  });
 });

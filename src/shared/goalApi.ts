@@ -931,6 +931,96 @@ export interface GoalAttestationCorrectionDecisionRecorded {
   completionStanding: GoalCompletionStanding;
 }
 
+/** The seven reason codes of a correction request. The server's list must equal this one (see the drift test). */
+export const GOAL_ATTESTATION_CORRECTION_REASON_CODES = [
+  'integration_not_performed',
+  'wrong_source',
+  'wrong_destination',
+  'content_not_preserved',
+  'observation_error',
+  'superseded_by_new_observation',
+  'other',
+] as const;
+export type GoalAttestationCorrectionReasonCode = (typeof GOAL_ATTESTATION_CORRECTION_REASON_CODES)[number];
+export type GoalAttestationCorrectionKind = 'dispute' | 'withdraw' | 'supersede';
+
+/** The verified correction standing of one attestation, as the history read returns it. */
+export interface GoalAttestationCorrectionStandingView {
+  goalId: string;
+  attestationId: string;
+  standing: 'active_uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'invalid';
+  correctionCount: number;
+  tip: {
+    correctionId: string;
+    kind: GoalAttestationCorrectionKind;
+    sequence: number;
+    correctionDigest: string;
+    replacementAttestationId: string | null;
+  } | null;
+  invalidCode: string | null;
+}
+
+/** One stored correction of an attestation, as the history read returns it. */
+export interface GoalAttestationCorrectionEntry {
+  correctionId: string;
+  correctionKind: GoalAttestationCorrectionKind;
+  sequence: number;
+  correctionDigest: string;
+  previousCorrectionDigest: string | null;
+  actionDigest: string;
+  approvalId: string;
+  reasonCode: GoalAttestationCorrectionReasonCode;
+  explanation: string | null;
+  replacementAttestationId: string | null;
+  replacementRecordDigest: string | null;
+  decidedAt: string;
+}
+
+/** A correction request awaiting the user's decision. It never carries the explanation text. */
+export interface GoalAttestationCorrectionPendingRequest {
+  approvalId: string;
+  actionDigest: string;
+  correctionKind: GoalAttestationCorrectionKind;
+  reasonCode: GoalAttestationCorrectionReasonCode;
+  sequence: number;
+  previousCorrectionDigest: string | null;
+  replacementAttestationId: string | null;
+  /** True when the decision must re-send the same explanation, because the reviewed action carries one. */
+  explanationRequired: boolean;
+  requestedAt: string;
+}
+
+/**
+ * Response of the correction history GET. `chainPosition` is the If-Match value a request must send. `pending` lists
+ * requests for this attestation awaiting a decision. The read changes nothing.
+ */
+export interface GoalAttestationCorrectionHistory {
+  goalId: string;
+  handoffId: string;
+  attestationId: string;
+  standing: GoalAttestationCorrectionStandingView;
+  corrections: GoalAttestationCorrectionEntry[];
+  chainPosition: string;
+  pending: GoalAttestationCorrectionPendingRequest[];
+  pendingUnreadableCount: number;
+}
+
+/** Response of the correction request POST (201 when new, 200 when an identical pending request already exists). */
+export interface GoalAttestationCorrectionRequested {
+  approvalId: string;
+  actionDigest: string;
+  status: 'pending';
+  reused: boolean;
+  detail: {
+    correctionKind: GoalAttestationCorrectionKind;
+    sequence: number;
+    previousCorrectionDigest: string | null;
+    replacementAttestationId: string | null;
+    explanationDigest: string | null;
+    reasonCode: GoalAttestationCorrectionReasonCode;
+  };
+}
+
 /** Response of the completion POST (201 when new, 200 when reused). */
 export interface GoalExternalCompletionCompleted {
   reused: boolean;
