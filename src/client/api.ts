@@ -36,7 +36,33 @@ export class ApiError extends Error {
   }
 }
 
-export async function call<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * A successful response whose body could not be read as JSON. For a write the server may already have committed it, so
+ * the caller must treat the outcome as unknown and read the saved state, never assume failure.
+ */
+export class UnreadableResponseError extends Error {
+  constructor(readonly status: number | null) {
+    super('The response could not be read.');
+    this.name = 'UnreadableResponseError';
+  }
+}
+
+interface ErrorBody {
+  error?: string;
+  code?: string;
+  detail?: unknown;
+  approvalId?: string;
+}
+
+/**
+ * `requireBody` is opt-in. Without it a 2xx whose body cannot be parsed yields `{}`, exactly as before. Writes that the
+ * client cannot confirm from the response pass `requireBody` and get an `UnreadableResponseError` instead.
+ */
+export async function call<T>(
+  path: string,
+  init?: RequestInit,
+  options: { requireBody?: boolean } = {},
+): Promise<T> {
   const response = await fetch(masterApiUrl(path), {
     ...init,
     headers: {
@@ -44,12 +70,13 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  const body = (await response.json().catch(() => ({}))) as {
-    error?: string;
-    code?: string;
-    detail?: unknown;
-    approvalId?: string;
-  };
+  const parsed = await response.json().then(
+    (value: unknown) => ({ value }),
+    () => null,
+  );
+  if (response.ok && parsed === null && options.requireBody)
+    throw new UnreadableResponseError(response.status);
+  const body = (parsed?.value ?? {}) as ErrorBody;
   if (!response.ok)
     throw new ApiError(
       body.error ?? `Request failed (${response.status}).`,
@@ -58,7 +85,7 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       body.detail,
       typeof body.approvalId === 'string' ? body.approvalId : undefined,
     );
-  return body as T;
+  return (parsed === null ? {} : parsed.value) as T;
 }
 
 function json(method: string, body?: unknown): RequestInit {

@@ -61,6 +61,22 @@ export const CORRECTION_COPY = {
   declinedNote: 'The request was declined. Nothing was changed.',
 } as const;
 
+/** Recovery copy for an ambiguous request or decision. Each line is shown only after a read that supports it. */
+export const CORRECTION_RECOVERY_COPY = {
+  reconciling: 'Turing could not confirm the result. Checking the saved history…',
+  requestSaved: 'Your correction request was saved. It is waiting for your decision.',
+  stillPending: 'Not recorded yet. The request is still waiting for your decision.',
+  closed: 'This request is closed. No correction was recorded.',
+  absent:
+    'Nothing was saved when Turing last checked. If the earlier request is still running it may still finish, so check again before trying again.',
+  unreadablePending:
+    'A saved correction request could not be read, so Turing cannot confirm whether yours was saved. Do not send it again.',
+  historyChanged:
+    'The correction history changed. Review the attestation again before requesting a correction.',
+  unavailable:
+    'Turing still cannot read the saved history, so it cannot confirm the result. Check again before doing anything else.',
+} as const;
+
 export const CORRECTION_ACTIONS: Record<
   GoalAttestationCorrectionKind,
   { button: string; title: string; consequence: string; request: string }
@@ -239,7 +255,24 @@ export function pendingRequestSummary(pending: GoalAttestationCorrectionPendingR
 
 // --- Reducer ----------------------------------------------------------------------------------------------------------
 
-export type CorrectionPhase = 'idle' | 'reviewing' | 'requesting' | 'gate_pending' | 'deciding' | 'verifying';
+export type CorrectionPhase =
+  'idle' | 'reviewing' | 'requesting' | 'gate_pending' | 'deciding' | 'verifying' | 'reconciling';
+
+/**
+ * What an ambiguous write sent, held in memory for this mount only. It never sends a write by itself: a request may be
+ * resent only with the same body and chain position, and a decision only with the same approval and digest.
+ */
+export type CorrectionUnknownWrite =
+  | { write: 'request'; chainPosition: string; body: CorrectionRequestBody }
+  | {
+      write: 'decide';
+      approvalId: string;
+      actionDigest: string;
+      decision: 'approved' | 'denied';
+      attestationId: string;
+      correctionKind: GoalAttestationCorrectionKind;
+      explanation: string | null;
+    };
 
 /** What the user has typed for one correction. An empty explanation means none. */
 export interface CorrectionDraft {
@@ -287,6 +320,10 @@ export interface CorrectionState {
   decision: 'approved' | 'denied' | null;
   /** The decision to verify against the next read. Set only in `verifying`. */
   verify: { approvalId: string; decision: 'approved' | 'denied' } | null;
+  /** The request in flight, kept so an unknown outcome can be reconciled. Set only in `requesting`. */
+  sent: { chainPosition: string; body: CorrectionRequestBody } | null;
+  /** Set only by an unknown outcome, until a read settles it or the user cancels. */
+  unknown: CorrectionUnknownWrite | null;
   notice: string | null;
   refusal: CorrectionRefusal | null;
 }
@@ -294,16 +331,18 @@ export interface CorrectionState {
 export type CorrectionEvent =
   | { type: 'loaded'; history: GoalAttestationCorrectionHistory }
   | { type: 'load_failed' }
+  | { type: 'check_again' }
   | { type: 'review'; kind: GoalAttestationCorrectionKind }
   | { type: 'cancel' }
   | { type: 'request'; draft: CorrectionDraft }
   | { type: 'requested'; response: GoalAttestationCorrectionRequested }
-  | { type: 'request_failed'; refusal: CorrectionRefusal }
+  /** `unknown` is true when the request may have been saved (no response, 5xx, or an unusable success body). */
+  | { type: 'request_failed'; refusal: CorrectionRefusal; unknown?: boolean }
   | { type: 'explanation'; value: string }
   | { type: 'confirm' }
   | { type: 'decline' }
   | { type: 'decided' }
-  | { type: 'decide_failed'; refusal: CorrectionRefusal };
+  | { type: 'decide_failed'; refusal: CorrectionRefusal; unknown?: boolean };
 
 /** Effects are data. Only `request` and `decide` can write, and each is produced only by its own click event. */
 export type CorrectionEffect =
@@ -335,6 +374,8 @@ export function initialCorrectionState(attestationId: string): CorrectionState {
     gate: null,
     decision: null,
     verify: null,
+    sent: null,
+    unknown: null,
     notice: null,
     refusal: null,
   };
@@ -368,6 +409,89 @@ function gateFromPending(pending: GoalAttestationCorrectionPendingRequest): Corr
   };
 }
 
+const sameRequestBody = (a: CorrectionRequestBody, b: CorrectionRequestBody) =>
+  a.correctionKind === b.correctionKind &&
+  a.reasonCode === b.reasonCode &&
+  a.explanation === b.explanation &&
+  a.replacementAttestationId === b.replacementAttestationId;
+
+/**
+ * The read that settles an ambiguous correction write. Each branch names only what the read shows: an approval that was
+ * recorded or is still pending, a pending request matching the held body, an unreadable pending row (no absence can be
+ * claimed), a moved chain, or absence with the chain where the request was sent from. The held explanation returns only
+ * with a gate the read shows, and the server still checks its digest on confirm.
+ */
+function settleCorrection(
+  state: CorrectionState,
+  history: GoalAttestationCorrectionHistory,
+): CorrectionState {
+  const marker = state.unknown;
+  if (marker === null) return state;
+  const allowed = allowedCorrectionKinds(history.standing);
+  const base: CorrectionState = {
+    ...state,
+    allowed,
+    position: history.chainPosition,
+    kind: null,
+    gate: null,
+    sent: null,
+    unknown: null,
+    notice: null,
+    refusal: null,
+  };
+
+  if (marker.write === 'decide') {
+    if (history.corrections.some((row) => row.approvalId === marker.approvalId))
+      return { ...base, phase: 'idle', notice: CORRECTION_COPY.recordedNote };
+    const pending = history.pending.find((row) => row.approvalId === marker.approvalId);
+    if (pending)
+      return {
+        ...base,
+        phase: 'gate_pending',
+        gate: {
+          ...gateFromPending(pending),
+          explanation: pending.explanationRequired ? marker.explanation : null,
+        },
+        notice: CORRECTION_RECOVERY_COPY.stillPending,
+      };
+    return { ...base, phase: 'idle', notice: CORRECTION_RECOVERY_COPY.closed };
+  }
+
+  const held = marker.body;
+  const match = history.pending.find(
+    (row) =>
+      row.correctionKind === held.correctionKind &&
+      row.reasonCode === held.reasonCode &&
+      row.replacementAttestationId === held.replacementAttestationId,
+  );
+  if (match)
+    return {
+      ...base,
+      phase: 'gate_pending',
+      gate: { ...gateFromPending(match), explanation: match.explanationRequired ? held.explanation : null },
+      notice: CORRECTION_RECOVERY_COPY.requestSaved,
+    };
+  const other = history.pending[0];
+  if (other) return { ...base, phase: 'gate_pending', gate: gateFromPending(other) };
+  if (history.pendingUnreadableCount > 0)
+    return {
+      ...base,
+      phase: 'reconciling',
+      unknown: marker,
+      refusal: refuse(CORRECTION_RECOVERY_COPY.unreadablePending),
+    };
+  if (history.chainPosition !== marker.chainPosition || !allowed.includes(held.correctionKind))
+    return { ...base, phase: 'idle', notice: CORRECTION_RECOVERY_COPY.historyChanged };
+  // Absence: nothing is pending and the chain is where the request was sent from. Request again resends the held body.
+  return {
+    ...base,
+    phase: 'reviewing',
+    kind: held.correctionKind,
+    unknown: marker,
+    notice: CORRECTION_RECOVERY_COPY.absent,
+  };
+}
+
 /**
  * The state machine. `idle` never reaches `deciding`: a decision needs a gate, and a gate is reached only by a request
  * response or by a read that shows a pending request. `verifying` shows success only after a read shows the recorded
@@ -378,6 +502,7 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
     case 'loaded': {
       if (state.phase === 'requesting' || state.phase === 'deciding') return stay(state);
       const { history } = event;
+      if (state.unknown !== null) return stay(settleCorrection(state, history));
       const allowed = allowedCorrectionKinds(history.standing);
       const base: CorrectionState = { ...state, allowed, position: history.chainPosition };
 
@@ -430,6 +555,8 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
     }
 
     case 'load_failed':
+      if (state.phase === 'reconciling')
+        return stay({ ...state, refusal: refuse(CORRECTION_RECOVERY_COPY.unavailable) });
       if (state.phase === 'verifying')
         return stay({
           ...state,
@@ -438,6 +565,11 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
           refusal: refuse(UNCONFIRMED_CORRECTION, 'reload'),
         });
       return stay({ ...state, refusal: refuse(CORRECTION_COPY.historyUnavailable) });
+
+    case 'check_again':
+      // While reconciling, the only action is another read, and only after a read has failed or could not settle.
+      if (state.phase !== 'reconciling' || state.refusal === null) return stay(state);
+      return { state: { ...state, refusal: null }, effects: [{ type: 'reload' }] };
 
     case 'review':
       if (state.phase !== 'idle' || state.position === null || !state.allowed.includes(event.kind))
@@ -449,18 +581,28 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
 
     case 'cancel':
       if (state.phase !== 'reviewing') return stay(state);
-      return { state: { ...state, phase: 'idle', kind: null, refusal: null }, effects: [] };
+      return {
+        state: { ...state, phase: 'idle', kind: null, refusal: null, unknown: null, sent: null },
+        effects: [],
+      };
 
     case 'request': {
       if (state.phase !== 'reviewing' || state.position === null || state.kind !== event.draft.kind)
         return stay(state);
       const body = requestBodyFor(event.draft);
       if (!body) return stay(state);
+      // After an unknown request the only request allowed is the held one, at the position it was sent from.
+      if (state.unknown?.write === 'request' && !sameRequestBody(state.unknown.body, body))
+        return stay(state);
+      if (state.unknown?.write === 'request' && state.unknown.chainPosition !== state.position)
+        return stay(state);
       return {
         state: {
           ...state,
           phase: 'requesting',
           heldExplanation: body.explanation,
+          sent: { chainPosition: state.position, body },
+          unknown: null,
           refusal: null,
           notice: null,
         },
@@ -477,6 +619,8 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
           phase: 'gate_pending',
           kind: null,
           heldExplanation: null,
+          sent: null,
+          unknown: null,
           refusal: null,
           gate: {
             approvalId: response.approvalId,
@@ -494,6 +638,21 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
 
     case 'request_failed':
       if (state.phase !== 'requesting') return stay(state);
+      if (event.unknown === true && state.sent !== null)
+        return {
+          state: {
+            ...state,
+            phase: 'reconciling',
+            kind: null,
+            heldExplanation: null,
+            gate: null,
+            sent: null,
+            unknown: { write: 'request', chainPosition: state.sent.chainPosition, body: state.sent.body },
+            refusal: null,
+            notice: CORRECTION_RECOVERY_COPY.reconciling,
+          },
+          effects: [{ type: 'reload' }],
+        };
       if (event.refusal.next === 'reload')
         return {
           state: {
@@ -502,12 +661,13 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
             kind: null,
             heldExplanation: null,
             gate: null,
+            sent: null,
             refusal: event.refusal,
           },
           effects: [{ type: 'reload' }],
         };
       return {
-        state: { ...state, phase: 'reviewing', heldExplanation: null, refusal: event.refusal },
+        state: { ...state, phase: 'reviewing', heldExplanation: null, sent: null, refusal: event.refusal },
         effects: [],
       };
 
@@ -574,6 +734,31 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
     case 'decide_failed': {
       if (state.phase !== 'deciding' || !state.gate) return stay(state);
       const { refusal } = event;
+      if (event.unknown === true && state.decision !== null) {
+        const gate = state.gate;
+        return {
+          state: {
+            ...state,
+            phase: 'reconciling',
+            kind: null,
+            gate: null,
+            decision: null,
+            unknown: {
+              write: 'decide',
+              approvalId: gate.approvalId,
+              actionDigest: gate.actionDigest,
+              decision: state.decision,
+              attestationId: state.attestationId,
+              correctionKind: gate.correctionKind,
+              explanation:
+                state.decision === 'approved' && gate.explanationRequired ? gate.explanation : null,
+            },
+            refusal: null,
+            notice: CORRECTION_RECOVERY_COPY.reconciling,
+          },
+          effects: [{ type: 'reload' }],
+        };
+      }
       if (refusal.next === 'reload')
         return {
           state: { ...state, phase: 'idle', kind: null, gate: null, decision: null, refusal },

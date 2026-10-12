@@ -46,6 +46,22 @@ export const COMPLETION_COPY = {
   reviewAvailable: 'The review is ready. Recording a decision completes nothing.',
 } as const;
 
+/** Recovery copy for an ambiguous write. Each line is shown only after a read that supports it. */
+export const COMPLETION_RECOVERY_COPY = {
+  reconciling: 'Turing could not confirm the result. Checking the saved state…',
+  recordSaved: 'Your decision was saved.',
+  completeSaved: 'The Goal was completed. This is the saved result.',
+  settledNeutral: 'The saved completion state is shown below.',
+  recordAbsent:
+    'Nothing was saved when Turing last checked. If the earlier request is still running it may still finish, so check again before trying again.',
+  recordAbsentChanged:
+    'Nothing was saved. The review has changed since your earlier request, so review the new summary before recording a decision.',
+  completeAbsent:
+    'The Goal was not completed when Turing last checked. If the earlier request is still running it may still finish, so check again before trying again.',
+  unavailable:
+    'Turing still cannot read the saved state, so it cannot confirm the result. Check again before doing anything else.',
+} as const;
+
 export const UNCONFIRMED_RESULT =
   'Turing could not confirm the result. Do not assume it failed or succeeded. Refresh to read the saved state.';
 
@@ -312,12 +328,24 @@ export type CompletionPhase =
   | 'decided'
   | 'completing'
   | 'completed'
-  | 'refused';
+  | 'refused'
+  | 'reconciling';
+
+/**
+ * What an ambiguous write sent, held in memory for this mount only. It is set only by an unknown outcome and is never
+ * used to send a new write: it lets the next read decide what the write did.
+ */
+export type CompletionUnknownWrite =
+  { write: 'record'; digest: string } | { write: 'complete'; digest: string };
 
 export interface CompletionState {
   phase: CompletionPhase;
   /** A read is in flight. Every control is disabled while this is true. */
   reading: boolean;
+  /** Set while the saved state is being reconciled after an unknown outcome. Null otherwise. */
+  unknown: CompletionUnknownWrite | null;
+  /** A plain sentence about the outcome of a recovery read. Null when there is nothing to report. */
+  notice: string | null;
   /** The digest of the reviewed preflight that the next decision POST may name. Dropped after any failure. */
   preflightDigest: string | null;
   /** The digest of the recorded decision that the completion POST may name. */
@@ -339,16 +367,20 @@ export type CompletionEvent =
       decidedActionDigest: string | null;
       preflight: GoalExternalCompletionPreflightReport | null;
       preflightError: CompletionRefusal | null;
+      /** True only when the read shows the Goal completed (or completed earlier). Used to word a recovered completion. */
+      completed?: boolean;
     }
   | { type: 'load_failed'; refusal: CompletionRefusal }
+  | { type: 'check_again' }
   | { type: 'acknowledge_record'; checked: boolean }
   | { type: 'acknowledge_complete'; checked: boolean }
   | { type: 'record_requested' }
   | { type: 'record_succeeded'; actionDigest: string }
-  | { type: 'record_failed'; refusal: CompletionRefusal }
+  /** `unknown` is true when the write may have happened (no response, 5xx, or an unusable success body). */
+  | { type: 'record_failed'; refusal: CompletionRefusal; unknown?: boolean }
   | { type: 'complete_requested' }
   | { type: 'complete_succeeded' }
-  | { type: 'complete_failed'; refusal: CompletionRefusal };
+  | { type: 'complete_failed'; refusal: CompletionRefusal; unknown?: boolean };
 
 /** Effects are data. Only `complete` may request a Goal completion, and only `complete_requested` can emit it. */
 export type CompletionEffect =
@@ -366,6 +398,8 @@ export function initialCompletionState(current: boolean): CompletionState {
   return {
     phase: current ? 'loading' : 'idle',
     reading: current,
+    unknown: null,
+    notice: null,
     preflightDigest: null,
     actionDigest: null,
     reasons: [],
@@ -385,7 +419,7 @@ function applyLoaded(
 ): CompletionState {
   const refusal = event.preflightError ?? (state.refusalFromLoad ? null : state.refusal);
   const refusalFromLoad = event.preflightError !== null || (state.refusalFromLoad && refusal !== null);
-  const base = { ...state, reading: false, refusal, refusalFromLoad };
+  const base = { ...state, reading: false, refusal, refusalFromLoad, notice: null };
   if (event.settled)
     return {
       ...base,
@@ -429,6 +463,39 @@ function applyLoaded(
 }
 
 /**
+ * The read that settles an ambiguous write. It is the same read as any other (applyLoaded decides the phase from the saved
+ * facts); only the notice differs, and it names only what this read shows. A record needs a new acknowledgement after a
+ * recovery read, so the decision POST always uses the digest of the review this read returned, never the held one.
+ */
+function settleUnknown(
+  state: CompletionState,
+  event: Extract<CompletionEvent, { type: 'loaded' }>,
+): CompletionState {
+  const marker = state.unknown;
+  if (marker === null) return applyLoaded(state, event);
+  const settled = applyLoaded({ ...state, unknown: null, refusal: null, refusalFromLoad: false }, event);
+  const freshDigest = event.preflight?.outcome === 'ready' ? event.preflight.digest : null;
+  let notice: string | null;
+  if (settled.phase === 'decided')
+    notice =
+      marker.write === 'record' ? COMPLETION_RECOVERY_COPY.recordSaved : COMPLETION_COPY.recordedNotCompleted;
+  else if (settled.phase === 'completed')
+    notice =
+      marker.write === 'complete'
+        ? event.completed === true
+          ? COMPLETION_RECOVERY_COPY.completeSaved
+          : COMPLETION_RECOVERY_COPY.settledNeutral
+        : null;
+  else if (marker.write === 'complete') notice = COMPLETION_RECOVERY_COPY.completeAbsent;
+  else
+    notice =
+      freshDigest !== null && freshDigest !== marker.digest
+        ? COMPLETION_RECOVERY_COPY.recordAbsentChanged
+        : COMPLETION_RECOVERY_COPY.recordAbsent;
+  return { ...settled, notice };
+}
+
+/**
  * The completion state machine. Every transition is a user click or a read that the component started; no event emits a
  * completion effect except `complete_requested`. A refresh never emits a request effect of its own.
  */
@@ -440,10 +507,21 @@ export function reduceCompletion(state: CompletionState, event: CompletionEvent)
     case 'loaded':
       // A read that lands while a write is in flight is ignored; the write's own result re-reads the saved state.
       if (isInFlight(state.phase)) return { state: { ...state, reading: false }, effects: [] };
-      return { state: applyLoaded(state, event), effects: [] };
+      return { state: settleUnknown(state, event), effects: [] };
 
     case 'load_failed':
       if (isInFlight(state.phase)) return { state: { ...state, reading: false }, effects: [] };
+      // A failed recovery read keeps the held marker: the only next step is another read.
+      if (state.phase === 'reconciling')
+        return {
+          state: {
+            ...state,
+            reading: false,
+            refusal: refuse(COMPLETION_RECOVERY_COPY.unavailable),
+            refusalFromLoad: true,
+          },
+          effects: [],
+        };
       return {
         state: {
           ...state,
@@ -459,6 +537,11 @@ export function reduceCompletion(state: CompletionState, event: CompletionEvent)
         },
         effects: [],
       };
+
+    case 'check_again':
+      // The only action while reconciling is another read, and only after a read has failed.
+      if (state.phase !== 'reconciling' || state.refusal === null || state.reading) return unchanged(state);
+      return { state: { ...state, reading: true, refusal: null }, effects: [{ type: 'reload' }] };
 
     case 'acknowledge_record':
       if (state.phase !== 'preflight_ready') return unchanged(state);
@@ -499,6 +582,25 @@ export function reduceCompletion(state: CompletionState, event: CompletionEvent)
 
     case 'record_failed':
       if (state.phase !== 'recording') return unchanged(state);
+      if (event.unknown === true)
+        return {
+          state: {
+            ...state,
+            phase: 'reconciling',
+            reading: true,
+            unknown:
+              state.preflightDigest === null ? null : { write: 'record', digest: state.preflightDigest },
+            preflightDigest: null,
+            actionDigest: null,
+            reasons: [],
+            acknowledgeRecord: false,
+            acknowledgeComplete: false,
+            refusal: null,
+            refusalFromLoad: false,
+            notice: COMPLETION_RECOVERY_COPY.reconciling,
+          },
+          effects: [{ type: 'reload' }],
+        };
       return {
         state: {
           ...state,
@@ -543,6 +645,19 @@ export function reduceCompletion(state: CompletionState, event: CompletionEvent)
 
     case 'complete_failed':
       if (state.phase !== 'completing') return unchanged(state);
+      if (event.unknown === true)
+        return {
+          state: {
+            ...state,
+            phase: 'reconciling',
+            reading: true,
+            unknown: state.actionDigest === null ? null : { write: 'complete', digest: state.actionDigest },
+            refusal: null,
+            refusalFromLoad: false,
+            notice: COMPLETION_RECOVERY_COPY.reconciling,
+          },
+          effects: [{ type: 'reload' }],
+        };
       if (event.refusal.retryable)
         return {
           state: { ...state, phase: 'decided', refusal: event.refusal, refusalFromLoad: false },

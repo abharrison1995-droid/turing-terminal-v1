@@ -11,6 +11,7 @@ import {
   CORRECTION_ACTIONS,
   CORRECTION_COPY,
   CORRECTION_KIND_LABEL,
+  CORRECTION_RECOVERY_COPY,
   CORRECTION_REASON_LABEL,
   correctionRefusal,
   correctionStandingLabel,
@@ -553,5 +554,290 @@ describe('reducer', () => {
     const confirming = gated(false);
     const deciding = reduceCorrection(confirming, { type: 'confirm' }).state;
     expect(run(deciding, [{ type: 'loaded', history: history() }]).state.phase).toBe('deciding');
+  });
+});
+
+// --- Unknown-outcome recovery (D.4E) -----------------------------------------------------------------------------------
+
+const HELD = {
+  kind: 'dispute',
+  reasonCode: 'observation_error',
+  explanation: 'Held text',
+  replacementAttestationId: null,
+} as const;
+const heldDraft = (): CorrectionDraft => ({ ...HELD });
+const heldBody = () => ({
+  correctionKind: 'dispute' as const,
+  reasonCode: 'observation_error' as const,
+  explanation: 'Held text',
+  replacementAttestationId: null,
+});
+const unknownRequestRefusal = () =>
+  correctionRefusal(new ApiError('x', 503, 'persistence_failed'), 'request');
+const unknownDecideRefusal = () => correctionRefusal(new ApiError('x', 503, 'persistence_failed'), 'decide');
+const correctionRow = (approvalId: string) =>
+  ({ approvalId }) as unknown as GoalAttestationCorrectionHistory['corrections'][number];
+
+/** A reviewed request on the chain at POS, sent with the held draft. */
+function requestingState(): CorrectionState {
+  return runC(initialCorrectionState('att1'), [
+    { type: 'loaded', history: history() },
+    { type: 'review', kind: 'dispute' },
+    { type: 'request', draft: heldDraft() },
+  ]).state;
+}
+
+function runC(start: CorrectionState, events: CorrectionEvent[]) {
+  let state = start;
+  const effects: CorrectionEffect[] = [];
+  for (const event of events) {
+    const next = reduceCorrection(state, event);
+    state = next.state;
+    effects.push(...next.effects);
+  }
+  return { state, effects };
+}
+
+/** A gate with the explanation held in memory, sent and left unknown by a decision POST. */
+function decidingGate(): CorrectionState {
+  return runC(initialCorrectionState('att1'), [
+    { type: 'loaded', history: history({ pending: [pendingRow({ explanationRequired: true })] }) },
+    { type: 'explanation', value: 'Held text' },
+    { type: 'confirm' },
+  ]).state;
+}
+
+describe('unknown outcome of a correction request', () => {
+  it('enters reconciling with the held body and chain position, and no write effect', () => {
+    const next = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    });
+    expect(next.state).toMatchObject({
+      phase: 'reconciling',
+      unknown: { write: 'request', chainPosition: POS, body: heldBody() },
+      notice: CORRECTION_RECOVERY_COPY.reconciling,
+      refusal: null,
+      gate: null,
+    });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a recovery read with the matching pending request adopts it and restores the held explanation', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [
+      {
+        type: 'loaded',
+        history: history({ pending: [pendingRow({ explanationRequired: true })] }),
+      },
+    ]);
+    expect(after.state).toMatchObject({
+      phase: 'gate_pending',
+      unknown: null,
+      notice: CORRECTION_RECOVERY_COPY.requestSaved,
+      gate: { approvalId: 'ap1', actionDigest: DIG, explanation: 'Held text', explanationRequired: true },
+    });
+    expect(after.effects).toEqual([]);
+  });
+
+  it('a read with the chain moved and nothing pending says the history changed and claims no absence', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [{ type: 'loaded', history: history({ chainPosition: DIG2 }) }]).state;
+    expect(after).toMatchObject({
+      phase: 'idle',
+      notice: CORRECTION_RECOVERY_COPY.historyChanged,
+      unknown: null,
+    });
+    expect(after.notice).not.toBe(CORRECTION_RECOVERY_COPY.absent);
+  });
+
+  it('absence at the same chain position reopens the held request, which may be sent again only unchanged', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const absent = runC(reconciling, [{ type: 'loaded', history: history() }]).state;
+    expect(absent).toMatchObject({
+      phase: 'reviewing',
+      kind: 'dispute',
+      notice: CORRECTION_RECOVERY_COPY.absent,
+      unknown: { write: 'request', chainPosition: POS, body: heldBody() },
+    });
+    const resent = reduceCorrection(absent, { type: 'request', draft: heldDraft() });
+    expect(resent.effects).toEqual([{ type: 'request', chainPosition: POS, body: heldBody() }]);
+    const changed = reduceCorrection(absent, {
+      type: 'request',
+      draft: { ...heldDraft(), explanation: 'Other' },
+    });
+    expect(changed.effects).toEqual([]);
+    expect(changed.state.phase).toBe('reviewing');
+  });
+
+  it('an unreadable pending row blocks any absence claim and any new request', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const blocked = runC(reconciling, [
+      { type: 'loaded', history: history({ pendingUnreadableCount: 1 }) },
+    ]).state;
+    expect(blocked).toMatchObject({
+      phase: 'reconciling',
+      refusal: { message: CORRECTION_RECOVERY_COPY.unreadablePending, next: 'keep' },
+      unknown: { write: 'request' },
+    });
+    expect(reduceCorrection(blocked, { type: 'request', draft: heldDraft() }).effects).toEqual([]);
+    expect(runC(blocked, [{ type: 'check_again' }]).effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a failed recovery read keeps the marker, and check again is the only next step', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const failed = runC(reconciling, [{ type: 'load_failed' }]).state;
+    expect(failed).toMatchObject({
+      phase: 'reconciling',
+      refusal: { message: CORRECTION_RECOVERY_COPY.unavailable },
+      unknown: { write: 'request' },
+    });
+    expect(reduceCorrection(failed, { type: 'confirm' }).effects).toEqual([]);
+    expect(reduceCorrection(failed, { type: 'decline' }).effects).toEqual([]);
+    const again = runC(failed, [{ type: 'check_again' }]);
+    expect(again.effects).toEqual([{ type: 'reload' }]);
+    expect(again.state.refusal).toBeNull();
+  });
+
+  it('check again does nothing unless a read failed or could not settle', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    expect(reduceCorrection(reconciling, { type: 'check_again' })).toEqual({
+      state: reconciling,
+      effects: [],
+    });
+  });
+
+  it('a cancelled review drops the held request', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const absent = runC(reconciling, [{ type: 'loaded', history: history() }]).state;
+    expect(reduceCorrection(absent, { type: 'cancel' }).state.unknown).toBeNull();
+  });
+});
+
+describe('unknown outcome of a correction decision', () => {
+  it('enters reconciling with the sent approval, digest and explanation, and no write effect', () => {
+    const next = reduceCorrection(decidingGate(), {
+      type: 'decide_failed',
+      refusal: unknownDecideRefusal(),
+      unknown: true,
+    });
+    expect(next.state).toMatchObject({
+      phase: 'reconciling',
+      gate: null,
+      unknown: {
+        write: 'decide',
+        approvalId: 'ap1',
+        actionDigest: DIG,
+        decision: 'approved',
+        attestationId: 'att1',
+        explanation: 'Held text',
+      },
+      notice: CORRECTION_RECOVERY_COPY.reconciling,
+    });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a read showing the approval recorded says so', () => {
+    const reconciling = reduceCorrection(decidingGate(), {
+      type: 'decide_failed',
+      refusal: unknownDecideRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [
+      { type: 'loaded', history: history({ corrections: [correctionRow('ap1')] }) },
+    ]).state;
+    expect(after).toMatchObject({ phase: 'idle', notice: CORRECTION_COPY.recordedNote, unknown: null });
+  });
+
+  it('a read showing the approval still pending returns to the gate with the held explanation', () => {
+    const reconciling = reduceCorrection(decidingGate(), {
+      type: 'decide_failed',
+      refusal: unknownDecideRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [
+      { type: 'loaded', history: history({ pending: [pendingRow({ explanationRequired: true })] }) },
+    ]);
+    expect(after.state).toMatchObject({
+      phase: 'gate_pending',
+      notice: CORRECTION_RECOVERY_COPY.stillPending,
+      gate: { approvalId: 'ap1', actionDigest: DIG, explanation: 'Held text' },
+    });
+    const retried = reduceCorrection(after.state, { type: 'confirm' });
+    expect(retried.effects).toEqual([
+      {
+        type: 'decide',
+        approvalId: 'ap1',
+        actionDigest: DIG,
+        decision: 'approved',
+        attestationId: 'att1',
+        correctionKind: 'dispute',
+        explanation: 'Held text',
+      },
+    ]);
+  });
+
+  it('a read showing the approval neither pending nor recorded says the request is closed', () => {
+    const reconciling = reduceCorrection(decidingGate(), {
+      type: 'decide_failed',
+      refusal: unknownDecideRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [{ type: 'loaded', history: history() }]).state;
+    expect(after).toMatchObject({ phase: 'idle', notice: CORRECTION_RECOVERY_COPY.closed, unknown: null });
+  });
+
+  it('no request or decision effect is possible while reconciling', () => {
+    const reconciling = reduceCorrection(decidingGate(), {
+      type: 'decide_failed',
+      refusal: unknownDecideRefusal(),
+      unknown: true,
+    }).state;
+    for (const event of [
+      { type: 'confirm' },
+      { type: 'decline' },
+      { type: 'request', draft: heldDraft() },
+    ] as CorrectionEvent[]) {
+      expect(reduceCorrection(reconciling, event).effects).toEqual([]);
+    }
+  });
+});
+
+describe('correction recovery copy', () => {
+  it('never says the earlier attempt failed, succeeded without a read, or was clean', () => {
+    for (const text of Object.values(CORRECTION_RECOVERY_COPY)) {
+      expect(text).not.toMatch(/Do not assume/);
+      expect(text).not.toMatch(/\b(clean|no other|all good)\b/i);
+      expect(text).not.toMatch(/[a-z]+_[a-z]+/);
+    }
   });
 });

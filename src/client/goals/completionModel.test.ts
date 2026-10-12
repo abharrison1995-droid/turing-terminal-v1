@@ -8,6 +8,7 @@ import type {
 import { ApiError } from '../api';
 import {
   COMPLETION_COPY,
+  COMPLETION_RECOVERY_COPY,
   type CompletionEffect,
   type CompletionEvent,
   type CompletionRefusal,
@@ -522,6 +523,267 @@ describe('refusal map', () => {
   it('every preflight blocker maps to a sentence without its code', () => {
     for (const code of ['attestation_stale', 'destination_not_integrated', 'not_a_real_code']) {
       expect(preflightReasonCopy(code)).not.toMatch(/_/);
+    }
+  });
+});
+
+// --- Unknown-outcome recovery (D.4E) -----------------------------------------------------------------------------------
+
+const unknownRefusal = () => refusal(503, 'decision_persistence_failed');
+const recordingState = () =>
+  run(readyState(), [{ type: 'acknowledge_record', checked: true }, { type: 'record_requested' }]).state;
+const decidedState = (actionDigest = ACTION) =>
+  run(readyState(), [
+    { type: 'acknowledge_record', checked: true },
+    { type: 'record_requested' },
+    { type: 'record_succeeded', actionDigest },
+    {
+      type: 'loaded',
+      settled: false,
+      decidedActionDigest: actionDigest,
+      preflight: null,
+      preflightError: null,
+    },
+    { type: 'acknowledge_complete', checked: true },
+  ]).state;
+const decidedLoad = (actionDigest: string | null): Extract<CompletionEvent, { type: 'loaded' }> => ({
+  type: 'loaded',
+  settled: false,
+  decidedActionDigest: actionDigest,
+  preflight: null,
+  preflightError: null,
+});
+
+describe('unknown outcome of a decision POST', () => {
+  it('enters reconciling with one read and no write effect, and drops the acknowledgement', () => {
+    const next = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    });
+    expect(next.state).toMatchObject({
+      phase: 'reconciling',
+      reading: true,
+      unknown: { write: 'record', digest: DIGEST_A },
+      notice: COMPLETION_RECOVERY_COPY.reconciling,
+      refusal: null,
+      preflightDigest: null,
+      acknowledgeRecord: false,
+    });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a definite refusal is unchanged: refused, reload, and no marker', () => {
+    const next = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: refusal(409, 'completion_conflict'),
+      unknown: false,
+    });
+    expect(next.state).toMatchObject({ phase: 'refused', unknown: null });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a recovery read that shows the decision says it was saved, and offers Complete for that digest', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(ACTION)]);
+    expect(after.state).toMatchObject({
+      phase: 'decided',
+      notice: COMPLETION_RECOVERY_COPY.recordSaved,
+      unknown: null,
+      actionDigest: ACTION,
+    });
+    expect(after.effects).toEqual([]);
+  });
+
+  it('absence with the same review needs a new acknowledgement before the held review is recorded', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const afterRead = run(reconciling, [readyLoad(DIGEST_A)]).state;
+    expect(afterRead).toMatchObject({
+      phase: 'preflight_ready',
+      notice: COMPLETION_RECOVERY_COPY.recordAbsent,
+      preflightDigest: DIGEST_A,
+      acknowledgeRecord: false,
+    });
+    expect(reduceCompletion(afterRead, { type: 'record_requested' }).effects).toEqual([]);
+    const sent = run(afterRead, [
+      { type: 'acknowledge_record', checked: true },
+      { type: 'record_requested' },
+    ]);
+    expect(sent.effects).toEqual([{ type: 'record', preflightDigest: DIGEST_A }]);
+  });
+
+  it('absence with a changed review says the review changed and only the new digest can be recorded', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const afterRead = run(reconciling, [readyLoad(DIGEST_B)]).state;
+    expect(afterRead).toMatchObject({
+      phase: 'preflight_ready',
+      notice: COMPLETION_RECOVERY_COPY.recordAbsentChanged,
+      preflightDigest: DIGEST_B,
+    });
+    const sent = run(afterRead, [
+      { type: 'acknowledge_record', checked: true },
+      { type: 'record_requested' },
+    ]);
+    expect(sent.effects).toEqual([{ type: 'record', preflightDigest: DIGEST_B }]);
+  });
+
+  it('a refused review after absence shows its reasons and no digest to record', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const refused = report({
+      outcome: 'refused',
+      digest: null as unknown as string,
+      reasons: [
+        { code: 'goal_not_running' } as unknown as GoalExternalCompletionPreflightReport['reasons'][number],
+      ],
+    });
+    const afterRead = run(reconciling, [
+      { type: 'loaded', settled: false, decidedActionDigest: null, preflight: refused, preflightError: null },
+    ]).state;
+    expect(afterRead).toMatchObject({
+      phase: 'preflight_refused',
+      notice: COMPLETION_RECOVERY_COPY.recordAbsent,
+      preflightDigest: null,
+      reasons: [preflightReasonCopy('goal_not_running')],
+    });
+  });
+
+  it('a failed recovery read keeps the marker, names no outcome, and offers only another read', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const failed = run(reconciling, [
+      { type: 'load_failed', refusal: refusal(500, 'completion_read_failed') },
+    ]).state;
+    expect(failed).toMatchObject({
+      phase: 'reconciling',
+      reading: false,
+      unknown: { write: 'record', digest: DIGEST_A },
+      refusal: { message: COMPLETION_RECOVERY_COPY.unavailable, action: 'refresh' },
+    });
+    expect(reduceCompletion(failed, { type: 'record_requested' }).effects).toEqual([]);
+    expect(reduceCompletion(failed, { type: 'complete_requested' }).effects).toEqual([]);
+    const again = run(failed, [{ type: 'check_again' }]);
+    expect(again.effects).toEqual([{ type: 'reload' }]);
+    expect(again.state).toMatchObject({ reading: true, refusal: null });
+    expect(run(again.state, [decidedLoad(ACTION)]).state).toMatchObject({
+      phase: 'decided',
+      notice: COMPLETION_RECOVERY_COPY.recordSaved,
+    });
+  });
+
+  it('check again does nothing unless a read has failed', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    expect(reduceCompletion(reconciling, { type: 'check_again' })).toEqual({
+      state: reconciling,
+      effects: [],
+    });
+  });
+});
+
+describe('unknown outcome of a Goal completion POST', () => {
+  const completing = () => run(decidedState(), [{ type: 'complete_requested' }]).state;
+
+  it('enters reconciling with the sent digest kept and no write effect', () => {
+    const next = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: refusal(503, 'completion_persistence_failed'),
+      unknown: true,
+    });
+    expect(next.state).toMatchObject({
+      phase: 'reconciling',
+      reading: true,
+      unknown: { write: 'complete', digest: ACTION },
+      actionDigest: ACTION,
+      acknowledgeComplete: true,
+      notice: COMPLETION_RECOVERY_COPY.reconciling,
+    });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('a read showing the Goal completed says so, using the completed flag from the read', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [{ ...decidedLoad(null), settled: true, completed: true }]).state;
+    expect(after).toMatchObject({
+      phase: 'completed',
+      notice: COMPLETION_RECOVERY_COPY.completeSaved,
+      unknown: null,
+    });
+  });
+
+  it('a settled read that does not say completed makes no completion claim', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [{ ...decidedLoad(null), settled: true }]).state;
+    expect(after.phase).toBe('completed');
+    expect(after.notice).toBe(COMPLETION_RECOVERY_COPY.settledNeutral);
+    expect(after.notice).not.toBe(COMPLETION_RECOVERY_COPY.completeSaved);
+  });
+
+  it('a read still showing the decision keeps Complete on the stored digest only', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(ACTION)]).state;
+    expect(after).toMatchObject({
+      phase: 'decided',
+      notice: COMPLETION_COPY.recordedNotCompleted,
+      actionDigest: ACTION,
+      acknowledgeComplete: true,
+    });
+    expect(run(after, [{ type: 'complete_requested' }]).effects).toEqual([
+      { type: 'complete', actionDigest: ACTION },
+    ]);
+  });
+
+  it('a read with no decision and no completion says the Goal was not completed when checked', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(null)]).state;
+    expect(after.notice).toBe(COMPLETION_RECOVERY_COPY.completeAbsent);
+    expect(after.unknown).toBeNull();
+  });
+});
+
+describe('recovery copy', () => {
+  it('never says the earlier attempt failed, succeeded without a read, or was clean', () => {
+    for (const text of Object.values(COMPLETION_RECOVERY_COPY)) {
+      expect(text).not.toMatch(/Do not assume/);
+      expect(text).not.toMatch(/\b(clean|no other|all good)\b/i);
+      expect(text).not.toMatch(/[a-z]+_[a-z]+/);
     }
   });
 });

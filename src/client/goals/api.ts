@@ -35,6 +35,12 @@ import type {
 import type { GoalDefinition } from '../../shared/goals';
 import type { UsageAnalytics } from '../api';
 import { call } from '../api';
+import {
+  expectCompletion,
+  expectCompletionDecision,
+  expectCorrectionDecided,
+  expectCorrectionRequested,
+} from './unknownOutcome';
 
 /**
  * The Goal client API. Every operation is an explicit function with its own endpoint and body; nothing maps a
@@ -59,6 +65,19 @@ const post = <T>(path: string, body: unknown, headers?: Record<string, string>) 
  * as a strong entity tag. It is a precondition only; the server recomputes and verifies its own hash.
  */
 const ifMatch = (observedHash: string) => ({ 'If-Match': `"${observedHash}"` });
+/**
+ * A write whose successful response must have the shape the client reads. The body is read strictly, and a missing or
+ * malformed success throws, so the caller treats the outcome as unknown instead of reading fields that are not there.
+ */
+const postChecked = <T>(
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+  checkShape: (value: unknown) => T,
+): Promise<T> =>
+  call<unknown>(path, { method: 'POST', body: JSON.stringify(body), headers }, { requireBody: true }).then(
+    checkShape,
+  );
 const goalPath = (goalId: string) => `/api/goals/${encodeURIComponent(goalId)}`;
 
 export const goalsApi = {
@@ -132,7 +151,7 @@ export const goalsApi = {
     goalId: string,
     input: { attestationId: string; preflightDigest: string; acknowledgeContentNotProven: true },
   ) =>
-    post<GoalExternalCompletionDecisionRecorded>(
+    postChecked<GoalExternalCompletionDecisionRecorded>(
       `${goalPath(goalId)}/completion-decision`,
       {
         decision: 'record_completion_decision',
@@ -140,13 +159,15 @@ export const goalsApi = {
         acknowledgeContentNotProven: input.acknowledgeContentNotProven,
       },
       ifMatch(input.preflightDigest),
+      expectCompletionDecision,
     ),
   /** Completes the Goal for one recorded decision; If-Match is that decision's exact action digest. */
   completeGoal: (goalId: string, actionDigest: string, acknowledgeContentNotProven: true) =>
-    post<GoalExternalCompletionCompleted>(
+    postChecked<GoalExternalCompletionCompleted>(
       `${goalPath(goalId)}/completion`,
       { decision: 'complete_goal', acknowledgeContentNotProven },
       ifMatch(actionDigest),
+      expectCompletion,
     ),
 
   // --- Attestation corrections (D.4D). The read changes nothing. Each write is one request on one explicit click. ---------
@@ -168,10 +189,11 @@ export const goalsApi = {
       replacementAttestationId: string | null;
     },
   ) =>
-    post<GoalAttestationCorrectionRequested>(
+    postChecked<GoalAttestationCorrectionRequested>(
       `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attestations/${encodeURIComponent(attestationId)}/corrections`,
       body,
       ifMatch(chainPosition),
+      expectCorrectionRequested,
     ),
   /**
    * Decides one pending correction request on the D.4C route. If-Match is that request's exact action digest. The
@@ -190,10 +212,11 @@ export const goalsApi = {
         }
       | { decision: 'denied' },
   ) =>
-    post<GoalAttestationCorrectionDecisionRecorded>(
+    postChecked<GoalAttestationCorrectionDecisionRecorded>(
       `${goalPath(goalId)}/attestation-corrections/${encodeURIComponent(approvalId)}/decision`,
       body,
       ifMatch(actionDigest),
+      expectCorrectionDecided,
     ),
 
   unifiedApprovals: (options: { status?: 'pending'; goalId?: string; limit?: number } = {}) =>
