@@ -1533,3 +1533,221 @@ describe('completion standing reader: other attestations of the Goal are listed 
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
+
+describe('completion standing reader: G D.3F commit 3b, the remaining reason codes and the correction time rule', () => {
+  it(
+    'G1 correction_time_invalid: a completed_at that is not canonical ISO makes the time rule refuse, and the stored read still agrees',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      const proof = v2Of(db, goalId).proof;
+      await letClockAdvance();
+      const { record } = appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      expect(new Date(record.decision.decidedAt).toISOString()).toBe(record.decision.decidedAt);
+      // Disposable-DB tamper: the same instant without milliseconds. It parses, but its text is not its own toISOString().
+      // The Goal row and the two completion events that must agree with it are rewritten together, with the event
+      // immutability trigger dropped for this database only. The stored read therefore still answers completed.
+      const nonCanonical = completion.completedAt.replace(/\.\d{3}Z$/, 'Z');
+      expect(nonCanonical).not.toBe(completion.completedAt);
+      expect(new Date(Date.parse(nonCanonical)).toISOString()).not.toBe(nonCanonical);
+      db.exec('DROP TRIGGER trg_goal_event_immutable;');
+      db.prepare('UPDATE goals SET completed_at = ? WHERE id = ?').run(nonCanonical, goalId);
+      const events = db
+        .prepare(
+          "SELECT id, type, payload_json FROM goal_events WHERE goal_id = ? AND type IN ('external_completion_recorded', 'state_changed')",
+        )
+        .all(goalId) as { id: string; type: string; payload_json: string }[];
+      for (const event of events) {
+        const payload = JSON.parse(event.payload_json) as Record<string, unknown>;
+        if (event.type === 'external_completion_recorded') payload.completedAt = nonCanonical;
+        else if (payload.to !== 'completed') continue;
+        db.prepare('UPDATE goal_events SET created_at = ?, payload_json = ? WHERE id = ?').run(
+          nonCanonical,
+          JSON.stringify(payload),
+          event.id,
+        );
+      }
+
+      expect(readStoredCompletion(db, goalId)).toMatchObject({
+        state: 'completed',
+        proofId: completion.proofId,
+        completedAt: nonCanonical,
+      });
+      expect(readGoalCompletionStanding(db, goalId)).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: {
+          goalStatus: 'completed',
+          completedAt: nonCanonical,
+          reasonCode: EXTERNAL_COMPLETION_REASON,
+        },
+        proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'disputed',
+          correctionCount: 1,
+          tip: {
+            correctionId: record.correctionId,
+            kind: 'dispute',
+            sequence: 1,
+            correctionDigest: record.correctionDigest,
+            decidedAt: record.decision.decidedAt,
+            replacementAttestationId: null,
+          },
+          correctedAfterCompletion: null,
+          invalidCode: null,
+          replacement: null,
+        },
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['correction_time_invalid'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'G1 decided_at tamper: a non-canonical decision time is refused by the chain verifier first, so the time rule is not reached',
+    async () => {
+      const { decided, completion, db, goalId } = await completed('sha1');
+      const proof = v2Of(db, goalId).proof;
+      await letClockAdvance();
+      appendCorrectionForTest(decided.fx, decided.attestationId, 'dispute');
+      // Disposable-DB tamper: drop the correction immutability trigger, lift the CHECK constraints, and store a
+      // non-canonical decided_at column. The chain verifier compares that column with the verified payload and refuses.
+      db.exec('DROP TRIGGER trg_goal_attestation_correction_immutable;');
+      db.pragma('ignore_check_constraints = ON');
+      db.prepare('UPDATE goal_attestation_corrections SET decided_at = ? WHERE goal_id = ?').run(
+        '2030-01-01T00:00:00Z',
+        goalId,
+      );
+      // Observed: the projection's own code is correction_chain_invalid, so the reader never reaches the time rule.
+      expect(getAttestationCorrectionStanding(db, goalId, decided.attestationId)).toMatchObject({
+        standing: 'invalid',
+        invalidCode: 'correction_chain_invalid',
+      });
+      expect(readGoalCompletionStanding(db, goalId)).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: completedStatus(completion),
+        proof,
+        correction: {
+          attestationId: decided.attestationId,
+          standing: 'invalid',
+          correctionCount: 0,
+          tip: null,
+          correctedAfterCompletion: null,
+          invalidCode: 'correction_chain_invalid',
+          replacement: null,
+        },
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_integrity_failed'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'G2 correction_mapping_unclassifiable is not reached through the DB: a supersede with its replacement binding nulled is refused first by correction_chain_invalid',
+    async () => {
+      // The reader's mapping branch needs a supersede tip with no replacement. Three of its branches (no tip with a
+      // non-empty chain, a projection and history tip mismatch, and a non-null tip with active_uncontested) cannot be
+      // produced, because the projection and the history come from one verified chain read in one transaction.
+      const { decided, completion, db, goalId } = await supersededWithReplacement('sha1');
+      db.exec('DROP TRIGGER trg_goal_attestation_correction_immutable;');
+      db.pragma('ignore_check_constraints = ON');
+      db.prepare(
+        "UPDATE goal_attestation_corrections SET replacement_attestation_id = NULL, replacement_record_digest = NULL WHERE goal_id = ? AND correction_kind = 'supersede'",
+      ).run(goalId);
+      // Observed: the chain verifier refuses the row before the mapping sees a supersede without a replacement.
+      expect(getAttestationCorrectionStanding(db, goalId, decided.attestationId)).toMatchObject({
+        standing: 'invalid',
+        invalidCode: 'correction_chain_invalid',
+      });
+      expect(readGoalCompletionStanding(db, goalId)).toMatchObject({
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: completedStatus(completion),
+        correction: { standing: 'invalid', invalidCode: 'correction_chain_invalid', tip: null },
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_integrity_failed'] },
+      });
+      expect(readGoalCompletionStanding(db, goalId).classification.reasons).not.toContain(
+        'correction_mapping_unclassifiable',
+      );
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'G3 chain_identity_mismatch is not producible through the DB: the forged chain digest is caught first by completion_approval_mismatch',
+    async () => {
+      // Not attempted: reaching the chain check needs the completion approval action body, its action digest, the decision
+      // action digest, the status detail and the recorded event re-forged together. The approval comparison runs first.
+      const { completion, db, goalId } = await completed('sha1');
+      forgeChainDigest(db, goalId, completion.proofId);
+      expect(readStoredCompletion(db, goalId)).toEqual({
+        state: 'invalid',
+        reason: 'completion_approval_mismatch',
+      });
+      const model = readGoalCompletionStanding(db, goalId);
+      expect(model).toMatchObject({
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        proof: { state: 'invalid', reason: 'completion_approval_mismatch' },
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_integrity_failed'] },
+      });
+      expect(model.classification.reasons).not.toContain('chain_identity_mismatch');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'G5 proof_without_completion: a proof row on a Goal that is not completed reads as invalid with that reason',
+    async () => {
+      // No goal status trigger exists in the migrations, so the status is reset with a plain update, as R5a does.
+      const { completion, db, goalId } = await completed('sha1');
+      db.prepare("UPDATE goals SET status = 'running' WHERE id = ?").run(goalId);
+      expect(readStoredCompletion(db, goalId)).toEqual({
+        state: 'invalid',
+        reason: 'proof_without_completion',
+      });
+      expect(readGoalCompletionStanding(db, goalId)).toEqual({
+        schemaVersion: 1,
+        goalId,
+        kind: 'invalid',
+        standing: 'invalid_unverified',
+        status: {
+          goalStatus: 'running',
+          completedAt: completion.completedAt,
+          reasonCode: EXTERNAL_COMPLETION_REASON,
+        },
+        proof: { state: 'invalid', reason: 'proof_without_completion' },
+        correction: null,
+        claim: INVALID_CLAIM,
+        classification: { trust: 'untrusted', reconciliation: 'none', reasons: ['proof_without_completion'] },
+        otherAttestations: [],
+        otherAttestationsTruncated: false,
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'attestation after completion is refused with goal_ineligible',
+    async () => {
+      const { decided, db } = await completed('sha1');
+      advanceDestination(decided, 'destination moved after completion');
+      const before = databaseSnapshot(db);
+      await expect(reattestAtCurrentTip(decided)).rejects.toMatchObject({ code: 'goal_ineligible' });
+      expect(databaseSnapshot(db)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});

@@ -261,4 +261,16 @@ describe('completion standing: pure fallback for an impossible pairing', () => {
     expect(claim.trustedForDownstream).toBe(false);
     expect(claim.qualifier).toBe('proof_unverified');
   });
+
+  it('pure classifier fallback (not DB state): an invalid-kind uncontested pairing (through a cast) is untrusted and never a success', () => {
+    // The classifier emits claims only, never a reason code. The reader's correction_mapping_unclassifiable is asserted
+    // through the DB in completionStandingService.test.ts; this test asserts only the fail-closed claim of the pairing.
+    const impossible = { kind: 'invalid', standing: 'uncontested' } as unknown as CompletionStandingFacts;
+    expect(classifyCompletionStanding(impossible)).toEqual({
+      unqualifiedSuccessAllowed: false,
+      trustedForDownstream: false,
+      qualifier: 'proof_unverified',
+      contentPreservation: 'not_applicable',
+    });
+  });
 });
