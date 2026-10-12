@@ -9,9 +9,24 @@ import type {
 import { ApiError } from '../api';
 import { ConfirmPanel } from './DefinitionParts';
 import { GoalCompletion } from './GoalCompletion';
+import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
 import { goalsApi } from './api';
 import { formatTime, shortHash } from './presentation';
 import { useLoad } from './useLoad';
+
+/** The other attestations of this handoff, offered as the replacement for a supersession. The server verifies the choice. */
+function replacementOptionsFor(
+  status: GoalExternalIntegrationStoredStatus,
+  subjectId: string,
+): CorrectionReplacementOption[] {
+  return status.attestations
+    .filter((row) => row.attestationId !== subjectId)
+    .map((row) => ({
+      attestationId: row.attestationId,
+      label: `${formatTime(row.decidedAt)} · ${shortHash(row.recordDigest)}`,
+      title: row.recordDigest,
+    }));
+}
 
 const PENDING_PREFIX = 'turing.goalExternalIntegration.v1:';
 const HASH = /^[0-9a-f]{64}$/;
@@ -1133,6 +1148,24 @@ export function GoalExternalIntegration({
             goalId={goalId}
             attestationId={selectedAttestationId}
             refresh={refresh}
+          />
+        )}
+
+      {selectedAttestationId &&
+        pendingDigest === null &&
+        currentProjection?.state === 'current' &&
+        projectionMatchesSelected && (
+          <GoalCorrection
+            key={`${goalId}:${selectedAttestationId}:correction`}
+            goalId={goalId}
+            handoffId={handoff.handoffId}
+            attestationId={selectedAttestationId}
+            refresh={refresh}
+            replacementOptions={
+              stored.result.state === 'ready'
+                ? replacementOptionsFor(stored.result.data, selectedAttestationId)
+                : []
+            }
           />
         )}
 

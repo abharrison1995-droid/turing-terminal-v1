@@ -131,6 +131,10 @@ export function GoalMobileCockpit({
             <dd>{findings}</dd>
           </div>
           <div>
+            <dt>Corrections</dt>
+            <dd>Made on the desktop interface.</dd>
+          </div>
+          <div>
             <dt>Updated</dt>
             <dd>{formatTime(goal.updatedAt)}</dd>
           </div>

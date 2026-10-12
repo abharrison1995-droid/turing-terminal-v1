@@ -210,6 +210,27 @@ describe('phone Goal cockpit', () => {
     expect(calls.some((call) => /\/(resume|start)$/.test(call.path))).toBe(false);
   });
 
+  it('shows corrections as a desktop-only note in the compact cockpit, with no correction control and no correction read', async () => {
+    setCompact(true);
+    serve(detailRoutes(detail({ status: 'completed' })));
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openGoal(user);
+
+    expect(await screen.findByRole('heading', { name: 'Ship the importer' })).toBeTruthy();
+    expect(screen.getByLabelText('Current progress')).toHaveTextContent('Made on the desktop interface.');
+    expect(
+      screen.queryByRole('button', {
+        name: /Dispute|Withdraw|Replace with another|Confirm correction|Decline this request/,
+      }),
+    ).toBeNull();
+    expect(
+      calls.some(
+        (call) => call.path.includes('/corrections') || call.path.includes('/attestation-corrections'),
+      ),
+    ).toBe(false);
+  });
+
   it('dispatches unified run and Goal approvals to their own endpoints without resuming the Goal', async () => {
     setCompact(true);
     const goal = detail({
