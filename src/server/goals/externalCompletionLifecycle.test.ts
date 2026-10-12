@@ -1,10 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Db } from '../db.js';
-import { getGoalApproval } from './approvals.js';
+import { openDatabase, type Db } from '../db.js';
+import { decideGoalApproval, getGoalApproval } from './approvals.js';
+import {
+  appendAttestationCorrection,
+  requestAttestationCorrectionApproval,
+} from './attestationCorrection.js';
 import { completeGoal } from './completion.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import { createGoalDraft, approveDefinition } from './definitions.js';
@@ -39,6 +43,10 @@ import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
  * normal two-parent merge (Q3) and `merge -s ours`, which discards the accepted content (Q2). Both run through the real
  * handoff, Git observation, attestation, preflight, decision and completion services, on real Git and real SQLite with
  * the production migrations. Only the Git fixtures are test code; no service, Git or database call is stubbed.
+ *
+ * Restart and fault recovery are simulated: write faults are injected through existing seams and the database is closed
+ * and reopened. This does NOT prove OS-level crash durability, WAL recovery after a killed process, or partial-fsync
+ * behaviour.
  */
 
 afterEach(() => {
@@ -626,6 +634,299 @@ describe('external completion lifecycle: repeated requests across a correction (
         detail: 'goal_not_running',
       });
       expect(databaseSnapshot(fx.db)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+/**
+ * Write faults of the existing completion transaction: the four points that the "transaction faults" block of
+ * externalCompletion.test.ts injects, copied unchanged. Each trigger aborts one write step; `detail` is the step code.
+ */
+const COMPLETION_FAULTS = [
+  {
+    name: 'proof insert',
+    trigger: 'fault_proof_insert',
+    sql: "CREATE TRIGGER fault_proof_insert BEFORE INSERT ON goal_external_completion_proofs BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    detail: 'proof_insert',
+  },
+  {
+    name: 'recorded event',
+    trigger: 'fault_recorded_event',
+    sql: "CREATE TRIGGER fault_recorded_event BEFORE INSERT ON goal_events WHEN NEW.type = 'external_completion_recorded' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    detail: 'recorded_event',
+  },
+  {
+    name: 'terminal update',
+    trigger: 'fault_terminal_update',
+    sql: "CREATE TRIGGER fault_terminal_update BEFORE UPDATE OF status ON goals WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    detail: 'terminal_update',
+  },
+  {
+    name: 'state event',
+    trigger: 'fault_state_event',
+    sql: "CREATE TRIGGER fault_state_event BEFORE INSERT ON goal_events WHEN NEW.type = 'state_changed' AND json_extract(NEW.payload_json, '$.to') = 'completed' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    detail: 'state_event',
+  },
+] as const;
+
+/**
+ * Closes the fixture's connection and opens the same data root again, as a process restart does. The second connection
+ * sees only what is in the database file. Returns the new connection; the caller closes it.
+ */
+function reopenSameRoot(fx: GoalFixture): Db {
+  fx.db.close();
+  return openDatabase(dirname(fx.repo));
+}
+
+/** The same fixture on another connection to the same database. */
+const onConnection = (fx: GoalFixture, db: Db): GoalFixture => ({ ...fx, db });
+
+/** A dispute through the real correction services: request the approval, decide it, then append the correction. */
+function disputeThroughServices(db: Db, goalId: string, attestationId: string) {
+  const explanation = 'Disputed by the restart qualification.';
+  const reviewed = requestAttestationCorrectionApproval(db, {
+    goalId,
+    attestationId,
+    correctionKind: 'dispute',
+    reasonCode: 'observation_error',
+    explanation,
+    replacementAttestationId: null,
+  });
+  decideGoalApproval(db, {
+    goalId,
+    approvalId: reviewed.approval.id,
+    decision: 'approved',
+    decidedBy: 'user',
+  });
+  return appendAttestationCorrection(db, {
+    goalId,
+    approvalId: reviewed.approval.id,
+    expectedActionDigest: reviewed.actionDigest,
+    explanation,
+  });
+}
+
+/** The names of the tables whose digest differs between two snapshots, sorted. */
+function changedTables(
+  before: ReturnType<typeof databaseSnapshot>,
+  after: ReturnType<typeof databaseSnapshot>,
+): string[] {
+  return Object.keys(before.digests)
+    .filter((table) => before.digests[table] !== after.digests[table])
+    .sort();
+}
+
+/**
+ * The whole-database digests, with `settings` compared by key and value. Opening the database rewrites the
+ * `settings.updated_at` of the Goal workflow conflicts key on every open (seedGoalBuiltinWorkflows in db.ts), so the raw
+ * settings digest changes across a reopen with no Goal state involved. Every other table is compared raw.
+ */
+function wholeDatabase(db: Db): ReturnType<typeof databaseSnapshot> {
+  const snapshot = databaseSnapshot(db);
+  const settings = db.prepare('SELECT key, value FROM settings ORDER BY key').all();
+  snapshot.digests.settings = createHash('sha256').update(JSON.stringify(settings)).digest('hex');
+  return snapshot;
+}
+
+/** The same fields as `snapshotOf`, with the reopen-aware whole database. */
+function snapshotAcrossReopen(fx: GoalFixture, approvalId: string | null): Snapshot {
+  return {
+    db: wholeDatabase(fx.db),
+    repo: repositoryState(fx.repo),
+    events: goalEvents(fx.db, fx.goalId),
+    approval: approvalId === null ? null : getGoalApproval(fx.db, approvalId),
+  };
+}
+
+/** The checks of `expectCompleted`, for a connection reopened after `before`: the whole database is reopen-aware. */
+function expectCompletedAcrossReopen(fx: GoalFixture, before: Snapshot, approvalId: string): void {
+  expect(proofRows(fx.db, fx.goalId)).toHaveLength(1);
+
+  const after = goalEvents(fx.db, fx.goalId);
+  expect(after.slice(0, before.events.length)).toEqual(before.events);
+  const added = after.slice(before.events.length);
+  expect(added.map((event) => event.type)).toEqual(['external_completion_recorded', 'state_changed']);
+
+  const goal = goalRow(fx.db, fx.goalId);
+  expect(goal).toMatchObject({ status: 'completed', status_reason_code: EXTERNAL_COMPLETION_REASON });
+  expect(goal.completed_at).toBe(added[1]!.created_at);
+  expect(JSON.parse(added[1]!.payload_json)).toEqual({
+    from: 'running',
+    to: 'completed',
+    reasonCode: EXTERNAL_COMPLETION_REASON,
+    actor: 'user',
+  });
+
+  const afterSnapshot = wholeDatabase(fx.db);
+  for (const table of Object.keys(before.db.digests))
+    if (!TABLES_A_COMPLETION_CHANGES.has(table))
+      expect(afterSnapshot.digests[table], `table ${table} changed`).toBe(before.db.digests[table]);
+  expect(getGoalApproval(fx.db, approvalId)).toEqual(before.approval);
+  expect(repositoryState(fx.repo)).toEqual(before.repo);
+  expect(fx.db.inTransaction).toBe(false);
+}
+
+/** The completion request for a running Goal, decided through the real decision service, not yet completed. */
+async function decideOnly(attested: Awaited<ReturnType<typeof runningAttested>>) {
+  const digest = await readyDigest(attested);
+  const request = {
+    goalId: attested.fx.goalId,
+    attestationId: attested.attestationId,
+    reviewedPreflightDigest: digest,
+    acknowledgeContentNotProven: true,
+  };
+  const decision = await recordExternalCompletionDecision(attested.fx.db, request);
+  return { request, approvalId: decision.approvalId };
+}
+
+describe('external completion lifecycle: restart, standing and correction on a reopened database (Q7a)', () => {
+  it.each(FORMATS)(
+    'keeps the proof and standing across a reopen, replays the completion, then disputes it on the reopened connection and keeps it across a second reopen (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      const { request, completed } = await decideAndComplete(attested);
+      const proofId = proofRows(fx.db, fx.goalId)[0]!.id;
+      const proofBytes = proofRowsJson(fx.db, fx.goalId);
+      const standing = readGoalCompletionStanding(fx.db, fx.goalId);
+      const goalBefore = goalRow(fx.db, fx.goalId);
+
+      let db = reopenSameRoot(fx);
+      try {
+        // The stored proof, the standing and the Goal row are the same as before the close.
+        expect(proofRowsJson(db, fx.goalId)).toBe(proofBytes);
+        expect(readGoalCompletionStanding(db, fx.goalId)).toEqual(standing);
+        expect(goalRow(db, fx.goalId)).toEqual(goalBefore);
+
+        // The exact request replays the stored completion: no write of any table, no event, no Git change.
+        const replayDb = wholeDatabase(db);
+        const replayEvents = goalEvents(db, fx.goalId);
+        const replayRepo = repositoryState(fx.repo);
+        const replay = await completeGoalFromExternalDecision(db, request);
+        expect(replay).toEqual({ reused: true, completion: completed.completion });
+        expect(replay.completion.proofId).toBe(proofId);
+        expect(wholeDatabase(db)).toEqual(replayDb);
+        expect(goalEvents(db, fx.goalId)).toEqual(replayEvents);
+        expect(repositoryState(fx.repo)).toEqual(replayRepo);
+
+        // A dispute on the reopened connection changes only the correction tables and the event log.
+        const disputeDb = wholeDatabase(db);
+        const eventsBeforeDispute = goalEvents(db, fx.goalId);
+        const repoBeforeDispute = repositoryState(fx.repo);
+        disputeThroughServices(db, fx.goalId, attested.attestationId);
+
+        expect(goalRow(db, fx.goalId)).toEqual(goalBefore);
+        expect(proofRowsJson(db, fx.goalId)).toBe(proofBytes);
+        const afterDispute = wholeDatabase(db);
+        expect(changedTables(disputeDb, afterDispute)).toEqual([
+          'goal_approvals',
+          'goal_attestation_corrections',
+          'goal_events',
+        ]);
+        const eventsAfterDispute = goalEvents(db, fx.goalId);
+        expect(eventsAfterDispute.slice(0, eventsBeforeDispute.length)).toEqual(eventsBeforeDispute);
+        // The correction flow records its own approval request and decision before the correction itself.
+        expect(eventsAfterDispute.slice(eventsBeforeDispute.length).map((event) => event.type)).toEqual([
+          'approval_requested',
+          'approval_decided',
+          'external_integration_corrected',
+        ]);
+        expect(readGoalCompletionStanding(db, fx.goalId)).toMatchObject({ kind: 'v2', standing: 'disputed' });
+        expect(repositoryState(fx.repo)).toEqual(repoBeforeDispute);
+
+        // A second close and reopen keeps the disputed standing and the unchanged proof and Goal row.
+        db = reopenSameRoot(onConnection(fx, db));
+        expect(readGoalCompletionStanding(db, fx.goalId)).toMatchObject({ kind: 'v2', standing: 'disputed' });
+        expect(proofRowsJson(db, fx.goalId)).toBe(proofBytes);
+        expect(goalRow(db, fx.goalId)).toEqual(goalBefore);
+        expect(wholeDatabase(db)).toEqual(afterDispute);
+        expect(repositoryState(fx.repo)).toEqual(repoBeforeDispute);
+      } finally {
+        db.close();
+      }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: injected write faults, reopen and retry (Q7b)', () => {
+  it.each(FORMATS.flatMap((format) => COMPLETION_FAULTS.map((fault) => [format, fault.name] as const)))(
+    'rolls back the %s fault at the %s step, keeps the rollback across a reopen with no cleanup, then completes on retry',
+    async (format, name) => {
+      const fault = COMPLETION_FAULTS.find((candidate) => candidate.name === name)!;
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      const { request, approvalId } = await decideOnly(attested);
+      const goalBefore = goalRow(fx.db, fx.goalId);
+
+      fx.db.exec(fault.sql);
+      const before = snapshotAcrossReopen(fx, approvalId);
+      expect(await refusal(completeGoalFromExternalDecision(fx.db, request))).toEqual({
+        code: 'completion_persistence_failed',
+        detail: fault.detail,
+      });
+
+      // The fault trigger stays in the file: no cleanup happens before the close.
+      const db = reopenSameRoot(fx);
+      try {
+        const reopened = onConnection(fx, db);
+        expect(snapshotAcrossReopen(reopened, approvalId)).toEqual(before);
+        expect(goalEvents(db, fx.goalId)).toEqual(before.events);
+        expect(proofRows(db, fx.goalId)).toEqual([]);
+        expect(goalRow(db, fx.goalId)).toEqual(goalBefore);
+        expect(goalRow(db, fx.goalId)).toMatchObject({ status: 'running', completed_at: null });
+        expect(getGoalApproval(db, approvalId)).toEqual(before.approval);
+        expect(repositoryState(fx.repo)).toEqual(before.repo);
+        expect(db.inTransaction).toBe(false);
+
+        db.exec(`DROP TRIGGER ${fault.trigger};`);
+        const result = await completeGoalFromExternalDecision(db, request);
+        expect(result.reused).toBe(false);
+        expectCompletedAcrossReopen(reopened, before, approvalId);
+
+        const afterRetry = wholeDatabase(db);
+        const retryEvents = goalEvents(db, fx.goalId);
+        const again = await completeGoalFromExternalDecision(db, request);
+        expect(again).toEqual({ reused: true, completion: result.completion });
+        expect(proofRows(db, fx.goalId)).toHaveLength(1);
+        expect(wholeDatabase(db)).toEqual(afterRetry);
+        expect(goalEvents(db, fx.goalId)).toEqual(retryEvents);
+      } finally {
+        db.close();
+      }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion lifecycle: after-commit response loss (Q7c)', () => {
+  it.each(FORMATS)(
+    'replays the exact request after a dropped response and a reopen, with the whole state unchanged (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'merge');
+      const { fx } = attested;
+      const { request, approvalId } = await decideOnly(attested);
+
+      // The completion commits, and its returned value is discarded: the response is lost.
+      await completeGoalFromExternalDecision(fx.db, request);
+      const afterCompletion = snapshotAcrossReopen(fx, approvalId);
+      const proofId = proofRows(fx.db, fx.goalId)[0]!.id;
+      const proofBytes = proofRowsJson(fx.db, fx.goalId);
+
+      const db = reopenSameRoot(fx);
+      try {
+        const reopened = onConnection(fx, db);
+        expect(snapshotAcrossReopen(reopened, approvalId)).toEqual(afterCompletion);
+
+        const replay = await completeGoalFromExternalDecision(db, request);
+        expect(replay.reused).toBe(true);
+        expect(replay.completion.proofId).toBe(proofId);
+        expect(snapshotAcrossReopen(reopened, approvalId)).toEqual(afterCompletion);
+        expect(proofRowsJson(db, fx.goalId)).toBe(proofBytes);
+      } finally {
+        db.close();
+      }
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
