@@ -312,6 +312,8 @@ const ATTESTATION_CORRECTION_STATUS: Record<AttestationCorrectionErrorCode, numb
   approval_mismatch: 409,
   correction_action_mismatch: 409,
   correction_chain_changed: 409,
+  correction_request_pending: 409,
+  correction_request_already_decided: 409,
   correction_transition_not_allowed: 409,
   idempotency_conflict: 409,
   persistence_failed: 503,

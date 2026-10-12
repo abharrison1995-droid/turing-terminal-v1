@@ -42,6 +42,8 @@ export type AttestationCorrectionErrorCode =
   | 'correction_action_mismatch'
   | 'correction_chain_invalid'
   | 'correction_chain_changed'
+  | 'correction_request_pending'
+  | 'correction_request_already_decided'
   | 'correction_transition_not_allowed'
   | 'replacement_invalid'
   | 'explanation_invalid'
@@ -666,6 +668,16 @@ export function getAttestationCorrectionStanding(
       };
     throw error;
   }
+}
+
+/**
+ * The chain position a correction request must be reviewed against: the verified tip's correction digest, or the
+ * attestation's record digest when no correction exists. Read-only; it throws the same codes as the history read.
+ */
+export function getAttestationCorrectionChainPosition(db: Db, goalId: string, attestationId: string): string {
+  const original = loadOriginalAttestation(db, goalId, attestationId);
+  const { tip } = loadVerifiedChain(db, goalId, original);
+  return tip?.correctionDigest ?? original.record.recordDigest;
 }
 
 /** Only undisputed, uncorrected standing may support a new completion. Completion itself stays a separate decision. */
