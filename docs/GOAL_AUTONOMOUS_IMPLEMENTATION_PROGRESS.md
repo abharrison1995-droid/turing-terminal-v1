@@ -413,6 +413,34 @@ Non-blocking follow-ups:
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4D (correction request route and interface) not started.
 
+### D.4D correction request route and desktop interface: ACCEPTED on `b3c91bb` (lead record)
+
+Commits: `4f30dfd` (correction request service and two new refusal codes), `5723a86` (request POST and read additions on the history GET), `af76c1a` (static guard rules), `4235cb9` (client API, shared types, pure correction model), `4d20d25` (desktop correction controls), `b3c91bb` (test-only: no mutation on SSE and tab or Goal switches; generic route refuses a pending correction gate on a completed Goal). Plan: `scratchpad/d4d_plan.md` (Sonnet Medium).
+
+Behaviour: the request POST only creates a pending approval gate; it writes no correction row and changes no standing. The decision is a separate user action on the D.4C route. The compare-and-set token is the chain position, which the server computes itself. A stale value gets `409 correction_chain_changed` and nothing is written. Supersede names its replacement in the body, which is part of the reviewed action; an invalid replacement gets `422 replacement_invalid`. An identical pending request returns the same gate. The history GET is read-only (whole-database tests and a writer-name scan of its handler). The desktop panel has three separate actions, each with a confirm step; the decide controls appear only after a successful request; nothing is sent on render, refresh, SSE, or navigation.
+
+Deviations and decisions (disclosed):
+
+- `getAttestationCorrectionChainPosition` lives in `attestationCorrection.ts`, not the request module, because its private helpers are needed there (plan section 2).
+- The design line cited in the plan was off by two lines (line 67, not 65).
+- Dispute and withdraw copy adds the design's sentence that a completed Goal "will remain historically completed". The copy states that the completion is not changed, and it never claims content preserved or work verified.
+- Mobile shows only "Corrections: Made on the desktop interface." It does not show the correction standing, because the phone cockpit has no attestation data. Less informative than the plan, but safe.
+- The decision gate is shown inline, not in a confirm panel. The three request actions use the confirm panel.
+- A pending gate that survives a reload needs its explanation re-entered, because only its digest is stored. The UI says so and disables Confirm until the same text is entered. Decline is always available.
+
+Evidence: full gate on `b3c91bb` green (format, lint, typecheck, `npm test` 149 files / 2751 tests, build, `npm audit --omit=dev` 0, migrations diff empty). Independent review of `88711c0..4d20d25`: `VERDICT: PASS WITH NON-BLOCKING`, no blocking findings. The review's coverage gaps (generic refusal on a completed Goal; SSE and tab or Goal switch no-POST tests) were closed in `b3c91bb`, as test-only changes.
+
+CI: the first hosted run on `b3c91bb` (38251886834) was cancelled, with no later push to supersede it. It was re-run once; the re-run is success on the same SHA. The cancellation cause is unknown and is recorded here, not assumed to be a failure.
+
+Non-blocking follow-ups:
+
+1. The service's in-transaction `persistence_failed` path is untested; the 503 tests inject the fault at the service entry. Cover in a later stage.
+2. A pending gate with an unreadable row is counted, not repaired, and does not block the service. Recorded as residual.
+3. Explanation wording is lost on reload by design. A mistyped re-entry produces `explanation_invalid` at decision time, and the gate stays pending.
+4. D.4F: mobile correction standing display, contrast of the three request actions against the attestation confirm panel, screen-reader behaviour.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4E (unknown-outcome recovery) not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
