@@ -517,10 +517,12 @@ describe('external completion lifecycle: destination movement after completion (
 
 describe('external completion lifecycle: cross-Goal isolation (Q5, two databases; same-database NOT producible)', () => {
   // A same-database claim was NOT producible. A second Goal in the same database needs its own handoff, and a handoff
-  // needs an accepted final review and acceptance (buildManualHandoffSnapshot, ensureCompletionReady). Only the kit's
-  // acceptance fixture records that review, with fixture independence, and this slice does not use that bypass. The
-  // second Goal therefore lives in its own database, so the claim below is weaker: it shows that a correction in one
-  // database leaves a second database untouched, not that one database's Goals are isolated from each other.
+  // needs an accepted final review and acceptance (buildManualHandoffSnapshot, ensureCompletionReady). The only way the
+  // kit produces that review is the acceptance fixture, which records it with fixture independence rather than running
+  // the supervisor. This file's scenarios therefore use that fixture path for review and acceptance; only
+  // goalLifecycleQualification.test.ts runs review and acceptance through the real supervisor. The second Goal lives in
+  // its own database, so the claim below is weaker: it shows that a correction in one database leaves a second database
+  // untouched, not that one database's Goals are isolated from each other.
   it.each(FORMATS)(
     'a dispute in one database leaves a running Goal in another database untouched (two databases, %s)',
     async (format) => {

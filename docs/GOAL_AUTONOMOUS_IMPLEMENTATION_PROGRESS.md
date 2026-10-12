@@ -309,7 +309,17 @@ Plan: `d3g_plan.md` (Sonnet). Commits on `feature/grand-project-goal-engine`, ea
 - `4c6f94a` PRODUCTION FIX, found by the real-execution test. The supervisor never requested the final-acceptance gate for a version-2 Goal: `external_completion_not_activated` was not a user-terminal failure, so the Goal parked in `completion_pending` and acceptance was unreachable. The fix accepts that one code for the gate only under its own v2 signal (`finalApply.reason`). Completion still goes only through `completeGoal` and the external decision. CI success (run 38212307619). Authority review: PASS. Non-blocking: no test for a v2 Goal with an extra non-user-terminal failure, which the condition correctly refuses.
 - `5559f15` real-execution v2 lifecycle (sha1 and sha256) through the real supervisor, the real approve, decision and handoff routes, real Git, attestation, completion, reopen, and a corrected completion (dispute). Plus a same-family refusal (sha1). CI success (run 38216120808). Sonnet review: PASS WITH NON-BLOCKING FINDINGS (header disclaimer missing, now added; route-validation seeding not listed as a fake, now listed; old supervisor not explicitly stopped before restart).
 
-Coverage, mapped to the 13 lifecycle steps and 13 required conditions in the owner's D.3G text: all are covered by named tests in `externalCompletionLifecycle.test.ts` and `goalLifecycleQualification.test.ts`, plus the existing D.3E/D.3F suites. The same-family refusal is observed as `review_queue_error` with `plan_unavailable`; it is attributed to the family check only by contrast with the passing different-family run, not proven.
+Coverage, mapped to the 13 lifecycle steps and 13 required conditions in the owner's D.3G text. Stated precisely, following the D.3 parent-stage review:
+
+- Real-execution path (`goalLifecycleQualification.test.ts`, sha1 and sha256): steps 1 to 13 for a dispute through the real supervisor, real routes, real Git, real review and real acceptance. This is the only path that runs review and acceptance through the supervisor.
+- Withdraw and supersede after real execution are NOT covered in the real-execution path. They are covered only by the completion-standing service suite, which uses the acceptance fixture.
+- The `externalCompletionLifecycle.test.ts` scenarios (normal merge, `merge -s ours`, destination movement, repeats, v1 beside v2, cross-Goal in two databases, restart and injected faults) start from the acceptance fixture. Their review and acceptance are fixture-seeded with fixture independence, not produced by the supervisor. This is a real limit on the independent-review and user-acceptance steps for those scenarios, and the file's comments now say so.
+- `merge -s ours` is covered for sha1 only.
+- Cross-Goal isolation is two databases only.
+- Invalid stored records, and the independent and corrected attestation rules, are covered by the completion-standing service suite, not by the lifecycle files.
+- The D.3E and D.3F suites cover the remaining service-level rules.
+
+The owner should decide whether the fixture-seeded scenarios must be re-run through the real supervisor before D.3 is treated as complete. This record does not claim that they have been. The same-family refusal is observed as `review_queue_error` with `plan_unavailable`; it is attributed to the family check only by contrast with the passing different-family run, not proven.
 
 Residuals and gaps, stated as found:
 
