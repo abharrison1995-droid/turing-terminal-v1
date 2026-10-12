@@ -44,6 +44,10 @@ export const COMPLETION_COPY = {
   recording: 'Recording your decision…',
   completing: 'Completing the Goal…',
   reviewAvailable: 'The review is ready. Recording a decision completes nothing.',
+  decidedElsewhere:
+    'A completion decision is already recorded for a different attestation. Open that attestation to complete the Goal.',
+  otherAttestationsTruncated:
+    'Only the first 20 other attestations are listed. Others may exist and were not checked here.',
 } as const;
 
 /** Recovery copy for an ambiguous write. Each line is shown only after a read that supports it. */

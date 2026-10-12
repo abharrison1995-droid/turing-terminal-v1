@@ -20,29 +20,36 @@ import {
   standingPresentation,
 } from './completionModel';
 import { formatTime } from './presentation';
+import { isUnknownOutcome } from './unknownOutcome';
 
 interface CompletionView {
   status: GoalExternalCompletionStatus;
   preflight: GoalExternalCompletionPreflightReport | null;
   preflightError: CompletionRefusal | null;
+  /** True when a valid decision exists for a different attestation, so this one cannot be recorded. */
+  decidedElsewhere: boolean;
 }
 
 /**
  * Two reads, both GETs. The status comes first. The preflight is read only while this attestation can still take a
- * decision: not when a decision for it is already recorded, and not once the Goal is settled.
+ * decision: not when a decision for it is already recorded, not when a decision for another attestation is, and not
+ * once the Goal is settled. The preflight would refuse that case as "already recorded", which says nothing useful here.
  */
 export async function loadCompletionView(goalId: string, attestationId: string): Promise<CompletionView> {
   const status = await goalsApi.completionStatus(goalId);
   const decidedHere = status.decisions.some((row) => row.valid && row.attestationId === attestationId);
-  if (decidedHere || isSettledState(status)) return { status, preflight: null, preflightError: null };
+  const decidedElsewhere = !decidedHere && status.decisions.some((row) => row.valid);
+  if (decidedHere || decidedElsewhere || isSettledState(status))
+    return { status, preflight: null, preflightError: null, decidedElsewhere };
   try {
     return {
       status,
       preflight: await goalsApi.completionPreflight(goalId, attestationId),
       preflightError: null,
+      decidedElsewhere: false,
     };
   } catch (error) {
-    return { status, preflight: null, preflightError: completionRefusal(error) };
+    return { status, preflight: null, preflightError: completionRefusal(error), decidedElsewhere: false };
   }
 }
 
@@ -98,12 +105,26 @@ export function GoalCompletion({
           })
           .then(
             (recorded) => run(apply({ type: 'record_succeeded', actionDigest: recorded.actionDigest })),
-            (error: unknown) => run(apply({ type: 'record_failed', refusal: completionRefusal(error) })),
+            (error: unknown) =>
+              run(
+                apply({
+                  type: 'record_failed',
+                  refusal: completionRefusal(error),
+                  unknown: isUnknownOutcome(error),
+                }),
+              ),
           );
       } else {
         goalsApi.completeGoal(goalId, effect.actionDigest, true).then(
           () => run(apply({ type: 'complete_succeeded' })),
-          (error: unknown) => run(apply({ type: 'complete_failed', refusal: completionRefusal(error) })),
+          (error: unknown) =>
+            run(
+              apply({
+                type: 'complete_failed',
+                refusal: completionRefusal(error),
+                unknown: isUnknownOutcome(error),
+              }),
+            ),
         );
       }
     }
@@ -124,6 +145,7 @@ export function GoalCompletion({
           decidedActionDigest: decidedActionDigest(next.status, attestationId),
           preflight: next.preflight,
           preflightError: next.preflightError,
+          completed: next.status.state === 'completed' || next.status.state === 'contested',
         });
       },
       () => {
@@ -165,13 +187,24 @@ export function GoalCompletion({
           <p className="form-error" role="alert" tabIndex={-1} ref={alertRef}>
             {state.refusal.message}
           </p>
-          {state.refusal.action === 'refresh' && (
+          {phase === 'reconciling' && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={reading}
+              onClick={() => dispatch({ type: 'check_again' })}
+            >
+              {COMPLETION_COPY.checkAgain}
+            </button>
+          )}
+          {phase !== 'reconciling' && state.refusal.action === 'refresh' && (
             <button type="button" className="secondary-button" disabled={reading} onClick={reload}>
               {COMPLETION_COPY.refreshReview}
             </button>
           )}
         </div>
       )}
+      {state.notice !== null && <p role="status">{state.notice}</p>}
       {phase === 'preflight_refused' && (
         <button type="button" className="secondary-button" disabled={reading} onClick={reload}>
           {COMPLETION_COPY.checkAgain}
@@ -312,6 +345,10 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
       )}
       <p className="goal-completion-limitation">{limitationCopy(limitationSource)}</p>
       <p className="goal-row-meta">{COMPLETION_COPY.limitationPointInTime}</p>
+      {status.completionStanding.kind === 'v2' && status.completionStanding.otherAttestationsTruncated && (
+        <p className="goal-row-meta">{COMPLETION_COPY.otherAttestationsTruncated}</p>
+      )}
+      {view.decidedElsewhere && !isSettledState(status) && <p>{COMPLETION_COPY.decidedElsewhere}</p>}
       {status.completion && (
         <dl className="goal-handoff-identities" aria-label="Recorded completion">
           <Identity label="Completion proof">{hash(status.completion.proofId)}</Identity>

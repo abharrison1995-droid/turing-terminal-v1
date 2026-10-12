@@ -676,12 +676,6 @@ describe('desktop completion controls', () => {
     ['decision_not_found', 404, 'No recorded decision matches. Record the completion decision again.', true],
     ['proof_invalid', 422, 'Stored completion records failed a check. Nothing was changed.', false],
     ['completion_busy', 429, 'Another completion request is in progress. Try again shortly.', false],
-    [
-      'external_completion_unavailable',
-      503,
-      'Turing could not confirm the result. Do not assume it failed or succeeded. Refresh to read the saved state.',
-      true,
-    ],
   ] as const)(
     'a refused record shows its plain message and never the raw code (%s)',
     async (code, status, message, offersRefresh) => {
@@ -870,5 +864,216 @@ describe('completion is never sent without a click', () => {
     expect(section.queryByRole('button', { name: 'Record completion decision' })).toBeNull();
     expect(completionWrites()).toHaveLength(0);
     expect(posts()).toEqual([]);
+  });
+});
+
+describe('completion recovery after an ambiguous write (D.4E)', () => {
+  const decisionPath = '/api/goals/goal-1/completion-decision';
+  const completePath = '/api/goals/goal-1/completion';
+  const lost = () => new TypeError('Failed to fetch');
+  const UNAVAILABLE =
+    'Turing still cannot read the saved state, so it cannot confirm the result. Check again before doing anything else.';
+
+  it('a decision whose response was lost is read back as saved, once, with no unconfirmed alert', async () => {
+    const goal = statefulGoal();
+    const savedDecision = goal.routes[`POST ${decisionPath}`]!;
+    serveHandoff(
+      { status: goal.status },
+      {
+        ...goal.routes,
+        [`POST ${decisionPath}`]: () => {
+          savedDecision();
+          throw lost();
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    expect(await section.findByText('Your decision was saved.')).toBeTruthy();
+    expect(section.queryByRole('alert')).toBeNull();
+    expect(section.queryByText(/Do not assume/)).toBeNull();
+    expect(section.queryByText(/decision_persistence_failed/)).toBeNull();
+    expect(section.getByRole('button', { name: 'Complete Goal' })).toBeTruthy();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a decision lost before it was saved is reported as not saved, and needs a new acknowledgement', async () => {
+    let attempts = 0;
+    serveHandoff(
+      { status: completionStatus('not_completed') },
+      {
+        [`POST ${decisionPath}`]: () => {
+          attempts += 1;
+          if (attempts === 1) throw lost();
+          return created(decisionRecorded());
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    expect(await section.findByText(/Nothing was saved when Turing last checked/)).toBeTruthy();
+    expect((section.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(decisionWrites()).toHaveLength(1);
+    await user.click(section.getByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await waitFor(() => expect(decisionWrites()).toHaveLength(2));
+    expect(decisionWrites().map((call) => call.headers['if-match'])).toEqual([
+      `"${PREFLIGHT_DIGEST}"`,
+      `"${PREFLIGHT_DIGEST}"`,
+    ]);
+  });
+
+  it('a Goal completion whose response was lost is read back as completed', async () => {
+    const goal = { completed: false };
+    serveHandoff(
+      {
+        status: () =>
+          goal.completed
+            ? completionStatus('completed', { completion: completedRecord })
+            : completionStatus('decided', { decisions: [decisionRow] }),
+      },
+      {
+        [`POST ${completePath}`]: () => {
+          goal.completed = true;
+          throw lost();
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    expect(await section.findByText('The Goal was completed. This is the saved result.')).toBeTruthy();
+    expect(section.getByText('Completed on your decision')).toBeTruthy();
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(completionWrites()).toHaveLength(1);
+  });
+
+  it('an unreadable Goal completion is read again, and Complete again sends only the stored digest', async () => {
+    let completes = 0;
+    serveHandoff(
+      { status: () => completionStatus('decided', { decisions: [decisionRow] }) },
+      {
+        [`POST ${completePath}`]: () => {
+          completes += 1;
+          return completes === 1 ? new Response('', { status: 201 }) : created({ reused: true });
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    expect((await section.findByRole('status')).textContent).toBe(
+      'Your completion decision is recorded. The Goal is not completed yet.',
+    );
+    expect(section.queryByRole('alert')).toBeNull();
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    await waitFor(() => expect(completionWrites()).toHaveLength(2));
+    expect(completionWrites().map((call) => call.headers['if-match'])).toEqual([
+      `"${ACTION}"`,
+      `"${ACTION}"`,
+    ]);
+  });
+
+  it('when the recovery read fails, the only action is Check again, which reads and writes nothing', async () => {
+    let failing = false;
+    serveHandoff(
+      {
+        status: () => {
+          if (failing) throw lost();
+          return completionStatus('not_completed');
+        },
+      },
+      {
+        [`POST ${decisionPath}`]: () => {
+          failing = true;
+          throw lost();
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    expect((await section.findByRole('alert')).textContent).toBe(UNAVAILABLE);
+    expect(section.queryByRole('button', { name: 'Refresh review' })).toBeNull();
+    failing = false;
+    await user.click(section.getByRole('button', { name: 'Check again' }));
+    expect(await section.findByText(/Nothing was saved when Turing last checked/)).toBeTruthy();
+    expect(decisionWrites()).toHaveLength(1);
+  });
+
+  it('a decision recorded for another attestation hides Record and points to that attestation', async () => {
+    serveHandoff({
+      status: completionStatus('decided', {
+        decisions: [{ ...decisionRow, attestationId: 'attestation-other' }],
+      }),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(
+      await section.findByText(
+        'A completion decision is already recorded for a different attestation. Open that attestation to complete the Goal.',
+      ),
+    ).toBeTruthy();
+    expect(section.queryByRole('checkbox')).toBeNull();
+    expect(section.queryByRole('button', { name: 'Record completion decision' })).toBeNull();
+    expect(section.queryByText(/already been recorded/)).toBeNull();
+    expect(calls.some((call) => call.path.endsWith('/completion-preflight'))).toBe(false);
+  });
+
+  it('a v2 standing with cut-off other attestations says so, and the Goal claim is unchanged', async () => {
+    const status = {
+      ...completionStatus('not_completed'),
+      completionStanding: {
+        kind: 'v2',
+        claim: claim(),
+        otherAttestations: [],
+        otherAttestationsTruncated: true,
+      } as unknown as GoalCompletionStanding,
+    };
+    serveHandoff({ status: () => status });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(
+      await section.findByText(
+        'Only the first 20 other attestations are listed. Others may exist and were not checked here.',
+      ),
+    ).toBeTruthy();
+    expect(
+      section.getByText('Not completed. No completion decision is recorded for this Goal.'),
+    ).toBeTruthy();
+  });
+
+  it('a fresh mount reads the stored decision and Complete sends its digest', async () => {
+    serveHandoff({ status: () => completionStatus('decided', { decisions: [decisionRow] }) });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    await waitFor(() => expect(completionWrites()).toHaveLength(1));
+    expect(completionWrites()[0]!.headers['if-match']).toBe(`"${ACTION}"`);
   });
 });

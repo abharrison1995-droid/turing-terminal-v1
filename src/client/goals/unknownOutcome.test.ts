@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, call, UnreadableResponseError } from '../api';
 import { goalsApi } from './api';
@@ -178,5 +179,18 @@ describe('refusals and lost responses reach the recovery path', () => {
     );
     const error = await goalsApi.completeGoal('goal-1', DIG, true).catch((caught) => caught);
     expect(isUnknownOutcome(error)).toBe(true);
+  });
+});
+
+describe('no timer can retry a write', () => {
+  it.each([
+    'GoalCompletion.tsx',
+    'GoalCorrection.tsx',
+    'completionModel.ts',
+    'correctionModel.ts',
+    'unknownOutcome.ts',
+  ])('%s has no timer that could run a write again', (file) => {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    expect(source).not.toMatch(/setTimeout|setInterval/);
   });
 });
