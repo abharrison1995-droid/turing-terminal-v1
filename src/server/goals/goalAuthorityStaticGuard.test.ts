@@ -116,6 +116,14 @@ const RULES: readonly AuthorityRule[] = [
       'Only the atomic version-2 completion service names its entry point. The D.4A route layer is the only route caller.',
   },
   {
+    id: 'correction_decision_service',
+    pattern: /\bdecideAttestationCorrectionAsUser\b/,
+    mode: 'only_in',
+    files: ['goals/attestationCorrectionDecision.ts', 'goals/goalRoutes.ts'],
+    reason:
+      'Only the dedicated correction decision service names its entry point. The D.4C route layer is the only caller.',
+  },
+  {
     id: 'completion_consume',
     pattern: /\b(?:consumeExternalCompletionDecision|selectCompletionDecision)\b/,
     mode: 'only_in',
@@ -370,6 +378,16 @@ describe('authority static guard: seeded violations and negative controls', () =
       'app.post(path, () => completeGoalFromExternalDecision(db, body));',
     ],
     [
+      'correction_decision_service',
+      'goals/activeWork.ts',
+      'await decideAttestationCorrectionAsUser(db, input);',
+    ],
+    [
+      'correction_decision_service',
+      'goals/routes.ts',
+      'app.post(path, () => decideAttestationCorrectionAsUser(db, body));',
+    ],
+    [
       'completion_consume',
       'goals/externalCompletionDecision.ts',
       'selectCompletionDecision(db, goalId, approvalId);',
@@ -472,6 +490,21 @@ describe('authority static guard: seeded violations and negative controls', () =
       'completion_service',
       'goals/externalCompletion.ts',
       'export async function completeGoalFromExternalDecision() {}',
+    ],
+    [
+      'correction_decision_service',
+      'goals/attestationCorrectionDecision.ts',
+      'export function decideAttestationCorrectionAsUser() {}',
+    ],
+    [
+      'correction_decision_service',
+      'goals/goalRoutes.ts',
+      'return decideAttestationCorrectionAsUser(db, input);',
+    ],
+    [
+      'correction_decision_service',
+      'goals/synthetic.ts',
+      'const label = "decide attestation correction as user";',
     ],
     ['completion_service', 'goals/synthetic.ts', 'const label = "complete goal from external decision";'],
     [
