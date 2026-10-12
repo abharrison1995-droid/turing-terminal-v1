@@ -559,9 +559,43 @@ Deviations and residual risks:
 3. Test gaps from review: no test drives the UNIQUE-violation path to class 4 or 5, and the supersede variant of D23 is missing. Carry to Slice 2c or Slice 4.
 4. Finding for the D17 title (now stale wording) is cosmetic.
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 2c (terminal classifier-driven) not started.
+### D.4R Slice 2c: terminal consume follows completion authority class: ACCEPTED on `d952df2` (lead record)
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 2b (decision recording and reuse gating) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open.
+Commits: `d952df2` (the Slice 2c change), then `036d098` (a CI-only timeout change, below). Reconciliation: `scratchpad/d4r_s2c_brief.md` (Sonnet 5.5 Medium, GO; it found that the reuse-after-race gap is already closed in production by check 6 through the terminal's identity read, so 2c is classifier wiring, tests and the 2b gap tests). Implementer: Haiku 5.5 High (uncommitted working tree; the lead gated and committed). Independent review: Sonnet 5.5 Medium (`scratchpad/d4r_s2c_review.md`).
+
+Behaviour: the terminal's own-attestation check is now classifier-driven. Consume proceeds only for class 2 with exactly one own entry that matches the held decision id and action digest and is eligible. Classes 4, 5 and 6 are refused at the identity read before the check runs, so their branches are defensive. An ineligible decision on another attestation is tolerated. An eligible competing decision still blocks. The proof writer is unchanged: it is the only INSERT into the terminal proof table, and `goal_not_running` and the proof-count guards still gate it. `externalCompletion.ts` is unchanged. No migration, no change to `allowRecordedDecision`, no client or `src/shared` change.
+
+Tests:
+
+- New: `externalCompletionTerminalSeams.test.ts` B4 (approval set to denied after the identity read gives `approval_status`) and B5 (own decision disputed inside the transaction gives `own_decision_ineligible`). These use a one-shot `afterIdentity` hook on a wrapper around `readPreflightSnapshotIdentity`, reset in `afterEach`.
+- New in `externalCompletionTerminal.test.ts`: B1 (a disputed first decision does not block a later eligible B; one proof; a second consume is refused), B2 (a stale A after B is decided is refused as `completion_already_recorded`), B3 (dispute, withdraw and supersede of the only decision are refused as `attestation_*`).
+- New in `externalCompletionDecision.test.ts`: D23 gains a supersede variant.
+- New in `externalCompletionDecisionSeams.test.ts`: D11d (a pending same-digest row written in the hook trips the UNIQUE path and re-classifies as class 5) and D11e (an eligible competing decision written in the hook re-classifies as class 4).
+- Static guard: `classifier_entry` gains `externalCompletionTerminal.ts`, with one negative control.
+- Flipped: none. The only change to an existing test is a comment in T11.
+
+Only B5 exercises the new terminal branch directly. B1 to B4 would also pass on the Slice 2b logic, and the commit message says so.
+
+Evidence:
+
+- Gate on the working tree, run by the lead: format, lint and typecheck exit 0; `npm test` 153 files and 2,918 tests passed; build exit 0; `npm audit --omit=dev` 0 vulnerabilities. Logs are in `scratchpad/d4r_s2c_lead_*.log`.
+- Independent review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, no blocking findings.
+- Hosted CI on `036d098`: run 38320429746, success, 17.1 minutes.
+
+CI cancellations and their cause (recorded here because the earlier notes did not explain them):
+
+- Run 38311650042 on `6540002` (the Slice 2b record commit) was cancelled at 20.2 minutes.
+- Run 38316496887 on `d952df2` was cancelled at 20.3 minutes. A same-SHA re-run (the same run ID) was cancelled at 20.3 minutes too, with no superseding push.
+- The gate job has `timeout-minutes: 20`. Successful runs on this branch took 16.6 to 19.9 minutes (17.7 for `215a2da`, 19.9 for `fcb629c`). The two cancellations stopped at the limit, so the cause is the job's wall-clock budget, not a test failure.
+- Change in `036d098`: the timeout is raised to 30 minutes. The gate steps, the test set and every assertion are unchanged. This is a CI budget change, not a test change, and it is disclosed here so the owner can review it. The earlier cancellations on `b233312`, `211f900` and `bd67cb0` remain recorded as unexplained, because I have no durations for them.
+
+Deviations and residual risks:
+
+1. B6 (a second same-attestation decision inside the transaction) was dropped. The API test T11 covers the two-decision case as `decision_conflict`.
+2. The terminal's class 4, 5 and 6 branches and the own-id and own-digest mismatch branches have no direct test. Class 4, 5 and 6 are refused at the identity read first, so these branches are defensive only.
+3. The in-transaction class 5 reason of the decision path (`completion_history_invalid`) is still a product choice for the owner.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 3 (API, client copy, explicit attestation selection) not started; it needs its own reconciliation. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open.
 
 ## Remediation iterations
 
