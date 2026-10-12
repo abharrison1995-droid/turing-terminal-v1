@@ -10,10 +10,12 @@ import {
   CORRECTION_COPY,
   CORRECTION_KIND_LABEL,
   CORRECTION_REASON_LABEL,
+  CORRECTION_RECOVERY_COPY,
   type CorrectionDraft,
   type CorrectionEffect,
   type CorrectionEvent,
   type CorrectionGate,
+  type CorrectionRequestBody,
   type CorrectionState,
   correctionRefusal,
   correctionStandingLabel,
@@ -23,6 +25,7 @@ import {
 } from './correctionModel';
 import { ConfirmPanel } from './DefinitionParts';
 import { formatTime } from './presentation';
+import { isUnknownOutcome } from './unknownOutcome';
 
 export interface CorrectionReplacementOption {
   attestationId: string;
@@ -31,7 +34,6 @@ export interface CorrectionReplacementOption {
 }
 
 const NONE_AVAILABLE = 'No correction is available for this attestation from its current standing.';
-const UNREADABLE_PENDING = 'A correction request could not be read. It is not shown and it is not acted on.';
 
 /**
  * The correction controls for one selected attestation, desktop only, in the Handoff tab. Three actions, each with its own
@@ -76,7 +78,13 @@ export function GoalCorrection({
         goalsApi.requestCorrection(goalId, handoffId, attestationId, effect.chainPosition, effect.body).then(
           (response) => run(apply({ type: 'requested', response })),
           (error: unknown) =>
-            run(apply({ type: 'request_failed', refusal: correctionRefusal(error, 'request') })),
+            run(
+              apply({
+                type: 'request_failed',
+                refusal: correctionRefusal(error, 'request'),
+                unknown: isUnknownOutcome(error),
+              }),
+            ),
         );
       } else {
         const body =
@@ -91,7 +99,13 @@ export function GoalCorrection({
         goalsApi.decideCorrection(goalId, effect.approvalId, effect.actionDigest, body).then(
           () => run(apply({ type: 'decided' })),
           (error: unknown) =>
-            run(apply({ type: 'decide_failed', refusal: correctionRefusal(error, 'decide') })),
+            run(
+              apply({
+                type: 'decide_failed',
+                refusal: correctionRefusal(error, 'decide'),
+                unknown: isUnknownOutcome(error),
+              }),
+            ),
         );
       }
     }
@@ -123,7 +137,11 @@ export function GoalCorrection({
   }, [state.refusal]);
 
   const { phase } = state;
-  const working = phase === 'requesting' || phase === 'deciding' || phase === 'verifying';
+  const working =
+    phase === 'requesting' ||
+    phase === 'deciding' ||
+    phase === 'verifying' ||
+    (phase === 'reconciling' && state.refusal === null);
 
   return (
     <section
@@ -140,6 +158,11 @@ export function GoalCorrection({
         <p className="form-error" role="alert" tabIndex={-1} ref={alertRef}>
           {state.refusal.message}
         </p>
+      )}
+      {phase === 'reconciling' && state.refusal !== null && (
+        <button type="button" className="secondary-button" onClick={() => dispatch({ type: 'check_again' })}>
+          {CORRECTION_RECOVERY_COPY.checkAgain}
+        </button>
       )}
       {phase === 'requesting' && <p role="status">{CORRECTION_COPY.requesting}</p>}
       {phase === 'deciding' && <p role="status">{CORRECTION_COPY.deciding}</p>}
@@ -165,6 +188,8 @@ export function GoalCorrection({
         <ReviewPanel
           key={state.kind}
           kind={state.kind}
+          held={state.unknown?.write === 'request' ? state.unknown.body : null}
+          blocked={history !== null && history.pendingUnreadableCount > 0}
           replacementOptions={replacementOptions}
           working={phase === 'requesting'}
           onCancel={() => dispatch({ type: 'cancel' })}
@@ -205,7 +230,9 @@ function CorrectionHistory({ history }: { history: GoalAttestationCorrectionHist
           ))}
         </ul>
       )}
-      {history.pendingUnreadableCount > 0 && <p className="goal-row-meta">{UNREADABLE_PENDING}</p>}
+      {history.pendingUnreadableCount > 0 && (
+        <p className="goal-row-meta">{CORRECTION_RECOVERY_COPY.unreadablePending}</p>
+      )}
     </>
   );
 }
@@ -213,12 +240,18 @@ function CorrectionHistory({ history }: { history: GoalAttestationCorrectionHist
 /** The confirmation for one kind. Its own dialog, its own consequence copy, and a request only on the explicit button. */
 function ReviewPanel({
   kind,
+  held,
+  blocked,
   replacementOptions,
   working,
   onCancel,
   onRequest,
 }: {
   kind: GoalAttestationCorrectionKind;
+  /** The request an unknown outcome left unsettled. Its fields are shown as sent and locked: only the same body can be sent. */
+  held: CorrectionRequestBody | null;
+  /** True while a pending request cannot be read. No request can be sent then. */
+  blocked: boolean;
   replacementOptions: CorrectionReplacementOption[];
   working: boolean;
   onCancel: () => void;
@@ -228,11 +261,12 @@ function ReviewPanel({
   const reasonId = useId();
   const explanationId = useId();
   const replacementId = useId();
-  const [reason, setReason] = useState<GoalAttestationCorrectionReasonCode | ''>('');
-  const [explanation, setExplanation] = useState('');
-  const [replacement, setReplacement] = useState('');
+  const [reason, setReason] = useState<GoalAttestationCorrectionReasonCode | ''>(held?.reasonCode ?? '');
+  const [explanation, setExplanation] = useState(held?.explanation ?? '');
+  const [replacement, setReplacement] = useState(held?.replacementAttestationId ?? '');
   const needsReplacement = kind === 'supersede';
   const ready = reason !== '' && (!needsReplacement || replacement !== '');
+  const locked = held !== null;
 
   const submit = () => {
     if (reason === '' || (needsReplacement && replacement === '')) return;
@@ -258,7 +292,7 @@ function ReviewPanel({
         <select
           id={reasonId}
           value={reason}
-          disabled={working}
+          disabled={working || locked}
           onChange={(event) => setReason(event.target.value as GoalAttestationCorrectionReasonCode | '')}
         >
           <option value="">Choose a reason</option>
@@ -278,7 +312,7 @@ function ReviewPanel({
             <select
               id={replacementId}
               value={replacement}
-              disabled={working}
+              disabled={working || locked}
               onChange={(event) => setReplacement(event.target.value)}
             >
               <option value="">Choose an attestation</option>
@@ -298,7 +332,7 @@ function ReviewPanel({
           rows={3}
           maxLength={1000}
           value={explanation}
-          disabled={working}
+          disabled={working || locked}
           onChange={(event) => setExplanation(event.target.value)}
         />
         <p className="goal-row-meta">{CORRECTION_COPY.explanationCounter(explanation.length)}</p>
@@ -317,11 +351,11 @@ function ReviewPanel({
         <button
           type="button"
           className="primary-button"
-          disabled={working || !ready}
+          disabled={working || !ready || (locked && blocked)}
           aria-busy={working}
           onClick={submit}
         >
-          {action.request}
+          {locked ? CORRECTION_RECOVERY_COPY.requestAgain : action.request}
         </button>
       </div>
     </ConfirmPanel>

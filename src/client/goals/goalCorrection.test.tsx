@@ -405,7 +405,9 @@ describe('correction controls: decisions', () => {
     expect(text).not.toMatch(
       /correctionKind|reasonCode|approvalId|chainPosition|actionDigest|replacementAttestationId/,
     );
-    expect(text).toContain('A correction request could not be read. It is not shown and it is not acted on.');
+    expect(text).toContain(
+      'A saved correction request could not be read, so Turing cannot confirm whether yours was saved. Do not send it again.',
+    );
   });
 });
 
@@ -734,5 +736,151 @@ describe('correction requests are never sent by server events, tab switches or G
     await user.click(screen.getByRole('tab', { name: 'Handoff' }));
     await screen.findByRole('group', { name: GATE_TEXT });
     expect(posts()).toHaveLength(0);
+  });
+});
+
+describe('correction recovery after an ambiguous write (D.4E)', () => {
+  const lost = () => new TypeError('Failed to fetch');
+  const UNREADABLE =
+    'A saved correction request could not be read, so Turing cannot confirm whether yours was saved. Do not send it again.';
+  const savedCorrection = () =>
+    ({
+      approvalId: 'ap1',
+      correctionId: 'c1',
+      correctionKind: 'dispute',
+      reasonCode: 'observation_error',
+      decidedAt: '2026-10-01T00:00:00.000Z',
+      sequence: 1,
+    }) as unknown as GoalAttestationCorrectionHistory['corrections'][number];
+
+  /** Opens the dispute form, chooses a reason and types the explanation. */
+  async function fillDispute(user: ReturnType<typeof userEvent.setup>, explanation: string) {
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    if (explanation) await user.type(screen.getByLabelText(/^Explanation/), explanation);
+  }
+
+  it('a request whose response was lost is read back as pending, with its explanation restored and no alert', async () => {
+    let saved = false;
+    mount({
+      [CORRECTIONS]: () => history(saved ? { pending: [pendingRow({ explanationRequired: true })] } : {}),
+      [`POST ${CORRECTIONS}`]: () => {
+        saved = true;
+        throw lost();
+      },
+    });
+    const user = userEvent.setup();
+    await fillDispute(user, 'Held text');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    expect(
+      await screen.findByText('Your correction request was saved. It is waiting for your decision.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect((screen.getByLabelText(/^Explanation/) as HTMLTextAreaElement).value).toBe('Held text');
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a request lost before it was saved is reported as not saved, and Request again sends the same body and position', async () => {
+    let attempts = 0;
+    mount({
+      [CORRECTIONS]: () => history(),
+      [`POST ${CORRECTIONS}`]: () => {
+        attempts += 1;
+        if (attempts === 1) throw lost();
+        return requested();
+      },
+    });
+    const user = userEvent.setup();
+    await fillDispute(user, 'Held text');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    expect(await screen.findByText(/Nothing was saved when Turing last checked/)).toBeTruthy();
+    expect((screen.getByLabelText(/^Explanation/) as HTMLTextAreaElement).disabled).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Request again' }));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(bodyOf(1)).toEqual(bodyOf(0));
+    expect(posts()[1]!.headers['if-match']).toBe(`"${POS}"`);
+  });
+
+  it('a request whose pending state cannot be read names that, offers Check again, and sends nothing', async () => {
+    let reads = 0;
+    mount({
+      [CORRECTIONS]: () => {
+        reads += 1;
+        return history(reads > 1 ? { pendingUnreadableCount: 1 } : {});
+      },
+      [`POST ${CORRECTIONS}`]: () => {
+        throw lost();
+      },
+    });
+    const user = userEvent.setup();
+    await fillDispute(user, '');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    expect((await screen.findByRole('alert')).textContent).toBe(UNREADABLE);
+    expect(screen.queryByRole('button', { name: 'Request again' })).toBeNull();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+    await user.click(screen.getByRole('button', { name: 'Check again' }));
+    await waitFor(() => expect(reads).toBeGreaterThan(2));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a request answered with an empty success body is read again, not trusted', async () => {
+    mount({
+      [CORRECTIONS]: () => history(),
+      [`POST ${CORRECTIONS}`]: () => new Response('', { status: 201 }),
+    });
+    const user = userEvent.setup();
+    await fillDispute(user, '');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    expect(await screen.findByText(/Nothing was saved when Turing last checked/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a decision whose response was lost is read back as recorded, with no alert and no second decision', async () => {
+    let recorded = false;
+    mount({
+      [CORRECTIONS]: () =>
+        history(recorded ? { corrections: [savedCorrection()] } : { pending: [pendingRow()] }),
+      [`POST ${DECISION}`]: () => {
+        recorded = true;
+        throw lost();
+      },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Confirm correction' }));
+    expect(await screen.findByText('The correction is recorded in the history.')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('a decision lost before it was saved returns to the same gate with the explanation, and confirms on the same digest', async () => {
+    let attempts = 0;
+    mount({
+      [CORRECTIONS]: () =>
+        history(
+          attempts >= 2
+            ? { corrections: [savedCorrection()] }
+            : { pending: [pendingRow({ explanationRequired: true })] },
+        ),
+      [`POST ${DECISION}`]: () => {
+        attempts += 1;
+        if (attempts === 1) throw lost();
+        return { approvalId: 'ap1', status: 'approved' };
+      },
+    });
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText(/^Explanation/), 'Held text');
+    await user.click(screen.getByRole('button', { name: 'Confirm correction' }));
+    expect(
+      await screen.findByText('Not recorded yet. The request is still waiting for your decision.'),
+    ).toBeTruthy();
+    expect((screen.getByLabelText(/^Explanation/) as HTMLTextAreaElement).value).toBe('Held text');
+    await user.click(screen.getByRole('button', { name: 'Confirm correction' }));
+    await waitFor(() => expect(posts()).toHaveLength(2));
+    expect(posts().map((call) => call.headers['if-match'])).toEqual([`"${DIG}"`, `"${DIG}"`]);
+    expect(bodyOf(1)).toEqual(bodyOf(0));
+    expect(await screen.findByText('The correction is recorded in the history.')).toBeTruthy();
   });
 });

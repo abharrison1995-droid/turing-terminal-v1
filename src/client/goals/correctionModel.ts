@@ -71,6 +71,8 @@ export const CORRECTION_RECOVERY_COPY = {
     'Nothing was saved when Turing last checked. If the earlier request is still running it may still finish, so check again before trying again.',
   unreadablePending:
     'A saved correction request could not be read, so Turing cannot confirm whether yours was saved. Do not send it again.',
+  requestAgain: 'Request again',
+  checkAgain: 'Check again',
   historyChanged:
     'The correction history changed. Review the attestation again before requesting a correction.',
   unavailable:
