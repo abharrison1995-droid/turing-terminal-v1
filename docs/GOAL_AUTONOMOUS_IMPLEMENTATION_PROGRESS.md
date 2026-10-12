@@ -475,6 +475,66 @@ Non-blocking follow-ups:
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4F (accessibility and mobile) not started.
 
+### D.4R cross-attestation completion recovery: Slice 0 ACCEPTED on `bd67cb0` (lead record)
+
+Scope: a source-grounded design only (`docs/GOAL_CROSS_ATTESTATION_RECOVERY_DESIGN.md`), with no production change. Scratchpad inputs: `scratchpad/d4r_slice0_design.md`, `scratchpad/d4r_slice0_review.md`, `scratchpad/d4r_s0_reconciliation.md`.
+
+- Independent Sonnet Medium review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`. Policy soundness passed: no path found to two live authorities, retargeting, a decision over corrupt history, or double completion.
+- The review's note on Git-stale attestations is recorded in design section 11.1: a stale, uncorrected A keeps blocking B until it is disputed, withdrawn or superseded. Slice 4 adds the test "correct a Git-stale A, then record B".
+- Reconciliation: accepted. The design header still describes the read-only reconciliation state at `b233312`. This is cosmetic and is left as is.
+- Hosted CI on `bd67cb0`: run 38284180415, success (job `gate`).
+- Gate: the design-only commit's gate log ends `GATE_EXIT=0`, 151 files and 2,826 tests passed.
+
+### D.4R Slice 1: read-only completion authority classifier: ACCEPTED on `54986de` (lead record)
+
+Commits: `2f7761b` (extract the completion decision readers into `externalCompletionDecisionRows.ts`, add `countCompletionRows`, add the read-only classifier `completionAuthorityPolicy.ts` and its tests), then `54986de` (remediation). Implementer: Haiku 5.5 High. Independent reviews: Sonnet 5.5 Medium on `2f7761b` (`scratchpad/d4r_s1_review.md`) and on `54986de` (`scratchpad/d4r_s1r_review.md`).
+
+Behaviour: `classifyCompletionAuthority(db, goalId, selectedAttestationId)` is read-only (SELECT only). It returns one of six classes, with precedence 6 > 5 > 4 > 2 > 3 > 1. Class 5 covers history that is invalid or unreadable, including more than 50 decision rows, and it fails closed. The canonical policy digest is sha256 over `turing-goal-external-completion-policy-v1`, a NUL separator and the canonical JSON body, with entries sorted by decision id. Nothing calls the classifier yet, so public behaviour is unchanged.
+
+Changes made in remediation `54986de`: the classifier now checks the empty correction-chain digest (it mirrors `computeEmptyCorrectionChainIdentity` as a private constant, with a parity test, because importing the preflight would create a cycle), and every read is wrapped so that an unreadable row fails closed as class 5.
+
+Evidence:
+
+- Gate on `2f7761b`: `GATE_EXIT=0` (`scratchpad/d4r_s1_gate_2f7761b.log`). Gate on `54986de`: `GATE_EXIT=0` (`scratchpad/d4r_s1r_gate_54986de.log`). Full `npm test` on each.
+- Hosted CI on `54986de`: run 38293438128, success. `2f7761b` has no separate hosted run recorded in the run list.
+- Independent review of `54986de`: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, 36 of 36 classifier tests passing.
+
+Non-blocking follow-ups (carried forward):
+
+1. The `goal_mismatch` reason branch is unreachable and untested.
+2. The `row_unreadable` reason is effectively unreachable and untested.
+3. `canonicalJson` and `policyDigest` run inside `classification()` outside any try. A throw there is still fail closed through `preflight_unavailable` once Slice 2a consumes it, but a direct test is missing.
+
+### D.4R Slice 2a: preflight integration of the classifier: ACCEPTED on `211f900` (lead record)
+
+Commit: `211f900` (parent `54986de`). Reconciliation before implementation: `scratchpad/d4r_s2_reconciliation.md` (GO with flips 1-9 and the T-TX4 change). Implementer: Haiku 5.5 High. Independent review: Sonnet 5.5 Medium (`scratchpad/d4r_s2a_review.md`).
+
+Behaviour: `readSnapshot` runs the classifier inside its existing transaction, after the goal-status and definition checks. Outcome map: class 6 refuses `completion_already_recorded` (detail null); class 5 refuses `completion_history_invalid` (detail is the classifier reason); class 4 refuses `completion_already_recorded` with detail `competing_decision`, and the option is never consulted; class 2 refuses unless `options.allowRecordedDecision === true`; classes 1 and 3 proceed. `SnapshotIdentity` gains `policy_class` and `policy_digest`, appended last, so existing key order is unchanged. No migration, no new option, no new report fact, and the public signature is unchanged.
+
+Flipped tests (each was pinned to the old bypass or to the old refusal code; all are listed as the reconciliation required):
+
+- `completionAuthorityPolicy.test.ts`: the class 3 case is now a fresh attestation that becomes ready after a correction on the earlier one.
+- `externalCompletionDecision.test.ts`: D17b now expects `completion_history_invalid`. D12 uses the `action` returned by `seedCompletion`, which is a setup-only change.
+- `externalCompletionApi.test.ts`: T11 pins that a decision for Y while X is an eligible competing decision is refused. The POST returns 409 and writes nothing.
+- `externalCompletionTerminal.test.ts`: T-TX4 (both variants) now asserts the terminal refusal, with the database snapshot unchanged. The reconciliation required a lead sign-off for this change. This record is that sign-off, and the independent review examined it (finding 8).
+- `externalCompletion.test.ts`: F5, F6 and F7 now expect `completion_history_invalid` instead of `correction_standing_unavailable` or `attestation_invalid`.
+- `goalAuthorityStaticGuard.test.ts`: the classifier entry allow-list gains the preflight, and the seeded violation moves to negative controls.
+
+Evidence:
+
+- Gate on `211f900`: `GATE_EXIT=0` (`scratchpad/d4r_s2a_gate_211f900.log`). Full `npm test` 152 files and 2,902 tests passed; `npm audit --omit=dev` 0 production vulnerabilities.
+- Hosted CI on `211f900`: run 38301018507, success. The run list shows this as one run with conclusion success.
+- Independent review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`. The reviewer ran only `completionAuthorityPolicy.test.ts` (42 of 42), not the other flipped files, so their pass state rests on the gate.
+
+Deviations and residual risks:
+
+1. F3 (`externalCompletionDecision.ts:173`): the decision POST for a competing attestation returns detail `completion_already_recorded`, not `competing_decision`, because only `reasons[0].code` is passed on. The public GET still reports `competing_decision`. Fixed in Slice 2b with an explicit mapping. Both refusals write nothing.
+2. Test reachability is reduced. The terminal `approval_status` check and the own-attestation check 6 are now reached only as defence in depth, because the classifier pre-empts them in tests (F4 to F7). A direct unit test is planned in Slice 2c.
+3. Client copy: "A completion has already been recorded" overstates a competing decision, and `completion_history_invalid` falls to generic copy. Fixed in Slice 3.
+4. The stored CI cancellation history for `211f900` is not visible in the run list, which shows one run. Earlier cancellation notes are not cited as evidence in this record.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 2b (decision recording and reuse gating) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
