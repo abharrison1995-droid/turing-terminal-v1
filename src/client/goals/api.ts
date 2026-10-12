@@ -8,6 +8,11 @@ import type {
   GoalEventsResponse,
   GoalEvidenceResponse,
   GoalExternalIntegrationAttested,
+  GoalExternalCompletionCompleted,
+  GoalExternalCompletionDecisionRecorded,
+  GoalExternalCompletionPreflightReport,
+  GoalExternalCompletionPreflightResponse,
+  GoalExternalCompletionStatus,
   GoalExternalIntegrationAttestationProjection,
   GoalExternalIntegrationStoredStatus,
   GoalExternalIntegrationVerification,
@@ -30,8 +35,9 @@ import { call } from '../api';
  * The Goal client API. Every operation is an explicit function with its own endpoint and body; nothing maps a
  * `nextAction` to a request. Reads are GETs. The only mutations are the user controls below, each of which the server
  * independently re-proves: start, resume, pause, abandon, a Goal-approval decision, a finding decision, definition
- * operations (create, save, begin revision, approve, reject), handoff preparation, and exact external-integration
- * attestation. Git final apply is deliberately absent (7C).
+ * operations (create, save, begin revision, approve, reject), handoff preparation, exact external-integration
+ * attestation, and the version-2 completion decision and Goal completion (each by its exact reviewed digest). Git final
+ * apply is deliberately absent (7C). The completion reads (preflight and status) change nothing.
  */
 const query = (params: Record<string, string | number | undefined>): string => {
   const search = new URLSearchParams();
@@ -99,6 +105,42 @@ export const goalsApi = {
     post<GoalExternalIntegrationAttested>(
       `${goalPath(goalId)}/handoffs/${encodeURIComponent(handoffId)}/external-integration/attest`,
       { decision: 'confirm_external_integration' },
+      ifMatch(actionDigest),
+    ),
+
+  // --- Version-2 completion (read-only reads first; the two writes are explicit user clicks, one request each) -----
+  /** Read-only: the reviewed preflight for one attestation. A refused report is data (200), not an error. */
+  completionPreflight: async (
+    goalId: string,
+    attestationId: string,
+  ): Promise<GoalExternalCompletionPreflightReport> =>
+    (
+      await call<GoalExternalCompletionPreflightResponse>(
+        `${goalPath(goalId)}/completion-preflight${query({ attestationId })}`,
+      )
+    ).preflight,
+  /** Read-only: the Goal's completion state, optionally filtered to one exact action digest. */
+  completionStatus: (goalId: string, actionDigest?: string) =>
+    call<GoalExternalCompletionStatus>(`${goalPath(goalId)}/completion${query({ actionDigest })}`),
+  /** Records the user's decision for one reviewed preflight. It completes nothing; If-Match is the preflight digest. */
+  recordCompletionDecision: (
+    goalId: string,
+    input: { attestationId: string; preflightDigest: string; acknowledgeContentNotProven: true },
+  ) =>
+    post<GoalExternalCompletionDecisionRecorded>(
+      `${goalPath(goalId)}/completion-decision`,
+      {
+        decision: 'record_completion_decision',
+        attestationId: input.attestationId,
+        acknowledgeContentNotProven: input.acknowledgeContentNotProven,
+      },
+      ifMatch(input.preflightDigest),
+    ),
+  /** Completes the Goal for one recorded decision; If-Match is that decision's exact action digest. */
+  completeGoal: (goalId: string, actionDigest: string, acknowledgeContentNotProven: true) =>
+    post<GoalExternalCompletionCompleted>(
+      `${goalPath(goalId)}/completion`,
+      { decision: 'complete_goal', acknowledgeContentNotProven },
       ifMatch(actionDigest),
     ),
 
