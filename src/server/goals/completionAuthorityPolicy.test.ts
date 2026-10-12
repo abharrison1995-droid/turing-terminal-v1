@@ -7,7 +7,10 @@ import type { Db } from '../db.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
 import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { buildExternalCompletionAction } from './externalCompletionProof.js';
-import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
+import {
+  computeEmptyCorrectionChainIdentity,
+  computeExternalCompletionPreflight,
+} from './externalCompletionPreflight.js';
 import {
   appendCorrectionForTest,
   databaseSnapshot,
@@ -113,6 +116,21 @@ function recordStatements(db: Db): { db: Db; statements: string[] } {
     },
   });
   return { db: handle, statements };
+}
+
+/** The database handle whose `prepare` throws for any SQL matching `pattern`. Test-only read-fault injection. */
+function failPrepareFor(db: Db, pattern: RegExp): Db {
+  return new Proxy(db, {
+    get(target, property) {
+      if (property === 'prepare')
+        return (sql: string) => {
+          if (pattern.test(sql)) throw new Error(`injected read fault for ${pattern.source}`);
+          return target.prepare(sql);
+        };
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
 }
 
 describe('completion authority classifier: classes', () => {
@@ -402,6 +420,180 @@ describe('completion authority classifier: class 5 (history invalid or unavailab
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+  it(
+    'a decision naming another Goal in its action is class 5 and does not throw; the decision validator reports it',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { db, goalId } = attested.fx;
+      const body = await completionBody(attested);
+      // The service refuses an action that names another Goal, so a valid row is written and its action is rewritten
+      // after the immutability triggers are dropped, the way the tamper test does. The row keeps its Goal.
+      const mismatchId = seedCompletionRow(db, goalId, body, true);
+      const foreign = buildExternalCompletionAction({ ...body, goalId: randomUUID() });
+      if (foreign === null) throw new Error('the foreign action body is not valid');
+      db.exec('DROP TRIGGER trg_goal_approval_identity;');
+      db.exec('DROP TRIGGER trg_goal_approval_terminal;');
+      db.prepare(
+        'UPDATE goal_approvals SET detail_json = ?, external_completion_action_digest = ? WHERE id = ?',
+      ).run(JSON.stringify(foreign), foreign.actionDigest, mismatchId);
+      const result = classifyCompletionAuthority(db, goalId, attested.attestationId);
+      expect(result).toMatchObject({ class: 5, reason: 'approval_fields_invalid', proofIds: [] });
+      expect(result.entries).toEqual([
+        expect.objectContaining({
+          decisionId: mismatchId,
+          integrity: 'approval_fields_invalid',
+          eligible: false,
+        }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a decision whose attestation record digest is tampered is class 5 attestation_record_mismatch, and the classifier does not throw',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { db, goalId } = attested.fx;
+      const body = await completionBody(attested);
+      const attestation = body.attestation as Record<string, unknown>;
+      const tamperedId = seedCompletionRow(
+        db,
+        goalId,
+        { ...body, attestation: { ...attestation, recordDigest: 'f'.repeat(64) } },
+        true,
+      );
+      const result = classifyCompletionAuthority(db, goalId, attested.attestationId);
+      expect(result).toMatchObject({ class: 5, reason: 'attestation_record_mismatch', proofIds: [] });
+      expect(result.entries).toEqual([
+        expect.objectContaining({
+          decisionId: tamperedId,
+          integrity: 'attestation_record_mismatch',
+          eligible: false,
+        }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a decision whose stored attestation record cannot be read is class 5 attestation_invalid, and the classifier does not throw',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      // The table CHECKs the payload's mapped fields, so the tamper adds a key that no column maps; the record then
+      // fails its own validation and the read throws.
+      const stored = db
+        .prepare('SELECT payload_json FROM goal_external_integration_attestations WHERE id = ?')
+        .get(decided.attestationId) as { payload_json: string };
+      const tampered = { ...(JSON.parse(stored.payload_json) as Record<string, unknown>), tampered: true };
+      db.exec('DROP TRIGGER trg_goal_external_attestation_immutable;');
+      db.prepare('UPDATE goal_external_integration_attestations SET payload_json = ? WHERE id = ?').run(
+        JSON.stringify(tampered),
+        decided.attestationId,
+      );
+      const result = classifyCompletionAuthority(db, goalId, decided.attestationId);
+      expect(result).toMatchObject({ class: 5, reason: 'attestation_invalid', proofIds: [] });
+      expect(result.entries).toEqual([
+        expect.objectContaining({
+          decisionId: decided.recorded.approvalId,
+          integrity: 'attestation_invalid',
+          eligible: false,
+        }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a decision whose empty correction chain digest is tampered is class 5 correction_chain_digest_mismatch',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { db, goalId } = attested.fx;
+      const body = await completionBody(attested);
+      const correctionChain = body.correctionChain as Record<string, unknown>;
+      const tamperedId = seedCompletionRow(
+        db,
+        goalId,
+        { ...body, correctionChain: { ...correctionChain, digest: 'f'.repeat(64) } },
+        true,
+      );
+      const result = classifyCompletionAuthority(db, goalId, attested.attestationId);
+      expect(result).toMatchObject({ class: 5, reason: 'correction_chain_digest_mismatch', proofIds: [] });
+      expect(result.entries).toEqual([
+        expect.objectContaining({
+          decisionId: tamperedId,
+          integrity: 'correction_chain_digest_mismatch',
+          eligible: false,
+        }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a failed proof, count or completion-row read is class 5 history_unreadable, not class 6, and does not throw',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      const expected = {
+        class: 5,
+        reason: 'history_unreadable',
+        selectedAttestationId: decided.attestationId,
+        proofIds: [],
+        entries: [],
+        policyDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      };
+      expect(
+        classifyCompletionAuthority(
+          failPrepareFor(db, /goal_external_completion_proofs/),
+          goalId,
+          decided.attestationId,
+        ),
+      ).toEqual(expected);
+      expect(
+        classifyCompletionAuthority(
+          failPrepareFor(db, /COUNT\(\*\) AS n FROM goal_approvals/),
+          goalId,
+          decided.attestationId,
+        ),
+      ).toEqual(expected);
+      expect(
+        classifyCompletionAuthority(
+          failPrepareFor(db, /SELECT id FROM goal_approvals/),
+          goalId,
+          decided.attestationId,
+        ),
+      ).toEqual(expected);
+      // Control: the same state reads normally without the injected fault, so the failure above is the injected one.
+      expect(classifyCompletionAuthority(db, goalId, decided.attestationId)).toMatchObject({ class: 2 });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('completion authority classifier: empty correction chain digest', () => {
+  it(
+    'a fresh attested decision stores the digest the preflight identity computes, and the classifier accepts it',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      const stored = db
+        .prepare('SELECT detail_json FROM goal_approvals WHERE id = ?')
+        .get(decided.recorded.approvalId) as {
+        detail_json: string;
+      };
+      const { correctionChain } = JSON.parse(stored.detail_json) as { correctionChain: { digest: string } };
+      const real = computeEmptyCorrectionChainIdentity({
+        attestationId: decided.attestationId,
+        attestationRecordDigest: decided.attestation.recordDigest,
+      });
+      expect(correctionChain.digest).toBe(real.digest);
+      expect(classifyCompletionAuthority(db, goalId, decided.attestationId).entries[0]).toMatchObject({
+        integrity: 'ok',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('completion authority classifier: eligibility by correction chain', () => {
@@ -499,6 +691,27 @@ describe('completion authority classifier: the row cap', () => {
       const approvalStatements = recording.statements.filter((sql) => /goal_approvals/.test(sql));
       expect(approvalStatements.length).toBeGreaterThan(0);
       for (const sql of approvalStatements) expect(sql).toMatch(/COUNT\(\*\)/);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+  it(
+    'class 6 outranks the cap: 51 rows and a proof row classify as 6 with no entries read',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { db, goalId } = decided.fx;
+      const body = await completionBody(decided);
+      for (let index = 1; index <= 50; index += 1)
+        seedCompletionRow(db, goalId, variantBody(body, `cap row ${index}`), true);
+      const proofId = insertProofRow(db, goalId);
+      const result = classifyCompletionAuthority(db, goalId, decided.attestationId);
+      expect(result).toEqual({
+        class: 6,
+        reason: null,
+        selectedAttestationId: decided.attestationId,
+        proofIds: [proofId],
+        entries: [],
+        policyDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

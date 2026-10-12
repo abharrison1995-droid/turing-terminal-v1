@@ -22,6 +22,10 @@ import { loadValidatedRecord } from './externalIntegration.js';
  */
 
 const POLICY_DOMAIN = 'turing-goal-external-completion-policy-v1';
+/** Constants of the empty correction chain identity. They mirror the preflight's; this file must not import it. */
+const CHAIN_SCHEMA_VERSION = 1;
+const CHAIN_KIND = 'turing_goal_external_integration_correction_chain';
+const CHAIN_DOMAIN = 'turing-goal-attestation-correction-chain-v1';
 
 /** The classifier reads at most this many completion rows; a Goal above the cap fails closed. */
 const MAX_COMPLETION_ROWS = 50;
@@ -37,11 +41,13 @@ export type CompletionAuthorityIntegrity =
   | 'attestation_invalid'
   | 'attestation_record_mismatch'
   | 'correction_chain_invalid'
+  | 'correction_chain_digest_mismatch'
   | 'correction_standing_unavailable'
   | 'row_unreadable';
 
-/** The class-5 reason: the first non-intact row, or the cap. Null for every other class. */
-export type CompletionAuthorityReason = CompletionAuthorityIntegrity | 'too_many_decisions';
+/** The class-5 reason: the first non-intact row, the cap, or a failed history read. Null for every other class. */
+export type CompletionAuthorityReason =
+  CompletionAuthorityIntegrity | 'too_many_decisions' | 'history_unreadable';
 
 export interface CompletionAuthorityEntry {
   decisionId: string;
@@ -64,6 +70,27 @@ export interface CompletionAuthorityClassification {
   proofIds: string[];
   entries: CompletionAuthorityEntry[];
   policyDigest: string;
+}
+
+/**
+ * The digest an empty correction chain (sequence 0, no tip) must carry for one attestation. It repeats the preflight's
+ * identity algorithm, so a stored chain built any other way fails the integrity check. Private: no identity is imported.
+ */
+function expectedEmptyChainDigest(attestationId: string, attestationRecordDigest: string): string {
+  return createHash('sha256')
+    .update(CHAIN_DOMAIN)
+    .update('\0')
+    .update(
+      canonicalJson({
+        schemaVersion: CHAIN_SCHEMA_VERSION,
+        kind: CHAIN_KIND,
+        attestationId,
+        attestationRecordDigest,
+        sequence: 0,
+        tipCorrectionDigest: null,
+      }),
+    )
+    .digest('hex');
 }
 
 /** A row whose contents cannot be trusted: every field it could not establish is null, and integrity says why. */
@@ -132,6 +159,8 @@ function entryFor(
   )
     return failed('attestation_record_mismatch');
   if (action.correctionChain.sequence !== 0) return failed('correction_chain_invalid');
+  if (action.correctionChain.digest !== expectedEmptyChainDigest(attestation.id, attestation.recordDigest))
+    return failed('correction_chain_digest_mismatch');
 
   let projection: ReturnType<typeof getAttestationCorrectionStanding>;
   try {
@@ -182,44 +211,15 @@ function policyDigest(body: unknown): string {
  * exists, 5 history invalid or unavailable (including the row cap), 4 another attestation has an eligible decision,
  * 2 a decision exists for the selected attestation, 3 decisions exist but all are corrected elsewhere, 1 none exist.
  */
-export function classifyCompletionAuthority(
-  db: Db,
+/** The result of one classification. Every result, including a fail-closed one, gets its digest the same way. */
+function classification(
   goalId: string,
   selectedAttestationId: string,
+  klass: CompletionAuthorityClass,
+  reason: CompletionAuthorityReason | null,
+  proofIds: string[],
+  entries: CompletionAuthorityEntry[],
 ): CompletionAuthorityClassification {
-  const proofRows = db
-    .prepare('SELECT id FROM goal_external_completion_proofs WHERE goal_id = ? ORDER BY id')
-    .all(goalId) as { id: string }[];
-  const proofIds = proofRows.map(({ id }) => id);
-
-  let entries: CompletionAuthorityEntry[] = [];
-  let klass: CompletionAuthorityClass;
-  let reason: CompletionAuthorityReason | null = null;
-
-  if (countCompletionRows(db, goalId) > MAX_COMPLETION_ROWS) {
-    // Over the cap no row is read at all. A terminal proof still outranks history problems.
-    if (proofIds.length > 0) klass = 6;
-    else {
-      klass = 5;
-      reason = 'too_many_decisions';
-    }
-  } else {
-    entries = completionRows(db, goalId)
-      .map(({ id, approval }) => safeEntryFor(db, goalId, id, approval))
-      .sort(byDecisionId);
-    const invalid = entries.find((entry) => entry.integrity !== 'ok');
-    const others = entries.filter((entry) => entry.attestationId !== selectedAttestationId);
-    const own = entries.filter((entry) => entry.attestationId === selectedAttestationId);
-    if (proofIds.length > 0) klass = 6;
-    else if (invalid) {
-      klass = 5;
-      reason = invalid.integrity;
-    } else if (others.some((entry) => entry.eligible)) klass = 4;
-    else if (own.length > 0) klass = 2;
-    else if (entries.length > 0) klass = 3;
-    else klass = 1;
-  }
-
   const body = {
     schemaVersion: 1,
     goalId,
@@ -236,4 +236,55 @@ export function classifyCompletionAuthority(
     entries,
     policyDigest: policyDigest(body),
   };
+}
+
+export function classifyCompletionAuthority(
+  db: Db,
+  goalId: string,
+  selectedAttestationId: string,
+): CompletionAuthorityClassification {
+  let proofIds: string[];
+  let overCap: boolean;
+  let rows: { id: string; approval: GoalApproval | null }[] = [];
+  try {
+    proofIds = (
+      db
+        .prepare('SELECT id FROM goal_external_completion_proofs WHERE goal_id = ? ORDER BY id')
+        .all(goalId) as { id: string }[]
+    ).map(({ id }) => id);
+    overCap = countCompletionRows(db, goalId) > MAX_COMPLETION_ROWS;
+    // Over the cap no completion row is read at all.
+    if (!overCap) rows = completionRows(db, goalId);
+  } catch {
+    // The proof read failed, so a terminal proof may exist: this is class 5 and never class 6.
+    return classification(goalId, selectedAttestationId, 5, 'history_unreadable', [], []);
+  }
+
+  let entries: CompletionAuthorityEntry[] = [];
+  let klass: CompletionAuthorityClass;
+  let reason: CompletionAuthorityReason | null = null;
+
+  if (overCap) {
+    // A terminal proof still outranks the cap.
+    if (proofIds.length > 0) klass = 6;
+    else {
+      klass = 5;
+      reason = 'too_many_decisions';
+    }
+  } else {
+    entries = rows.map(({ id, approval }) => safeEntryFor(db, goalId, id, approval)).sort(byDecisionId);
+    const invalid = entries.find((entry) => entry.integrity !== 'ok');
+    const others = entries.filter((entry) => entry.attestationId !== selectedAttestationId);
+    const own = entries.filter((entry) => entry.attestationId === selectedAttestationId);
+    if (proofIds.length > 0) klass = 6;
+    else if (invalid) {
+      klass = 5;
+      reason = invalid.integrity;
+    } else if (others.some((entry) => entry.eligible)) klass = 4;
+    else if (own.length > 0) klass = 2;
+    else if (entries.length > 0) klass = 3;
+    else klass = 1;
+  }
+
+  return classification(goalId, selectedAttestationId, klass, reason, proofIds, entries);
 }
