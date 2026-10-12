@@ -368,6 +368,29 @@ Non-blocking follow-ups (not blocking D.4A):
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Stage D.4B (desktop completion UI) not started.
 
+### D.4B desktop completion UI: ACCEPTED on `5a06d49` (lead record)
+
+Commits: `6f1f8a4` (client API and pure completion model), `4e6de7e` (read-only review panel in the Handoff tab), `5aca8f7` (Record completion decision and Complete Goal controls, mobile assertion), `5a06d49` (test-only: timer, Goal switch and pre-existing decision never complete the Goal). Plan: `scratchpad/d4b_plan.md` (Sonnet Medium).
+
+Behaviour: `GoalCompletion` is mounted in the Handoff tab of the desktop cockpit only. "Record completion decision" posts with the preflight digest as If-Match and completes nothing. "Complete Goal" appears only after a recorded decision, has its own acknowledgement, and posts with the stored action digest as If-Match. The completion POST is reachable only from the Complete Goal click handler. The mobile cockpit has no completion control (`goalMobile.test.tsx`).
+
+Decisions made during the stage (lead, disclosed):
+
+- The decision control is labelled "Record completion decision", not the plan's "Confirm external integration". The existing attestation button already uses that name on the same tab. The review agreed, and the owner may choose otherwise.
+- Raw field names and codes are never printed. The plan's observed-pair line was replaced by plain sentences: "Content preservation: not proven."
+- The completed heading "Completed on your decision" sits beside the not-proven line. Owner decision 2 remains open, so this copy is provisional.
+
+Evidence: full gate on `5a06d49` green (format, lint, typecheck, `npm test` 142 files / 2608 tests, build, `npm audit --omit=dev` 0, migrations diff empty). Independent review of `3e538b2..5aca8f7`: `VERDICT: PASS WITH NON-BLOCKING`, no blocking findings. Hosted CI on `5a06d49`: run 38236306160, success. The timer, Goal-switch and pre-existing-decision cases were added after review and are covered by that CI run.
+
+Non-blocking follow-ups:
+
+1. Implementer report misnamed the file of one edit (`goalHandoff.test.tsx` vs `goalCompletion.test.tsx`). No existing assertion was weakened; the repository is the authority.
+2. "Completed on your decision" could bind the not-proven wording into the same string (review suggestion, for D.4F).
+3. A 503 on a read-only preflight GET shows the "do not assume it failed or succeeded" wording. Accurate, but odd for a read. For D.4F.
+4. D.4F: authenticated-user wording ("your decision"), contrast of the Record and Complete controls against the attestation ConfirmPanel on the same tab, hash overflow, screen-reader behaviour, late responses after a Goal switch, retryable 429 on Complete.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. D.4C (correction authority) not started.
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
