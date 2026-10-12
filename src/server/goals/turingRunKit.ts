@@ -72,6 +72,8 @@ export async function realRunHarness(
     /** A real route-plan provider in place of the fixed test provider (Stage 5B). */
     planProvider?: (db: Db) => GoalRunPlanProvider;
     requireResolvedRoutes?: boolean;
+    /** Git object format of the isolated repository; omitted means sha1, as `goalRepoFixture` defaults. */
+    objectFormat?: 'sha1' | 'sha256';
   } = {},
 ): Promise<RealRunHarness> {
   const definition =
@@ -95,6 +97,7 @@ export async function realRunHarness(
     approved: options.approved,
     initializeRef: options.initializeGoalRef,
     initialFiles: { 'package.json': JSON.stringify({ scripts }) },
+    objectFormat: options.objectFormat,
   });
   const { db } = fx;
   const root = dirname(fx.repo);

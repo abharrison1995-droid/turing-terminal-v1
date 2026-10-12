@@ -208,7 +208,7 @@ export async function acceptedFixture(
 
 export async function integratedExternalFixture(
   objectFormat: 'sha1' | 'sha256' = 'sha1',
-  strategy: 'fast-forward' | 'ours' = 'fast-forward',
+  strategy: 'fast-forward' | 'ours' | 'merge' = 'fast-forward',
   options: { completionContractVersion2?: boolean; running?: boolean } = {},
 ) {
   const accepted = await acceptedFixture(objectFormat, options);
@@ -223,7 +223,21 @@ export async function integratedExternalFixture(
     });
   const handoff = (await prepareManualHandoff(accepted.fx.db, accepted.fx.goalId)).record;
   if (strategy === 'fast-forward') git(accepted.fx.repo, 'merge', '--ff-only', accepted.sourceRef);
-  else
+  else if (strategy === 'merge') {
+    // A destination-only commit makes the next merge a true two-parent merge: the source is not the destination's tip.
+    writeFileSync(join(accepted.fx.repo, 'unrelated.txt'), 'destination-only change\n');
+    git(accepted.fx.repo, 'add', 'unrelated.txt');
+    git(accepted.fx.repo, 'commit', '-q', '-m', 'destination-only change');
+    git(
+      accepted.fx.repo,
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '-m',
+      'fixture merges accepted source',
+      accepted.sourceRef,
+    );
+  } else
     git(
       accepted.fx.repo,
       'merge',
