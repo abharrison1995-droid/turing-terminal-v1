@@ -266,7 +266,7 @@ Limits that must be stated at D.2 acceptance:
 Commits on `feature/grand-project-goal-engine`, each with hosted CI green on its exact SHA and an independent Sonnet review:
 
 - `7f89727` pure completion-standing classifier and proof-row count helper. CI success (run 38179501425). Focused Sonnet review: PASS WITH NON-BLOCKING FINDINGS.
-- `f2c4dd0` read-only reader `readGoalCompletionStanding` (two SELECTs, no writes, no Git). CI success (run 38182589431). Sonnet review: PASS WITH NON-BLOCKING FINDINGS.
+- `f2c4dd0` read-only reader `readGoalCompletionStanding` (no writes, no Git; it reads the goals row, the proof, the correction projection and the other attestations). CI success (run 38182589431). Sonnet review: PASS WITH NON-BLOCKING FINDINGS.
 - `bf983f6` correction standings, independence tests, core-rule snapshots, consumer guard. Reviewed with `8ada747` below.
 - `8ada747` reason-code and correction-time-rule tests. CI success (run 38187984044). Sonnet Medium review of `bf983f6` and `8ada747`: PASS WITH NON-BLOCKING FINDINGS, no blocking findings.
 - `1152537` additive `completionStanding` on `GET /api/goals/:goalId`, the shared mirror type, tests W1 to W3, and two stale-comment corrections. CI success (run 38190847538). Gate passed locally on the exact tree (137 files, 2432 tests, audit 0). Sonnet Medium review: PASS WITH NON-BLOCKING FINDINGS, no blocking findings.
@@ -280,7 +280,7 @@ Decisions (owner-authorised recommended defaults; disclosed here for the stage r
 - Q5 the standing is exposed as an additive field on `GET /api/goals/:goalId`. Deviation from the plan: it is composed in the route layer, not inside `getGoalDetail`. A read-model import would close a cycle through `activeWork` and `externalCompletionDecision`. The route already imports the read model, so no new cycle appears.
 - Q6 `otherAttestations` is capped at 20 with a truncation flag.
 
-Core rules, as pinned by tests in `completionStandingService.test.ts`: a later correction (dispute, withdrawal or supersession) before or after completion never deletes the completion, rewrites `completed_at`, rewrites the proof, reopens the Goal, launches remediation, or invents a replacement. Standing suppresses an unqualified success claim. A valid independent attestation B is not invalidated when attestation A is withdrawn.
+Core rules, as pinned by tests in `completionStandingService.test.ts`: a later correction (dispute, withdrawal or supersession) before or after completion never deletes the completion, rewrites `completed_at`, rewrites the proof, reopens the Goal, launches remediation, or invents a replacement. The whole-database snapshot comparison covers dispute and withdrawal (A7). Supersession is covered at field level only (A4, A5), because it goes through the same correction service. Standing suppresses an unqualified success claim. A valid independent attestation B is not invalidated when attestation A is withdrawn (B5).
 
 Residual risks and open items at this point:
 
@@ -289,9 +289,14 @@ Residual risks and open items at this point:
 - The shared mirror in `src/shared/goalApi.ts` is checked against the server types in one direction only (server assignable to shared). There is no reverse check.
 - The independent-attestation tests use a test-only ref reset (`completedWithIndependent`) to create attestations at the proof tip. The service accepts that real-Git state. The replacement attestation used in the supersede tests is stale after that reset, which limits realism.
 - W2 reads its expected `status` from the same row the reader reads.
-- The duplicate `goal_ineligible` assertion at `src/server/goals/completionStandingService.test.ts:1748` is still present next to the C6 test. The review asked for it to be removed or justified. This is open.
+- The duplicate `goal_ineligible` assertion at `src/server/goals/completionStandingService.test.ts:1748` (test-quality only, not a D.3F rule) is still present next to the C6 test at :1471. Open; not blocking.
+- `GET /api/goals/:goalId` makes two separate reads, `getGoalDetail` and then the standing reader, not one transaction. A correction that lands between them could make the two disagree. Accepted for D.3F; the standing itself is a single read transaction.
 
-Not done: this docs commit (commit 5), the final whole-stage Sonnet review on the pushed SHA with CI green, and D.3F acceptance. D.3G, D.4, the Model Opportunity Layer, V1 hardening and V1 qualification have not started. Physical Windows, iPhone, live Tailscale and live provider gates remain pending.
+Final whole-stage review: Sonnet Medium on `9b442a1` returned PASS WITH NON-BLOCKING FINDINGS, with no blocking findings. It verified each core rule against code and tests, the suppression and independence rules, before- and after-completion coverage, the read-only reader and route, and that the migrations are unchanged from `3e6848a`. Hosted CI on `9b442a1` (run 38192756562) is green on the exact SHA.
+
+D.3F ACCEPTED on `9b442a1` under the stage rule, with the residuals above. A follow-up docs-only commit corrects three statements in this record that the final review found too broad (the reader's read description, the snapshot coverage, and the two-read route residual). It changes no code.
+
+Not done: D.3G, D.4, the Model Opportunity Layer, V1 hardening and V1 qualification have not started. Physical Windows, iPhone, live Tailscale and live provider gates remain pending.
 
 ## Remediation iterations
 
