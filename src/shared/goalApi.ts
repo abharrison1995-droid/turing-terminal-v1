@@ -430,7 +430,9 @@ export type GoalCompletionStandingReason =
   | 'integrity_check_failed';
 
 export interface GoalCompletionStandingClaim {
+  /** Means an uncontested recorded decision on a proof; never content correctness; read with contentPreservation. */
   unqualifiedSuccessAllowed: boolean;
+  /** Means an uncontested recorded decision on a proof; never content correctness; read with contentPreservation. */
   trustedForDownstream: boolean;
   qualifier:
     | 'none'

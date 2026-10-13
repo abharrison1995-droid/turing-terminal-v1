@@ -5,6 +5,8 @@ import {
   classifyCompletionStanding,
   COMPLETION_STANDING_VALUES,
   completionStandingAllowsUnqualifiedSuccess,
+  completionStandingHasProofBoundDecision,
+  completionStandingIsContentVerified,
   completionStandingTrustedForDownstream,
   type CompletionStandingFacts,
   type GoalCompletionClaim,
@@ -273,5 +275,97 @@ describe('completion standing: pure fallback for an impossible pairing', () => {
       qualifier: 'proof_unverified',
       contentPreservation: 'not_applicable',
     });
+  });
+});
+
+/**
+ * GH.6a, D3-2 option (1). The Booleans mean an uncontested recorded decision on a proof. They never mean content
+ * correctness, and `contentPreservation` is the field that says what is not proven. These invariants are over the
+ * producer's whole input space: every typed fact, plus the impossible pairings a cast can reach.
+ */
+describe('completion standing: content invariants of the producer (D3-2 option 1)', () => {
+  const INPUTS: { name: string; facts: CompletionStandingFacts }[] = [
+    ...ROWS.map((row) => ({ name: row.name, facts: row.facts })),
+    {
+      name: 'cast: legacy with uncontested',
+      facts: { kind: 'legacy', standing: 'uncontested' } as unknown as CompletionStandingFacts,
+    },
+    {
+      name: 'cast: invalid with uncontested',
+      facts: { kind: 'invalid', standing: 'uncontested' } as unknown as CompletionStandingFacts,
+    },
+  ];
+  const claimOf = (facts: CompletionStandingFacts): GoalCompletionClaim => classifyCompletionStanding(facts);
+
+  it('the input space holds every v2 standing, every other kind, and both casts', () => {
+    const v2Standings = INPUTS.flatMap((input) =>
+      input.facts.kind === 'v2' ? [input.facts.standing] : [],
+    ).sort();
+    expect(v2Standings).toEqual(
+      ['uncontested', 'disputed', 'withdrawn', 'superseded', 'reconciliation_required'].sort(),
+    );
+    expect(new Set(INPUTS.map((input) => input.facts.kind))).toEqual(
+      new Set(['v2', 'legacy', 'invalid', 'not_completed']),
+    );
+    expect(INPUTS).toHaveLength(10);
+  });
+
+  it('contentPreservation is not_proven for every v2 input, uncontested or not', () => {
+    for (const input of INPUTS) {
+      if (input.facts.kind !== 'v2') continue;
+      expect(claimOf(input.facts).contentPreservation, input.name).toBe('not_proven');
+    }
+  });
+
+  it('contentPreservation follows the producer table exactly: not_proven for v2, not_applicable for every other input', () => {
+    const table = Object.fromEntries(
+      INPUTS.map((input) => [input.name, claimOf(input.facts).contentPreservation]),
+    );
+    expect(table).toEqual({
+      'uncontested (v2)': 'not_proven',
+      'disputed (v2)': 'not_proven',
+      'withdrawn (v2)': 'not_proven',
+      'superseded (v2)': 'not_proven',
+      'reconciliation_required (v2)': 'not_proven',
+      'invalid_unverified (invalid)': 'not_applicable',
+      'historical_legacy (legacy)': 'not_applicable',
+      not_completed: 'not_applicable',
+      'cast: legacy with uncontested': 'not_applicable',
+      'cast: invalid with uncontested': 'not_applicable',
+    });
+  });
+
+  it('a trusted claim is only ever v2 uncontested, and it always carries not_proven', () => {
+    for (const input of INPUTS) {
+      const claim = claimOf(input.facts);
+      expect(claim.unqualifiedSuccessAllowed, input.name).toBe(claim.trustedForDownstream);
+      if (claim.trustedForDownstream) {
+        expect(input.facts, input.name).toEqual({ kind: 'v2', standing: 'uncontested' });
+        expect(claim.contentPreservation, input.name).toBe('not_proven');
+      }
+    }
+  });
+
+  it('completionStandingIsContentVerified is false for every input, and the proof-bound helper is true only for v2 uncontested', () => {
+    for (const input of INPUTS) {
+      const model = { claim: claimOf(input.facts) };
+      expect(completionStandingIsContentVerified(model), input.name).toBe(false);
+      expect(completionStandingHasProofBoundDecision(model), input.name).toBe(
+        input.facts.kind === 'v2' && input.facts.standing === 'uncontested',
+      );
+    }
+  });
+
+  it('a Boolean pair alone never implies a proof-bound decision: the helper also requires qualifier none and not_proven', () => {
+    const booleansOnly = {
+      claim: {
+        unqualifiedSuccessAllowed: true,
+        trustedForDownstream: true,
+        qualifier: 'none' as const,
+        contentPreservation: 'not_applicable' as const,
+      },
+    };
+    expect(completionStandingHasProofBoundDecision(booleansOnly)).toBe(false);
+    expect(completionStandingIsContentVerified(booleansOnly)).toBe(false);
   });
 });

@@ -53,7 +53,9 @@ export type CompletionContentPreservation = 'not_proven' | 'not_applicable';
 
 /** The claim a consumer may make about a completed Goal. Derived in one place by `classifyCompletionStanding`. */
 export interface GoalCompletionClaim {
+  /** Means an uncontested recorded decision on a proof; never content correctness; read with contentPreservation. */
   unqualifiedSuccessAllowed: boolean;
+  /** Means an uncontested recorded decision on a proof; never content correctness; read with contentPreservation. */
   trustedForDownstream: boolean;
   qualifier: CompletionClaimQualifier;
   contentPreservation: CompletionContentPreservation;
@@ -117,6 +119,31 @@ export function completionStandingAllowsUnqualifiedSuccess(model: { claim: GoalC
 /** True only when the Goal's claim is trusted for downstream use. Reads the claim alone, so it agrees with the predicate above. */
 export function completionStandingTrustedForDownstream(model: { claim: GoalCompletionClaim }): boolean {
   return model.claim.trustedForDownstream;
+}
+
+/**
+ * Content verification. Always false at V1: no production path proves that a completed Goal's content is correct. Neither
+ * Boolean ever proves it either. A version-2 proof records `contentPreservation: 'not_proven'`, and a user's accepted
+ * completion is a recorded decision, not a content check. Nothing may read this as content correctness. The function
+ * gives one place to change if a content-verification path is ever added, and the invariant tests assert it is false.
+ */
+export function completionStandingIsContentVerified(_model: { claim: GoalCompletionClaim }): false {
+  return false;
+}
+
+/**
+ * True only for an uncontested recorded decision on a proof: both Booleans true, the `none` qualifier, and
+ * `contentPreservation` `not_proven`. This is the rule the client applies in completionStandingCopy.ts. It is NOT content
+ * verification; `completionStandingIsContentVerified` is the function for that question, and it is always false.
+ */
+export function completionStandingHasProofBoundDecision(model: { claim: GoalCompletionClaim }): boolean {
+  const { claim } = model;
+  return (
+    claim.unqualifiedSuccessAllowed &&
+    claim.trustedForDownstream &&
+    claim.qualifier === 'none' &&
+    claim.contentPreservation === 'not_proven'
+  );
 }
 
 /** The only domain error of the reader. Every other failure is classified as an invalid standing, never thrown. */

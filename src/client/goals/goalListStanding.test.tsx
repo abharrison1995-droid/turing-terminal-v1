@@ -117,6 +117,20 @@ describe('Goal list: a completed row never reads as a bare Completed unless its 
     expect(row!.textContent).not.toContain(BARE_DONE);
   });
 
+  it.each([
+    ['not_applicable', 'not_applicable' as const],
+    ['null', null],
+  ])(
+    'L-5b a trusted brief whose contentPreservation is %s fails closed to the not-recognised label',
+    async (_label, value) => {
+      const brief = { ...TRUSTED, contentPreservation: value } as unknown as CompletionStandingBrief;
+      const [row] = await renderList([completedItem('goal-1', brief)]);
+      expect(pillOf(row!).textContent).toBe('Standing not recognised');
+      expect(nextOf(row!).textContent).not.toBe('Completed');
+      expect(row!.textContent).not.toContain(BARE_DONE);
+    },
+  );
+
   it('L-6 a non-completed row keeps its status label and has no standing copy', async () => {
     const [row] = await renderList([
       item({ id: 'goal-1', status: 'running', nextAction: { kind: 'wait_for_turing' } }),

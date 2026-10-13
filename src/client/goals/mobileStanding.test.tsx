@@ -255,6 +255,7 @@ describe('compact Goal standing: fail closed', () => {
       'contentPreservation not_applicable',
       { ...CLAIM_TRUSTED, contentPreservation: 'not_applicable' as const },
     ],
+    ['contentPreservation null', { ...CLAIM_TRUSTED, contentPreservation: null as unknown as 'not_proven' }],
   ])('M-R6 an uncontested standing with %s is not recognised', async (_label, claim) => {
     await renderGoal(standingDetail(standing('v2', 'uncontested', claim)));
     const section = await screen.findByRole('region', { name: 'Completion standing' });
