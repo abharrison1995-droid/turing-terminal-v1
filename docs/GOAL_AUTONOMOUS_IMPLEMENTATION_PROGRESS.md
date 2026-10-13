@@ -754,3 +754,52 @@ Non-blocking findings from the whole-programme review, carried forward as follow
 Final report: the final report is the lead's message for this workstream, not a repository file. It states the matrix as 21 cases with case 10 partial, case 15 seam-based and case 17 seeded. It does not claim a bare 21 of 21.
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. PR #3 is open and has not been merged. D.4F (accessibility and mobile) has not started.
+
+## D.4F: accessibility, mobile visibility and completion/correction UX hardening
+
+### D.4F.0 audit and plan: ACCEPTED as planning (lead record, no production change)
+
+Starting point verified before any mutation: local HEAD, `origin/feature/grand-project-goal-engine` and the accepted D.4R checkpoint are all `3e3f926`. The working tree was clean, the branch contained the checkpoint, PR #3 was open and unmerged at that head, and it was the only worktree. Planner: Sonnet 5.5 Medium, read-only (`scratchpad/d4f0_audit.md`). Verdict: PLAN: GO.
+
+Scope of this record: a source-grounded inventory of the accepted D.4R client, server and mobile code, the accessibility support that already exists, the gaps, and the D.4E follow-ups F1 to F4. No production file was changed.
+
+Findings that shape the slices:
+
+- The D.4E follow-ups are confirmed in source. F1: the "may still finish" caution is lost when the read still shows the decision recorded. F2: correction adoption does not compare the chain position. F3: a read-only preflight 503 uses write-uncertain wording. F4: a busy Record ignores `retryable`, while a busy Complete honours it.
+- The phone shows "Completed" for any completed Goal, including a disputed one. The phone already receives `completionStanding`, and nothing reads it. The fix is client-only.
+- No axe or jest-dom library is installed. Role, name, focus-order and static CSS scans need no new dependency. jsdom cannot show layout or screen-reader output.
+- The cycle scan of `src/client` finds no cycles at HEAD. The rule for any shared helper is a new leaf module.
+- The timer static scan in `unknownOutcome.test.ts` forbids timers in the completion and correction files. A timed live-region clear is therefore not allowed.
+
+Owner flags (not implemented; recorded for decision):
+
+1. **G14, pending correction approval on the phone.** The phone lists a pending correction approval with Approve and Deny. The server refuses the decision, and the refusal text is confusing. The fix is a server read-projection change at `readModel.ts:1065-1073`. This is a server file, so it needs an owner decision.
+2. **No server enforcement of desktop-only.** Nothing on the Goal completion or correction routes checks whether the caller is remote or mobile. The acceptance matrix already says paired phones can call the API directly. Copy and documents must say the phone interface offers no completion or correction control. They must not say the phone is prevented from calling the API. Adding server enforcement would change authority and needs an owner decision.
+3. **F4 behaviour.** A busy Record will keep its acknowledgement and offer a manual retry, as a busy Complete already does. This changes the D.4E record expectation for busy Record. The alternative, keeping the re-review and fixing only the copy, is an owner choice.
+
+Mapping of the directive's 20 test requirements to the planned slices:
+
+| Directive test                                                      | Planned slice                                        |
+| ------------------------------------------------------------------- | ---------------------------------------------------- |
+| 1 No completion POST before the explicit Complete action            | D.4F.1 (existing tests kept; new keyboard walk)      |
+| 2 No decision POST before the explicit Record action                | D.4F.1 (existing tests kept)                         |
+| 3 No correction POST on render, refresh, remount, SSE or navigation | D.4F.2 (late-response and navigation pins)           |
+| 4 Decision distinct from terminal completion                        | D.4F.1 (copy and headings)                           |
+| 5 Keyboard access to supported controls                             | D.4F.1 (keyboard walk)                               |
+| 6 No focus stolen by background reads                               | D.4F.1 (read refusals do not focus)                  |
+| 7 Deliberate errors and refusals get accessible feedback            | D.4F.1 (persistent live region; alerts for refusals) |
+| 8 Correction approval boundaries preserved                          | D.4F.2 (existing correction tests kept)              |
+| 9 Mobile shows standing with no completion or correction control    | D.4F.3                                               |
+| 10 Unverified standing never shown as successful verification       | D.4F.1 and D.4F.3                                    |
+| 11 Late responses cannot contaminate another Goal                   | D.4F.2                                               |
+| 12 Switching attestation does not reuse prior authority             | D.4F.2 (existing D.4R tests kept)                    |
+| 13 Unknown write outcomes blocked until reconciliation              | D.4F.2 (existing D.4E tests kept)                    |
+| 14 Read-only failures do not claim a write may have persisted       | D.4F.2 (F3)                                          |
+| 15 Retryable 429 never silently retries a write                     | D.4F.2 (F4)                                          |
+| 16 Pending correction not resumed against a changed chain           | D.4F.2 (F2)                                          |
+| 17 Historical completion and later correction visually distinct     | D.4F.1                                               |
+| 18 D.4R cross-attestation recovery still functional                 | D.4F.4 (full regression)                             |
+| 19 Existing authenticated desktop workflows intact                  | D.4F.4 (full regression)                             |
+| 20 No new authority path, proof writer or terminal transition       | D.4F.4 (static guards and no-migration diff)         |
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.1 onward has not started. PR #3 is open and has not been merged.
