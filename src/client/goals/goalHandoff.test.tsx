@@ -1929,8 +1929,7 @@ describe('GH.6b residual B: preparation refusal copy', () => {
     serve(
       detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
         '/api/goals/goal-1/handoffs': () => history(),
-        'POST /api/goals/goal-1/handoffs': () =>
-          refuse(409, message, 'manual_reconciliation_required'),
+        'POST /api/goals/goal-1/handoffs': () => refuse(409, message, 'manual_reconciliation_required'),
       }),
     );
     const user = userEvent.setup();

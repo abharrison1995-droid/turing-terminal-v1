@@ -117,12 +117,15 @@ describe('compact Goal standing: pins at HEAD', () => {
     ['no standing', undefined, 'Standing could not be read'],
     ['a trusted standing', trustedStanding(), 'Completed'],
     ['a contested standing', contestedStanding('disputed', 'disputed_by_user'), 'Completion contested'],
-  ])('M-P3 the pill of a completed Goal keeps the status with %s and shows its label', async (_label, value, label) => {
-    await renderGoal(standingDetail(value));
-    await screen.findByLabelText('Next action');
-    expect(pill()).toHaveAttribute('data-goal-status', 'completed');
-    expect(pill()).toHaveTextContent(label);
-  });
+  ])(
+    'M-P3 the pill of a completed Goal keeps the status with %s and shows its label',
+    async (_label, value, label) => {
+      await renderGoal(standingDetail(value));
+      await screen.findByLabelText('Next action');
+      expect(pill()).toHaveAttribute('data-goal-status', 'completed');
+      expect(pill()).toHaveTextContent(label);
+    },
+  );
 
   it.each([
     ['no standing', undefined],

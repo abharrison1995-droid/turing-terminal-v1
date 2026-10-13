@@ -227,7 +227,10 @@ describe('the test-only reset is referenced only by its owner', () => {
 
   it('C3 the scanner flags a seeded production import of the reset and passes a clean file', () => {
     const seeded = [
-      { path: 'client/goals/Seeded.tsx', source: "import { clearInflightWritesForTests } from './inflightWrites';" },
+      {
+        path: 'client/goals/Seeded.tsx',
+        source: "import { clearInflightWritesForTests } from './inflightWrites';",
+      },
       { path: 'client/goals/Clean.ts', source: 'export const clean = 1;' },
     ];
     expect(referencing(seeded, RESET_NAME)).toEqual(['client/goals/Seeded.tsx']);
