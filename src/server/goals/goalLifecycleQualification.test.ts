@@ -446,244 +446,247 @@ function completedState(target: Target) {
   };
 }
 
+/**
+ * Steps 1 to 4 of Q1, moved unchanged from the test body: the real approval, the real bounded execution and review,
+ * the restart, the prepared handoff, and the real destination integration with its verified observation. Returns what
+ * the later steps of Q1 and Q1b read. Only the test body's indentation changed when it moved.
+ */
+async function driveToVerifiedHandoff(objectFormat: (typeof FORMATS)[number]) {
+  const harness = await openGoal('gpt-5.5', objectFormat);
+  const { db, repo, goalId } = harness.fx;
+  const target: Target = { db, goalId, repo };
+
+  // Step 1: the v2 policy is approved through the real HTTP approve route.
+  const hash = (
+    db
+      .prepare(
+        'SELECT definition_hash AS hash FROM goal_definition_versions WHERE goal_id = ? AND version = 1',
+      )
+      .get(goalId) as { hash: string }
+  ).hash;
+  expect(
+    db.prepare('SELECT status FROM goal_definition_versions WHERE goal_id = ? AND version = 1').get(goalId),
+  ).toEqual({ status: 'proposed' });
+  const approval = await approveDefinition(db, goalId);
+  expect(approval.hash).toBe(hash);
+  expect(approval.response).toMatchObject({
+    status: 200,
+    body: { version: 1, definitionHash: hash, goalStatus: 'ready' },
+  });
+  const approvedRow = db
+    .prepare(
+      'SELECT status, approved_by, definition_hash, contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = 1',
+    )
+    .get(goalId) as {
+    status: string;
+    approved_by: string;
+    definition_hash: string;
+    contract_json: string;
+  };
+  expect(approvedRow).toMatchObject({ status: 'approved', approved_by: 'user', definition_hash: hash });
+  expect(JSON.parse(approvedRow.contract_json).completionPolicy).toMatchObject({
+    completionContractVersion: 2,
+    integrationMode: 'external_user_attested',
+  });
+
+  // Step 2: real supervisor ticks through proposal, execution, deterministic evidence and a different-family review.
+  const base = harness.baseCommit;
+  const started = await call('POST', `/api/goals/${goalId}/start`, {});
+  expect(started).toMatchObject({ status: 200, body: { ok: true, goalStatus: 'running' } });
+  const ref = `refs/heads/turing/goal/${goalId}`;
+
+  await harness.until('proposal_run_started');
+  const proposalRun = runFor('proposal');
+  await vi.waitFor(() => expect(harness.runRow(proposalRun.id).status).toBe('completed'), {
+    timeout: 20_000,
+  });
+  await harness.until('proposal_recorded');
+
+  await harness.until('run_started');
+  const executionId = runFor('execution', harness.cycleId()).id;
+  await vi.waitFor(() => expect(harness.runRow(executionId).status).toBe('completed'), {
+    timeout: 25_000,
+  });
+  await harness.until('cycle_succeeded');
+  const integratedHead = harness.fx.git('rev-parse', ref);
+  expect(integratedHead).not.toBe(base);
+  expect(harness.fx.git('rev-parse', 'main')).toBe(base);
+
+  await harness.until('evidence_collected');
+  const integratedTree = harness.fx.git('rev-parse', `${integratedHead}^{tree}`);
+  const evidence = db
+    .prepare(
+      'SELECT kind, criterion_key, subject_tree FROM goal_evidence WHERE goal_id = ? AND run_id = ? ORDER BY criterion_key, kind',
+    )
+    .all(goalId, executionId) as Array<Record<string, string>>;
+  expect(evidence).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'build_result',
+        criterion_key: 'build',
+        subject_tree: integratedTree,
+      }),
+      expect.objectContaining({
+        kind: 'test_result',
+        criterion_key: 'tests',
+        subject_tree: integratedTree,
+      }),
+    ]),
+  );
+
+  await harness.until('review_run_started');
+  const reviewCycle = db
+    .prepare(
+      "SELECT id FROM goal_cycles WHERE goal_id = ? AND kind = 'review' ORDER BY sequence DESC LIMIT 1",
+    )
+    .get(goalId) as { id: string };
+  const reviewRun = runFor('review', reviewCycle.id);
+  await vi.waitFor(
+    () => {
+      const status = harness.runRow(reviewRun.id).status;
+      if (status === 'failed') {
+        const stages = db
+          .prepare('SELECT kind, status, error FROM stages WHERE run_id = ? ORDER BY sequence')
+          .all(reviewRun.id);
+        throw new Error(
+          `Review run failed: ${JSON.stringify(stages)}; provider roles: ${providerCalls.map((call) => call.role).join(',')}`,
+        );
+      }
+      expect(status).toBe('completed');
+    },
+    { timeout: 25_000 },
+  );
+  const resolutionJson = (
+    db.prepare('SELECT route_resolution_json AS json FROM goal_cycles WHERE id = ?').get(reviewCycle.id) as {
+      json: string;
+    }
+  ).json;
+  expect(readStoredResolutions(resolutionJson).final_reviewer?.selected.configuration.modelId).toBe(
+    'gpt-5.5',
+  );
+  await harness.until('review_consumed');
+  const review = db
+    .prepare('SELECT status, verdict, independence_json FROM goal_reviews WHERE cycle_id = ?')
+    .get(reviewCycle.id) as { status: string; verdict: string; independence_json: string };
+  expect(review).toMatchObject({ status: 'completed', verdict: 'pass' });
+  expect(JSON.parse(review.independence_json)).toMatchObject({
+    established: true,
+    policy: 'different-family',
+  });
+
+  await harness.until('gate_requested');
+  const acceptance = db
+    .prepare("SELECT id, status FROM goal_approvals WHERE goal_id = ? AND gate = 'final_acceptance'")
+    .get(goalId) as { id: string; status: string };
+  expect(acceptance.status).toBe('pending');
+  const atGate = await evaluateCompletion(db, goalId);
+  expect(atGate.failures.map((failure) => failure.code)).toEqual([
+    'final_acceptance_missing',
+    'external_completion_not_activated',
+  ]);
+  expect(atGate.finalReview).toMatchObject({ required: true, ok: true });
+  expect(atGate.finalAcceptance).toMatchObject({ required: true, ok: false });
+  expect(proofRows(db, goalId)).toEqual([]);
+
+  // Restart before the user decides: a fresh supervisor and a fresh app on the same database.
+  const restarted = harness.restart();
+  restartedApp = createApp({
+    database: db,
+    engine: restarted.engine,
+    goalSupervisor: restarted.supervisor,
+  });
+  await restartedApp.ready();
+  serving = restartedApp;
+  // A pending acceptance gate holds the Goal in needs_user (gate_pending) until the user decides; it is not running.
+  expect(goalRow(db, goalId)).toMatchObject({
+    status: 'needs_user',
+    status_reason_code: 'gate_pending',
+    completed_at: null,
+  });
+  expect(proofRows(db, goalId)).toEqual([]);
+
+  // Step 3: the user decides the acceptance gate through the real decision route, then resumes through the real route.
+  const decided = await call('POST', `/api/goal-approvals/${acceptance.id}/decision`, {
+    decision: 'approved',
+  });
+  expect(decided).toMatchObject({ status: 200, body: { status: 'approved', changed: true } });
+  expect(db.prepare('SELECT status, decided_by FROM goal_approvals WHERE id = ?').get(acceptance.id)).toEqual(
+    {
+      status: 'approved',
+      decided_by: 'user',
+    },
+  );
+  expect(goalRow(db, goalId)).toMatchObject({ status: 'needs_user' });
+  const resumed = await call('POST', `/api/goals/${goalId}/resume`, { reason: 'gate_resolved' });
+  expect(resumed).toMatchObject({ status: 200, body: { ok: true, goalStatus: 'running' } });
+  const next = await restarted.supervisor.tickGoal(goalId);
+  expect(next.action).toBe('completion_pending');
+  const evaluation = await evaluateCompletion(db, goalId);
+  expect(evaluation.failures.map((failure) => failure.code)).toEqual(['external_completion_not_activated']);
+  expect(evaluation.finalReview).toMatchObject({ required: true, ok: true });
+  expect(evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
+  expect(evaluation.finalApply).toMatchObject({
+    required: true,
+    ok: false,
+    reason: 'external_completion_not_activated',
+  });
+  expect(goalRow(db, goalId)).toMatchObject({ status: 'running', completed_at: null });
+  expect(proofRows(db, goalId)).toEqual([]);
+
+  // Step 4: the handoff is prepared through the real API. The fixture performs the Git integration, not the product.
+  const preparedResponse = await call('POST', `/api/goals/${goalId}/handoffs`, {});
+  expect(preparedResponse.status).toBe(201);
+  const handoffId = preparedResponse.body.handoffId as string;
+  const projection = (await call('GET', `/api/goals/${goalId}/handoffs/${handoffId}`)).body
+    .projection as GoalManualHandoffProjection;
+  expect(projection.state).toBe('current');
+
+  const externalPath = `/api/goals/${goalId}/handoffs/${handoffId}/external-integration`;
+  expect(await call('GET', `${externalPath}/verification`)).toMatchObject({
+    status: 200,
+    body: { verification: { state: 'not_integrated', reason: { code: 'source_not_ancestor' } } },
+  });
+
+  if (objectFormat === 'sha1') harness.fx.git('merge', '--ff-only', ref);
+  else {
+    // A destination-only commit makes the following merge a true two-parent `--no-ff` merge.
+    writeFileSync(join(repo, 'unrelated.txt'), 'destination-only change\n');
+    harness.fx.git('add', 'unrelated.txt');
+    harness.fx.git('commit', '-m', 'user advances destination independently');
+    harness.fx.git('merge', '--no-ff', '--no-edit', ref);
+  }
+  const destinationHead = harness.fx.git('rev-parse', 'main');
+  if (objectFormat === 'sha1') expect(destinationHead).toBe(integratedHead);
+  else
+    expect(harness.fx.git('rev-list', '--parents', '-n', '1', 'main').split(' ')).toContain(integratedHead);
+  const afterIntegration = repositoryState(repo);
+
+  const verified = await call('GET', `${externalPath}/verification`);
+  expect(verified).toMatchObject({ status: 200, body: { verification: { state: 'verified' } } });
+  const observation = (
+    verified.body.verification as {
+      observation: {
+        actionDigest: string;
+        source: { commit: string };
+        destination: { observedCommit: string };
+      };
+    }
+  ).observation;
+  expect(observation).toMatchObject({
+    actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    source: { commit: integratedHead },
+    destination: { observedCommit: destinationHead },
+  });
+  expect(repositoryState(repo)).toEqual(afterIntegration);
+  return { harness, db, repo, goalId, target, externalPath, observation, afterIntegration };
+}
+
 describe('Q1 one version-2 Goal from real bounded execution to a corrected completion', () => {
   it.each(FORMATS)(
     'runs one v2 Goal from real execution through a corrected completion (%s)',
     async (objectFormat) => {
-      const harness = await openGoal('gpt-5.5', objectFormat);
-      const { db, repo, goalId } = harness.fx;
-      const target: Target = { db, goalId, repo };
-
-      // Step 1: the v2 policy is approved through the real HTTP approve route.
-      const hash = (
-        db
-          .prepare(
-            'SELECT definition_hash AS hash FROM goal_definition_versions WHERE goal_id = ? AND version = 1',
-          )
-          .get(goalId) as { hash: string }
-      ).hash;
-      expect(
-        db
-          .prepare('SELECT status FROM goal_definition_versions WHERE goal_id = ? AND version = 1')
-          .get(goalId),
-      ).toEqual({ status: 'proposed' });
-      const approval = await approveDefinition(db, goalId);
-      expect(approval.hash).toBe(hash);
-      expect(approval.response).toMatchObject({
-        status: 200,
-        body: { version: 1, definitionHash: hash, goalStatus: 'ready' },
-      });
-      const approvedRow = db
-        .prepare(
-          'SELECT status, approved_by, definition_hash, contract_json FROM goal_definition_versions WHERE goal_id = ? AND version = 1',
-        )
-        .get(goalId) as {
-        status: string;
-        approved_by: string;
-        definition_hash: string;
-        contract_json: string;
-      };
-      expect(approvedRow).toMatchObject({ status: 'approved', approved_by: 'user', definition_hash: hash });
-      expect(JSON.parse(approvedRow.contract_json).completionPolicy).toMatchObject({
-        completionContractVersion: 2,
-        integrationMode: 'external_user_attested',
-      });
-
-      // Step 2: real supervisor ticks through proposal, execution, deterministic evidence and a different-family review.
-      const base = harness.baseCommit;
-      const started = await call('POST', `/api/goals/${goalId}/start`, {});
-      expect(started).toMatchObject({ status: 200, body: { ok: true, goalStatus: 'running' } });
-      const ref = `refs/heads/turing/goal/${goalId}`;
-
-      await harness.until('proposal_run_started');
-      const proposalRun = runFor('proposal');
-      await vi.waitFor(() => expect(harness.runRow(proposalRun.id).status).toBe('completed'), {
-        timeout: 20_000,
-      });
-      await harness.until('proposal_recorded');
-
-      await harness.until('run_started');
-      const executionId = runFor('execution', harness.cycleId()).id;
-      await vi.waitFor(() => expect(harness.runRow(executionId).status).toBe('completed'), {
-        timeout: 25_000,
-      });
-      await harness.until('cycle_succeeded');
-      const integratedHead = harness.fx.git('rev-parse', ref);
-      expect(integratedHead).not.toBe(base);
-      expect(harness.fx.git('rev-parse', 'main')).toBe(base);
-
-      await harness.until('evidence_collected');
-      const integratedTree = harness.fx.git('rev-parse', `${integratedHead}^{tree}`);
-      const evidence = db
-        .prepare(
-          'SELECT kind, criterion_key, subject_tree FROM goal_evidence WHERE goal_id = ? AND run_id = ? ORDER BY criterion_key, kind',
-        )
-        .all(goalId, executionId) as Array<Record<string, string>>;
-      expect(evidence).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            kind: 'build_result',
-            criterion_key: 'build',
-            subject_tree: integratedTree,
-          }),
-          expect.objectContaining({
-            kind: 'test_result',
-            criterion_key: 'tests',
-            subject_tree: integratedTree,
-          }),
-        ]),
-      );
-
-      await harness.until('review_run_started');
-      const reviewCycle = db
-        .prepare(
-          "SELECT id FROM goal_cycles WHERE goal_id = ? AND kind = 'review' ORDER BY sequence DESC LIMIT 1",
-        )
-        .get(goalId) as { id: string };
-      const reviewRun = runFor('review', reviewCycle.id);
-      await vi.waitFor(
-        () => {
-          const status = harness.runRow(reviewRun.id).status;
-          if (status === 'failed') {
-            const stages = db
-              .prepare('SELECT kind, status, error FROM stages WHERE run_id = ? ORDER BY sequence')
-              .all(reviewRun.id);
-            throw new Error(
-              `Review run failed: ${JSON.stringify(stages)}; provider roles: ${providerCalls.map((call) => call.role).join(',')}`,
-            );
-          }
-          expect(status).toBe('completed');
-        },
-        { timeout: 25_000 },
-      );
-      const resolutionJson = (
-        db
-          .prepare('SELECT route_resolution_json AS json FROM goal_cycles WHERE id = ?')
-          .get(reviewCycle.id) as {
-          json: string;
-        }
-      ).json;
-      expect(readStoredResolutions(resolutionJson).final_reviewer?.selected.configuration.modelId).toBe(
-        'gpt-5.5',
-      );
-      await harness.until('review_consumed');
-      const review = db
-        .prepare('SELECT status, verdict, independence_json FROM goal_reviews WHERE cycle_id = ?')
-        .get(reviewCycle.id) as { status: string; verdict: string; independence_json: string };
-      expect(review).toMatchObject({ status: 'completed', verdict: 'pass' });
-      expect(JSON.parse(review.independence_json)).toMatchObject({
-        established: true,
-        policy: 'different-family',
-      });
-
-      await harness.until('gate_requested');
-      const acceptance = db
-        .prepare("SELECT id, status FROM goal_approvals WHERE goal_id = ? AND gate = 'final_acceptance'")
-        .get(goalId) as { id: string; status: string };
-      expect(acceptance.status).toBe('pending');
-      const atGate = await evaluateCompletion(db, goalId);
-      expect(atGate.failures.map((failure) => failure.code)).toEqual([
-        'final_acceptance_missing',
-        'external_completion_not_activated',
-      ]);
-      expect(atGate.finalReview).toMatchObject({ required: true, ok: true });
-      expect(atGate.finalAcceptance).toMatchObject({ required: true, ok: false });
-      expect(proofRows(db, goalId)).toEqual([]);
-
-      // Restart before the user decides: a fresh supervisor and a fresh app on the same database.
-      const restarted = harness.restart();
-      restartedApp = createApp({
-        database: db,
-        engine: restarted.engine,
-        goalSupervisor: restarted.supervisor,
-      });
-      await restartedApp.ready();
-      serving = restartedApp;
-      // A pending acceptance gate holds the Goal in needs_user (gate_pending) until the user decides; it is not running.
-      expect(goalRow(db, goalId)).toMatchObject({
-        status: 'needs_user',
-        status_reason_code: 'gate_pending',
-        completed_at: null,
-      });
-      expect(proofRows(db, goalId)).toEqual([]);
-
-      // Step 3: the user decides the acceptance gate through the real decision route, then resumes through the real route.
-      const decided = await call('POST', `/api/goal-approvals/${acceptance.id}/decision`, {
-        decision: 'approved',
-      });
-      expect(decided).toMatchObject({ status: 200, body: { status: 'approved', changed: true } });
-      expect(
-        db.prepare('SELECT status, decided_by FROM goal_approvals WHERE id = ?').get(acceptance.id),
-      ).toEqual({
-        status: 'approved',
-        decided_by: 'user',
-      });
-      expect(goalRow(db, goalId)).toMatchObject({ status: 'needs_user' });
-      const resumed = await call('POST', `/api/goals/${goalId}/resume`, { reason: 'gate_resolved' });
-      expect(resumed).toMatchObject({ status: 200, body: { ok: true, goalStatus: 'running' } });
-      const next = await restarted.supervisor.tickGoal(goalId);
-      expect(next.action).toBe('completion_pending');
-      const evaluation = await evaluateCompletion(db, goalId);
-      expect(evaluation.failures.map((failure) => failure.code)).toEqual([
-        'external_completion_not_activated',
-      ]);
-      expect(evaluation.finalReview).toMatchObject({ required: true, ok: true });
-      expect(evaluation.finalAcceptance).toMatchObject({ required: true, ok: true });
-      expect(evaluation.finalApply).toMatchObject({
-        required: true,
-        ok: false,
-        reason: 'external_completion_not_activated',
-      });
-      expect(goalRow(db, goalId)).toMatchObject({ status: 'running', completed_at: null });
-      expect(proofRows(db, goalId)).toEqual([]);
-
-      // Step 4: the handoff is prepared through the real API. The fixture performs the Git integration, not the product.
-      const preparedResponse = await call('POST', `/api/goals/${goalId}/handoffs`, {});
-      expect(preparedResponse.status).toBe(201);
-      const handoffId = preparedResponse.body.handoffId as string;
-      const projection = (await call('GET', `/api/goals/${goalId}/handoffs/${handoffId}`)).body
-        .projection as GoalManualHandoffProjection;
-      expect(projection.state).toBe('current');
-
-      const externalPath = `/api/goals/${goalId}/handoffs/${handoffId}/external-integration`;
-      expect(await call('GET', `${externalPath}/verification`)).toMatchObject({
-        status: 200,
-        body: { verification: { state: 'not_integrated', reason: { code: 'source_not_ancestor' } } },
-      });
-
-      if (objectFormat === 'sha1') harness.fx.git('merge', '--ff-only', ref);
-      else {
-        // A destination-only commit makes the following merge a true two-parent `--no-ff` merge.
-        writeFileSync(join(repo, 'unrelated.txt'), 'destination-only change\n');
-        harness.fx.git('add', 'unrelated.txt');
-        harness.fx.git('commit', '-m', 'user advances destination independently');
-        harness.fx.git('merge', '--no-ff', '--no-edit', ref);
-      }
-      const destinationHead = harness.fx.git('rev-parse', 'main');
-      if (objectFormat === 'sha1') expect(destinationHead).toBe(integratedHead);
-      else
-        expect(harness.fx.git('rev-list', '--parents', '-n', '1', 'main').split(' ')).toContain(
-          integratedHead,
-        );
-      const afterIntegration = repositoryState(repo);
-
-      const verified = await call('GET', `${externalPath}/verification`);
-      expect(verified).toMatchObject({ status: 200, body: { verification: { state: 'verified' } } });
-      const observation = (
-        verified.body.verification as {
-          observation: {
-            actionDigest: string;
-            source: { commit: string };
-            destination: { observedCommit: string };
-          };
-        }
-      ).observation;
-      expect(observation).toMatchObject({
-        actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
-        source: { commit: integratedHead },
-        destination: { observedCommit: destinationHead },
-      });
-      expect(repositoryState(repo)).toEqual(afterIntegration);
+      const { harness, db, repo, goalId, target, externalPath, observation, afterIntegration } =
+        await driveToVerifiedHandoff(objectFormat);
 
       // Step 5: attestation through the real HTTP route, then the real preflight and decision services.
       const confirmation = await call(
@@ -813,6 +816,178 @@ describe('Q1 one version-2 Goal from real bounded execution to a corrected compl
       } finally {
         if (reopened.open) reopened.close();
       }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it.each(FORMATS)(
+    'Q1b a decided A whose destination advanced after observation blocks B until A is disputed, then B completes (%s)',
+    async (objectFormat) => {
+      const { db, repo, goalId, externalPath, observation, harness } =
+        await driveToVerifiedHandoff(objectFormat);
+
+      // A is attested through the real route and decided through the real decision service.
+      const confirmationA = await call(
+        'POST',
+        `${externalPath}/attest`,
+        { decision: 'confirm_external_integration' },
+        { 'if-match': `"${observation.actionDigest}"` },
+      );
+      expect(confirmationA.status).toBe(201);
+      const attestationA = confirmationA.body.attestationId as string;
+      const preflightA = await computeExternalCompletionPreflight(db, goalId, {
+        attestationId: attestationA,
+      });
+      expect(preflightA.outcome).toBe('ready');
+      const decisionA = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: attestationA,
+        reviewedPreflightDigest: preflightA.digest,
+        acknowledgeContentNotProven: true,
+      });
+      expect(decisionA).toMatchObject({ status: 'approved', reused: false });
+      const rowA = db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(decisionA.approvalId);
+
+      // The destination advances with a real commit after A was observed. A is not corrected.
+      harness.fx.git('rev-parse', 'main');
+      writeFileSync(join(repo, 'after-a.txt'), 'destination advanced after A was observed\n');
+      harness.fx.git('add', 'after-a.txt');
+      harness.fx.git('commit', '-m', 'user advances destination after A');
+      const staleA = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attestationA },
+        { allowRecordedDecision: true },
+      );
+      expect(staleA).toMatchObject({ outcome: 'refused' });
+      // Observed: the source is still integrated and only the tip advanced, so A is historical, not stale.
+      expect(staleA.reasons[0]).toMatchObject({ code: 'destination_advanced_after_observation' });
+      expect(db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(decisionA.approvalId)).toEqual(rowA);
+      expect(goalRow(db, goalId)).toMatchObject({ status: 'running', completed_at: null });
+      expect(proofRows(db, goalId)).toEqual([]);
+
+      // B is attested at the new destination tip through the real route.
+      const verifiedB = await call('GET', `${externalPath}/verification`);
+      expect(verifiedB).toMatchObject({ status: 200, body: { verification: { state: 'verified' } } });
+      const observationB = (verifiedB.body.verification as { observation: { actionDigest: string } })
+        .observation;
+      const confirmationB = await call(
+        'POST',
+        `${externalPath}/attest`,
+        { decision: 'confirm_external_integration' },
+        { 'if-match': `"${observationB.actionDigest}"` },
+      );
+      expect(confirmationB.status).toBe(201);
+      const attestationB = confirmationB.body.attestationId as string;
+
+      // While A is still eligible, B is blocked as a competing decision by every route.
+      const blockedB = await computeExternalCompletionPreflight(
+        db,
+        goalId,
+        { attestationId: attestationB },
+        { allowRecordedDecision: true },
+      );
+      expect(blockedB).toMatchObject({ outcome: 'refused' });
+      expect(blockedB.reasons[0]).toMatchObject({ code: 'completion_already_recorded' });
+      const beforeBlocked = wholeDatabase(db);
+      const repoBeforeBlocked = repositoryState(repo);
+      await expect(
+        recordExternalCompletionDecision(db, {
+          goalId,
+          attestationId: attestationB,
+          reviewedPreflightDigest: blockedB.digest,
+          acknowledgeContentNotProven: true,
+        }),
+      ).rejects.toMatchObject({ code: 'competing_decision', detail: null });
+      const blockedPost = await call(
+        'POST',
+        `/api/goals/${goalId}/completion-decision`,
+        {
+          decision: 'record_completion_decision',
+          attestationId: attestationB,
+          acknowledgeContentNotProven: true,
+        },
+        { 'if-match': `"${blockedB.digest}"` },
+      );
+      expect(blockedPost).toMatchObject({ status: 409, body: { code: 'competing_decision' } });
+      expect(wholeDatabase(db)).toEqual(beforeBlocked);
+      expect(repositoryState(repo)).toEqual(repoBeforeBlocked);
+
+      // The user disputes A through the real correction services. Only the correction's own tables change.
+      const explanation = 'Disputed by the Q1b stale-A qualification.';
+      const beforeDispute = wholeDatabase(db);
+      const repoBeforeDispute = repositoryState(repo);
+      const reviewed = requestAttestationCorrectionApproval(db, {
+        goalId,
+        attestationId: attestationA,
+        correctionKind: 'dispute',
+        reasonCode: 'observation_error',
+        explanation,
+        replacementAttestationId: null,
+      });
+      decideGoalApproval(db, {
+        goalId,
+        approvalId: reviewed.approval.id,
+        decision: 'approved',
+        decidedBy: 'user',
+      });
+      appendAttestationCorrection(db, {
+        goalId,
+        approvalId: reviewed.approval.id,
+        expectedActionDigest: reviewed.actionDigest,
+        explanation,
+      });
+      expect(changedTables(beforeDispute, wholeDatabase(db))).toEqual([
+        'goal_approvals',
+        'goal_attestation_corrections',
+        'goal_events',
+      ]);
+      expect(db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(decisionA.approvalId)).toEqual(rowA);
+      expect(proofRows(db, goalId)).toEqual([]);
+      expect(goalRow(db, goalId)).toMatchObject({ status: 'running', completed_at: null });
+      expect(repositoryState(repo)).toEqual(repoBeforeDispute);
+
+      // With A disputed, B is recorded through the real decision service.
+      const readyB = await computeExternalCompletionPreflight(db, goalId, { attestationId: attestationB });
+      expect(readyB.outcome).toBe('ready');
+      const decisionB = await recordExternalCompletionDecision(db, {
+        goalId,
+        attestationId: attestationB,
+        reviewedPreflightDigest: readyB.digest,
+        acknowledgeContentNotProven: true,
+      });
+      expect(decisionB).toMatchObject({ status: 'approved', reused: false });
+      expect(decisionB.approvalId).not.toBe(decisionA.approvalId);
+      expect(proofRows(db, goalId)).toEqual([]);
+      expect(goalRow(db, goalId)).toMatchObject({ status: 'running', completed_at: null });
+
+      // Complete B separately: the proof names B, and A is reported as disputed.
+      const requestB = {
+        goalId,
+        attestationId: attestationB,
+        reviewedPreflightDigest: readyB.digest,
+        acknowledgeContentNotProven: true,
+      };
+      const completedB = await completeGoalFromExternalDecision(db, requestB);
+      expect(completedB.reused).toBe(false);
+      expect(completedB.completion).toMatchObject({ state: 'completed', approvalId: decisionB.approvalId });
+      expect(proofRows(db, goalId)).toHaveLength(1);
+      expect(goalRow(db, goalId)).toMatchObject({ status: 'completed' });
+      expect(readGoalCompletionStanding(db, goalId)).toMatchObject({
+        kind: 'v2',
+        standing: 'uncontested',
+        otherAttestations: expect.arrayContaining([
+          expect.objectContaining({ attestationId: attestationA, standing: 'disputed' }),
+        ]),
+      });
+      expect(db.prepare('SELECT * FROM goal_approvals WHERE id = ?').get(decisionA.approvalId)).toEqual(rowA);
+
+      // An exact replay of B's completion returns the same proof and writes nothing.
+      const replayBefore = wholeDatabase(db);
+      const replay = await completeGoalFromExternalDecision(db, requestB);
+      expect(replay).toEqual({ reused: true, completion: completedB.completion });
+      expect(wholeDatabase(db)).toEqual(replayBefore);
+      expect(proofRows(db, goalId)).toHaveLength(1);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
