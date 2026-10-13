@@ -1922,3 +1922,26 @@ describe('saved attestation reasons (D.4F.1)', () => {
     expect(screen.queryByText(/attestation_stale/)).toBeNull();
   });
 });
+
+describe('GH.6b residual B: preparation refusal copy', () => {
+  it('B1 a refused preparation shows the server copy and never prints the raw error code', async () => {
+    const message = 'The Goal requires manual reconciliation before a handoff can be prepared.';
+    serve(
+      detailRoutes(detail({ nextAction: { kind: 'final_apply' } }), {
+        '/api/goals/goal-1/handoffs': () => history(),
+        'POST /api/goals/goal-1/handoffs': () =>
+          refuse(409, message, 'manual_reconciliation_required'),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    await screen.findByText('No handoffs have been prepared for this Goal.');
+    await user.click(screen.getByRole('button', { name: 'Prepare handoff' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm preparation' }));
+    const refusal = await screen.findByText(/The Goal requires manual reconciliation/);
+    expect(refusal.textContent).toBe(message);
+    expect(document.body.textContent).not.toContain('manual_reconciliation_required');
+    expect(posts()).toHaveLength(1);
+  });
+});

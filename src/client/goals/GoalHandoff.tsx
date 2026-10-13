@@ -521,7 +521,9 @@ export function GoalHandoff({
       if (!mountedRef.current) return;
       setConfirming(false);
       if (error instanceof ApiError && error.status < 500) {
-        const message = `${error.message}${error.code ? ` (${error.code})` : ''}`;
+        // error.message is the server's user-facing copy for this refusal (manualHandoff.ts ERROR_MESSAGES). The machine
+        // code is not shown to the user.
+        const message = error.message;
         setPreparation({ state: 'refused', message });
         updateHandoffUiMemory(goal.id, { uncertainOutcome: false });
         setRefusal(message);
