@@ -1087,6 +1087,20 @@ function readApprovalForProjection(db: Db, approvalId: string): ReturnType<typeo
 }
 
 /**
+ * Whether the Goal is in manual reconciliation, for the inbox projection. bindExactGate reads the approval the Goal's
+ * gate names, so a malformed stored detail on that approval makes the row read-only and fails closed; the list does not
+ * fail. Any other error, such as a database failure, is rethrown.
+ */
+function isManualReconciliationForProjection(db: Db, goalId: string): boolean {
+  try {
+    return isManualReconciliation(db, goalId);
+  } catch (error) {
+    if (error instanceof SyntaxError) return true;
+    throw error;
+  }
+}
+
+/**
  * Whether the server would accept a user decision on this Goal approval right now: pending, its Goal not terminal, not in
  * manual reconciliation, and not owned by a dedicated decision (see dedicatedDecisionOf). The decision route enforces the
  * same rules; this projection only lets a surface show the row as read-only instead of offering a refused decision. A
@@ -1105,7 +1119,7 @@ function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApp
     goalStatus !== undefined &&
     goalStatus !== 'completed' &&
     goalStatus !== 'abandoned' &&
-    !isManualReconciliation(db, goalId) &&
+    !isManualReconciliationForProjection(db, goalId) &&
     dedicatedDecision === undefined;
   return {
     source: 'goal',

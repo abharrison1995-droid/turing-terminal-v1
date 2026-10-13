@@ -9,6 +9,7 @@ import { buildExternalCompletionAction } from './externalCompletionProof.js';
 import { databaseSnapshot, reviewedDigest, v2RunningAttestedFixture } from './goalV2TestKit.js';
 import { unifiedApprovals } from './readModel.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { transitionGoal } from './stateMachine.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 
 /**
@@ -247,6 +248,46 @@ describe('unified inbox projection of dedicated-service approvals', () => {
       });
       expect(pendingRow(all, corrupt.id)).not.toHaveProperty('dedicatedDecision');
       expect(pendingRow(all, ordinary.id)).toMatchObject({ status: 'pending', decidable: true });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a malformed gate approval named by a needs_user(gate_pending) Goal does not fail the inbox: sibling rows stay listed, read-only',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { db, goalId } = attested.fx;
+      const sibling = requestGoalApproval(db, {
+        goalId,
+        gate: 'final_acceptance',
+        risk: 'medium',
+        reason: 'An ordinary pending decision in the same Goal.',
+        requestedBy: 'system',
+      });
+      const gate = requestGoalApproval(db, {
+        goalId,
+        gate: 'user_confirmation',
+        risk: 'medium',
+        reason: 'The gate this Goal waits on, whose stored detail is corrupt.',
+        requestedBy: 'system',
+      });
+      transitionGoal(db, {
+        goalId,
+        to: 'needs_user',
+        reasonCode: 'gate_pending',
+        actor: 'supervisor',
+        detail: { approvalId: gate.id, gate: 'user_confirmation' },
+      });
+      corruptStoredDetail(db, gate.id, '{not json');
+
+      const all = unifiedApprovals(db, { status: 'all' }).approvals;
+      expect(pendingRow(all, gate.id)).toMatchObject({
+        status: 'pending',
+        decidable: false,
+        gate: 'user_confirmation',
+      });
+      expect(pendingRow(all, gate.id)).not.toHaveProperty('dedicatedDecision');
+      expect(pendingRow(all, sibling.id)).toMatchObject({ status: 'pending', decidable: false });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
