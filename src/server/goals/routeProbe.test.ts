@@ -19,6 +19,7 @@ vi.mock('../providers.js', () => ({
 }));
 
 import { discoverProviders, executeProvider, type ProviderRunRequest } from '../providers.js';
+import { recoverQueuedRunsAfterRestart } from '../runLauncher.js';
 import { canonicalJson } from './definitionHash.js';
 import {
   computeRouteIdentity,
@@ -655,6 +656,7 @@ describe('probe lifecycle and the validation record writer', () => {
     h.restart();
     const start = vi.spyOn(h.engine, 'start');
     h.engine.reconcileInterruptedRuns();
+    recoverQueuedRunsAfterRestart(h.db, h.engine);
     expect(start).not.toHaveBeenCalled();
     expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(queued.runId)).toEqual({
       status: 'queued',

@@ -11,6 +11,7 @@ import {
   createRun,
   createRunOrigin,
   queueRun,
+  recoverQueuedRunsAfterRestart,
   RunOriginError,
   startQueuedRun,
   type RunPreview,
@@ -436,6 +437,7 @@ describe('Goal-origin run launch', () => {
       const restarted = new RunEngine(db, () => undefined);
       const start = vi.spyOn(restarted, 'start');
       restarted.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, restarted);
       expect(start).not.toHaveBeenCalled();
       expect(rowOf(runId).status).toBe('queued');
       expect(

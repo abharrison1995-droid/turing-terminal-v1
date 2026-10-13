@@ -13,7 +13,7 @@ vi.mock('../providers.js', () => ({
 
 import { discoverProviders, executeProvider, type ProviderRunRequest } from '../providers.js';
 import { RunEngine } from '../runEngine.js';
-import { startQueuedRun } from '../runLauncher.js';
+import { recoverQueuedRunsAfterRestart, startQueuedRun } from '../runLauncher.js';
 import { queryUsageAnalytics } from '../usageAnalytics.js';
 import {
   AUTHORING_LIMITS,
@@ -655,6 +655,7 @@ describe('Goal authoring: engine recovery of queued authoring runs (HR-Q4)', () 
         const restarted = new RunEngine(db(), () => undefined);
         const engineStart = vi.spyOn(restarted, 'start');
         restarted.reconcileInterruptedRuns();
+        recoverQueuedRunsAfterRestart(db(), restarted);
         expect(engineStart).not.toHaveBeenCalled();
         expect(h.runRow(started.runId).status).toBe('queued');
         expect(calls).toHaveLength(0);
@@ -670,6 +671,7 @@ describe('Goal authoring: engine recovery of queued authoring runs (HR-Q4)', () 
       const restarted = new RunEngine(db(), () => undefined);
       const engineStart = vi.spyOn(restarted, 'start');
       restarted.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db(), restarted);
       // Owner path: AuthoringReconciler.reconcile() -> reconcileAuthoringCycle -> startRun is the only starter here.
       expect(engineStart).not.toHaveBeenCalled();
       expect(h.runRow(started.runId).status).toBe('queued');

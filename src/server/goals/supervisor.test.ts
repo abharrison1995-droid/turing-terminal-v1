@@ -1405,6 +1405,14 @@ describe('boundaries', () => {
     expect(index.indexOf('engine.reconcileInterruptedRuns()')).toBeLessThan(
       index.indexOf('goalSupervisor.reconcile()'),
     );
+    // HR-Q4: queued-run recovery is wired at startup, after the engine's own reconcile and before the Goal reconcilers.
+    expect(index).toContain('recoverQueuedRunsAfterRestart(database, engine);');
+    expect(index.indexOf('engine.reconcileInterruptedRuns()')).toBeLessThan(
+      index.indexOf('recoverQueuedRunsAfterRestart(database, engine);'),
+    );
+    expect(index.indexOf('recoverQueuedRunsAfterRestart(database, engine);')).toBeLessThan(
+      index.indexOf('goalSupervisor.reconcile()'),
+    );
   });
 
   it('keeps the executor interface free of database, Git and status authority', () => {

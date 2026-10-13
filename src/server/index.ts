@@ -3,7 +3,7 @@ import { createApp } from './app.js';
 import { RunEngine } from './runEngine.js';
 import { assertLoopbackHost } from './networkPolicy.js';
 import { deliverPushNotice } from './webPush.js';
-import { startQueuedRun } from './runLauncher.js';
+import { recoverQueuedRunsAfterRestart, startQueuedRun } from './runLauncher.js';
 import { createGoalSupervisor } from './goals/supervisor.js';
 import { DisabledGoalExecutor } from './goals/executor.js';
 import { AuthoringReconciler } from './goals/authoring.js';
@@ -21,6 +21,8 @@ const masterEventPublisher = createMasterEventPublisher(eventHub, (event, payloa
 );
 const engine = new RunEngine(database, masterEventPublisher.publishRun);
 engine.reconcileInterruptedRuns();
+// HR-Q4: ordinary runs left queued by a crash before start. Goal-owned and probe runs are left to their reconcilers.
+recoverQueuedRunsAfterRestart(database, engine);
 // Stage 3: the Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
 // route is ever reported ready and no child run or provider call can be started from a Goal.
 const goalSupervisor = createGoalSupervisor({

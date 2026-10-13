@@ -10,6 +10,7 @@ import {
   cancelQueuedRun,
   createRun,
   queueRun,
+  recoverQueuedRunsAfterRestart,
   startQueuedRun,
   type RunPreview,
 } from './runLauncher.js';
@@ -181,6 +182,7 @@ describe('run launcher', () => {
       const restarted = new RunEngine(db, () => undefined);
       const start = vi.spyOn(restarted, 'start');
       restarted.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, restarted);
       expect(start).toHaveBeenCalledExactlyOnceWith(runId);
       expect(queuedIds()).toEqual([]);
       expect(recoveredEvents(runId)).toBe(1);
@@ -193,6 +195,7 @@ describe('run launcher', () => {
       const restarted = new RunEngine(db, () => undefined);
       const start = vi.spyOn(restarted, 'start');
       restarted.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, restarted);
       expect(start).not.toHaveBeenCalled();
       expect(statusOf(runId)).toBe('cancelled');
       expect(recoveredEvents(runId)).toBe(0);
@@ -205,11 +208,13 @@ describe('run launcher', () => {
       const firstStart = vi.spyOn(first, 'start');
       const secondStart = vi.spyOn(second, 'start');
       first.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, first);
       expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
       expect(startQueuedRun(db, second, runId)).toEqual({ started: false, reason: 'not-queued' });
       await vi.waitFor(() => expect(statusOf(runId)).toBe('waiting_for_approval'));
       // The second reconcile's existing interrupted-run pass may pause the live run; it must never start it again.
       second.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, second);
       expect(secondStart).not.toHaveBeenCalled();
       expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
       expect(recoveredEvents(runId)).toBe(1);
@@ -223,10 +228,12 @@ describe('run launcher', () => {
       const firstStart = vi.spyOn(first, 'start').mockImplementation((id: string) => {
         // Re-entrant recovery: the claim must already be persisted, or this pass would see the run as queued.
         second.reconcileInterruptedRuns();
+        recoverQueuedRunsAfterRestart(db, second);
         realStart(id);
       });
       const secondStart = vi.spyOn(second, 'start');
       first.reconcileInterruptedRuns();
+      recoverQueuedRunsAfterRestart(db, first);
       expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
       expect(secondStart).not.toHaveBeenCalled();
       expect(recoveredEvents(runId)).toBe(1);

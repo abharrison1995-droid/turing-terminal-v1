@@ -245,6 +245,54 @@ export function startQueuedRun(db: Db, engine: RunEngine, runId: string): StartQ
   return { started: true };
 }
 
+/**
+ * Restart recovery for ordinary runs persisted as `queued` that were never started (a crash between queueRun and start).
+ * Call it on startup right after `engine.reconcileInterruptedRuns()`. It lives here, not in the RunEngine, because it
+ * decides which queued runs are Goal-owned: the engine stays Goal-agnostic. Excluded, because their owners are the only
+ * code that starts them:
+ * - Goal-owned runs (goal_cycle_id), and authoring runs among them. They are started through startQueuedRun by their
+ *   owners (AuthoringReconciler, the supervisor), without the fixture and identity proofs that startProbe performs.
+ * - Route-probe runs (route_validation_probes). startProbe re-verifies the pinned fixture and the persisted identity
+ *   before it starts them; only probe runs carry that proof.
+ * Each run is claimed by a compare-and-set `queued` -> `preparing` update, and the claim commits with its event before
+ * `start` is called. Returns the ids this call started.
+ */
+export function recoverQueuedRunsAfterRestart(db: Db, engine: RunEngine): string[] {
+  const queued = db
+    .prepare(
+      `SELECT id FROM runs
+       WHERE status = 'queued'
+         AND goal_cycle_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM goal_cycles c WHERE c.id = runs.goal_cycle_id AND c.kind = 'authoring')
+         AND NOT EXISTS (SELECT 1 FROM route_validation_probes p WHERE p.run_id = runs.id)
+       ORDER BY created_at, id`,
+    )
+    .all() as Array<{ id: string }>;
+  const started: string[] = [];
+  for (const { id } of queued) {
+    const claimed = db.transaction(() => {
+      const changes = db
+        .prepare("UPDATE runs SET status = 'preparing' WHERE id = ? AND status = 'queued'")
+        .run(id).changes;
+      if (!changes) return false;
+      db.prepare(
+        'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
+      ).run(
+        randomUUID(),
+        id,
+        'run_recovered_after_restart',
+        JSON.stringify({ reason: 'Queued when the desktop service restarted.' }),
+        new Date().toISOString(),
+      );
+      return true;
+    })();
+    if (!claimed) continue;
+    engine.start(id);
+    started.push(id);
+  }
+  return started;
+}
+
 export type CancelQueuedRunResult =
   { cancelled: true } | { cancelled: false; reason: 'not-found' | 'not-queued' };
 
