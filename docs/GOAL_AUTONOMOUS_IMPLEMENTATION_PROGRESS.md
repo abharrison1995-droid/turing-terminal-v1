@@ -865,3 +865,88 @@ Not claimed: WCAG 2.2 AA conformance or certification; rendered layout; screen-r
 Stage result: D.4F is accepted for its scope, as recorded in the readiness document's D.4F status section. V1 is NOT release-ready, and this workstream does not qualify V1 by itself.
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. PR #3 is open and has not been merged. The next hardening stage is not started; the owner decides between the G14 and S1 decisions and the read-projection change first.
+
+## 2026-10-13 amendment: GH.1–GH.4 acceptance evidence
+
+Dated 2026-10-13. Branch `feature/grand-project-goal-engine`, HEAD `1cbe58a`. This amendment is additive. Earlier entries are unchanged. The "Current state" section at the top records the D.2 checkpoint and is not updated here. This record does not declare V1 release-ready, does not resolve GH.6 items, and does not claim live Tailscale, physical device, live provider, WCAG conformance or content verification.
+
+Status:
+
+| Slice                                         | Commits              | Hosted CI (gate job)         | Status   |
+| --------------------------------------------- | -------------------- | ---------------------------- | -------- |
+| GH.1 desktop-only Goal authority routes (S1a) | `be0685e`, `d7b55d2` | run 38425090559 on `d7b55d2` | Accepted |
+| GH.2 completion authority                     | `471e64d`            | run 38433826179 on `471e64d` | Accepted |
+| GH.3a dedicated approval routing (G14)        | `77c1434`, `cdda8a2` | run 38439563605 on `77c1434` | Accepted |
+| GH.3b unqualified Completed (CS-1)            | `24d1ea6`            | run 38444959765 on `24d1ea6` | Accepted |
+| GH.4 in-flight writes (P5e), U1, U2           | `1cbe58a`            | run 38449862041 on `1cbe58a` | Accepted |
+
+No independent review verdict is cited in this amendment for GH.1, GH.2, GH.3a or GH.3b. Their acceptance rests on the owner's decision and the CI records above.
+
+### GH.1 desktop-only Goal authority routes (S1a)
+
+- Commits: `be0685e` (implementation) and `d7b55d2` (`SECURITY.md` wording correction and follow-up).
+- Hosted CI: run 38425090559, green on `d7b55d2`.
+- Changed: five POST routes for user-only Goal completion and correction refuse paired remote callers with HTTP 403, code `desktop_required`. The check runs first in each handler. The signal is the existing remote predicate supplied through `requireDesktopCaller`. No User-Agent, viewport, device-type or `x-forwarded` header is used as a boundary.
+- Verified: hosted CI green on `d7b55d2`. The record for this amendment does not name the automated test or tests that cover the 403 refusal, so none is cited here.
+- Not verified: live Tailscale Serve behaviour, including identity-header injection, client-supplied header handling, Host rewriting and remote/local classification. Tailscale is not installed on the verification machine. This is not waived and not passed. It remains a blocking pre-V1 item.
+- Owner decision (2026-10-13): S1b option O1 approved for V1, conditionally. The owner's stated condition: live Tailscale Serve verification is not waived. Identity-header injection, client-supplied header handling, Host rewriting and remote/local classification must be tested live, and any remote request misclassified as local that reaches a desktop-only Goal route is a blocking security defect. The residual same-user local-process trust model is accepted and documented in `docs/GOAL_TRUSTED_CALLER_BOUNDARY.md` and `docs/SECURITY.md`. O2 may be deferred past V1.
+- Follow-ups: live Tailscale verification (blocking pre-V1).
+
+### GH.2 completion authority
+
+- Commit: `471e64d`. Hosted CI: run 38433826179, green on `471e64d`.
+- Changed: class-2 exact own-decision reuse now requires attestation eligibility (R1). The duplicate D3-4 test is removed; its body was verified identical to the retained copy. D3-5 adds an extra v2 gate negative test; `supervisor.ts` is not modified. C5: class 5 keeps `completion_history_invalid`, and the difference from `decision_corrupt` is documented and pinned. U4 and X6 are addressed. The classifier policy docblock is moved only.
+- Verified by automated test: the D3-5 negative test and the C5 pin, both added by this commit. This record does not name the test covering R1, U4 or X6.
+- Not verified: live provider, physical device and live Tailscale behaviour. None is part of this slice.
+- Follow-ups: none recorded.
+
+### GH.3a dedicated approval routing (G14)
+
+- Commits: `77c1434` and `cdda8a2`. Hosted CI: run 38439563605, green on `77c1434`. No hosted run for `cdda8a2` itself is recorded here. The later GH.3b run (38444959765, on `24d1ea6`) builds a tree that includes it.
+- Changed: dedicated correction and completion approvals show a read-only line and no generic Approve or Deny. Malformed `detail_json` fails closed per row (SyntaxError only), so the inbox read does not fail as a whole. Server authority is unchanged.
+- Gate at that point: 163 files, 3,291 tests passing.
+- Verified: the gate above, and hosted CI on `77c1434`. Test names are not cited here.
+- Also changed in this slice: the `readModel.ts` projection (the dedicated-decision flag, and per-row fail-closed reads of approval detail), the shared predicates in `approvals.ts`, and the `dedicatedDecision` field in `goalApi.ts`.
+- Not verified: physical phone rendering.
+- Follow-ups: none recorded.
+
+### GH.3b unqualified Completed (CS-1)
+
+- Commit: `24d1ea6`. Hosted CI: run 38444959765, green on `24d1ea6`.
+- Changed: the Goal list and the desktop Overview show a standing-aware label. Unqualified "Completed" is not shown for contested or non-trusted completions. Standing is read from the database only, with no Git access. The import cycle is avoided by composing the list standing in the route layer.
+- Verified: hosted CI green on `24d1ea6`. Test names are not cited here.
+- Not verified: the phone list is not recorded as covered by this slice. The `GoalMobileCockpit` phone header still shows bare "Completed" for contested Goals (GH.4 follow-up d).
+- Follow-ups: GH.4 follow-up (d).
+
+### GH.4 in-flight writes (P5e), U1, U2
+
+- Commit: `1cbe58a`. Hosted CI: run 38449862041, green on `1cbe58a`. Gate on the committed tree: 165 files, 3,307 tests passing.
+- Status: **accepted.** An independent Sonnet re-review (read-only, 2026-10-13) of the synchronous-throw fix returned **APPROVE** with no blocking defects. It confirmed that all four launch points settle the registry entry exactly once on every path, that no timer, storage or retry was added, and that the regression test fails if the try/catch is removed. Focused tests: 4 files, 123 of 123 passing. Follow-ups are carried to GH.6 below. The re-review did not read the qualification and handoff test edits line by line.
+- Changed: bounded client in-flight registry (cap 16; no eviction of in-flight entries; settle-once on every path; no timers; no storage). Duplicate UI submission is blocked while a matching write is in flight. Server idempotency remains authoritative. U1: `GoalExternalIntegration` prints the plain reason only. U2: qualification tests assert that no server text and no raw codes render.
+- Independent review: REQUEST-CHANGES on a synchronous-throw registry leak. Fixed in the same commit with a regression test.
+- Verified by automated test: the synchronous-throw regression test, and the U2 qualification assertions.
+- Not verified: live provider, physical device and live Tailscale behaviour. A reload or another window bypasses the in-flight registry.
+- Retained follow-ups, recorded for GH.6:
+  - (a) Duplicate-submit window: a read that started before another panel's write settled can briefly show a control the server would reuse rather than duplicate.
+  - (b) The registry lives in page memory only, so a reload or another window bypasses it.
+  - (c) The other three launch points have no individual synchronous-throw test.
+  - (d) The `GoalMobileCockpit` phone header still shows bare "Completed" for contested Goals.
+  - (e) `GoalHandoff.tsx:524` prints `ApiError.code`.
+  - (f) `clearInflightWritesForTests` is exported from a production module.
+  - (g) The U6 orphan-resume test flakes under six-file batch load (about 5.1 s; failed 2 of 5 runs).
+  - (h) Queued-run crash/restart defect HR-Q4: a mandatory pre-release V1 blocker, not waived.
+
+### Owner decisions recorded (2026-10-13)
+
+1. S1b option O1 approved for V1, conditionally (see GH.1). O2 may be deferred post-V1.
+2. D3-2 interim option (1) approved, with a semantic guard. The full consumer audit is still pending in GH.6.
+3. HR-Q4 confirmed as a mandatory V1 blocker. It may not be waived or classified as non-blocking.
+
+### Still open after this amendment
+
+- Live Tailscale verification: blocking pre-V1 item. Not performed, not waived, not passed.
+- HR-Q4: mandatory pre-release V1 blocker.
+- GH.4: accepted (re-review APPROVE, above). Its follow-ups (a) to (h) remain open for GH.6.
+- GH.6: follow-ups (a) to (h) above, the D3-2 consumer audit, and the cross-attestation stuck-Goal owner question (the item marked "still an open owner decision" in the D.4E record). The stuck-Goal question is not resolved by this amendment.
+- Physical Windows, physical iPhone and live provider gates remain pending.
+- V1 is not release-ready.
