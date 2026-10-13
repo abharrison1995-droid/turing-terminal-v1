@@ -802,4 +802,18 @@ Mapping of the directive's 20 test requirements to the planned slices:
 | 19 Existing authenticated desktop workflows intact                  | D.4F.4 (full regression)                             |
 | 20 No new authority path, proof writer or terminal transition       | D.4F.4 (static guards and no-migration diff)         |
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.1 onward has not started. PR #3 is open and has not been merged.
+### D.4F.1 desktop presentation and accessibility: ACCEPTED on `cd8ab18` (lead record)
+
+Baseline at `7eded75`: the full canonical gate passed (154 files, 3,000 tests). Code commit `cd8ab18` (fast-forward from `7eded75`) changes the completion and correction panels, the confirm-dialog heading levels, the touch and wrap CSS, and the handoff reason copy. Tests: 155 files and 3,048 tests on the final tree, all green. Hosted CI for `cd8ab18` (run 38375032426): one `gate` job, success, about 22 minutes against the 30-minute limit.
+
+Planning and implementation: a Sonnet read-only planner produced the reconciliation brief (GO). A Haiku implementer wrote the RED and PIN tests first, then the production changes, and did not commit or push. The first independent Sonnet review returned REQUEST CHANGES with one blocking finding: a lost write armed focus, so a later failed read could take it. That was fixed with a `failed` helper that arms focus only when the refusal is new, and verified RED-then-GREEN by test K6b. A fresh independent Sonnet review of the final tree returned APPROVE.
+
+Accessible behaviour checked by tests (jsdom): one persistent polite status region from first render in each panel; refusal alerts stay separate and take focus only after the user's own click; focus follows the user's own finished write (Complete checkbox after a Record is read back; panel heading after a Complete) and returns to the opening action after Cancel or Escape; standing is a labelled and described group; Record and Complete are named groups; correction dialog headings are level 5. Static CSS checks cover the 44px touch targets at 680px and below, wrapping, distinct contested, invalid and legacy colours, and the light-theme contrast pairs in `a11yTokens.test.ts`.
+
+Changed existing assertion (one, approved in the brief): `goalCompletion.test.tsx` ~995 changed from `findByRole('status')` to `waitFor` with the same exact string. The old form could return the persistent region before its text arrived, so it passed by timing. It is no weaker.
+
+Not claimed and not verified: WCAG 2.2 AA conformance or certification; screen-reader output and announcement timing; rendered layout (the empty status region uses a visually-hidden pattern, not yet checked in a browser); the real tab order; focus-visible rendering. The `.goal-completion button` selector also matches the correction section; harmless (wrap and touch height), recorded for D.4F.4. Reopen-focus after a cancel the reducer ignores has no dedicated test.
+
+Deferred, not changed: attribution wording ("Completed on your decision", "You disputed", "Disputed by you") stays until D.4F.2; `GoalExternalIntegration.tsx` line 877 still prints a raw code, pinned by `goalHandoff.test.tsx`; G14 (pending correction approvals shown with Approve and Deny on the phone) and S1 (no server-side desktop-only enforcement) remain owner decisions.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.2 onward has not started. PR #3 is open and has not been merged.
