@@ -37,7 +37,14 @@ import type {
 } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { toWorkflow } from '../serialize.js';
-import { bindExactGate, getGoalApproval, pendingGoalApprovals } from './approvals.js';
+import {
+  bindExactGate,
+  getGoalApproval,
+  isDedicatedCompletionApproval,
+  isDedicatedCorrectionApproval,
+  pendingGoalApprovals,
+  type DedicatedApprovalSubject,
+} from './approvals.js';
 import { activeCycle, listCycles, type CycleRow } from './cycles.js';
 import { loadDefinitionVersion, validateStoredDefinition } from './definitions.js';
 import type { GoalDefinitionVersion } from '../../shared/goals.js';
@@ -1053,21 +1060,53 @@ export function getGoalEvents(
 const APPROVAL_STATUS = new Set<string>(['pending', 'approved', 'denied', 'all']);
 
 /**
- * Whether the server would accept a user decision on this Goal approval right now: pending, its Goal not terminal and
- * not in manual reconciliation. The decision route enforces the same rule; this projection only lets a surface with no
- * Goal context show the row as read-only instead of offering a decision that will be refused.
+ * The dedicated decision that owns this Goal approval, or undefined when the generic route decides it. A correction
+ * approval is owned by the correction review at any status; a completion approval only while it is pending, since a
+ * decided one is history. The generic route refuses exactly these rows (goalCommands.ts), so the inbox shows them read-only.
+ */
+function dedicatedDecisionOf(
+  approval: DedicatedApprovalSubject & { status: string },
+): 'correction' | 'completion' | undefined {
+  if (isDedicatedCorrectionApproval(approval)) return 'correction';
+  if (approval.status === 'pending' && isDedicatedCompletionApproval(approval)) return 'completion';
+  return undefined;
+}
+
+/**
+ * Reads one Goal approval for the inbox projection. A malformed stored detail (the SyntaxError JSON.parse throws in
+ * toApproval) is treated as unreadable for that row only: the row fails closed to read-only and stays visible, and the
+ * list does not fail. Any other error, such as a database failure, is rethrown.
+ */
+function readApprovalForProjection(db: Db, approvalId: string): ReturnType<typeof getGoalApproval> {
+  try {
+    return getGoalApproval(db, approvalId);
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Whether the server would accept a user decision on this Goal approval right now: pending, its Goal not terminal, not in
+ * manual reconciliation, and not owned by a dedicated decision (see dedicatedDecisionOf). The decision route enforces the
+ * same rules; this projection only lets a surface show the row as read-only instead of offering a refused decision. A
+ * dedicated row is kept in every history: it is projected, never hidden. An unreadable approval fails closed.
  */
 function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApproval {
   const goalId = String(row.goal_id);
   const goalStatus = (
     db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: GoalStatus } | undefined
   )?.status;
+  const approval = readApprovalForProjection(db, String(row.id));
+  const dedicatedDecision = approval ? dedicatedDecisionOf(approval) : undefined;
   const decidable =
+    approval !== undefined &&
     row.status === 'pending' &&
     goalStatus !== undefined &&
     goalStatus !== 'completed' &&
     goalStatus !== 'abandoned' &&
-    !isManualReconciliation(db, goalId);
+    !isManualReconciliation(db, goalId) &&
+    dedicatedDecision === undefined;
   return {
     source: 'goal',
     id: String(row.id),
@@ -1082,6 +1121,7 @@ function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApp
     createdAt: String(row.created_at),
     respondedAt: (row.responded_at as string | null) ?? null,
     decidable,
+    ...(dedicatedDecision ? { dedicatedDecision } : {}),
   };
 }
 

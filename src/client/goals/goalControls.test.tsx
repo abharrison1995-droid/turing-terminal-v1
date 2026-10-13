@@ -606,6 +606,38 @@ describe('Terminalisation and fail-closed authority (7B.2A.1)', () => {
     expect(calls.some((call) => /\/(resume|start)$/.test(call.path))).toBe(false);
   });
 
+  it('a dedicated correction or completion row has no decision controls and says where it is decided', async () => {
+    serve({
+      '/api/approvals/unified': listOf(
+        approval({
+          id: 'ga-c',
+          gate: 'user_confirmation',
+          decidable: false,
+          dedicatedDecision: 'correction',
+        }),
+        approval({
+          id: 'ga-k',
+          gate: 'user_confirmation',
+          decidable: false,
+          dedicatedDecision: 'completion',
+        }),
+        approval({ id: 'ga-3', decidable: true }),
+      ),
+    });
+    render(<UnifiedApprovals heading="Approval required" />);
+    await screen.findAllByText('Goal gate');
+    const rows = [...document.querySelectorAll('[data-approval-source="goal"]')] as HTMLElement[];
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]!).queryByRole('button')).toBeNull();
+    expect(rows[0]!.textContent).toContain('Decided in the correction review on the desktop.');
+    expect(within(rows[1]!).queryByRole('button')).toBeNull();
+    expect(rows[1]!.textContent).toContain('Decided in the completion review on the desktop.');
+    // A decidable row keeps its buttons; the dedicated line is not shown on it.
+    expect(within(rows[2]!).getByRole('button', { name: /^Approve/ })).toBeTruthy();
+    expect(within(rows[2]!).getByRole('button', { name: /^Deny/ })).toBeTruthy();
+    expect(rows[2]!.textContent).not.toContain('review on the desktop');
+  });
+
   it('an ordinary healthy Goal still decides approvals and findings', async () => {
     const user = await open(goal('running', { kind: 'wait_for_turing' }), {
       '/api/approvals/unified': listOf(approval({ decidable: true })),

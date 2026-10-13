@@ -10,6 +10,12 @@ import { useLoad } from './useLoad';
 
 const rowKey = (approval: UnifiedApproval) => `${approval.source}:${approval.id}`;
 
+/** Where a dedicated-service approval is decided. The inbox never decides it; it only says where to go. */
+const DEDICATED_DECISION_TEXT: Record<NonNullable<UnifiedApproval['dedicatedDecision']>, string> = {
+  correction: 'Decided in the correction review on the desktop.',
+  completion: 'Decided in the completion review on the desktop.',
+};
+
 /**
  * One approval surface for run and Goal approvals. Presentation is unified; authority is not: the `source`
  * discriminator alone picks the existing endpoint (a run approval to `/api/approvals/:id/decision`, a Goal approval to
@@ -138,6 +144,11 @@ export function UnifiedApprovals({
                   const readOnly =
                     readOnlyAll ||
                     (approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false));
+                  // Set only on a row the server does not let the inbox decide (decidable is false for it).
+                  const dedicated =
+                    approval.source === 'goal' && approval.decidable === false
+                      ? approval.dedicatedDecision
+                      : undefined;
                   const disabled = busy !== null || (approval.source === 'goal' && mismatch);
                   const target =
                     approval.source === 'goal'
@@ -175,7 +186,15 @@ export function UnifiedApprovals({
                           <small>Approving final acceptance does not apply anything to your branch.</small>
                         )}
                       </div>
-                      {readOnly ? (
+                      {dedicated ? (
+                        <p
+                          className="goal-note"
+                          data-approval-readonly="true"
+                          data-dedicated-decision={dedicated}
+                        >
+                          {DEDICATED_DECISION_TEXT[dedicated]}
+                        </p>
+                      ) : readOnly ? (
                         <p className="goal-note" data-approval-readonly="true">
                           Not actionable here: this Goal cannot take approval decisions right now.
                         </p>

@@ -716,6 +716,11 @@ export interface UnifiedApproval {
    * needs manual reconciliation; the row is then shown read-only.
    */
   decidable?: boolean;
+  /**
+   * Goal approvals only, set only for a row owned by a dedicated decision: a correction approval (any status), or a
+   * completion approval while pending. Such a row is never decidable here; this names the review that decides it.
+   */
+  dedicatedDecision?: 'correction' | 'completion';
 }
 
 export interface UnifiedApprovalsResponse {

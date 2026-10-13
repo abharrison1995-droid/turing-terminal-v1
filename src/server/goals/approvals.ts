@@ -93,6 +93,34 @@ export function getGoalApproval(db: Db, approvalId: string): GoalApproval | unde
   return row ? toApproval(row) : undefined;
 }
 
+/** The fields that identify a dedicated-service approval. Shared by the generic route refusal and the inbox projection. */
+export type DedicatedApprovalSubject = Pick<
+  GoalApproval,
+  'detail' | 'attestationCorrectionActionDigest' | 'externalCompletionActionDigest'
+>;
+
+/**
+ * A correction approval is decided only by its dedicated correction service, at any status. The generic decision route
+ * refuses it, and the unified inbox must not offer a generic decision for it.
+ */
+export function isDedicatedCorrectionApproval(approval: DedicatedApprovalSubject): boolean {
+  return (
+    approval.attestationCorrectionActionDigest !== undefined ||
+    approval.detail.action === ATTESTATION_CORRECTION_ACTION
+  );
+}
+
+/**
+ * A completion approval is decided only by its dedicated completion service, while it is pending. This predicate is
+ * status-blind: the generic decision route and the unified inbox each apply the pending condition themselves.
+ */
+export function isDedicatedCompletionApproval(approval: DedicatedApprovalSubject): boolean {
+  return (
+    approval.externalCompletionActionDigest !== undefined ||
+    approval.detail.action === EXTERNAL_COMPLETION_ACTION
+  );
+}
+
 export function pendingGoalApprovals(db: Db, goalId: string): GoalApproval[] {
   return (
     db
