@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
@@ -15,8 +15,9 @@ import type {
   GoalManualHandoffProjection,
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
+import { goalsApi } from './api';
 import { GoalsPage } from './GoalsPage';
-import { CORRECTION_COPY } from './correctionModel';
+import { CORRECTION_COPY, CORRECTION_RECOVERY_COPY } from './correctionModel';
 import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
 import {
   calls,
@@ -30,7 +31,7 @@ import {
   serve,
   type Routes,
 } from './testKit';
-import { clearInflightWritesForTests } from './inflightWrites';
+import { clearInflightWritesForTests, type InflightWrite, isInflight } from './inflightWrites';
 
 const GOAL = 'goal-1';
 const HANDOFF = 'handoff-v2';
@@ -1244,5 +1245,199 @@ describe('correction gates against the chain, and late responses (D.4F.2)', () =
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByRole('group', { name: GATE_TEXT })).toBeTruthy();
     expect(posts().map((call) => call.path)).toEqual([CORRECTIONS]);
+  });
+});
+
+/** Two synchronous clicks on one control, inside one act(). No render, read or timer can run between them. */
+function clickTwiceInOneAct(control: HTMLElement) {
+  act(() => {
+    fireEvent.click(control);
+    fireEvent.click(control);
+  });
+}
+
+/** Lets resolved promise callbacks run. Each turn is a microtask flush inside act(), not a timer. */
+async function flushMicrotasks(turns = 5) {
+  for (let turn = 0; turn < turns; turn += 1) await act(async () => {});
+}
+
+/** A response the test settles by hand with a value. Nothing here waits on time. */
+function heldValue<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/** The request the panel registers for the held chain position and the reviewed body. */
+const requestWrite = (): InflightWrite => ({
+  goalId: GOAL,
+  handoffId: HANDOFF,
+  attestationId: ATT,
+  kind: 'correction-request',
+  identity: POS,
+  detail: JSON.stringify({
+    correctionKind: 'dispute',
+    reasonCode: 'observation_error',
+    explanation: null,
+    replacementAttestationId: null,
+  }),
+});
+
+/** The decision the panel registers for the pending approval, in the body it sends. */
+const decisionWrite = (decision: 'approved' | 'denied'): InflightWrite => ({
+  goalId: GOAL,
+  handoffId: null,
+  attestationId: ATT,
+  kind: 'correction-decision',
+  identity: 'ap1',
+  detail: JSON.stringify({
+    actionDigest: DIG,
+    body:
+      decision === 'approved'
+        ? { decision, attestationId: ATT, correctionKind: 'dispute', explanation: null }
+        : { decision },
+  }),
+});
+
+describe('correction launch controls fired twice synchronously in one act() (GH.6c item 1)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('Request dispute sends exactly one request', async () => {
+    const response = heldValue<GoalAttestationCorrectionRequested>();
+    mount({ [CORRECTIONS]: () => history(), [`POST ${CORRECTIONS}`]: () => response.promise });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    clickTwiceInOneAct(screen.getByRole('button', { name: 'Request dispute' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(requestWrite())).toBe(true);
+
+    await act(async () => {
+      response.resolve(requested());
+    });
+    await screen.findByRole('group', { name: GATE_TEXT });
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(requestWrite())).toBe(false);
+  });
+
+  it('Confirm correction sends exactly one decision', async () => {
+    const response = heldValue<unknown>();
+    mount({
+      [CORRECTIONS]: () => history({ pending: [pendingRow()] }),
+      [`POST ${DECISION}`]: () => response.promise,
+    });
+    clickTwiceInOneAct(await screen.findByRole('button', { name: 'Confirm correction' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(decisionWrite('approved'))).toBe(true);
+
+    await act(async () => {
+      response.resolve({ approvalId: 'ap1', status: 'approved' });
+    });
+    await flushMicrotasks(10);
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(decisionWrite('approved'))).toBe(false);
+  });
+
+  it('Decline this request sends exactly one decision', async () => {
+    const response = heldValue<unknown>();
+    mount({
+      [CORRECTIONS]: () => history({ pending: [pendingRow()] }),
+      [`POST ${DECISION}`]: () => response.promise,
+    });
+    clickTwiceInOneAct(await screen.findByRole('button', { name: 'Decline this request' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(decisionWrite('denied'))).toBe(true);
+
+    await act(async () => {
+      response.resolve({ approvalId: 'ap1', status: 'denied' });
+    });
+    await flushMicrotasks(10);
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(decisionWrite('denied'))).toBe(false);
+  });
+});
+
+describe('synchronous throws from requestCorrection and decideCorrection (GH.6c item 2)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('a synchronous throw from requestCorrection settles its entry, sends nothing, and shows the saved-history copy', async () => {
+    const reread = heldValue<GoalAttestationCorrectionHistory>();
+    let reads = 0;
+    mount({
+      [CORRECTIONS]: () => {
+        reads += 1;
+        return reads === 1 ? history() : reread.promise;
+      },
+    });
+    const request = vi.spyOn(goalsApi, 'requestCorrection').mockImplementationOnce(() => {
+      throw new Error('synchronous failure before the request');
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+
+    // The reducer's unknown-outcome branch: the notice is the reconciling copy, and no refusal is set.
+    expect(await screen.findByText(CORRECTION_RECOVERY_COPY.reconciling)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(isInflight(requestWrite())).toBe(false);
+    expect(posts()).toEqual([]);
+
+    await act(async () => {
+      reread.resolve(history());
+    });
+    // Nothing is saved, so the held body is offered again through the same control, which is enabled.
+    expect(await screen.findByText(CORRECTION_RECOVERY_COPY.absent)).toBeTruthy();
+    expect(screen.getByRole('button', { name: CORRECTION_RECOVERY_COPY.requestAgain })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(posts()).toEqual([]);
+  });
+
+  it('a synchronous throw from decideCorrection settles its entry, sends nothing, and shows the saved-history copy', async () => {
+    const reread = heldValue<GoalAttestationCorrectionHistory>();
+    let reads = 0;
+    mount({
+      [CORRECTIONS]: () => {
+        reads += 1;
+        return reads === 1 ? history({ pending: [pendingRow()] }) : reread.promise;
+      },
+    });
+    const decide = vi.spyOn(goalsApi, 'decideCorrection').mockImplementationOnce(() => {
+      throw new Error('synchronous failure before the request');
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Confirm correction' }));
+    await waitFor(() => expect(decide).toHaveBeenCalledTimes(1));
+
+    expect(await screen.findByText(CORRECTION_RECOVERY_COPY.reconciling)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(isInflight(decisionWrite('approved'))).toBe(false);
+    expect(posts()).toEqual([]);
+
+    await act(async () => {
+      reread.resolve(history({ pending: [pendingRow()] }));
+    });
+    // The request is still pending, so the gate returns and its Confirm control is enabled again.
+    expect(await screen.findByRole('group', { name: GATE_TEXT })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirm correction' })).toHaveProperty('disabled', false);
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(posts()).toEqual([]);
   });
 });

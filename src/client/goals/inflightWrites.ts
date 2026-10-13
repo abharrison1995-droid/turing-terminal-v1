@@ -6,6 +6,19 @@
  * decides success: an entry is removed when its request settles, whatever the answer, and a lost or unknown answer is
  * handled by the panel's own unknown-outcome path. An entry is therefore a claim that a request is unresolved, not that
  * it failed or succeeded.
+ *
+ * Limits, stated so that no one reads this record as durable state (GH.6c):
+ * - Page memory only. A page reload discards the record, so a write that was unresolved before the reload is not shown as
+ *   in progress afterwards. Nothing is kept in storage to prevent that, and nothing is resubmitted to recover it.
+ * - A write whose response was lost is handled after a reload, or without one, by the server-side unknown-outcome read
+ *   path: the panel reads the saved state, and any further write needs a user action. This record never resubmits a
+ *   write, and nothing here sends a request on a timer, on mount or on a read.
+ * - Click path: a click reaches its request only through a reducer transition computed from the synchronously updated
+ *   state reference, and beginInflight runs in that same synchronous call, before any await. A second click in one act()
+ *   is refused by the reducer or by this record, never by a re-render.
+ * - Known window (GH.6c item 1b): settling notifies only the panels for the same Goal and attestation. A panel whose read
+ *   began before a write for another attestation of the same Goal settled is not told, so until its next read it can show
+ *   a control that the server, not this record, decides. The click is then sent, and the server answers it.
  */
 
 export type InflightKind = 'record' | 'complete' | 'correction-request' | 'correction-decision';

@@ -4,9 +4,13 @@
  * A completion write that is in flight survives its panel. The panel can be unmounted by a selection change and mounted
  * again while the response is still held. These cases hold each response with a deferred promise that the test settles by
  * hand, so no timer and no sleep decides the order. The in-flight registry is module state, so it is cleared after each case.
+ *
+ * The registry is page memory only. A page reload loses it. A write whose response was lost is then handled by the
+ * server-side unknown-outcome read path, and the registry never resubmits anything. The cases at the end of this file
+ * hold that limit and the launch points' synchronous-throw and double-click behaviour (GH.6c).
  */
 
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { goalsApi } from './api';
@@ -15,11 +19,13 @@ import { GoalCompletion } from './GoalCompletion';
 import {
   beginInflight,
   clearInflightWritesForTests,
+  type InflightHandle,
   type InflightWrite,
   isInflight,
   MAX_INFLIGHT_WRITES,
+  settleInflight,
 } from './inflightWrites';
-import { posts, serve } from './testKit';
+import { calls, posts, serve } from './testKit';
 import {
   ACTION_A,
   ATT_A,
@@ -29,9 +35,12 @@ import {
   completionRoutes,
   completionStatus,
   created,
+  DECISION_PATH,
   decisionRow,
   GOAL,
+  PREFLIGHT_A,
   preflight,
+  recordedDecision,
 } from './qualificationKit';
 
 const IN_PROGRESS = 'A write for this review is still in progress. Reading the saved state…';
@@ -269,5 +278,191 @@ describe('a Complete call that throws before it returns a promise', () => {
       false,
     );
     expect(posts()).toEqual([]);
+  });
+});
+
+/** Two synchronous clicks on one control, inside one act(). No render, read or timer can run between them. */
+function clickTwiceInOneAct(control: HTMLElement) {
+  act(() => {
+    fireEvent.click(control);
+    fireEvent.click(control);
+  });
+}
+
+/** Lets resolved promise callbacks run. Each turn is a microtask flush inside act(), not a timer. */
+async function flushMicrotasks(turns = 5) {
+  for (let turn = 0; turn < turns; turn += 1) await act(async () => {});
+}
+
+const recordWrite = (over: Partial<InflightWrite> = {}): InflightWrite => ({
+  goalId: GOAL,
+  handoffId: null,
+  attestationId: ATT_A,
+  kind: 'record',
+  identity: PREFLIGHT_A,
+  detail: null,
+  ...over,
+});
+
+describe('launch controls fired twice synchronously in one act() (GH.6c item 1)', () => {
+  it('Record completion decision sends exactly one decision write', async () => {
+    const user = userEvent.setup();
+    const response = deferred<Response>();
+    serve(
+      completionRoutes(
+        { status: () => completionStatus('not_completed') },
+        { [`POST ${DECISION_PATH}`]: () => response.promise },
+      ),
+    );
+    render(<GoalCompletion goalId={GOAL} attestationId={ATT_A} refresh={0} />);
+    const region = await settledCompletion();
+    await user.click(within(region).getByRole('checkbox'));
+    clickTwiceInOneAct(within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(recordWrite())).toBe(true);
+
+    await act(async () => {
+      response.resolve(created(recordedDecision(ATT_A)));
+    });
+    await waitFor(() => expect(isInflight(recordWrite())).toBe(false));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+  });
+
+  it('Complete Goal sends exactly one completion write', async () => {
+    const user = userEvent.setup();
+    const response = deferred<Response>();
+    serve(
+      completionRoutes({ status: decidedStatus }, { [`POST ${COMPLETION_PATH}`]: () => response.promise }),
+    );
+    render(<GoalCompletion goalId={GOAL} attestationId={ATT_A} refresh={0} />);
+    const region = await settledCompletion();
+    await user.click(within(region).getByRole('checkbox'));
+    clickTwiceInOneAct(within(region).getByRole('button', { name: COMPLETION_COPY.completeLabel }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+    expect(isInflight(completeWrite())).toBe(true);
+
+    await act(async () => {
+      response.resolve(created({ reused: false }));
+    });
+    await waitFor(() => expect(isInflight(completeWrite())).toBe(false));
+    await flushMicrotasks();
+    expect(posts()).toHaveLength(1);
+  });
+});
+
+describe('the known read-before-settle window (GH.6c item 1b)', () => {
+  // Known window, pinned so that a change to it is deliberate. Panel B's read begins while attestation A's Complete write
+  // is unresolved in this page. That write settles before B's read completes. Settling notifies only panels for the same
+  // Goal and attestation, so B is not told and does not read again. B's read therefore shows Record enabled, and the
+  // registry holds nothing against the click. The server decides that click: it may reuse an earlier write or refuse it.
+  it('shows Record enabled from a read begun before another attestation settled, and sends the click', async () => {
+    const user = userEvent.setup();
+    const read = deferred<unknown>();
+    serve(
+      completionRoutes(
+        { status: () => read.promise },
+        { [`POST ${DECISION_PATH}`]: () => created(recordedDecision(ATT_B)) },
+      ),
+    );
+    render(<GoalCompletion goalId={GOAL} attestationId={ATT_B} refresh={0} />);
+    const handleA = beginInflight(completeWrite(), 'panel-a');
+    expect(handleA).not.toBe('busy');
+    settleInflight(handleA as InflightHandle);
+    await act(async () => {
+      read.resolve(completionStatus('not_completed'));
+    });
+
+    const region = await settledCompletion();
+    await user.click(within(region).getByRole('checkbox'));
+    const record = within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel });
+    expect(record).toHaveProperty('disabled', false);
+    await user.click(record);
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]?.path).toBe(DECISION_PATH);
+  });
+});
+
+describe('a synchronous throw from recordCompletionDecision (GH.6c item 2)', () => {
+  it('settles its entry, sends nothing, and shows the unknown-outcome copy until the saved state is read', async () => {
+    const user = userEvent.setup();
+    const reread = deferred<unknown>();
+    let reads = 0;
+    serve(
+      completionRoutes({
+        status: () => {
+          reads += 1;
+          return reads === 1 ? completionStatus('not_completed') : reread.promise;
+        },
+      }),
+    );
+    const record = vi.spyOn(goalsApi, 'recordCompletionDecision').mockImplementationOnce(() => {
+      throw new Error('synchronous failure before the request');
+    });
+
+    render(<GoalCompletion goalId={GOAL} attestationId={ATT_A} refresh={0} />);
+    const region = await settledCompletion();
+    await user.click(within(region).getByRole('checkbox'));
+    await user.click(within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel }));
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+
+    // The reducer's unknown-outcome branch: the notice is the reconciling copy, and no refusal is set.
+    expect(await within(region).findByText(COMPLETION_RECOVERY_COPY.reconciling)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(isInflight(recordWrite())).toBe(false);
+    expect(posts()).toEqual([]);
+
+    await act(async () => {
+      reread.resolve(completionStatus('not_completed'));
+    });
+    expect(await within(region).findByText(COMPLETION_RECOVERY_COPY.recordAbsent)).toBeTruthy();
+    await user.click(within(region).getByRole('checkbox'));
+    expect(within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(posts()).toEqual([]);
+  });
+});
+
+describe('the registry is page memory only (GH.6c item 3)', () => {
+  it('after a reload-equivalent clear and a remount, no write is sent without a user action', async () => {
+    const user = userEvent.setup();
+    const response = deferred<Response>();
+    serve(
+      completionRoutes({ status: decidedStatus }, { [`POST ${COMPLETION_PATH}`]: () => response.promise }),
+    );
+    const first = render(<GoalCompletion goalId={GOAL} attestationId={ATT_A} refresh={0} />);
+    const before = await settledCompletion();
+    await pressComplete(user, before);
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(isInflight(completeWrite())).toBe(true);
+    first.unmount();
+
+    // Module memory is what a page reload discards, and clearInflightWritesForTests stands in for that here.
+    clearInflightWritesForTests();
+    expect(isInflight(completeWrite())).toBe(false);
+    serve(
+      completionRoutes(
+        { status: decidedStatus },
+        { [`POST ${COMPLETION_PATH}`]: () => created({ reused: false }) },
+      ),
+    );
+    render(<GoalCompletion goalId={GOAL} attestationId={ATT_A} refresh={0} />);
+    const remounted = await settledCompletion();
+    await flushMicrotasks();
+
+    // The mount performs reads only. Zero writes are sent before any user action.
+    expect(within(remounted).queryByText(IN_PROGRESS)).toBeNull();
+    expect(posts()).toEqual([]);
+    expect(calls.every((call) => call.method === 'GET')).toBe(true);
+    await act(async () => {
+      response.resolve(created({ reused: false }));
+    });
   });
 });
