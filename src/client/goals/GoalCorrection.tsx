@@ -59,6 +59,11 @@ export function GoalCorrection({
   const [reloadTick, setReloadTick] = useState(0);
   const stateRef = useRef(state);
   const alertRef = useRef<HTMLParagraphElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
+  // Armed by a click's failed write only, and consumed by the next refusal. A read that fails never arms it.
+  const focusRefusal = useRef(false);
+  // The action whose review the user closed with Cancel or Escape. Focus returns to it.
+  const reopenKind = useRef<GoalAttestationCorrectionKind | null>(null);
 
   // Applies one event to the latest state and returns the effects. Effects are data, so only a click reaches a write.
   const apply = (event: CorrectionEvent): CorrectionEffect[] => {
@@ -70,6 +75,15 @@ export function GoalCorrection({
 
   const dispatch = (event: CorrectionEvent) => run(apply(event));
 
+  // A failed write moves focus to its refusal only when that refusal is new. An unknown outcome sets no refusal, and an
+  // ignored event keeps the old one, so the flag is never left armed for a later read to consume.
+  const failed = (event: CorrectionEvent) => {
+    const before = stateRef.current.refusal;
+    const effects = apply(event);
+    focusRefusal.current = stateRef.current.refusal !== null && stateRef.current.refusal !== before;
+    run(effects);
+  };
+
   const run = (effects: CorrectionEffect[]) => {
     for (const effect of effects) {
       if (effect.type === 'reload') {
@@ -78,13 +92,11 @@ export function GoalCorrection({
         goalsApi.requestCorrection(goalId, handoffId, attestationId, effect.chainPosition, effect.body).then(
           (response) => run(apply({ type: 'requested', response })),
           (error: unknown) =>
-            run(
-              apply({
-                type: 'request_failed',
-                refusal: correctionRefusal(error, 'request'),
-                unknown: isUnknownOutcome(error),
-              }),
-            ),
+            failed({
+              type: 'request_failed',
+              refusal: correctionRefusal(error, 'request'),
+              unknown: isUnknownOutcome(error),
+            }),
         );
       } else {
         const body =
@@ -99,13 +111,11 @@ export function GoalCorrection({
         goalsApi.decideCorrection(goalId, effect.approvalId, effect.actionDigest, body).then(
           () => run(apply({ type: 'decided' })),
           (error: unknown) =>
-            run(
-              apply({
-                type: 'decide_failed',
-                refusal: correctionRefusal(error, 'decide'),
-                unknown: isUnknownOutcome(error),
-              }),
-            ),
+            failed({
+              type: 'decide_failed',
+              refusal: correctionRefusal(error, 'decide'),
+              unknown: isUnknownOutcome(error),
+            }),
         );
       }
     }
@@ -131,10 +141,23 @@ export function GoalCorrection({
     };
   }, [goalId, handoffId, attestationId, refresh, reloadTick]);
 
-  // A refusal moves focus to its alert. A new refusal is a new object, so a read that changes nothing does not refocus.
+  // A refusal from the user's own click moves focus to its alert. A refusal from a read does not, so a background read
+  // cannot take focus away from the user.
   useEffect(() => {
-    if (state.refusal !== null) alertRef.current?.focus();
+    if (state.refusal !== null && focusRefusal.current) {
+      focusRefusal.current = false;
+      alertRef.current?.focus();
+    }
   }, [state.refusal]);
+
+  // Cancel and Escape end a review. The action that opened it is mounted again once the review closes, so focus returns
+  // to it there, and not to the dialog's removed control.
+  useEffect(() => {
+    if (state.phase !== 'idle' || reopenKind.current === null) return;
+    const kind = reopenKind.current;
+    reopenKind.current = null;
+    rootRef.current?.querySelector<HTMLButtonElement>(`[data-correction-kind="${kind}"]`)?.focus();
+  }, [state.phase]);
 
   const { phase } = state;
   const working =
@@ -145,15 +168,22 @@ export function GoalCorrection({
 
   return (
     <section
+      ref={rootRef}
       className="goal-completion goal-correction"
       aria-label={CORRECTION_COPY.panelTitle}
       aria-busy={working}
     >
       <h4>{CORRECTION_COPY.panelTitle}</h4>
       <p>{CORRECTION_COPY.intro}</p>
-      {history === null && state.refusal === null && <p role="status">{CORRECTION_COPY.loading}</p>}
       {history !== null && <CorrectionHistory history={history} />}
-      {state.notice !== null && <p role="status">{state.notice}</p>}
+      {/* One status region from the first render: it is never unmounted, so each change is announced in place. */}
+      <div className="goal-correction-status" role="status" aria-live="polite" aria-atomic="true">
+        {history === null && state.refusal === null && <p>{CORRECTION_COPY.loading}</p>}
+        {state.notice !== null && <p>{state.notice}</p>}
+        {phase === 'requesting' && <p>{CORRECTION_COPY.requesting}</p>}
+        {phase === 'deciding' && <p>{CORRECTION_COPY.deciding}</p>}
+        {phase === 'verifying' && <p>{CORRECTION_COPY.verifying}</p>}
+      </div>
       {state.refusal !== null && (
         <p className="form-error" role="alert" tabIndex={-1} ref={alertRef}>
           {state.refusal.message}
@@ -164,9 +194,6 @@ export function GoalCorrection({
           {CORRECTION_RECOVERY_COPY.checkAgain}
         </button>
       )}
-      {phase === 'requesting' && <p role="status">{CORRECTION_COPY.requesting}</p>}
-      {phase === 'deciding' && <p role="status">{CORRECTION_COPY.deciding}</p>}
-      {phase === 'verifying' && <p role="status">{CORRECTION_COPY.verifying}</p>}
 
       {phase === 'idle' && history !== null && (
         <div className="goal-completion-action" role="group" aria-label="Correction actions">
@@ -176,6 +203,7 @@ export function GoalCorrection({
               key={kind}
               type="button"
               className="secondary-button"
+              data-correction-kind={kind}
               onClick={() => dispatch({ type: 'review', kind })}
             >
               {CORRECTION_ACTIONS[kind].button}
@@ -192,7 +220,12 @@ export function GoalCorrection({
           blocked={history !== null && history.pendingUnreadableCount > 0}
           replacementOptions={replacementOptions}
           working={phase === 'requesting'}
-          onCancel={() => dispatch({ type: 'cancel' })}
+          onCancel={() => {
+            dispatch({ type: 'cancel' });
+            // Focus returns to the opener only when this click closed the review. A cancel the reducer ignores leaves the
+            // review open, so a later read that closes it must not move focus.
+            reopenKind.current = stateRef.current.phase === 'idle' ? state.kind : null;
+          }}
           onRequest={(draft) => dispatch({ type: 'request', draft })}
         />
       )}
@@ -284,6 +317,7 @@ function ReviewPanel({
       title={action.title}
       description={action.consequence}
       busy={working}
+      headingLevel={5}
       onCancel={onCancel}
     >
       <p className="goal-row-meta">{CORRECTION_COPY.requestOnly}</p>

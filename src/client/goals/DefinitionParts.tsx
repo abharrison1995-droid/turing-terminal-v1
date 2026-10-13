@@ -65,6 +65,7 @@ export function ConfirmPanel({
   description,
   onCancel,
   busy = false,
+  headingLevel = 2,
   children,
 }: {
   label: string;
@@ -72,9 +73,12 @@ export function ConfirmPanel({
   description: string;
   onCancel: () => void;
   busy?: boolean;
+  /** The title's heading level, so a dialog nested in a panel can keep the outline straight. Defaults to h2. */
+  headingLevel?: 2 | 3 | 4 | 5 | 6;
   children: ReactNode;
 }) {
   const id = useId();
+  const Title = `h${headingLevel}` as const;
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLElement | null>(null);
   const restoreTrigger = useRef(false);
@@ -117,7 +121,7 @@ export function ConfirmPanel({
       onKeyDown={onKeyDown}
       onClickCapture={onClickCapture}
     >
-      <h2 id={`${id}-title`}>{title}</h2>
+      <Title id={`${id}-title`}>{title}</Title>
       <p id={`${id}-description`}>{description}</p>
       {children}
     </div>

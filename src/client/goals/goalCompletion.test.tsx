@@ -14,7 +14,7 @@ import type {
   GoalManualHandoffProjection,
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
-import { COMPLETION_COPY } from './completionModel';
+import { COMPLETION_COPY, qualifierCopy } from './completionModel';
 import { GoalsPage } from './GoalsPage';
 import {
   calls,
@@ -992,8 +992,10 @@ describe('completion recovery after an ambiguous write (D.4E)', () => {
     const section = await completionSection();
     await user.click(await section.findByRole('checkbox'));
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
-    expect((await section.findByRole('status')).textContent).toBe(
-      'Your completion decision is recorded. The Goal is not completed yet.',
+    await waitFor(() =>
+      expect(section.getByRole('status').textContent).toBe(
+        'Your completion decision is recorded. The Goal is not completed yet.',
+      ),
     );
     expect(section.queryByRole('alert')).toBeNull();
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
@@ -1188,5 +1190,250 @@ describe('completion relation to other and corrected decisions (D.4R Slice 3)', 
     expect(blockers.textContent).toMatch(/could not be verified, so no decision can be recorded here/);
     expect(section.queryByText(/completion_history_invalid|attestation_not_found/)).toBeNull();
     expect(section.queryByRole('checkbox')).toBeNull();
+  });
+});
+
+describe('completion panel accessibility (D.4F.1)', () => {
+  const decisionPath = '/api/goals/goal-1/completion-decision';
+  const lostResponse = () => new TypeError('Failed to fetch');
+
+  it('C1: one status region is mounted from the first render and is the same node after the load', async () => {
+    serveHandoff({ status: completionStatus('not_completed') });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const region = await screen.findByRole('region', { name: 'Completion review' });
+    const status = within(region).getByRole('status');
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(status.getAttribute('aria-atomic')).toBe('true');
+    const section = await completionSection();
+    expect(status.isConnected).toBe(true);
+    expect(section.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('C2: while a decision is being recorded, the same status node says so and there is still one status', async () => {
+    const goal = statefulGoal();
+    const savedDecision = goal.routes[`POST ${decisionPath}`]!;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    serveHandoff(
+      { status: goal.status },
+      {
+        ...goal.routes,
+        [`POST ${decisionPath}`]: async () => {
+          await gate;
+          return savedDecision();
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const status = section.getByRole('status');
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await waitFor(() => expect(status.textContent).toBe('Recording your decision…'));
+    expect(section.getAllByRole('status')).toHaveLength(1);
+    release();
+    await section.findByRole('button', { name: 'Complete Goal' });
+    expect(status.isConnected).toBe(true);
+    expect(decisionWrites()).toHaveLength(1);
+  });
+
+  it('C3: a lost decision response read back as saved lands in the same status node, with no alert', async () => {
+    const goal = statefulGoal();
+    const savedDecision = goal.routes[`POST ${decisionPath}`]!;
+    serveHandoff(
+      { status: goal.status },
+      {
+        ...goal.routes,
+        [`POST ${decisionPath}`]: () => {
+          savedDecision();
+          throw lostResponse();
+        },
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const status = section.getByRole('status');
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await waitFor(() => expect(status.textContent).toBe('Your decision was saved.'));
+    expect(status.isConnected).toBe(true);
+    expect(section.getAllByRole('status')).toHaveLength(1);
+    expect(section.queryByRole('alert')).toBeNull();
+    expect(decisionWrites()).toHaveLength(1);
+  });
+
+  it('C4: a refused record moves focus to its alert, and the alert sits outside the status region', async () => {
+    serveHandoff(
+      { status: completionStatus('not_completed') },
+      {
+        [`POST ${decisionPath}`]: () => refuse(422, 'Server text that must not show.', 'proof_invalid'),
+      },
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    const alert = await section.findByRole('alert');
+    expect(alert.textContent).toBe('Stored completion records failed a check. Nothing was changed.');
+    expect(alert.closest('[role="status"]')).toBeNull();
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it('C5: a failed status read shows its alert and does not move focus to it', async () => {
+    serveHandoff({ status: () => refuse(500, 'Server text that must not show.', 'completion_read_failed') });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const alert = await section.findByRole('alert');
+    expect(alert.textContent).toBe('The saved completion state could not be read.');
+    expect(document.activeElement).not.toBe(alert);
+  });
+
+  it('C6: after a successful record, focus lands on the Complete checkbox once it is enabled', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await section.findByRole('button', { name: 'Complete Goal' });
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    expect(document.activeElement).toBe(section.getByRole('checkbox'));
+  });
+
+  it('C7: a keyboard-only walk records once on Enter, then completes once on Enter, and sends nothing on Space or Tab', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    section.getByRole('checkbox').focus();
+    await user.keyboard(' ');
+    expect(section.getByRole('checkbox')).toHaveProperty('checked', true);
+    await user.tab();
+    const record = section.getByRole('button', { name: 'Record completion decision' });
+    expect(document.activeElement).toBe(record);
+    expect(posts()).toEqual([]);
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(decisionWrites()).toHaveLength(1));
+    expect(completionWrites()).toHaveLength(0);
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    expect(document.activeElement).toBe(section.getByRole('checkbox'));
+
+    await user.keyboard(' ');
+    expect(section.getByRole('checkbox')).toHaveProperty('checked', true);
+    await user.tab();
+    expect(document.activeElement).toBe(section.getByRole('button', { name: 'Complete Goal' }));
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(completionWrites()).toHaveLength(1));
+    expect(posts().map((call) => call.path)).toEqual([decisionPath, '/api/goals/goal-1/completion']);
+    expect(decisionWrites()[0]?.headers['if-match']).toBe(`"${PREFLIGHT_DIGEST}"`);
+    expect(completionWrites()[0]?.headers['if-match']).toBe(`"${ACTION}"`);
+  });
+
+  it('C8: after a user-driven Complete succeeds, focus moves to the panel heading', async () => {
+    const goal = statefulGoal();
+    serveHandoff({ status: goal.status }, goal.routes);
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    await user.click(await section.findByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Record completion decision' }));
+    await waitFor(() => expect(section.getByRole('checkbox')).toHaveProperty('disabled', false));
+    await user.click(section.getByRole('checkbox'));
+    await user.click(section.getByRole('button', { name: 'Complete Goal' }));
+    expect(await section.findByText('Completed on your decision')).toBeTruthy();
+    expect(document.activeElement).toBe(section.getByRole('heading', { name: 'Completion review' }));
+  });
+
+  it('C8 (read only): a panel that mounts already completed moves no focus into the panel', async () => {
+    serveHandoff({ status: completionStatus('completed', { completion: completedRecord }) });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByText('Completed on your decision')).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Completion review' }).contains(document.activeElement)).toBe(
+      false,
+    );
+  });
+
+  it.each([
+    ['completed', 'none', 'Completed on your decision', true],
+    ['contested', 'disputed_by_user', 'Completed earlier; later contested.', true],
+    ['contested', 'superseded_by_user', 'Completed earlier; later contested.', true],
+    [
+      'legacy',
+      'legacy_not_v2_attested',
+      'Completed before external attestation existed. Not attested.',
+      false,
+    ],
+    ['invalid', 'none', 'Completion records could not be verified.', false],
+  ] as const)(
+    'C9: the %s standing (qualifier %s) is one named group whose description carries only its own lines',
+    async (state, qualifier, heading, carriesNotProven) => {
+      serveHandoff({
+        status: completionStatus(state, {
+          qualifier,
+          ...(state === 'completed' || state === 'contested' ? { completion: completedRecord } : {}),
+        }),
+      });
+      const user = userEvent.setup();
+      render(<GoalsPage />);
+      await openHandoffTab(user);
+      const section = await completionSection();
+      const group = section.getByRole('group', { name: heading });
+      expect(document.getElementById(group.getAttribute('aria-labelledby') ?? '')?.textContent).toBe(heading);
+      const description = (group.getAttribute('aria-describedby') ?? '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent ?? '')
+        .join(' ');
+      const sentence = qualifierCopy(qualifier);
+      if (sentence !== null) expect(description).toContain(sentence);
+      if (carriesNotProven) expect(description).toContain('Content preservation: not proven.');
+      else expect(description).not.toMatch(/not proven/);
+      if (state !== 'invalid') expect(heading).not.toMatch(/\b(succeeded|successfully|verified|safe)\b/i);
+    },
+  );
+
+  it('C10: the Record controls are one named group, separate from the Complete controls', async () => {
+    serveHandoff({ status: completionStatus('not_completed') });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const recording = section.getByRole('group', { name: 'Decision recording' });
+    expect(within(recording).getByRole('checkbox')).toBeTruthy();
+    expect(within(recording).getByRole('button', { name: 'Record completion decision' })).toBeTruthy();
+    expect(section.queryByRole('group', { name: 'Goal completion' })).toBeNull();
+  });
+
+  it('C10 (decided): the Complete controls are one named group, with no Decision recording group', async () => {
+    serveHandoff({ status: completionStatus('decided', { decisions: [decisionRow] }) });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const completion = section.getByRole('group', { name: 'Goal completion' });
+    expect(within(completion).getByRole('checkbox')).toBeTruthy();
+    expect(within(completion).getByRole('button', { name: 'Complete Goal' })).toBeTruthy();
+    expect(section.queryByRole('group', { name: 'Decision recording' })).toBeNull();
   });
 });

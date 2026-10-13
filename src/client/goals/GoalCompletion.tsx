@@ -104,7 +104,9 @@ export function GoalCompletion({
   const stateRef = useRef(state);
   const alertRef = useRef<HTMLParagraphElement>(null);
   const completeRef = useRef<HTMLInputElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const previousPhase = useRef(state.phase);
+  const focusAfterWrite = useRef<'complete' | 'heading' | null>(null);
 
   // Applies one event to the latest state and runs the effects it returns. Effects are data, so only a click can reach
   // the two POST calls below.
@@ -191,11 +193,30 @@ export function GoalCompletion({
     if (state.refusal !== null && !state.refusalFromLoad) alertRef.current?.focus();
   }, [state.refusal, state.refusalFromLoad]);
 
-  // A recorded decision moves focus to its complete control, so keyboard users land on the next step.
+  // Focus follows only the user's own finished write. A recorded decision arms the Complete checkbox, which is disabled
+  // until the saved state is read back, and a finished Complete arms the panel heading. Reads arm nothing.
   useEffect(() => {
-    if (previousPhase.current === 'recording' && state.phase === 'decided') completeRef.current?.focus();
+    const from = previousPhase.current;
     previousPhase.current = state.phase;
+    focusAfterWrite.current =
+      from === 'recording' && state.phase === 'decided'
+        ? 'complete'
+        : from === 'completing' && state.phase === 'completed'
+          ? 'heading'
+          : null;
   }, [state.phase]);
+
+  // Runs once the armed control can take focus: the checkbox after its reading ends, the heading at once.
+  useEffect(() => {
+    const target = focusAfterWrite.current;
+    if (target === 'complete' && state.phase === 'decided' && !state.reading) {
+      focusAfterWrite.current = null;
+      completeRef.current?.focus();
+    } else if (target === 'heading' && state.phase === 'completed') {
+      focusAfterWrite.current = null;
+      headingRef.current?.focus();
+    }
+  }, [state.phase, state.reading]);
 
   const reload = () => setReloadTick((tick) => tick + 1);
   const { phase, reading } = state;
@@ -203,9 +224,10 @@ export function GoalCompletion({
 
   return (
     <section className="goal-completion" aria-label={COMPLETION_COPY.panelTitle} aria-busy={reading || busy}>
-      <h4>{COMPLETION_COPY.panelTitle}</h4>
+      <h4 ref={headingRef} tabIndex={-1}>
+        {COMPLETION_COPY.panelTitle}
+      </h4>
       <p>{COMPLETION_COPY.intro}</p>
-      {view === null && phase === 'loading' && <p role="status">{COMPLETION_COPY.loading}</p>}
       {view !== null && <CompletionDetails attestationId={attestationId} view={view} />}
       {state.refusal !== null && (
         <div className="goal-completion-refusal">
@@ -229,7 +251,13 @@ export function GoalCompletion({
           )}
         </div>
       )}
-      {state.notice !== null && <p role="status">{state.notice}</p>}
+      {/* One status region from the first render: it is never unmounted, so each change is announced in place. */}
+      <div className="goal-completion-status" role="status" aria-live="polite" aria-atomic="true">
+        {view === null && phase === 'loading' && <p>{COMPLETION_COPY.loading}</p>}
+        {state.notice !== null && <p>{state.notice}</p>}
+        {phase === 'recording' && <p>{COMPLETION_COPY.recording}</p>}
+        {phase === 'completing' && <p>{COMPLETION_COPY.completing}</p>}
+      </div>
       {phase === 'preflight_refused' && (
         <button type="button" className="secondary-button" disabled={reading} onClick={reload}>
           {COMPLETION_COPY.checkAgain}
@@ -244,7 +272,6 @@ export function GoalCompletion({
           onRecord={() => dispatch({ type: 'record_requested' })}
         />
       )}
-      {phase === 'recording' && <p role="status">{COMPLETION_COPY.recording}</p>}
       {(phase === 'decided' || phase === 'completing') && (
         <CompleteControl
           inputRef={completeRef}
@@ -255,7 +282,6 @@ export function GoalCompletion({
           onComplete={() => dispatch({ type: 'complete_requested' })}
         />
       )}
-      {phase === 'completing' && <p role="status">{COMPLETION_COPY.completing}</p>}
     </section>
   );
 }
@@ -275,7 +301,7 @@ function RecordControl({
 }) {
   const id = useId();
   return (
-    <div className="goal-completion-action">
+    <div className="goal-completion-action" role="group" aria-label="Decision recording">
       <p className="goal-row-meta">{COMPLETION_COPY.recordHelp}</p>
       <label className="goal-completion-ack" htmlFor={id}>
         <input
@@ -317,7 +343,7 @@ function CompleteControl({
 }) {
   const id = useId();
   return (
-    <div className="goal-completion-action">
+    <div className="goal-completion-action" role="group" aria-label="Goal completion">
       <p className="goal-row-meta">{COMPLETION_COPY.completeHelp}</p>
       <label className="goal-completion-ack" htmlFor={id}>
         <input
@@ -362,13 +388,37 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
   const limitationSource =
     preflight?.proofLimitations.contentPreservation ?? status.completionStanding.claim.contentPreservation;
   const relationNote = isSettledState(status) ? null : relationCopy(view.relation);
+  const stateId = useId();
+  const qualifierId = useId();
+  const preservationId = useId();
+  // The heading names the standing, and the qualifier and the not-proven line describe it, so a screen reader gets the
+  // whole standing from one group.
+  const describedBy =
+    [presentation.qualifier ? qualifierId : null, presentation.contentPreservation ? preservationId : null]
+      .filter(Boolean)
+      .join(' ') || undefined;
   return (
     <>
-      <p className={`goal-completion-state goal-completion-${status.state}`}>{presentation.heading}</p>
-      {presentation.qualifier && <p className="goal-completion-qualifier">{presentation.qualifier}</p>}
-      {presentation.contentPreservation && (
-        <p className="goal-completion-preservation">{presentation.contentPreservation}</p>
-      )}
+      <div
+        className="goal-completion-standing"
+        role="group"
+        aria-labelledby={stateId}
+        aria-describedby={describedBy}
+      >
+        <p id={stateId} className={`goal-completion-state goal-completion-${status.state}`}>
+          {presentation.heading}
+        </p>
+        {presentation.qualifier && (
+          <p id={qualifierId} className="goal-completion-qualifier">
+            {presentation.qualifier}
+          </p>
+        )}
+        {presentation.contentPreservation && (
+          <p id={preservationId} className="goal-completion-preservation">
+            {presentation.contentPreservation}
+          </p>
+        )}
+      </div>
       <p className="goal-completion-limitation">{limitationCopy(limitationSource)}</p>
       <p className="goal-row-meta">{COMPLETION_COPY.limitationPointInTime}</p>
       {status.completionStanding.kind === 'v2' && status.completionStanding.otherAttestationsTruncated && (

@@ -891,3 +891,161 @@ describe('correction recovery after an ambiguous write (D.4E)', () => {
     expect(await screen.findByText('The correction is recorded in the history.')).toBeTruthy();
   });
 });
+
+describe('correction panel accessibility (D.4F.1)', () => {
+  const gateName = 'A correction is waiting for your decision';
+
+  it('K1: one status region stays mounted through the load and a request in flight', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    mount({
+      [CORRECTIONS]: () => history(),
+      [`POST ${CORRECTIONS}`]: async () => {
+        await gate;
+        return requested();
+      },
+    });
+    const status = screen.getByRole('status');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    expect(status.isConnected).toBe(true);
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    await waitFor(() => expect(status.textContent).toBe('Sending the request…'));
+    expect(status.isConnected).toBe(true);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    release();
+    await screen.findByRole('group', { name: gateName });
+    expect(status.isConnected).toBe(true);
+  });
+
+  it('K2: a read that fails moves no focus, so a background read cannot steal it', async () => {
+    mount({ [CORRECTIONS]: () => refuse(500, 'boom', 'server_error') });
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The correction history could not be read.');
+    expect(document.activeElement).not.toBe(alert);
+  });
+
+  it('K3: a refused request moves focus to its alert', async () => {
+    mount({
+      [CORRECTIONS]: () => history(),
+      [`POST ${CORRECTIONS}`]: () => refuse(409, 'stale', 'correction_chain_changed'),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    const alert = await screen.findByRole('alert');
+    expect(document.activeElement).toBe(alert);
+  });
+
+  it('K4: Cancel returns focus to the action that opened the review, and sends nothing', async () => {
+    mount({ [CORRECTIONS]: () => history() });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Dispute this attestation' }));
+    expect(posts()).toHaveLength(0);
+  });
+
+  it.each(['Withdraw this attestation', 'Replace with another attestation'] as const)(
+    'K5: Escape in the review opened by "%s" returns focus to that action and sends nothing',
+    async (opener) => {
+      mount({ [CORRECTIONS]: () => history() });
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole('button', { name: opener }));
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('alertdialog')).toBeNull();
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: opener }));
+      expect(posts()).toHaveLength(0);
+    },
+  );
+
+  it('K6: a history read that moves an open review to the gate moves focus nowhere', async () => {
+    let pendingNow = false;
+    const view = mount({
+      [CORRECTIONS]: () => history({ pending: pendingNow ? [pendingRow()] : [] }),
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    pendingNow = true;
+    view.rerender(
+      <GoalCorrection
+        goalId={GOAL}
+        handoffId={HANDOFF}
+        attestationId={ATT}
+        refresh={1}
+        replacementOptions={OPTIONS}
+      />,
+    );
+    await screen.findByRole('group', { name: gateName });
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('K6b: a request whose response was lost arms no focus, so a later failed read cannot take it', async () => {
+    let reads = 0;
+    mount({
+      [CORRECTIONS]: () => {
+        reads += 1;
+        return reads === 1 ? history() : refuse(500, 'boom', 'server_error');
+      },
+      [`POST ${CORRECTIONS}`]: () => {
+        throw new TypeError('Failed to fetch');
+      },
+    });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+    await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Turing still cannot read the saved history');
+    expect(document.activeElement).not.toBe(alert);
+  });
+
+  it('K7: every control in the review dialog has a name, and Tab visits them in order inside the dialog', async () => {
+    mount({ [CORRECTIONS]: () => history() });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Dispute this attestation?' });
+    const reason = within(dialog).getByLabelText('Reason');
+    await user.selectOptions(reason, 'observation_error');
+    const explanation = within(dialog).getByLabelText(/^Explanation/);
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    const request = within(dialog).getByRole('button', { name: 'Request dispute' });
+    expect(request).toHaveProperty('disabled', false);
+    reason.focus();
+    const visited: Element[] = [];
+    for (let step = 0; step < 3; step += 1) {
+      await user.tab();
+      visited.push(document.activeElement as Element);
+    }
+    expect(visited).toEqual([explanation, cancel, request]);
+  });
+
+  it('K7 (gate): every gate control has a name, and Tab moves from the explanation to Confirm to Decline', async () => {
+    mount({ [CORRECTIONS]: () => history({ pending: [pendingRow({ explanationRequired: true })] }) });
+    const group = await screen.findByRole('group', { name: gateName });
+    const explanation = within(group).getByLabelText(/^Explanation/);
+    const confirm = within(group).getByRole('button', { name: 'Confirm correction' });
+    const decline = within(group).getByRole('button', { name: 'Decline this request' });
+    const user = userEvent.setup();
+    await user.type(explanation, 'Reason text');
+    expect(confirm).toHaveProperty('disabled', false);
+    explanation.focus();
+    await user.tab();
+    expect(document.activeElement).toBe(confirm);
+    await user.tab();
+    expect(document.activeElement).toBe(decline);
+  });
+
+  it('K8: the review dialog title is a level-5 heading, and the dialog is named by it', async () => {
+    mount({ [CORRECTIONS]: () => history() });
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+    const dialog = screen.getByRole('alertdialog', { name: 'Dispute this attestation?' });
+    const title = within(dialog).getByRole('heading', { level: 5, name: 'Dispute this attestation?' });
+    expect(dialog.getAttribute('aria-labelledby')).toBe(title.id);
+  });
+});

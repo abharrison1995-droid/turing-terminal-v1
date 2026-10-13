@@ -467,7 +467,11 @@
   border: 1px solid var(--amber);
   border-radius: var(--r-sm);
 }
-.goal-confirm h2 {
+.goal-confirm h2,
+.goal-confirm h3,
+.goal-confirm h4,
+.goal-confirm h5,
+.goal-confirm h6 {
   margin: 0;
   font-size: var(--fs-section);
   line-height: var(--lh-section);
@@ -501,6 +505,12 @@
 }
 .goal-controls button,
 .goal-confirm button {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.goal-completion button {
   max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -723,6 +733,17 @@
   min-width: 0;
   max-width: 80ch;
 }
+/* An empty status region is taken out of the grid, so it adds no row gap. It stays in the accessibility tree and is
+   not hidden with display: none, so a message written into it is still announced. */
+.goal-completion-status:empty,
+.goal-correction-status:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .goal-completion > p,
 .goal-completion-state,
 .goal-completion-qualifier,
@@ -734,6 +755,11 @@
 .goal-completion h4 {
   margin: 0;
 }
+.goal-completion-standing {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
 .goal-completion-state {
   font-weight: var(--fw-semibold);
 }
@@ -743,6 +769,9 @@
 .goal-completion-invalid {
   color: var(--red);
 }
+.goal-completion-legacy {
+  color: var(--ink);
+}
 .goal-completion-limitation {
   color: var(--ink-2);
 }
@@ -751,6 +780,12 @@
   display: grid;
   gap: var(--s-2);
   justify-items: start;
+  min-width: 0;
+}
+.goal-completion-action select,
+.goal-completion-action textarea {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
 }
 .goal-completion-ack {
@@ -882,5 +917,11 @@
   }
   .goal-confirm {
     max-width: 100%;
+  }
+  .goal-completion-action button,
+  .goal-completion-refusal button,
+  .goal-completion > button,
+  .goal-completion-ack {
+    min-height: var(--h-touch);
   }
 }

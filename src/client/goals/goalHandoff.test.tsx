@@ -1886,3 +1886,38 @@ describe('desktop external integration confirmation', () => {
     );
   });
 });
+
+describe('saved attestation reasons (D.4F.1)', () => {
+  it('H1: a saved attestation prints its plain reason and never its code', async () => {
+    const record = handoff();
+    const action = observation(record);
+    serve(
+      detailRoutes(detail(), {
+        '/api/goals/goal-1/handoffs': () => history({ handoffId: record.handoffId, definitionVersion: 2 }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}`]: () => ({
+          projection: projection('current', record),
+        }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration`]: () =>
+          storedExternalStatus(record, {
+            attestationId: 'attestation-external',
+            actionDigest: action.actionDigest,
+          }),
+        [`/api/goals/goal-1/handoffs/${record.handoffId}/external-integration/attestations/attestation-external`]:
+          () => ({
+            projection: {
+              ...attestationProjection(record, action),
+              state: 'stale',
+              reason: { code: 'attestation_stale', message: 'Safe stale explanation.' },
+            },
+          }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoff(user);
+    const heading = await screen.findByRole('heading', { name: 'Attestation history' });
+    await user.click(within(heading.parentElement!).getAllByRole('button')[0]!);
+    expect(await screen.findByText('Safe stale explanation.')).toBeInTheDocument();
+    expect(screen.queryByText(/attestation_stale/)).toBeNull();
+  });
+});

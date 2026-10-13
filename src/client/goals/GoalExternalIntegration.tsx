@@ -1102,9 +1102,7 @@ export function GoalExternalIntegration({
                 {attestationLabel(currentProjection)}
               </p>
               {currentProjection.reason && (
-                <p className="goal-handoff-reason">
-                  {currentProjection.reason.message} ({currentProjection.reason.code})
-                </p>
+                <p className="goal-handoff-reason">{currentProjection.reason.message}</p>
               )}
               {currentProjection.record && (
                 <dl className="goal-handoff-identities">
