@@ -434,3 +434,18 @@ Residual risks:
 - Error labels: a transient SQLite read failure during replay is reported as `completion_corrupt` with `integrity_check_failed`, not `completion_read_failed`. In-transaction read errors surface as `completion_persistence_failed` or `database_busy`. Both are fail-closed but mislabelled. The post-commit read-back after COMMIT (step 11) uses the same mapping: a committed completion that cannot be read back raises `completion_corrupt` with `integrity_check_failed`, and an exact replay recovers it (test `reports completion_corrupt when a committed completion cannot be read back, and recovers it on replay`, `externalCompletionSeams.test.ts:499`).
 - No HTTP route and no UI exist. Windows is unverified.
 - The final whole-path review against this matrix is pending.
+
+## Cross-attestation completion recovery (D.4R, accepted)
+
+Recorded 2026-10-13. This section states the owner policy for a running version-2 Goal that already has a historical completion decision for another attestation. The implementation detail is in [GOAL_CROSS_ATTESTATION_RECOVERY_DESIGN.md](GOAL_CROSS_ATTESTATION_RECOVERY_DESIGN.md). The evidence is in the D.4R records of [GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md](GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md), including the 21-case qualification and its disclosed partial, seam-based and seeded cases.
+
+Policy:
+
+- A running version-2 Goal whose historical completion decision is for attestation A may proceed through an independently eligible attestation B only once A is verifiably disputed, withdrawn or superseded.
+- Eligibility is correction standing only, never Git. Staleness never voids a decision.
+- Every new completion needs a fresh explicitly selected attestation, a fresh preflight, a new high-risk user-approved decision and a separate Complete action. Nothing is automatic.
+- Decisions are immutable and cannot be retargeted to another attestation.
+- A still-eligible earlier decision blocks competing authority. Recording or completing another attestation is refused while it stands.
+- Corrupt or unreadable completion history fails closed. No new decision or completion is recorded over it.
+- A completed Goal cannot be reopened or completed again. There is still one terminal proof per Goal.
+- `contentPreservation` stays `not_proven`. An ancestry observation at a point in time does not show that accepted content survived.

@@ -182,3 +182,9 @@ Historical completion standing is implemented as a read-only projection (`src/se
 - Exposed as the additive `completionStanding` field on `GET /api/goals/:goalId`. No correction write route or UI exists in D.3F; those are D.4.
 
 Limits and open items are recorded in the D.3F section of `GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md`.
+
+## Correction standing and cross-attestation completion (2026-10-13)
+
+Correction standing now gates cross-attestation completion. A new completion through another attestation B is allowed only when the earlier completion decision for attestation A is verifiably disputed, withdrawn or superseded. That is the policy in "Cross-attestation completion recovery (D.4R, accepted)" in [GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md](GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md). Eligibility uses the correction standing defined in this document, and never Git.
+
+A correction on attestation A does not change the standing of attestation B. B is judged only on its own correction chain. A correction on B does not change A's standing.

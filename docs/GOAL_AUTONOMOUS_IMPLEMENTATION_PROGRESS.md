@@ -727,3 +727,22 @@ Still pending and not performed: physical Windows, physical iPhone, live Tailsca
 - Load during the failing run was about 4 on 12 cores, with desktop applications running. The cause is not proven.
 - Action for hardening (H.x): measure and reduce fixture cost, or set a justified per-test timeout with measured
   headroom in those specific tests. Do not raise global timeouts to hide failures.
+
+## D.4R Slice 5: documentation and final review (status)
+
+Recorded 2026-10-13. Parent HEAD for this slice: `786c64b`. Slice 5 documentation is done. It is uncommitted at the time of writing; the lead gates and commits it.
+
+Files changed by this slice (documentation only; no source, test or migration file changed):
+
+- `docs/GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md`: new dated section "Cross-attestation completion recovery (D.4R, accepted)" stating the owner policy.
+- `docs/GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md`: new dated note that correction standing now gates cross-attestation completion.
+- `docs/V1_READINESS.md`: one status entry for the D.4R workstream.
+- `docs/GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md`: this section. No existing D.4R record was changed.
+
+Commits that carry this slice: [PLACEHOLDER: lead to record the Slice 5 documentation commit SHA(s) after committing].
+
+Whole-programme review: [PLACEHOLDER: lead to record the verdict and reference]. Not performed by this slice, and not claimed here.
+
+Final report: [PLACEHOLDER: lead to record the final report reference]. Not written by this slice, and not claimed here.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. PR #3 is open and has not been merged. D.4F (accessibility and mobile) has not started.
