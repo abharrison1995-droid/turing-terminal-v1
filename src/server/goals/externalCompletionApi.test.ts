@@ -33,6 +33,7 @@ import {
   reattestAtCurrentTip,
   repositoryState,
   reviewedDigest,
+  v2DecidedFixture,
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
@@ -268,6 +269,8 @@ describe('external completion status GET (read-only)', () => {
           status: null,
           valid: false,
           invalidReason: 'digest_mismatch',
+          eligibility: 'invalid',
+          correctionStanding: null,
         },
       ]);
       expect(wholeState(fx)).toEqual(before);
@@ -1239,6 +1242,8 @@ describe('external completion status after a correction and for a legacy complet
             status: 'approved',
             valid: true,
             invalidReason: null,
+            eligibility: 'ineligible',
+            correctionStanding: 'disputed',
           },
         ],
         completion: {
@@ -1315,6 +1320,234 @@ describe('external completion status after a correction and for a legacy complet
         'proofDigest',
         'proofId',
       ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+// --- Eligibility and the decided state (D.4R Slice 3) ---------------------------------------------------------------------
+
+/** Moves the destination branch to a commit made outside Turing and leaves it there. */
+function moveDestination(fx: GoalFixture, baseRef: string, label: string): void {
+  const current = git(fx.repo, 'rev-parse', baseRef);
+  const tree = git(fx.repo, 'rev-parse', `${current}^{tree}`);
+  git(fx.repo, 'update-ref', baseRef, git(fx.repo, 'commit-tree', tree, '-p', current, '-m', label));
+}
+
+/** The action body the preflight reports for one attestation, as the classifier tests build it. Test-only. */
+async function actionBody(fx: GoalFixture, attestationId: string): Promise<Record<string, unknown>> {
+  const report = await computeExternalCompletionPreflight(
+    fx.db,
+    fx.goalId,
+    { attestationId },
+    { allowRecordedDecision: true },
+  );
+  if (!report.actionFields) throw new Error('actionBody: the preflight reports no action fields');
+  return { ...report.actionFields, userReviewedPreflightDigest: report.digest };
+}
+
+/** Writes one completion decision row for an action body and approves it as the user. Test-only seed. */
+function seedApprovedRow(fx: GoalFixture, body: Record<string, unknown>): string {
+  const action = buildExternalCompletionAction(body);
+  if (action === null) throw new Error('seedApprovedRow: the action body is not valid');
+  const approval = requestGoalApproval(fx.db, {
+    goalId: fx.goalId,
+    gate: 'user_confirmation',
+    risk: 'high',
+    reason: 'Seeded completion row for a status test.',
+    requestedBy: 'user',
+    detail: { ...action },
+    externalCompletionActionDigest: action.actionDigest,
+  });
+  decideGoalApproval(fx.db, {
+    goalId: fx.goalId,
+    approvalId: approval.id,
+    decision: 'approved',
+    decidedBy: 'user',
+  });
+  return approval.id;
+}
+
+describe('external completion status eligibility and the decided state (D.4R Slice 3)', () => {
+  const statusUrl = (goalId: string) => `/api/goals/${goalId}/completion`;
+
+  it.each([
+    ['dispute', 'disputed'],
+    ['withdraw', 'withdrawn'],
+    ['supersede', 'superseded'],
+  ] as const)(
+    'S1/S2 a decision whose attestation is corrected by %s is ineligible, the Goal is not decided, and the GET writes nothing',
+    async (kind, standing) => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      if (kind === 'supersede') {
+        moveDestination(fx, attested.handoff.target.baseRef, 'destination moved before the replacement');
+        const replacement = await reattestAtCurrentTip(attested);
+        appendCorrectionForTest(fx, attestationId, kind, replacement.attestationId);
+      } else appendCorrectionForTest(fx, attestationId, kind);
+      const before = wholeState(fx);
+
+      const first = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      const second = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({
+        state: 'not_completed',
+        completion: null,
+        decisions: [
+          {
+            approvalId: decided.approvalId,
+            actionDigest: decided.actionDigest,
+            attestationId,
+            valid: true,
+            eligibility: 'ineligible',
+            correctionStanding: standing,
+          },
+        ],
+      });
+      expect(first.body.completionStanding).toEqual(readGoalCompletionStanding(fx.db, fx.goalId));
+      expect(first.body.completionStanding.claim.contentPreservation).not.toBe('proven');
+      expect(second.body).toEqual(first.body);
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'S8 a decision whose attestation is uncorrected stays eligible when Git has moved past it',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const decided = await decideOverHttp(app, attested);
+      moveDestination(fx, attested.handoff.target.baseRef, 'destination moved after the decision');
+
+      const response = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      expect(response.body.state).toBe('decided');
+      expect(response.body.decisions).toEqual([
+        expect.objectContaining({
+          approvalId: decided.approvalId,
+          valid: true,
+          eligibility: 'eligible',
+          correctionStanding: 'active_uncontested',
+        }),
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'S3 after a dispute and a fresh attestation, the Goal is decided by the fresh decision; the exact filter returns only it',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      appendCorrectionForTest(fx, decided.attestationId, 'dispute');
+      moveDestination(fx, decided.handoff.target.baseRef, 'destination moved for a fresh attestation');
+      const fresh = await reattestAtCurrentTip(decided);
+      const digest = await reviewedDigest({ fx, attestationId: fresh.attestationId });
+      const recorded = await recordExternalCompletionDecision(fx.db, {
+        goalId: fx.goalId,
+        attestationId: fresh.attestationId,
+        reviewedPreflightDigest: digest,
+        acknowledgeContentNotProven: true,
+      });
+
+      const status = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      expect(status.body.state).toBe('decided');
+      expect(status.body.completion).toBeNull();
+      expect(status.body.decisions).toEqual([
+        expect.objectContaining({
+          approvalId: decided.recorded.approvalId,
+          attestationId: decided.attestationId,
+          eligibility: 'ineligible',
+          correctionStanding: 'disputed',
+        }),
+        expect.objectContaining({
+          approvalId: recorded.approvalId,
+          attestationId: fresh.attestationId,
+          eligibility: 'eligible',
+          correctionStanding: 'active_uncontested',
+        }),
+      ]);
+      const freshDigest = status.body.decisions[1]!.actionDigest!;
+      const exact = await get<GoalExternalCompletionStatus>(
+        `${statusUrl(fx.goalId)}?actionDigest=${freshDigest}`,
+      );
+      expect(exact.body.state).toBe('decided');
+      expect(exact.body.decisions).toEqual([status.body.decisions[1]]);
+      expect(exact.body.completion).toBeNull();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'S4 two eligible decisions for different attestations (seeded through the approval primitives): both eligible, state decided',
+    async () => {
+      const attested = await v2RunningAttestedFixture('sha1');
+      const { fx, attestationId } = attested;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      // Both bodies are read before the decisions exist, so each preflight is ready and internally consistent.
+      const bodyFirst = await actionBody(fx, attestationId);
+      moveDestination(fx, attested.handoff.target.baseRef, 'destination moved for a second attestation');
+      const second = await reattestAtCurrentTip(attested);
+      const bodySecond = await actionBody(fx, second.attestationId);
+      const firstId = seedApprovedRow(fx, bodyFirst);
+      const secondId = seedApprovedRow(fx, bodySecond);
+      const before = wholeState(fx);
+
+      const response = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      expect(response.body.state).toBe('decided');
+      expect(response.body.completion).toBeNull();
+      expect(
+        response.body.decisions.map((view) => [view.approvalId, view.attestationId, view.eligibility]),
+      ).toEqual([
+        [firstId, attestationId, 'eligible'],
+        [secondId, second.attestationId, 'eligible'],
+      ]);
+      expect(wholeState(fx)).toEqual(before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'S5 a completion row for a fabricated attestation is an invalid view, the Goal is invalid, and the GET writes nothing',
+    async () => {
+      const decided = await v2DecidedFixture('sha1');
+      const { fx } = decided;
+      app = goalApp(fx.db, disabledSupervisor(fx.db));
+      const body = await actionBody(fx, decided.attestationId);
+      const fabricated = randomUUID();
+      const fabricatedId = seedApprovedRow(fx, {
+        ...body,
+        attestation: { ...(body.attestation as Record<string, unknown>), id: fabricated },
+        correctionChain: { ...(body.correctionChain as Record<string, unknown>), attestationId: fabricated },
+      });
+      const before = wholeState(fx);
+
+      const response = await get<GoalExternalCompletionStatus>(statusUrl(fx.goalId));
+      expect(response.status).toBe(200);
+      expect(response.body.state).toBe('invalid');
+      expect(response.body.completion).toBeNull();
+      expect(response.body.decisions).toContainEqual({
+        approvalId: fabricatedId,
+        actionDigest: null,
+        attestationId: null,
+        status: null,
+        valid: false,
+        invalidReason: 'attestation_not_found',
+        eligibility: 'invalid',
+        correctionStanding: null,
+      });
+      expect(response.body.decisions).toContainEqual(
+        expect.objectContaining({
+          approvalId: decided.recorded.approvalId,
+          valid: true,
+          eligibility: 'eligible',
+        }),
+      );
+      expect(wholeState(fx)).toEqual(before);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

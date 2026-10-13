@@ -44,8 +44,16 @@ export const COMPLETION_COPY = {
   recording: 'Recording your decision…',
   completing: 'Completing the Goal…',
   reviewAvailable: 'The review is ready. Recording a decision completes nothing.',
-  decidedElsewhere:
-    'A completion decision is already recorded for a different attestation. Open that attestation to complete the Goal.',
+  blockedByEligibleDecision:
+    'A completion decision for a different attestation of this Goal can still complete it, so no decision can be recorded here. Open that attestation to complete the Goal, or correct it (dispute, withdraw or supersede it) to set it aside.',
+  ownDecisionSetAside:
+    'The decision recorded for this attestation was corrected, so it no longer counts toward completion. It stays in the history as a record and does not complete the Goal.',
+  othersSetAside:
+    'A decision for a different attestation was corrected, so it no longer counts toward completion. It stays in the history as a record and does not complete the Goal.',
+  competingDecisions:
+    'More than one current decision could complete this Goal, so Turing will not complete it from any of them. Correct the attestations that are not needed until one decision remains.',
+  selectAttestation:
+    'Choose an attestation from this history to review its completion. Nothing is loaded until you choose one.',
   otherAttestationsTruncated:
     'Only the first 20 other attestations are listed. Others may exist and were not checked here.',
 } as const;
@@ -97,6 +105,10 @@ export function qualifierCopy(qualifier: GoalCompletionStandingClaim['qualifier'
   return QUALIFIER_COPY[qualifier as GoalCompletionStandingClaim['qualifier']];
 }
 
+/** The `completion_already_recorded` blocker with detail `competing_decision`: another attestation's eligible decision. */
+const COMPETING_DECISION_REASON =
+  'A completion decision for a different attestation can already complete this Goal, so none can be recorded here. Open that attestation, or correct it, to continue.';
+
 const PREFLIGHT_REASON_COPY: Record<string, string> = {
   attestation_id_invalid: 'The selected attestation is not valid. Choose another one.',
   goal_not_found: 'The Goal does not exist.',
@@ -124,15 +136,51 @@ const PREFLIGHT_REASON_COPY: Record<string, string> = {
   verification_busy: 'Turing is busy checking Git. Try again in a moment.',
   observation_changed: 'The Git observation changed. Refresh the review.',
   preflight_internal_invalid: 'The completion review failed an internal check. Refresh to review it again.',
+  completion_history_invalid:
+    'The saved completion records could not be verified, so no decision can be recorded here. Refresh to check them again.',
 };
 
 const GENERIC_REASON = 'The completion review is no longer ready. Refresh to review it again.';
 
-/** A plain sentence for one preflight blocker. Unknown blockers never print their code. */
-export function preflightReasonCopy(code: string): string {
+/**
+ * A plain sentence for one preflight blocker. The detail only selects between known sentences for the same code; it is
+ * never printed. Unknown blockers never print their code.
+ */
+export function preflightReasonCopy(code: string, detail?: string | null): string {
+  if (code === 'completion_already_recorded' && detail === 'competing_decision')
+    return COMPETING_DECISION_REASON;
   return Object.prototype.hasOwnProperty.call(PREFLIGHT_REASON_COPY, code)
     ? PREFLIGHT_REASON_COPY[code]!
     : GENERIC_REASON;
+}
+
+/**
+ * How this attestation stands against the Goal's recorded decisions. Only a decision that is `eligible` counts; a row whose
+ * eligibility is missing, or not exactly `eligible`, is treated as not eligible (fail closed), and an invalid row never counts.
+ * - `decided_here`: exactly one eligible decision, for this attestation.
+ * - `competing`: two eligible decisions for this attestation, or this attestation's and another's.
+ * - `blocked_by_other`: an eligible decision for another attestation and none for this one.
+ * - `own_set_aside`: this attestation's decision is valid but corrected, and no other decision is eligible.
+ * - `others_set_aside`: only other attestations' decisions exist, and all of them are corrected.
+ * - `none`: no valid decision exists.
+ */
+export type DecisionRelation =
+  'none' | 'decided_here' | 'blocked_by_other' | 'own_set_aside' | 'others_set_aside' | 'competing';
+
+export function decisionRelation(
+  status: GoalExternalCompletionStatus,
+  attestationId: string,
+): DecisionRelation {
+  const valid = status.decisions.filter((row) => row.valid);
+  const own = (row: { attestationId: string | null }) => row.attestationId === attestationId;
+  const ownEligible = valid.filter((row) => own(row) && row.eligibility === 'eligible').length;
+  const otherEligible = valid.filter((row) => !own(row) && row.eligibility === 'eligible').length;
+  if (ownEligible > 1 || (ownEligible === 1 && otherEligible > 0)) return 'competing';
+  if (ownEligible === 1) return 'decided_here';
+  if (otherEligible > 0) return 'blocked_by_other';
+  if (valid.some(own)) return 'own_set_aside';
+  if (valid.length > 0) return 'others_set_aside';
+  return 'none';
 }
 
 // --- Standing presentation (what the Goal's completion state says) -----------------------------------------------------
@@ -266,6 +314,9 @@ const CODE_REFUSALS: Record<string, CompletionRefusal> = {
   completion_already_recorded: refuse(
     'A completion has already been recorded for this Goal. Refresh to see it.',
   ),
+  competing_decision: refuse(
+    'A completion decision for a different attestation can already complete this Goal, so nothing was recorded. Open that attestation, or correct it, to continue.',
+  ),
   decision_not_found: refuse('No recorded decision matches. Record the completion decision again.'),
   authority_changed_during_decision: refuse(
     'Goal authority changed during the request. Refresh to review again.',
@@ -301,6 +352,9 @@ const PREFLIGHT_DETAIL_REFUSALS: Record<string, CompletionRefusal> = {
   verification_busy: refuse('Turing is busy checking Git. Try again in a moment.'),
   git_unavailable: refuse('Git could not be read. Try again.'),
   preflight_unavailable: refuse('Git could not be read. Try again.'),
+  completion_history_invalid: refuse(
+    'The saved completion records could not be verified, so nothing was recorded. Refresh to check them again.',
+  ),
 };
 
 /**
@@ -460,7 +514,9 @@ function applyLoaded(
     phase: 'preflight_refused',
     preflightDigest: null,
     actionDigest: null,
-    reasons: event.preflight ? event.preflight.reasons.map((reason) => preflightReasonCopy(reason.code)) : [],
+    reasons: event.preflight
+      ? event.preflight.reasons.map((reason) => preflightReasonCopy(reason.code, reason.detail))
+      : [],
     acknowledgeRecord: false,
     acknowledgeComplete: false,
   };

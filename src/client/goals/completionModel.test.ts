@@ -9,6 +9,7 @@ import { ApiError } from '../api';
 import {
   COMPLETION_COPY,
   COMPLETION_RECOVERY_COPY,
+  decisionRelation,
   type CompletionEffect,
   type CompletionEvent,
   type CompletionRefusal,
@@ -472,6 +473,8 @@ describe('refusal map', () => {
     ['goal_work_in_flight', 409, undefined, 'refresh', false],
     ['manual_reconciliation_required', 409, undefined, 'refresh', false],
     ['completion_already_recorded', 409, undefined, 'refresh', false],
+    ['competing_decision', 409, undefined, 'refresh', false],
+    ['preflight_refused', 409, 'completion_history_invalid', 'refresh', false],
     ['decision_not_found', 404, undefined, 'refresh', false],
     ['decision_corrupt', 422, undefined, 'none', false],
     ['completion_corrupt', 422, undefined, 'none', false],
@@ -785,5 +788,125 @@ describe('recovery copy', () => {
       expect(text).not.toMatch(/\b(clean|no other|all good)\b/i);
       expect(text).not.toMatch(/[a-z]+_[a-z]+/);
     }
+  });
+});
+
+// --- Decision relation and the copy for corrected and competing decisions (D.4R Slice 3) -------------------------------
+
+function withDecisions(decisions: unknown[]): GoalExternalCompletionStatus {
+  return { ...statusFor('not_completed'), decisions: decisions as GoalExternalCompletionStatus['decisions'] };
+}
+
+/** One decision row. `eligibility` is passed through unchecked so the fail-closed rules can be exercised. */
+function decisionFor(attestationId: string, eligibility: unknown, valid = true) {
+  return {
+    approvalId: `approval-${attestationId}-${String(eligibility)}-${valid}`,
+    actionDigest: 'a'.repeat(64),
+    attestationId,
+    status: 'approved',
+    valid,
+    invalidReason: null,
+    eligibility,
+    correctionStanding: 'active_uncontested',
+  };
+}
+
+describe('decision relation', () => {
+  const ME = 'attestation-me';
+  const OTHER = 'attestation-other';
+  const THIRD = 'attestation-third';
+
+  it('is none when no valid decision exists, and when the only rows are invalid', () => {
+    expect(decisionRelation(withDecisions([]), ME)).toBe('none');
+    expect(decisionRelation(withDecisions([decisionFor(ME, 'invalid', false)]), ME)).toBe('none');
+  });
+
+  it('is decided_here for exactly one eligible decision of this attestation, even beside an ineligible one', () => {
+    expect(decisionRelation(withDecisions([decisionFor(ME, 'eligible')]), ME)).toBe('decided_here');
+    expect(
+      decisionRelation(withDecisions([decisionFor(ME, 'eligible'), decisionFor(OTHER, 'ineligible')]), ME),
+    ).toBe('decided_here');
+  });
+
+  it('is blocked_by_other when another attestation has an eligible decision and this one has none', () => {
+    expect(decisionRelation(withDecisions([decisionFor(OTHER, 'eligible')]), ME)).toBe('blocked_by_other');
+    expect(
+      decisionRelation(withDecisions([decisionFor(ME, 'ineligible'), decisionFor(OTHER, 'eligible')]), ME),
+    ).toBe('blocked_by_other');
+    expect(
+      decisionRelation(withDecisions([decisionFor(OTHER, 'eligible'), decisionFor(THIRD, 'eligible')]), ME),
+    ).toBe('blocked_by_other');
+  });
+
+  it('is own_set_aside when this attestation decision is corrected and no other decision is eligible', () => {
+    expect(decisionRelation(withDecisions([decisionFor(ME, 'ineligible')]), ME)).toBe('own_set_aside');
+    expect(
+      decisionRelation(withDecisions([decisionFor(ME, 'ineligible'), decisionFor(OTHER, 'ineligible')]), ME),
+    ).toBe('own_set_aside');
+  });
+
+  it('is others_set_aside when only other attestations decisions exist and all are corrected', () => {
+    expect(decisionRelation(withDecisions([decisionFor(OTHER, 'ineligible')]), ME)).toBe('others_set_aside');
+  });
+
+  it('is competing for two eligible decisions of this attestation, or this attestation beside another', () => {
+    expect(
+      decisionRelation(withDecisions([decisionFor(ME, 'eligible'), decisionFor(ME, 'eligible')]), ME),
+    ).toBe('competing');
+    expect(
+      decisionRelation(withDecisions([decisionFor(ME, 'eligible'), decisionFor(OTHER, 'eligible')]), ME),
+    ).toBe('competing');
+  });
+
+  it('fails closed: a missing or non-exact eligibility is not eligible, and an invalid row never counts', () => {
+    expect(decisionRelation(withDecisions([decisionFor(ME, undefined)]), ME)).toBe('own_set_aside');
+    expect(decisionRelation(withDecisions([decisionFor(ME, 'Eligible')]), ME)).toBe('own_set_aside');
+    expect(decisionRelation(withDecisions([decisionFor(OTHER, 'eligible ')]), ME)).toBe('others_set_aside');
+    expect(decisionRelation(withDecisions([decisionFor(OTHER, 'eligible', false)]), ME)).toBe('none');
+    expect(decisionRelation(withDecisions([decisionFor(ME, 'eligible', false)]), ME)).toBe('none');
+  });
+});
+
+describe('copy for a competing decision, a history that cannot be verified, and corrected decisions', () => {
+  it('names a competing decision as a decision, not as a completion, and never by its code', () => {
+    const competing = preflightReasonCopy('completion_already_recorded', 'competing_decision');
+    expect(competing).not.toBe(preflightReasonCopy('completion_already_recorded'));
+    expect(competing).not.toMatch(/has already been recorded|_|competing_decision/);
+    expect(competing).toMatch(/decision/);
+    expect(refusal(409, 'competing_decision').message).not.toBe(
+      'The request was refused. Nothing was changed.',
+    );
+  });
+
+  it('gives a history that cannot be verified its own sentence, never the generic one or its detail', () => {
+    const history = preflightReasonCopy('completion_history_invalid', 'too_many_decisions');
+    expect(history).not.toBe(preflightReasonCopy('some_unknown_blocker'));
+    expect(history).not.toMatch(/_|too_many_decisions/);
+    const refused = refusal(409, 'preflight_refused', 'completion_history_invalid').message;
+    expect(refused).not.toBe(refusal(409, 'preflight_refused', 'some_unknown_blocker').message);
+    expect(refused).not.toMatch(/_|completion_history_invalid/);
+  });
+
+  it('keeps the proof-exists sentence for a null detail, unchanged', () => {
+    expect(preflightReasonCopy('completion_already_recorded')).toBe(
+      'A completion has already been recorded for this Goal. Refresh to see it.',
+    );
+  });
+
+  it('never says a decision is a completion, and never calls a corrected decision completed or verified', () => {
+    const copy = [
+      COMPLETION_COPY.blockedByEligibleDecision,
+      COMPLETION_COPY.ownDecisionSetAside,
+      COMPLETION_COPY.othersSetAside,
+      COMPLETION_COPY.competingDecisions,
+      COMPLETION_COPY.selectAttestation,
+      preflightReasonCopy('completion_already_recorded', 'competing_decision'),
+    ];
+    for (const text of copy) {
+      expect(text).not.toMatch(/has already been recorded|completed|verified|proven|\bdone\b|success/i);
+      expect(text).not.toMatch(/_/);
+    }
+    expect(COMPLETION_COPY.ownDecisionSetAside).toMatch(/does not complete the Goal/);
+    expect(COMPLETION_COPY.othersSetAside).toMatch(/does not complete the Goal/);
   });
 });

@@ -12,6 +12,8 @@ import {
   type CompletionState,
   completionRefusal,
   correctionStandingCopy,
+  decisionRelation,
+  type DecisionRelation,
   initialCompletionState,
   isSettledState,
   limitationCopy,
@@ -26,37 +28,60 @@ interface CompletionView {
   status: GoalExternalCompletionStatus;
   preflight: GoalExternalCompletionPreflightReport | null;
   preflightError: CompletionRefusal | null;
-  /** True when a valid decision exists for a different attestation, so this one cannot be recorded. */
-  decidedElsewhere: boolean;
+  /** How this attestation stands against the Goal's recorded decisions. Only `decided_here` can complete the Goal. */
+  relation: DecisionRelation;
 }
 
 /**
  * Two reads, both GETs. The status comes first. The preflight is read only while this attestation can still take a
- * decision: not when a decision for it is already recorded, not when a decision for another attestation is, and not
- * once the Goal is settled. The preflight would refuse that case as "already recorded", which says nothing useful here.
+ * decision: when no valid decision exists, or when the only ones are corrected elsewhere, and not once the Goal is
+ * settled. In every other relation the preflight would refuse, or the decision already stands, so it is not read.
  */
 export async function loadCompletionView(goalId: string, attestationId: string): Promise<CompletionView> {
   const status = await goalsApi.completionStatus(goalId);
-  const decidedHere = status.decisions.some((row) => row.valid && row.attestationId === attestationId);
-  const decidedElsewhere = !decidedHere && status.decisions.some((row) => row.valid);
-  if (decidedHere || decidedElsewhere || isSettledState(status))
-    return { status, preflight: null, preflightError: null, decidedElsewhere };
+  const relation = decisionRelation(status, attestationId);
+  const canRecord = relation === 'none' || relation === 'others_set_aside';
+  if (!canRecord || isSettledState(status))
+    return { status, preflight: null, preflightError: null, relation };
   try {
     return {
       status,
       preflight: await goalsApi.completionPreflight(goalId, attestationId),
       preflightError: null,
-      decidedElsewhere: false,
+      relation,
     };
   } catch (error) {
-    return { status, preflight: null, preflightError: completionRefusal(error), decidedElsewhere: false };
+    return { status, preflight: null, preflightError: completionRefusal(error), relation };
   }
 }
 
-/** The action digest of this attestation's valid recorded decision, or null when there is none. */
+/**
+ * The action digest of this attestation's eligible recorded decision, or null. Only `decided_here` yields one, so a
+ * corrected, competing or blocked decision never offers the Complete control.
+ */
 function decidedActionDigest(status: GoalExternalCompletionStatus, attestationId: string): string | null {
-  const row = status.decisions.find((decision) => decision.valid && decision.attestationId === attestationId);
+  if (decisionRelation(status, attestationId) !== 'decided_here') return null;
+  const row = status.decisions.find(
+    (decision) =>
+      decision.valid && decision.eligibility === 'eligible' && decision.attestationId === attestationId,
+  );
   return row?.actionDigest ?? null;
+}
+
+/** The sentence that explains a relation to another or a corrected decision. Null when there is nothing to explain. */
+function relationCopy(relation: DecisionRelation): string | null {
+  switch (relation) {
+    case 'blocked_by_other':
+      return COMPLETION_COPY.blockedByEligibleDecision;
+    case 'competing':
+      return COMPLETION_COPY.competingDecisions;
+    case 'own_set_aside':
+      return COMPLETION_COPY.ownDecisionSetAside;
+    case 'others_set_aside':
+      return COMPLETION_COPY.othersSetAside;
+    default:
+      return null;
+  }
 }
 
 /**
@@ -336,6 +361,7 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
   const decision = status.decisions.find((row) => row.valid && row.attestationId === attestationId) ?? null;
   const limitationSource =
     preflight?.proofLimitations.contentPreservation ?? status.completionStanding.claim.contentPreservation;
+  const relationNote = isSettledState(status) ? null : relationCopy(view.relation);
   return (
     <>
       <p className={`goal-completion-state goal-completion-${status.state}`}>{presentation.heading}</p>
@@ -348,7 +374,7 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
       {status.completionStanding.kind === 'v2' && status.completionStanding.otherAttestationsTruncated && (
         <p className="goal-row-meta">{COMPLETION_COPY.otherAttestationsTruncated}</p>
       )}
-      {view.decidedElsewhere && !isSettledState(status) && <p>{COMPLETION_COPY.decidedElsewhere}</p>}
+      {relationNote !== null && <p>{relationNote}</p>}
       {status.completion && (
         <dl className="goal-handoff-identities" aria-label="Recorded completion">
           <Identity label="Completion proof">{hash(status.completion.proofId)}</Identity>
@@ -378,7 +404,7 @@ function PreflightSummary({ preflight }: { preflight: GoalExternalCompletionPref
     return (
       <ul className="goal-plain-list" aria-label="Blockers">
         {preflight.reasons.map((reason, index) => (
-          <li key={`${reason.code}:${index}`}>{preflightReasonCopy(reason.code)}</li>
+          <li key={`${reason.code}:${index}`}>{preflightReasonCopy(reason.code, reason.detail)}</li>
         ))}
       </ul>
     );

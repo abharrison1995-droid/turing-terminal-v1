@@ -14,6 +14,7 @@ import type {
   GoalManualHandoffProjection,
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
+import { COMPLETION_COPY } from './completionModel';
 import { GoalsPage } from './GoalsPage';
 import {
   calls,
@@ -281,6 +282,8 @@ const decisionRow = {
   status: 'approved' as const,
   valid: true,
   invalidReason: null,
+  eligibility: 'eligible' as const,
+  correctionStanding: 'active_uncontested' as const,
 };
 
 /** Serves the Handoff tab with one current attestation and the completion routes given. */
@@ -315,6 +318,16 @@ function serveHandoff(
 async function openHandoffTab(user: ReturnType<typeof userEvent.setup>) {
   await openGoal(user);
   await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
+  await chooseAttestation(user);
+}
+
+/**
+ * Chooses the first attestation in the history. Selection is explicit: the Handoff tab no longer selects an attestation by
+ * itself, so the completion review and the correction panel mount only after this click.
+ */
+async function chooseAttestation(user: ReturnType<typeof userEvent.setup>) {
+  const heading = await screen.findByRole('heading', { name: 'Attestation history' });
+  await user.click(within(heading.parentElement!).getAllByRole('button')[0]!);
 }
 
 /** The completion section, once it has finished its reads (aria-busy is false only then). */
@@ -835,6 +848,7 @@ describe('completion is never sent without a click', () => {
     await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
     expect(anyCompletionPosts()).toHaveLength(0);
     await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await chooseAttestation(user);
     section = await completionSection();
     await section.findByRole('button', { name: 'Record completion decision' });
     expect(anyCompletionPosts()).toHaveLength(0);
@@ -842,6 +856,7 @@ describe('completion is never sent without a click', () => {
     await user.click(screen.getByRole('button', { name: 'All Goals' }));
     await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
     await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    await chooseAttestation(user);
     section = await completionSection();
     await section.findByRole('button', { name: 'Complete Goal' });
     expect(anyCompletionPosts()).toHaveLength(0);
@@ -1031,7 +1046,7 @@ describe('completion recovery after an ambiguous write (D.4E)', () => {
     const section = await completionSection();
     expect(
       await section.findByText(
-        'A completion decision is already recorded for a different attestation. Open that attestation to complete the Goal.',
+        'A completion decision for a different attestation of this Goal can still complete it, so no decision can be recorded here. Open that attestation to complete the Goal, or correct it (dispute, withdraw or supersede it) to set it aside.',
       ),
     ).toBeTruthy();
     expect(section.queryByRole('checkbox')).toBeNull();
@@ -1075,5 +1090,103 @@ describe('completion recovery after an ambiguous write (D.4E)', () => {
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
     await waitFor(() => expect(completionWrites()).toHaveLength(1));
     expect(completionWrites()[0]!.headers['if-match']).toBe(`"${ACTION}"`);
+  });
+});
+
+describe('completion relation to other and corrected decisions (D.4R Slice 3)', () => {
+  const preflightReads = () => calls.filter((call) => call.path === '/api/goals/goal-1/completion-preflight');
+  const corrected = (attestationId: string) =>
+    ({
+      ...decisionRow,
+      attestationId,
+      eligibility: 'ineligible' as const,
+      correctionStanding: 'disputed' as const,
+    }) as const;
+
+  it('another attestation corrected: this attestation is still reviewed, Record is offered, and the note says the other decision no longer counts', async () => {
+    serveHandoff({
+      status: completionStatus('not_completed', { decisions: [corrected('attestation-other')] }),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByRole('checkbox')).toBeTruthy();
+    expect(section.getByText(COMPLETION_COPY.othersSetAside)).toBeTruthy();
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(preflightReads()).toHaveLength(1);
+    expect(posts()).toEqual([]);
+  });
+
+  it('this attestation corrected: the set-aside note shows, no Record or Complete control is offered, and no review is read', async () => {
+    serveHandoff({ status: completionStatus('not_completed', { decisions: [corrected(ATTESTATION)] }) });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByText(COMPLETION_COPY.ownDecisionSetAside)).toBeTruthy();
+    expect(section.queryByRole('checkbox')).toBeNull();
+    expect(section.queryByRole('button', { name: 'Record completion decision' })).toBeNull();
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(preflightReads()).toHaveLength(0);
+    expect(posts()).toEqual([]);
+  });
+
+  it('two eligible decisions, one of them this attestation: the competing note shows and Complete is not offered', async () => {
+    serveHandoff({
+      status: completionStatus('decided', {
+        decisions: [
+          decisionRow,
+          { ...decisionRow, approvalId: 'approval-second', attestationId: 'attestation-other' },
+        ],
+      }),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    expect(await section.findByText(COMPLETION_COPY.competingDecisions)).toBeTruthy();
+    expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
+    expect(section.queryByRole('checkbox')).toBeNull();
+    expect(preflightReads()).toHaveLength(0);
+    expect(posts()).toEqual([]);
+  });
+
+  it('a refused review that names a competing decision says so as a decision, never as a completion', async () => {
+    serveHandoff({
+      status: completionStatus('not_completed'),
+      preflight: preflight({
+        outcome: 'refused',
+        reasons: [{ code: 'completion_already_recorded', detail: 'competing_decision' }],
+        digest: '8'.repeat(64),
+      }),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const blockers = await section.findByRole('list', { name: 'Blockers' });
+    expect(blockers.textContent).toMatch(/can already complete this Goal/);
+    expect(section.queryByText(/has already been recorded/)).toBeNull();
+    expect(section.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('a refused review whose history cannot be verified shows its own sentence and never prints the code or the detail', async () => {
+    serveHandoff({
+      status: completionStatus('not_completed'),
+      preflight: preflight({
+        outcome: 'refused',
+        reasons: [{ code: 'completion_history_invalid', detail: 'attestation_not_found' }],
+        digest: '8'.repeat(64),
+      }),
+    });
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await openHandoffTab(user);
+    const section = await completionSection();
+    const blockers = await section.findByRole('list', { name: 'Blockers' });
+    expect(blockers.textContent).toMatch(/could not be verified, so no decision can be recorded here/);
+    expect(section.queryByText(/completion_history_invalid|attestation_not_found/)).toBeNull();
+    expect(section.queryByRole('checkbox')).toBeNull();
   });
 });

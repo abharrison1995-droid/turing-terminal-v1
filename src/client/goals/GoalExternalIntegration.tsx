@@ -7,6 +7,7 @@ import type {
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
 import { ApiError } from '../api';
+import { COMPLETION_COPY } from './completionModel';
 import { ConfirmPanel } from './DefinitionParts';
 import { GoalCompletion } from './GoalCompletion';
 import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
@@ -254,12 +255,28 @@ export function GoalExternalIntegration({
   goalTitle,
   handoff,
   refresh = 0,
+  selectedAttestationId: controlledSelection,
+  onSelectAttestation: onControlledSelection,
 }: {
   goalId: string;
   goalTitle: string;
   handoff: GoalManualIntegrationHandoff;
   refresh?: number | string;
+  /**
+   * The attestation the user chose. A parent that holds the choice (so a tab switch keeps it) passes both props. Without
+   * them the choice is local to this component. Null until the user chooses one.
+   */
+  selectedAttestationId?: string | null;
+  onSelectAttestation?: (attestationId: string) => void;
 }) {
+  const [localSelection, setLocalSelection] = useState<string | null>(null);
+  const controlled = onControlledSelection !== undefined;
+  const selectedAttestationId = controlled ? (controlledSelection ?? null) : localSelection;
+  // The D.4E recovery code and the history buttons call this setter. It reaches the parent when one holds the choice.
+  const setSelectedAttestationId = (attestationId: string) => {
+    if (onControlledSelection !== undefined) onControlledSelection(attestationId);
+    else setLocalSelection(attestationId);
+  };
   const [recovery, setRecovery] = useState<RecoveryState>(() => {
     const digest = readPendingDigest(goalId, handoff.handoffId);
     return digest ? { state: 'outcome_uncertain', digest } : { state: 'idle' };
@@ -270,7 +287,6 @@ export function GoalExternalIntegration({
   const [reviewedConfirmation, setReviewedConfirmation] = useState<GoalExternalIntegrationObservation | null>(
     null,
   );
-  const [selectedAttestationId, setSelectedAttestationId] = useState<string | null>(null);
   const [recoveryMessage, setRecoveryMessage] = useState('');
   const [announcement, setAnnouncement] = useState('');
   const [refusal, setRefusal] = useState('');
@@ -350,8 +366,6 @@ export function GoalExternalIntegration({
         );
       return;
     }
-    if (selectedAttestationId === null && status.attestations[0])
-      setSelectedAttestationId(status.attestations[0].attestationId);
     if (!pendingDigest || reconciledDigest.current === pendingDigest) return;
     const baseline = reconciliationBaseline.current;
     if (baseline?.digest === pendingDigest && baseline.status === status) return;
@@ -810,6 +824,9 @@ export function GoalExternalIntegration({
             {stored.result.data.attestations.length > 0 && (
               <div>
                 <h4>Attestation history</h4>
+                {selectedAttestationId === null && (
+                  <p className="goal-row-meta">{COMPLETION_COPY.selectAttestation}</p>
+                )}
                 <ul className="goal-plain-list goal-external-history">
                   {stored.result.data.attestations.map((row) => (
                     <li key={row.attestationId}>

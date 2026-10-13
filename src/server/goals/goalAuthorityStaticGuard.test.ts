@@ -219,9 +219,10 @@ const RULES: readonly AuthorityRule[] = [
       'goals/externalCompletionPreflight.ts',
       'goals/externalCompletionDecision.ts',
       'goals/externalCompletionTerminal.ts',
+      'goals/externalCompletionApi.ts',
     ],
     reason:
-      'Only the completion authority classifier module, the public preflight, the decision service and the terminal consumer name its entry point. Slice 2a adds the preflight caller; Slice 2b adds the decision caller, which classifies inside its transaction; Slice 2c adds the terminal caller, which re-classifies inside the completion transaction. A later caller must extend this list in the same commit.',
+      'Only the completion authority classifier module, the public preflight, the decision service and the terminal consumer name its entry point. Slice 2a adds the preflight caller; Slice 2b adds the decision caller, which classifies inside its transaction; Slice 2c adds the terminal caller, which re-classifies inside the completion transaction. Slice 3 adds the read-only status shaper, which reads the classifier entries for eligibility and never writes. A later caller must extend this list in the same commit.',
   },
   {
     id: 'classifier_not_writer',
@@ -804,6 +805,11 @@ describe('authority static guard: seeded violations and negative controls', () =
     [
       'classifier_entry',
       'goals/externalCompletionTerminal.ts',
+      "import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';",
+    ],
+    [
+      'classifier_entry',
+      'goals/externalCompletionApi.ts',
       "import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';",
     ],
   ];

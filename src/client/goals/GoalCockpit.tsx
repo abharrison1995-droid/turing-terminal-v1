@@ -11,7 +11,7 @@ import { FindingsPanel } from './GoalFindings';
 import { CyclesPanel, EvidencePanel, ReviewsPanel } from './GoalHistory';
 import { RefreshButton } from './GoalList';
 import { GoalOverview } from './GoalOverview';
-import { GoalHandoff } from './GoalHandoff';
+import { type GoalAttestationChoice, GoalHandoff } from './GoalHandoff';
 import { UsagePanel } from './GoalUsage';
 import { GoalStatusPill, Resource } from './parts';
 import { humanize } from './presentation';
@@ -54,6 +54,12 @@ export function GoalCockpit({
   const [generation, setGeneration] = useState(0);
   const bump = useCallback(() => setGeneration((value) => value + 1), []);
   const detail = useLoad(() => goalsApi.detail(goalId), goalId, generation);
+  // The attestation chosen on the Handoff tab. It is held here, not in the tab, so a tab switch keeps it, and it is cleared
+  // whenever the Goal changes, so no selection is ever carried from one Goal to another.
+  const [attestationChoice, setAttestationChoice] = useState<GoalAttestationChoice | null>(null);
+  useEffect(() => {
+    setAttestationChoice(null);
+  }, [goalId]);
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
     const stream = new EventSource(masterApiUrl(`/api/events?goalId=${encodeURIComponent(goalId)}`));
@@ -248,7 +254,15 @@ export function GoalCockpit({
                           />
                         )}
                         {tab === 'usage' && <UsagePanel goalId={goal.id} refresh={generation} />}
-                        {tab === 'handoff' && <GoalHandoff key={goal.id} goal={goal} refresh={generation} />}
+                        {tab === 'handoff' && (
+                          <GoalHandoff
+                            key={goal.id}
+                            goal={goal}
+                            refresh={generation}
+                            attestationChoice={attestationChoice}
+                            onAttestationChoice={setAttestationChoice}
+                          />
+                        )}
                       </>
                     )}
                   </div>

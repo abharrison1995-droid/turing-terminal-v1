@@ -652,6 +652,9 @@ function servePage(extra: Routes = {}) {
 async function openPageHandoffTab(user: ReturnType<typeof userEvent.setup>) {
   await openGoal(user);
   await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
+  // Selection is explicit: the first attestation in the history is chosen by one click, as a user would.
+  const heading = await screen.findByRole('heading', { name: 'Attestation history' });
+  await user.click(within(heading.parentElement!).getAllByRole('button')[0]!);
   await screen.findByRole('group', { name: GATE_TEXT });
 }
 
@@ -728,12 +731,16 @@ describe('correction requests are never sent by server events, tab switches or G
     await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
     expect(posts()).toHaveLength(0);
     await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    const historyHeading = await screen.findByRole('heading', { name: 'Attestation history' });
+    await user.click(within(historyHeading.parentElement!).getAllByRole('button')[0]!);
     await screen.findByRole('group', { name: GATE_TEXT });
     expect(posts()).toHaveLength(0);
 
     await user.click(screen.getByRole('button', { name: 'All Goals' }));
     await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
     await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+    const returnHeading = await screen.findByRole('heading', { name: 'Attestation history' });
+    await user.click(within(returnHeading.parentElement!).getAllByRole('button')[0]!);
     await screen.findByRole('group', { name: GATE_TEXT });
     expect(posts()).toHaveLength(0);
   });

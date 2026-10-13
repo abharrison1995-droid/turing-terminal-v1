@@ -857,6 +857,12 @@ export interface GoalExternalCompletionPreflightResponse {
   preflight: GoalExternalCompletionPreflightReport;
 }
 
+/**
+ * Whether a valid decision can still complete the Goal. Eligibility is correction standing only: never Git, never
+ * staleness. `invalid` for any row that is not intact, including a row the authority classifier cannot vouch for.
+ */
+export type GoalExternalCompletionDecisionEligibility = 'eligible' | 'ineligible' | 'invalid';
+
 /** One completion decision row of a Goal. Invalid rows carry no digest, attestation or status. */
 export interface GoalExternalCompletionDecisionView {
   approvalId: string;
@@ -865,6 +871,9 @@ export interface GoalExternalCompletionDecisionView {
   status: 'approved' | null;
   valid: boolean;
   invalidReason: string | null;
+  eligibility: GoalExternalCompletionDecisionEligibility;
+  /** The correction standing of the decision's attestation; null when the row is not intact. */
+  correctionStanding: 'active_uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'invalid' | null;
 }
 
 /** The stored proof identity of a completed version-2 Goal. Historical identity: consult `completionStanding`. */
@@ -896,9 +905,10 @@ export interface GoalExternalCompletionStatusRecord {
  * Read-only status. `state` describes the whole Goal and is derived from the decision rows and `completionStanding`, not
  * from the historical stored completion. `invalid` when any decision row or the standing is invalid; `completed` only for
  * a version-2 completion with uncontested standing; `contested` for a version-2 completion that a later correction
- * disputed, withdrew, superseded or left for reconciliation; `legacy` for a version-1 completion; `decided` when a valid
- * decision is waiting; `not_completed` otherwise. With `actionDigest`, `decisions` and `completion` are filtered to that
- * exact action.
+ * disputed, withdrew, superseded or left for reconciliation; `legacy` for a version-1 completion; `decided` when at least
+ * one decision is `eligible` (a valid decision whose attestation is not corrected); `not_completed` otherwise. A corrected
+ * decision stays in `decisions` as history and does not make the Goal `decided`. With `actionDigest`, `decisions` and
+ * `completion` are filtered to that exact action.
  */
 export interface GoalExternalCompletionStatus {
   goalId: string;

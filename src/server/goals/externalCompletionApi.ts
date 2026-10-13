@@ -5,6 +5,11 @@ import type {
   GoalExternalCompletionStatus,
   GoalExternalCompletionStatusRecord,
 } from '../../shared/goalApi.js';
+import {
+  classifyCompletionAuthority,
+  type CompletionAuthorityClassification,
+  type CompletionAuthorityEntry,
+} from './completionAuthorityPolicy.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import { ExternalCompletionError } from './externalCompletion.js';
 import { listExternalCompletionDecisions } from './externalCompletionDecision.js';
@@ -22,8 +27,17 @@ type ListedDecision = Exclude<
   { state: 'not_found' }
 >;
 
-function toDecisionView(row: ListedDecision): GoalExternalCompletionDecisionView {
-  if (row.state === 'valid')
+/**
+ * The view of one listed decision row. Eligibility and correction standing come from the authority classifier's entry for
+ * the same row. A valid row with no intact entry fails closed: it is reported as an invalid view, never as eligible.
+ * `authority.reason` names a whole-Goal failure (the row cap or an unreadable history), which the entry is missing for.
+ */
+function toDecisionView(
+  row: ListedDecision,
+  entry: CompletionAuthorityEntry | undefined,
+  authority: CompletionAuthorityClassification,
+): GoalExternalCompletionDecisionView {
+  if (row.state === 'valid' && entry?.integrity === 'ok')
     return {
       approvalId: row.approval.id,
       actionDigest: row.action.actionDigest,
@@ -31,6 +45,23 @@ function toDecisionView(row: ListedDecision): GoalExternalCompletionDecisionView
       status: 'approved',
       valid: true,
       invalidReason: null,
+      eligibility: entry.eligible ? 'eligible' : 'ineligible',
+      correctionStanding: entry.standing,
+    };
+  if (row.state === 'valid')
+    return {
+      approvalId: row.approval.id,
+      actionDigest: null,
+      attestationId: null,
+      status: null,
+      valid: false,
+      invalidReason:
+        entry?.integrity ??
+        (authority.reason === 'too_many_decisions' || authority.reason === 'history_unreadable'
+          ? authority.reason
+          : 'row_unreadable'),
+      eligibility: 'invalid',
+      correctionStanding: null,
     };
   return {
     approvalId: row.approvalId,
@@ -39,6 +70,8 @@ function toDecisionView(row: ListedDecision): GoalExternalCompletionDecisionView
     status: null,
     valid: false,
     invalidReason: row.reason,
+    eligibility: 'invalid',
+    correctionStanding: null,
   };
 }
 
@@ -69,15 +102,21 @@ export function readExternalCompletionStatus(
   goalId: string,
   actionDigest: string | null,
 ): GoalExternalCompletionStatus {
-  const views = listExternalCompletionDecisions(db, goalId).flatMap((row) =>
-    row.state === 'not_found' ? [] : [toDecisionView(row)],
-  );
+  // The classifier's entries do not depend on the selected attestation (only its class and policy digest do), so the
+  // selection is empty and only `entries` and `reason` are read. It never throws and writes nothing.
+  const authority = classifyCompletionAuthority(db, goalId, '');
+  const entries = new Map(authority.entries.map((entry) => [entry.decisionId, entry]));
+  const views = listExternalCompletionDecisions(db, goalId).flatMap((row) => {
+    if (row.state === 'not_found') return [];
+    const approvalId = row.state === 'valid' ? row.approval.id : row.approvalId;
+    return [toDecisionView(row, entries.get(approvalId), authority)];
+  });
   const standing = readGoalCompletionStanding(db, goalId);
   const hasInvalidDecision = views.some((view) => !view.valid);
-  const hasValidDecision = views.some((view) => view.valid);
+  const hasEligibleDecision = views.some((view) => view.eligibility === 'eligible');
 
   const state: GoalExternalCompletionStatus['state'] =
-    hasInvalidDecision || standing.kind === 'invalid'
+    hasInvalidDecision || standing.kind === 'invalid' || authority.class === 5
       ? 'invalid'
       : standing.kind === 'v2' && standing.standing === 'uncontested'
         ? 'completed'
@@ -85,7 +124,7 @@ export function readExternalCompletionStatus(
           ? 'contested'
           : standing.kind === 'legacy'
             ? 'legacy'
-            : hasValidDecision
+            : hasEligibleDecision
               ? 'decided'
               : 'not_completed';
 

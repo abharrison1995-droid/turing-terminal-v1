@@ -324,7 +324,27 @@ function InspectionCommands({ record, enabled }: { record: GoalManualIntegration
   );
 }
 
-export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: number }) {
+/**
+ * The attestation the user chose on the Handoff tab, with the Goal and handoff it belongs to. The cockpit holds it, so a tab
+ * switch keeps it; it means nothing for any other Goal or handoff, and it does nothing on its own (no request, no decision).
+ */
+export interface GoalAttestationChoice {
+  goalId: string;
+  handoffId: string;
+  attestationId: string;
+}
+
+export function GoalHandoff({
+  goal,
+  refresh,
+  attestationChoice,
+  onAttestationChoice,
+}: {
+  goal: GoalDetail;
+  refresh: number;
+  attestationChoice: GoalAttestationChoice | null;
+  onAttestationChoice: (choice: GoalAttestationChoice) => void;
+}) {
   const [savedUi] = useState(() => readHandoffUiMemory(goal.id));
   const [localRefresh, setLocalRefresh] = useState(0);
   const [reconciledListPage, setReconciledListPage] = useState<{
@@ -519,6 +539,13 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
   };
 
   const projection = selected.result.state === 'ready' ? selected.result.data : null;
+  // The stored choice counts only for this Goal and this handoff; any other choice is no selection at all.
+  const selectedAttestationId =
+    attestationChoice !== null &&
+    attestationChoice.goalId === goal.id &&
+    projection?.handoff?.handoffId === attestationChoice.handoffId
+      ? attestationChoice.attestationId
+      : null;
   const projectionMatchesSelection =
     projection !== null &&
     (projection.handoff === null
@@ -737,6 +764,14 @@ export function GoalHandoff({ goal, refresh }: { goal: GoalDetail; refresh: numb
                   goalTitle={goal.title}
                   handoff={projection.handoff}
                   refresh={`${refresh}:${localRefresh}`}
+                  selectedAttestationId={selectedAttestationId}
+                  onSelectAttestation={(attestationId) =>
+                    onAttestationChoice({
+                      goalId: goal.id,
+                      handoffId: projection.handoff!.handoffId,
+                      attestationId,
+                    })
+                  }
                 />
               )}
             </>
