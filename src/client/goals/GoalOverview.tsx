@@ -1,6 +1,7 @@
 import type { GoalCompletionView, GoalDetail, GoalPreview } from '../../shared/goalApi';
 import { goalsApi } from './api';
 import { goalAcceptsDecisions } from './controls';
+import { phoneStandingView } from './completionStandingCopy';
 import { NextActionCard } from './NextAction';
 import { Empty, Resource } from './parts';
 import { UnifiedApprovals } from './UnifiedApprovals';
@@ -31,7 +32,7 @@ export function GoalOverview({
   const completion = goal.completion;
   return (
     <div className="goal-overview">
-      <NextActionCard action={goal.nextAction} />
+      <NextActionCard action={goal.nextAction} standing={phoneStandingView(goal) ?? undefined} />
 
       <UnifiedApprovals
         goalId={goal.id}

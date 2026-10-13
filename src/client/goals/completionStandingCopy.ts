@@ -1,4 +1,4 @@
-import type { GoalDetail } from '../../shared/goalApi';
+import type { CompletionStandingBrief, GoalDetail } from '../../shared/goalApi';
 
 /**
  * Copy for the compact Goal view's completion standing. A pure leaf: type-only imports, no React, no request, no timer.
@@ -77,6 +77,13 @@ const NOT_RECORDED_DETAIL =
   'The Goal status says completed, but no saved completion backs it. Treat it as not confirmed.';
 const UNRECOGNISED_DETAIL =
   'This view does not recognise the saved completion standing, so it makes no completion claim.';
+
+const CONTESTED_NEXT_LABEL = 'Completion contested';
+const CONTESTED_NEXT_SUMMARY =
+  'This completion was later contested. See the completion standing for what was recorded.';
+const LEGACY_NEXT_LABEL = 'Completed before attestation existed';
+const LEGACY_NEXT_SUMMARY =
+  'This completion is not attested. See the completion standing for what was recorded.';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -170,8 +177,8 @@ function classify(raw: unknown): PhoneStandingView {
       contentPreservation: preservationLine(claim.contentPreservation),
       tone: 'attention',
       icon: 'warning',
-      nextLabel: 'Completion contested',
-      nextSummary: 'This completion was later contested. See the completion standing for what was recorded.',
+      nextLabel: CONTESTED_NEXT_LABEL,
+      nextSummary: CONTESTED_NEXT_SUMMARY,
     };
   }
   if (kind === 'legacy' && standing === 'historical_legacy') {
@@ -183,8 +190,8 @@ function classify(raw: unknown): PhoneStandingView {
       contentPreservation: null,
       tone: 'neutral',
       icon: 'warning',
-      nextLabel: 'Completed before attestation existed',
-      nextSummary: 'This completion is not attested. See the completion standing for what was recorded.',
+      nextLabel: LEGACY_NEXT_LABEL,
+      nextSummary: LEGACY_NEXT_SUMMARY,
     };
   }
   if (kind === 'invalid' && standing === 'invalid_unverified') return INVALID;
@@ -211,4 +218,47 @@ export function phoneStandingView(
   const raw: unknown = goal.completionStanding;
   if (raw === undefined || raw === null) return UNREADABLE;
   return classify(raw);
+}
+
+/** The list row's label, detail and pill tone for one completed Goal. */
+export interface CompletedListStandingView {
+  label: string;
+  detail: string;
+  tone: PhoneStandingTone;
+}
+
+const fromPhone = (view: PhoneStandingView): CompletedListStandingView => ({
+  label: view.nextLabel,
+  detail: view.nextSummary,
+  tone: view.tone,
+});
+
+/**
+ * The compact list's label for one completed row, from that row's brief. Only a trusted brief whose every signal agrees
+ * reads Completed, and its detail keeps the content-not-proven statement. A missing, unreadable or unrecognised brief
+ * fails closed. The wording is the phone's own for each state, so the list and the phone cannot disagree.
+ */
+export function completedListStandingView(
+  brief: CompletionStandingBrief | null | undefined,
+): CompletedListStandingView {
+  if (!brief || brief.state !== 'ready') return fromPhone(UNREADABLE);
+  if (brief.trusted) {
+    const agrees =
+      brief.standing === 'uncontested' &&
+      brief.qualifier === 'none' &&
+      brief.contentPreservation === 'not_proven';
+    return fromPhone(agrees ? TRUSTED : UNRECOGNISED);
+  }
+  if (CONTESTED_STANDINGS.includes(brief.standing)) {
+    return {
+      label: CONTESTED_NEXT_LABEL,
+      detail: qualifierLine(brief.qualifier) ?? CONTESTED_NEXT_SUMMARY,
+      tone: 'attention',
+    };
+  }
+  if (brief.standing === 'historical_legacy') {
+    return { label: LEGACY_NEXT_LABEL, detail: LEGACY_NEXT_SUMMARY, tone: 'neutral' };
+  }
+  if (brief.standing === 'invalid_unverified') return fromPhone(INVALID);
+  return fromPhone(UNRECOGNISED);
 }

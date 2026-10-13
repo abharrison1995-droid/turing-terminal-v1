@@ -1,5 +1,6 @@
 import { RefreshCw } from 'lucide-react';
 import type { GoalListItem, GoalListResponse } from '../../shared/goalApi';
+import { completedListStandingView } from './completionStandingCopy';
 import { describeNextAction, formatTime, humanize } from './presentation';
 import { Empty, GoalStatusPill, Resource, TruncationNote } from './parts';
 import type { Loaded } from './useLoad';
@@ -32,6 +33,10 @@ export function GoalList({
             <ul className="goal-list" aria-label="Grand Projects">
               {data.goals.map((goal) => {
                 const next = describeNextAction(goal.nextAction);
+                const completed =
+                  goal.status === 'completed'
+                    ? completedListStandingView(goal.completionStandingBrief)
+                    : null;
                 const findings = openFindings(goal);
                 return (
                   <li key={goal.id}>
@@ -55,12 +60,18 @@ export function GoalList({
                         )}
                       </span>
                       <span className="goal-row-state">
-                        <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
+                        <GoalStatusPill
+                          status={goal.status}
+                          reason={goal.reasonCode}
+                          label={completed?.label}
+                          tone={completed?.tone}
+                        />
                         {goal.needsUser && <span className="goal-needs-you">Needs you</span>}
                       </span>
                       <span className="goal-row-next" data-next-action={next.kind}>
                         <span className="goal-eyebrow">Next</span>
-                        {next.label}
+                        {completed ? completed.label : next.label}
+                        {completed && <span className="goal-row-meta">{completed.detail}</span>}
                       </span>
                       <span className="goal-row-meta goal-row-side">
                         <span>

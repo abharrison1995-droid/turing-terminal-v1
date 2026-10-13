@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { GoalDefinition } from '../../shared/goals.js';
 import type {
+  CompletionStandingBrief,
   GoalApiError,
   GoalAttestationCorrectionDecisionRecorded,
   GoalCompletionStanding,
@@ -10,6 +11,8 @@ import type {
   GoalExternalCompletionPreflightResponse,
   GoalExternalCompletionStatus,
   GoalFinalApplyPreflightView,
+  GoalListItem,
+  GoalListResponse,
   GoalManualHandoffListResponse,
   GoalManualHandoffPrepared,
   GoalManualHandoffProjection,
@@ -493,6 +496,42 @@ const handoffListQuery = z.strictObject({
   offset: z.coerce.number().int().min(0).max(100_000).optional(),
 });
 
+/**
+ * The brief for one completed row. Any failure, including a missing Goal, is `unreadable` for this row only: the list
+ * stays a success and no other row is affected. The reader runs no Git and writes nothing, and it is one deferred read
+ * transaction per Goal. A reader that reports no completion (a race with the row's status) also fails closed.
+ */
+function completionStandingBriefOf(db: Db, goalId: string): CompletionStandingBrief {
+  try {
+    const standing = readGoalCompletionStanding(db, goalId);
+    if (standing.standing === null) return { state: 'unreadable' };
+    return {
+      state: 'ready',
+      standing: standing.standing,
+      qualifier: standing.claim.qualifier,
+      trusted: standing.claim.trustedForDownstream,
+      contentPreservation: standing.claim.contentPreservation,
+    };
+  } catch {
+    return { state: 'unreadable' };
+  }
+}
+
+/**
+ * Adds `completionStandingBrief` to each completed row of one list page, and to no other row. Composed here rather than in
+ * readModel.ts, for the same import-cycle reason as the detail route. Order, total, limit and every other field are
+ * unchanged.
+ */
+function withCompletionStandingBriefs(db: Db, list: GoalListResponse): GoalListResponse {
+  return {
+    ...list,
+    goals: list.goals.map((goal: GoalListItem): GoalListItem => {
+      if (goal.status !== 'completed') return goal;
+      return { ...goal, completionStandingBrief: completionStandingBriefOf(db, goal.id) };
+    }),
+  };
+}
+
 export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): void {
   const { db } = deps;
   const goalIdOf = (request: { params: unknown }) => (request.params as { goalId: string }).goalId;
@@ -503,7 +542,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     const query = parse(listQuery, request.query, reply);
     if (!query.ok) return reply;
     try {
-      return listGoals(db, query.data);
+      return withCompletionStandingBriefs(db, listGoals(db, query.data));
     } catch (error) {
       return domainError(error, reply);
     }

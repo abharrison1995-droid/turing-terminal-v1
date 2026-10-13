@@ -9,17 +9,20 @@ export function GoalStatusPill({
   status,
   reason,
   tone,
+  label,
 }: {
   status: GoalStatus;
   reason?: string | null;
   tone?: Tone;
+  /** Replaces the status text. Used only where a completed Goal's saved standing decides the wording. */
+  label?: string;
 }) {
   return (
     <span
       className={`status-pill goal-tone goal-tone-${tone ?? STATUS_TONE[status]}`}
       data-goal-status={status}
     >
-      {humanize(status)}
+      {label ?? humanize(status)}
       {reason ? <span className="goal-pill-reason"> · {humanize(reason)}</span> : null}
     </span>
   );

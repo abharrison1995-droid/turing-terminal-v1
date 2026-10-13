@@ -7,6 +7,7 @@ import { ConfirmPanel } from './DefinitionParts';
 import { DefinitionsPanel } from './GoalDefinitions';
 import { GoalControls } from './GoalControls';
 import { goalAcceptsDecisions } from './controls';
+import { phoneStandingView } from './completionStandingCopy';
 import { FindingsPanel } from './GoalFindings';
 import { CyclesPanel, EvidencePanel, ReviewsPanel } from './GoalHistory';
 import { RefreshButton } from './GoalList';
@@ -140,7 +141,12 @@ export function GoalCockpit({
                     <h2>{goal.title}</h2>
                     <p className="goal-row-meta">{goal.projectName}</p>
                   </div>
-                  <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
+                  <GoalStatusPill
+                    status={goal.status}
+                    reason={goal.reasonCode}
+                    label={phoneStandingView(goal)?.nextLabel}
+                    tone={phoneStandingView(goal)?.tone}
+                  />
                 </header>
                 {goal.needsUser && (
                   <section className="goal-cockpit-attention" aria-label="Needs you">

@@ -270,6 +270,29 @@ export interface GoalCycleBrief {
   finishedAt: string | null;
 }
 
+/**
+ * The compact completion standing of one completed row in the Goal list (`GET /api/goals`). Additive, and set only for a
+ * row whose stored status is `completed`. It is the reader's own classification of that row. `trusted` is the reader's
+ * existing `trustedForDownstream` flag. It is NOT a claim that the Goal's content has been verified. No Git, proof or
+ * attestation detail is carried here.
+ */
+export type CompletionStandingBrief =
+  | {
+      state: 'ready';
+      standing:
+        | 'uncontested'
+        | 'disputed'
+        | 'withdrawn'
+        | 'superseded'
+        | 'reconciliation_required'
+        | 'invalid_unverified'
+        | 'historical_legacy';
+      qualifier: GoalCompletionStandingClaim['qualifier'];
+      trusted: boolean;
+      contentPreservation: GoalCompletionStandingClaim['contentPreservation'];
+    }
+  | { state: 'unreadable' };
+
 export interface GoalListItem {
   id: string;
   projectId: string;
@@ -294,6 +317,11 @@ export interface GoalListItem {
   usageSummary: GoalUsageSummary;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Additive. Set by `GET /api/goals` only, and only on a row whose status is `completed`. A completed row with no brief,
+   * or with an unrecognised one, must be shown as unavailable, never as completed.
+   */
+  completionStandingBrief?: CompletionStandingBrief;
 }
 
 export interface GoalListResponse {
