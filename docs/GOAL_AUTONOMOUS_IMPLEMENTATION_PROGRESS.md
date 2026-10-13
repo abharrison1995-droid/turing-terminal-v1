@@ -645,29 +645,29 @@ What was added: `src/server/goals/completionRecoveryQualification.test.ts` (52 t
 
 Case results:
 
-| # | Result | Test(s) |
-|---|---|---|
-| 1 | PASS | QR01 (dispute variant; B recorded and completed) |
-| 2 | PASS | QR02 (withdrawn A allows B) |
-| 3 | PASS | QR03 (superseded A gives no decision for B; no retarget) |
-| 4 | PASS | QR04 (eligible A, including Git-stale uncorrected A, blocks every route to B) |
-| 5 | PASS | QR05 (six seeded corrupt-history variants) |
-| 6 | PASS | QR06a (A-side), QR06b (B-side) |
-| 7 | PASS | QR07 (tampered B attestation) |
-| 8 | PASS | QR08a (record), QR08b (Complete) |
-| 9 | PASS | QR09 (destination changes, both formats) |
-| 10 | PARTIAL | QR10a (criterion stale), QR10b (pending review); stale acceptance not asserted for B after A |
-| 11 | PASS | QR11a (Complete refuses `active_work`), QR11b (record refused; see pins) |
-| 12 | PASS | QR12i and QR12ii (real windows); QR12iii (seam) |
-| 13 | PASS | QR13a, b, c (seam retry and fail-closed paths) |
-| 14 | PASS | QR14 (identical concurrent requests: one row, one proof) |
-| 15 | PASS (seam) | QR15 (B/C concurrency via seam; no true OS parallelism) |
-| 16 | PASS | QR16 (A and B corrected, C completes, one proof) |
-| 17 | PASS (seeded) | QR17 (seeded B row; the public path is asserted separately as `goal_not_running`) |
-| 18 | PASS | QR18 (lost response: no duplicate row, proof or event) |
-| 19 | PASS | QR19 (digest, attestation and Goal bindings) |
-| 20 | PASS | QR20 (B after corrected decided A: one proof, one event pair) |
-| 21 | PASS | QR21 (dispute, withdraw and supersede after B completes: standing only) |
+| #   | Result        | Test(s)                                                                                      |
+| --- | ------------- | -------------------------------------------------------------------------------------------- |
+| 1   | PASS          | QR01 (dispute variant; B recorded and completed)                                             |
+| 2   | PASS          | QR02 (withdrawn A allows B)                                                                  |
+| 3   | PASS          | QR03 (superseded A gives no decision for B; no retarget)                                     |
+| 4   | PASS          | QR04 (eligible A, including Git-stale uncorrected A, blocks every route to B)                |
+| 5   | PASS          | QR05 (six seeded corrupt-history variants)                                                   |
+| 6   | PASS          | QR06a (A-side), QR06b (B-side)                                                               |
+| 7   | PASS          | QR07 (tampered B attestation)                                                                |
+| 8   | PASS          | QR08a (record), QR08b (Complete)                                                             |
+| 9   | PASS          | QR09 (destination changes, both formats)                                                     |
+| 10  | PARTIAL       | QR10a (criterion stale), QR10b (pending review); stale acceptance not asserted for B after A |
+| 11  | PASS          | QR11a (Complete refuses `active_work`), QR11b (record refused; see pins)                     |
+| 12  | PASS          | QR12i and QR12ii (real windows); QR12iii (seam)                                              |
+| 13  | PASS          | QR13a, b, c (seam retry and fail-closed paths)                                               |
+| 14  | PASS          | QR14 (identical concurrent requests: one row, one proof)                                     |
+| 15  | PASS (seam)   | QR15 (B/C concurrency via seam; no true OS parallelism)                                      |
+| 16  | PASS          | QR16 (A and B corrected, C completes, one proof)                                             |
+| 17  | PASS (seeded) | QR17 (seeded B row; the public path is asserted separately as `goal_not_running`)            |
+| 18  | PASS          | QR18 (lost response: no duplicate row, proof or event)                                       |
+| 19  | PASS          | QR19 (digest, attestation and Goal bindings)                                                 |
+| 20  | PASS          | QR20 (B after corrected decided A: one proof, one event pair)                                |
+| 21  | PASS          | QR21 (dispute, withdraw and supersede after B completes: standing only)                      |
 
 Stale-A stale-correction test, Q1b: PASS on sha1 and sha256. A is decided; a real destination commit advances the tip; A's preflight reports `destination_advanced_after_observation`; B is blocked with whole state unchanged. After a real dispute of A, B records and completes separately, and an exact replay writes nothing.
 
