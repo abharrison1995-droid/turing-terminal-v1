@@ -816,4 +816,22 @@ Not claimed and not verified: WCAG 2.2 AA conformance or certification; screen-r
 
 Deferred, not changed: attribution wording ("Completed on your decision", "You disputed", "Disputed by you") stays until D.4F.2; `GoalExternalIntegration.tsx` line 877 still prints a raw code, pinned by `goalHandoff.test.tsx`; G14 (pending correction approvals shown with Approve and Deny on the phone) and S1 (no server-side desktop-only enforcement) remain owner decisions.
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.2 onward has not started. PR #3 is open and has not been merged.
+### D.4F.2 recovery and async safety: ACCEPTED on `4c02286` (lead record)
+
+Baseline `cd8ab18` plus the D.4F.1 record (`89e9409`). Code commit `4c02286` (fast-forward from `89e9409`). Full canonical gate on the final tree: 155 files and 3,081 tests, all green (baseline 3,048; the 33 new tests are the RED and PIN cases). Hosted CI for `4c02286` (run 38382257249): one `gate` job, success, about 24 minutes against the 30-minute limit.
+
+Planning and implementation: a Sonnet read-only planner returned GO on a reconciliation brief with three lead decisions (F1 restores the caution in the decided path; F4 option A-min; attribution change made now). A Haiku implementer wrote the RED and PIN tests first, then the production changes, and committed nothing. A fresh independent Sonnet review of the final tree returned APPROVE with no blocking findings.
+
+What changed, by follow-up:
+
+- F1: after a lost Complete, a read that still shows the decision recorded keeps the caution that the Goal may still finish, and keeps Complete on the stored digest.
+- F2: a pending correction is adopted as an actionable gate only when its sequence and previous digest fit the current chain tip. A stale row, or an on-screen gate the chain has overtaken, shows out of date with Confirm disabled and Decline kept. A reviewing draft closes when the chain position moves, so it cannot be sent from the old position.
+- F3: an unreadable preflight read says the review could not be read and that the check changed nothing. Write failures keep the reconciling wording.
+- F4 (option A-min): a busy Record (`completion_busy` and bare 429) keeps its digest and acknowledgement and offers a manual retry, as a busy Complete already does. `verification_busy` stays non-retryable. No automatic retry exists under any option.
+- Attribution (N-full): the completed heading now reads "Completed on a recorded decision. Turing has not proven content preservation." Qualifiers and correction labels no longer say "by you", because the client has no evidence of who decided. Copy shown after the user's own click is unchanged.
+
+Changed existing assertions (old behaviour, new behaviour, why superseded, all recorded in the commit message): the lost-Complete decided notice, the completed heading in several tests (the negative checks now assert the new heading, so they are not vacuous), and the disputed label. No assertion was weakened to a looser matcher. A refused preflight route was added to the second Goal in the correction test fixture; that is a fixture change, not an assertion change.
+
+Not claimed and not verified: WCAG 2.2 AA conformance or certification; screen-reader output; rendered layout; the real focus order in a browser; phone enforcement (none exists server-side: S1). The pending-correction copy "waiting for your decision" and the request-confirmation line "Your ..." are kept because they follow the user's own action or ask for a decision; `UNCONFIRMED_RESULT` text that says "Do not assume" is no longer reachable from a read. Residual, recorded not fixed: a remount while a write is in flight can show the control again (P5e); no in-panel Check again outside the reconciling state (P1d).
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.3 (mobile read-only standing) and D.4F.4 (qualification and final review) have not started. The G14 and S1 owner decisions are still open. PR #3 is open and has not been merged.
