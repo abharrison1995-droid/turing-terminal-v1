@@ -834,4 +834,18 @@ Changed existing assertions (old behaviour, new behaviour, why superseded, all r
 
 Not claimed and not verified: WCAG 2.2 AA conformance or certification; screen-reader output; rendered layout; the real focus order in a browser; phone enforcement (none exists server-side: S1). The pending-correction copy "waiting for your decision" and the request-confirmation line "Your ..." are kept because they follow the user's own action or ask for a decision; `UNCONFIRMED_RESULT` text that says "Do not assume" is no longer reachable from a read. Residual, recorded not fixed: a remount while a write is in flight can show the control again (P5e); no in-panel Check again outside the reconciling state (P1d).
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.3 (mobile read-only standing) and D.4F.4 (qualification and final review) have not started. The G14 and S1 owner decisions are still open. PR #3 is open and has not been merged.
+### D.4F.3 mobile read-only standing: ACCEPTED on `f4c555f` (lead record)
+
+Baseline `4184371` (the D.4F.2 record). Code commit `f4c555f` (fast-forward from `4184371`). Full canonical gate on the final tree: 157 files and 3,166 tests, all green (baseline 3,081). Hosted CI for `f4c555f` (run 38388594277): one `gate` job, success, about 27 minutes against the 30-minute limit. This is the closest run to the limit so far. The CI timeout is still the approved 30 minutes, and it is not raised here.
+
+Planning and implementation: a Sonnet read-only planner returned GO (the phone list and `presentation.ts` stay as they are; the desktop Overview card and phone list "Completed" are disclosed limits, because fixing them needs a server or read-projection change). A Haiku implementer wrote the RED and PIN tests first, then the production changes, and committed nothing. A fresh independent Sonnet review of the final tree returned APPROVE with no blocking findings.
+
+What changed: the phone compact view shows the saved completion standing as a read-only section after the next-action card. The section has no button, form or link, makes no request, and Refresh stays GET-only. A standing is shown as settled only when the stored status is completed and the saved standing carries the complete, uncontested claim. A completed status alone is never a success headline. Contested, legacy and invalid standings show their own copy; a missing standing reads "Standing could not be read"; unknown values fail closed. A parity test compares the phone copy with the desktop copy for the same states.
+
+Changed existing assertions: none. `goalMobile.test.tsx` is byte-for-byte unchanged (checked by `git diff`).
+
+Not claimed and not verified: WCAG 2.2 AA conformance or certification; rendered layout and narrow-width wrapping; screen-reader output; the amber and red text contrast on the phone (jsdom cannot show it). Non-blocking notes from review, recorded and not changed: the unreadable and unrecognised states use the base text colour (the card and pill tone mark them as attention states); an invalid standing with a missing claim reads "not recognised" rather than "could not be verified", and still fails closed.
+
+Owner items still open: G14 (pending correction approvals with Approve and Deny on the phone) and S1 (no server desktop-only enforcement). The phone can still show "Completed" in list rows and the desktop Overview card; the fix needs a server or read-projection change.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. D.4F.4 (qualification, documentation and whole-stage review) has not started. PR #3 is open and has not been merged.
