@@ -20,6 +20,7 @@ import {
   correctionRefusal,
   correctionStandingLabel,
   initialCorrectionState,
+  isUsableCorrectionHistory,
   REASON_CODES,
   reduceCorrection,
 } from './correctionModel';
@@ -128,6 +129,10 @@ export function GoalCorrection({
     goalsApi.correctionHistory(goalId, handoffId, attestationId).then(
       (next) => {
         if (!live) return;
+        if (!isUsableCorrectionHistory(next)) {
+          dispatch({ type: 'load_failed' });
+          return;
+        }
         setHistory(next);
         dispatch({ type: 'loaded', history: next });
       },

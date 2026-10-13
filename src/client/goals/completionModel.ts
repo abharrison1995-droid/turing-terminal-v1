@@ -388,6 +388,19 @@ export function completionReadRefusal(error: unknown): CompletionRefusal {
   return refusal.message === UNCONFIRMED_RESULT ? refuse(COMPLETION_COPY.reviewUnreadable, 'none') : refusal;
 }
 
+/**
+ * True when a preflight read has the shape the review reads: a known outcome, a reasons list, and a digest when ready.
+ * Anything else is a failed read, so the caller turns it into the read refusal and never into a silent refusal.
+ */
+export function isUsablePreflight(value: unknown): value is GoalExternalCompletionPreflightReport {
+  if (typeof value !== 'object' || value === null) return false;
+  const report = value as Record<string, unknown>;
+  if (!Array.isArray(report.reasons)) return false;
+  if (!report.reasons.every((reason) => typeof reason === 'object' && reason !== null)) return false;
+  if (report.outcome === 'ready') return typeof report.digest === 'string' && report.digest.length > 0;
+  return report.outcome === 'refused';
+}
+
 // --- Reducer ----------------------------------------------------------------------------------------------------------
 
 export type CompletionPhase =

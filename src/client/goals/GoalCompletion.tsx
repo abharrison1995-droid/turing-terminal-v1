@@ -17,6 +17,7 @@ import {
   type DecisionRelation,
   initialCompletionState,
   isSettledState,
+  isUsablePreflight,
   limitationCopy,
   preflightReasonCopy,
   reduceCompletion,
@@ -45,12 +46,9 @@ export async function loadCompletionView(goalId: string, attestationId: string):
   if (!canRecord || isSettledState(status))
     return { status, preflight: null, preflightError: null, relation };
   try {
-    return {
-      status,
-      preflight: await goalsApi.completionPreflight(goalId, attestationId),
-      preflightError: null,
-      relation,
-    };
+    const preflight = await goalsApi.completionPreflight(goalId, attestationId);
+    if (!isUsablePreflight(preflight)) throw new TypeError('The completion review body was not usable.');
+    return { status, preflight, preflightError: null, relation };
   } catch (error) {
     return { status, preflight: null, preflightError: completionReadRefusal(error), relation };
   }

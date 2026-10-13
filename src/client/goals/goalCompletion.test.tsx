@@ -507,6 +507,7 @@ describe('desktop completion review (read-only)', () => {
         throw new TypeError('Failed to fetch');
       },
     ],
+    ['an unusable success body', () => new Response('{}', { status: 200 })],
   ] as const)(
     'an unreadable review (%s) says nothing was changed, offers one Check again, and sends no write',
     async (_label, preflight) => {

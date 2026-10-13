@@ -20,6 +20,7 @@ import {
   type CorrectionEvent,
   type CorrectionState,
   initialCorrectionState,
+  isUsableCorrectionHistory,
   reduceCorrection,
   UNCONFIRMED_CORRECTION,
 } from './correctionModel';
@@ -968,5 +969,29 @@ describe('pending requests against the chain (D.4F.2)', () => {
     expect(correctionStandingLabel('disputed')).toBe('Disputed');
     expect(correctionStandingLabel('withdrawn')).toBe('Withdrawn');
     expect(correctionStandingLabel('superseded')).toBe('Superseded');
+  });
+});
+
+describe('isUsableCorrectionHistory (D.4F.4)', () => {
+  it('accepts a history with no chain tip and with a moved chain tip', () => {
+    expect(isUsableCorrectionHistory(history())).toBe(true);
+    expect(isUsableCorrectionHistory(movedHistory())).toBe(true);
+  });
+
+  it('rejects an unusable body and any history missing a field the panel or the reducer reads', () => {
+    const unusable: unknown[] = [
+      {},
+      null,
+      { ...history(), standing: null },
+      { ...history(), standing: { ...standingView(), standing: undefined } },
+      { ...history(), standing: { ...standingView(), tip: undefined } },
+      { ...history(), corrections: 'none' },
+      { ...history(), corrections: [null] },
+      { ...history(), pending: undefined },
+      { ...history(), pending: [null] },
+      { ...history(), chainPosition: undefined },
+      { ...history(), pendingUnreadableCount: undefined },
+    ];
+    for (const value of unusable) expect(isUsableCorrectionHistory(value)).toBe(false);
   });
 });

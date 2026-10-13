@@ -390,6 +390,13 @@ describe('correction controls: decisions', () => {
     expect(posts()).toHaveLength(0);
   });
 
+  it('a 200 response with an unusable body says the history could not be read and does not crash', async () => {
+    mount({ [CORRECTIONS]: () => new Response('{}', { status: 200 }) });
+    expect(await screen.findByRole('alert')).toHaveTextContent('The correction history could not be read.');
+    expect(screen.queryByRole('button', { name: 'Dispute this attestation' })).toBeNull();
+    expect(posts()).toHaveLength(0);
+  });
+
   it('no state shows a raw code or a field name', async () => {
     mount({
       [CORRECTIONS]: () => history({ pendingUnreadableCount: 1 }),

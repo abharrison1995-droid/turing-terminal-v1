@@ -19,6 +19,7 @@ import {
   contentPreservationCopy,
   correctionStandingCopy,
   initialCompletionState,
+  isUsablePreflight,
   preflightReasonCopy,
   qualifierCopy,
   reduceCompletion,
@@ -1094,5 +1095,28 @@ describe('completion attribution copy (D.4F.2)', () => {
     expect(COMPLETION_COPY.recordedNotCompleted).toBe(
       'A completion decision is recorded. The Goal is not completed yet.',
     );
+  });
+});
+
+describe('isUsablePreflight (D.4F.4)', () => {
+  it('accepts a ready report with a digest, and a refused report with reasons', () => {
+    expect(isUsablePreflight(report())).toBe(true);
+    expect(isUsablePreflight(report({ outcome: 'refused', reasons: [{ code: 'x', detail: null }] }))).toBe(
+      true,
+    );
+  });
+
+  it('rejects an unusable body, so it reads as a failed review and never as a refusal', () => {
+    const unusable: unknown[] = [
+      {},
+      null,
+      'a string',
+      { outcome: 'ready', reasons: [] },
+      { outcome: 'ready', reasons: [], digest: '' },
+      { outcome: 'refused' },
+      { outcome: 'other', reasons: [] },
+      { outcome: 'ready', reasons: [null], digest: DIGEST_A },
+    ];
+    for (const value of unusable) expect(isUsablePreflight(value)).toBe(false);
   });
 });

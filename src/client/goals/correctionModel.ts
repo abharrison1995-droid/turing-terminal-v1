@@ -400,6 +400,32 @@ export function requestBodyFor(draft: CorrectionDraft): CorrectionRequestBody | 
 }
 
 /**
+ * True when a history read has every field the panel and the reducer dereference. Anything else is a failed read, so the
+ * caller reports the history as unavailable and never stores or renders it.
+ */
+export function isUsableCorrectionHistory(value: unknown): value is GoalAttestationCorrectionHistory {
+  if (typeof value !== 'object' || value === null) return false;
+  const history = value as Record<string, unknown>;
+  const standing = history.standing as Record<string, unknown> | null | undefined;
+  if (typeof standing !== 'object' || standing === null || typeof standing.standing !== 'string')
+    return false;
+  const tip = standing.tip;
+  if (
+    tip !== null &&
+    (typeof tip !== 'object' || typeof (tip as Record<string, unknown>).sequence !== 'number')
+  )
+    return false;
+  return (
+    Array.isArray(history.corrections) &&
+    history.corrections.every((row) => typeof row === 'object' && row !== null) &&
+    Array.isArray(history.pending) &&
+    history.pending.every((row) => typeof row === 'object' && row !== null) &&
+    typeof history.chainPosition === 'string' &&
+    typeof history.pendingUnreadableCount === 'number'
+  );
+}
+
+/**
  * A pending request can be confirmed only if it extends the chain as the read shows it now: its sequence follows the tip
  * and its previous digest is the tip's digest. A request that does not fit was made against a chain that has moved.
  */
