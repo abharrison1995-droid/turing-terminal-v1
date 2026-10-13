@@ -1760,7 +1760,15 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
   });
 
   // Stage 7A: the Goal read models, explicit user controls and unified approvals (thin adapters over the services).
-  registerGoalRoutes(app, { db, supervisor: goalSupervisor, usageFilterFromQuery });
+  // GH.1 (S1a): paired remote devices (Tailscale identity) are refused on the user-only completion and correction routes.
+  // This is the same predicate the global hook uses; it does not distinguish the desktop UI from a same-user local process.
+  registerGoalRoutes(app, {
+    db,
+    supervisor: goalSupervisor,
+    usageFilterFromQuery,
+    requireDesktopCaller: (request) =>
+      !isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])),
+  });
 
   // Stage 5B.1: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
   // the route identity itself and answers as soon as the run is queued. There is no revalidation endpoint: a probe only

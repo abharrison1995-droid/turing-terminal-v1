@@ -102,6 +102,12 @@ export interface GoalRouteDeps {
   db: Db;
   /** Absent in apps built without a supervisor: start/resume then answer 503. */
   supervisor?: GoalSupervisor | undefined;
+  /**
+   * True when the caller is a desktop-local caller (not a paired remote device). Required, so a missing wiring fails to
+   * typecheck. The five user-only completion and correction routes call it first and refuse with 403 desktop_required.
+   * Supplied by app.ts from the existing remote predicate; this module reads no headers for it.
+   */
+  requireDesktopCaller: (request: FastifyRequest) => boolean;
   usageFilterFromQuery: (
     db: Db,
     query: Record<string, string | undefined>,
@@ -904,6 +910,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   app.post(
     '/api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections',
     async (request, reply) => {
+      if (!deps.requireDesktopCaller(request))
+        return send(reply, 403, {
+          error: 'Goal completion and correction can be changed on the desktop only.',
+          code: 'desktop_required',
+        });
       const params = externalAttestationParams.safeParse(request.params);
       if (!params.success)
         return send(reply, 400, { error: 'Invalid Goal attestation identity.', code: 'invalid_request' });
@@ -945,6 +956,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   );
 
   app.post('/api/goals/:goalId/handoffs/:handoffId/external-integration/attest', async (request, reply) => {
+    if (!deps.requireDesktopCaller(request))
+      return send(reply, 403, {
+        error: 'Goal completion and correction can be changed on the desktop only.',
+        code: 'desktop_required',
+      });
     const params = handoffParams.safeParse(request.params);
     if (!params.success)
       return send(reply, 400, { error: 'Invalid Goal handoff identity.', code: 'invalid_request' });
@@ -984,6 +1000,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
 
   // The user's decision for one reviewed preflight. It records one approved approval and completes nothing.
   app.post('/api/goals/:goalId/completion-decision', async (request, reply) => {
+    if (!deps.requireDesktopCaller(request))
+      return send(reply, 403, {
+        error: 'Goal completion and correction can be changed on the desktop only.',
+        code: 'desktop_required',
+      });
     const params = goalIdParams.safeParse(request.params);
     if (!params.success)
       return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
@@ -1022,6 +1043,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   // The explicit "Complete Goal" step. The client names only the exact action digest of a recorded decision; the attestation
   // and the reviewed preflight digest are read from that stored decision, never from the request.
   app.post('/api/goals/:goalId/completion', async (request, reply) => {
+    if (!deps.requireDesktopCaller(request))
+      return send(reply, 403, {
+        error: 'Goal completion and correction can be changed on the desktop only.',
+        code: 'desktop_required',
+      });
     const params = goalIdParams.safeParse(request.params);
     if (!params.success)
       return send(reply, 400, { error: 'Invalid Goal identity.', code: 'invalid_request' });
@@ -1114,6 +1140,11 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   // exactly that correction. It never starts or resumes the Goal, never touches the completion or Git, and returns the
   // Goal's standing after the decision. The reviewed action digest comes from If-Match only.
   app.post('/api/goals/:goalId/attestation-corrections/:approvalId/decision', async (request, reply) => {
+    if (!deps.requireDesktopCaller(request))
+      return send(reply, 403, {
+        error: 'Goal completion and correction can be changed on the desktop only.',
+        code: 'desktop_required',
+      });
     const params = attestationCorrectionDecisionParams.safeParse(request.params);
     if (!params.success)
       return send(reply, 400, { error: 'Invalid Goal or approval identity.', code: 'invalid_request' });
