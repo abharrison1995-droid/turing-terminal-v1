@@ -10,6 +10,7 @@ import {
   type CompletionEvent,
   type CompletionRefusal,
   type CompletionState,
+  completionReadRefusal,
   completionRefusal,
   correctionStandingCopy,
   decisionRelation,
@@ -51,7 +52,7 @@ export async function loadCompletionView(goalId: string, attestationId: string):
       relation,
     };
   } catch (error) {
-    return { status, preflight: null, preflightError: completionRefusal(error), relation };
+    return { status, preflight: null, preflightError: completionReadRefusal(error), relation };
   }
 }
 

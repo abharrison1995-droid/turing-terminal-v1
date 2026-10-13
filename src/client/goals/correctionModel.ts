@@ -125,9 +125,9 @@ export const REASON_CODES: readonly GoalAttestationCorrectionReasonCode[] =
 
 const STANDING_COPY: Record<GoalAttestationCorrectionHistory['standing']['standing'], string> = {
   active_uncontested: 'Uncontested',
-  disputed: 'Disputed by you',
-  withdrawn: 'Withdrawn by you',
-  superseded: 'Superseded by you',
+  disputed: 'Disputed',
+  withdrawn: 'Withdrawn',
+  superseded: 'Superseded',
   invalid: 'Unavailable: the saved record failed a check',
 };
 
@@ -399,7 +399,25 @@ export function requestBodyFor(draft: CorrectionDraft): CorrectionRequestBody | 
   };
 }
 
-function gateFromPending(pending: GoalAttestationCorrectionPendingRequest): CorrectionGate {
+/**
+ * A pending request can be confirmed only if it extends the chain as the read shows it now: its sequence follows the tip
+ * and its previous digest is the tip's digest. A request that does not fit was made against a chain that has moved.
+ */
+export function pendingFitsChain(
+  pending: GoalAttestationCorrectionPendingRequest,
+  history: GoalAttestationCorrectionHistory,
+): boolean {
+  const tip = history.standing.tip;
+  return (
+    pending.sequence === (tip?.sequence ?? 0) + 1 &&
+    pending.previousCorrectionDigest === (tip?.correctionDigest ?? null)
+  );
+}
+
+function gateFromPending(
+  pending: GoalAttestationCorrectionPendingRequest,
+  history: GoalAttestationCorrectionHistory,
+): CorrectionGate {
   return {
     approvalId: pending.approvalId,
     actionDigest: pending.actionDigest,
@@ -407,7 +425,7 @@ function gateFromPending(pending: GoalAttestationCorrectionPendingRequest): Corr
     reasonCode: pending.reasonCode,
     explanationRequired: pending.explanationRequired,
     explanation: null,
-    outOfDate: false,
+    outOfDate: !pendingFitsChain(pending, history),
   };
 }
 
@@ -451,7 +469,7 @@ function settleCorrection(
         ...base,
         phase: 'gate_pending',
         gate: {
-          ...gateFromPending(pending),
+          ...gateFromPending(pending, history),
           explanation: pending.explanationRequired ? marker.explanation : null,
         },
         notice: CORRECTION_RECOVERY_COPY.stillPending,
@@ -470,11 +488,15 @@ function settleCorrection(
     return {
       ...base,
       phase: 'gate_pending',
-      gate: { ...gateFromPending(match), explanation: match.explanationRequired ? held.explanation : null },
-      notice: CORRECTION_RECOVERY_COPY.requestSaved,
+      gate: {
+        ...gateFromPending(match, history),
+        explanation: match.explanationRequired ? held.explanation : null,
+      },
+      // A request that no longer fits the chain is shown only as out of date, never as saved.
+      notice: pendingFitsChain(match, history) ? CORRECTION_RECOVERY_COPY.requestSaved : null,
     };
   const other = history.pending[0];
-  if (other) return { ...base, phase: 'gate_pending', gate: gateFromPending(other) };
+  if (other) return { ...base, phase: 'gate_pending', gate: gateFromPending(other, history) };
   if (history.pendingUnreadableCount > 0)
     return {
       ...base,
@@ -531,7 +553,12 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
 
       if (state.phase === 'gate_pending' && state.gate) {
         const gateApprovalId = state.gate.approvalId;
-        if (history.pending.some((row) => row.approvalId === gateApprovalId)) return stay(base);
+        const onScreen = history.pending.find((row) => row.approvalId === gateApprovalId);
+        if (onScreen)
+          return stay({
+            ...base,
+            gate: { ...state.gate, outOfDate: state.gate.outOfDate || !pendingFitsChain(onScreen, history) },
+          });
         // The gate was decided or withdrawn elsewhere, so it is no longer on screen.
         return stay({ ...base, phase: 'idle', gate: null, refusal: null, notice: null });
       }
@@ -542,7 +569,7 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
           ...base,
           phase: 'gate_pending',
           kind: null,
-          gate: gateFromPending(pending),
+          gate: gateFromPending(pending, history),
           refusal: null,
         });
 
@@ -552,6 +579,15 @@ export function reduceCorrection(state: CorrectionState, event: CorrectionEvent)
           phase: 'idle',
           kind: null,
           refusal: refuse('That correction is not available from the current standing.', 'reload'),
+        });
+      // A review opened on a chain position that has since moved is closed, so its draft cannot be sent against the new chain.
+      if (state.phase === 'reviewing' && state.position !== history.chainPosition)
+        return stay({
+          ...base,
+          phase: 'idle',
+          kind: null,
+          refusal: null,
+          notice: CORRECTION_RECOVERY_COPY.historyChanged,
         });
       return stay(base);
     }

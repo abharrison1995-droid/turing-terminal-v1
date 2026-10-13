@@ -16,6 +16,7 @@ import type {
   GoalManualIntegrationHandoff,
 } from '../../shared/goalApi';
 import { GoalsPage } from './GoalsPage';
+import { CORRECTION_COPY } from './correctionModel';
 import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
 import {
   calls,
@@ -1047,5 +1048,192 @@ describe('correction panel accessibility (D.4F.1)', () => {
     const dialog = screen.getByRole('alertdialog', { name: 'Dispute this attestation?' });
     const title = within(dialog).getByRole('heading', { level: 5, name: 'Dispute this attestation?' });
     expect(dialog.getAttribute('aria-labelledby')).toBe(title.id);
+  });
+});
+
+/** A response that stays open until the test releases it. */
+function deferredResponse() {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { gate, release: () => release() };
+}
+
+const tipDispute = {
+  correctionId: 'c0',
+  kind: 'dispute' as const,
+  sequence: 1,
+  correctionDigest: DIG,
+  replacementAttestationId: null,
+};
+
+/** A history whose chain moved on: one dispute is the tip, and the chain position is that dispute's digest. */
+const movedChain = (pending: GoalAttestationCorrectionPendingRequest[]) =>
+  history({
+    standing: {
+      goalId: GOAL,
+      attestationId: ATT,
+      standing: 'disputed',
+      correctionCount: 1,
+      tip: tipDispute,
+      invalidCode: null,
+    },
+    chainPosition: DIG,
+    pending,
+  });
+
+/** The Goal page with the second Goal added, so a switch can be made while a write is still in flight. */
+function serveSecondGoal(extra: Routes = {}): Routes {
+  const second = pageHandoff(HANDOFF_B, GOAL_B);
+  return {
+    '/api/goals': () => ({
+      goals: [item(), item({ id: GOAL_B, title: 'Second Goal' })],
+      total: 2,
+      limit: 50,
+    }),
+    [`/api/goals/${GOAL_B}`]: () => ({ goal: detail({ id: GOAL_B, title: 'Second Goal' }) }),
+    [`/api/goals/${GOAL_B}/preview`]: () => ({ preview: { ...preview(), goalId: GOAL_B } }),
+    [`/api/goals/${GOAL_B}/handoffs`]: () => pageHistory(HANDOFF_B),
+    [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}`]: () => ({ projection: pageProjection(second) }),
+    [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration`]: () => ({
+      ...pageStoredStatus(second),
+      goalId: GOAL_B,
+    }),
+    [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration/attestations/${ATT}`]: () => ({
+      projection: pageAttestation(second),
+    }),
+    [`/api/goals/${GOAL_B}/handoffs/${HANDOFF_B}/external-integration/attestations/${ATT}/corrections`]:
+      () => ({
+        ...history({ pending: [pendingRow()] }),
+        goalId: GOAL_B,
+        handoffId: HANDOFF_B,
+      }),
+    [`/api/goals/${GOAL_B}/completion`]: () => pageCompletion(GOAL_B),
+    // Goal 2's completion review reads a preflight; a refused one with no reasons keeps that panel quiet here.
+    [`/api/goals/${GOAL_B}/completion-preflight`]: () => ({
+      preflight: {
+        outcome: 'refused',
+        reasons: [],
+        digest: null,
+        proofLimitations: { contentPreservation: 'not_proven' },
+      },
+    }),
+    ...extra,
+  };
+}
+
+/** Opens the first Goal's attestation and requests a dispute, which is then in flight. */
+async function requestDisputeOnFirstGoal(user: ReturnType<typeof userEvent.setup>) {
+  await openGoal(user);
+  await user.click(await screen.findByRole('tab', { name: 'Handoff' }));
+  const heading = await screen.findByRole('heading', { name: 'Attestation history' });
+  await user.click(within(heading.parentElement!).getAllByRole('button')[0]!);
+  await user.click(await screen.findByRole('button', { name: 'Dispute this attestation' }));
+  await user.selectOptions(screen.getByLabelText('Reason'), 'observation_error');
+  await user.click(screen.getByRole('button', { name: 'Request dispute' }));
+  await waitFor(() => expect(posts()).toHaveLength(1));
+}
+
+/** Switches to the second Goal and opens its attestation; returns its gate group. */
+async function openSecondGoalGate(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('button', { name: 'All Goals' }));
+  await user.click(await screen.findByRole('button', { name: /Second Goal/ }));
+  await user.click(screen.getByRole('tab', { name: 'Handoff' }));
+  const heading = await screen.findByRole('heading', { name: 'Attestation history' });
+  await user.click(within(heading.parentElement!).getAllByRole('button')[0]!);
+  return screen.findByRole('group', { name: GATE_TEXT });
+}
+
+describe('correction gates against the chain, and late responses (D.4F.2)', () => {
+  it('F2-C1: a pending request that no longer fits the chain shows out of date, with Confirm disabled and Decline enabled, and sends nothing', async () => {
+    mount({ [CORRECTIONS]: () => movedChain([pendingRow()]) });
+    const group = await screen.findByRole('group', { name: GATE_TEXT });
+    expect(within(group).getByRole('button', { name: 'Confirm correction' })).toHaveProperty(
+      'disabled',
+      true,
+    );
+    expect(within(group).getByRole('button', { name: 'Decline this request' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    expect(within(group).getByText(CORRECTION_COPY.gateOutOfDate)).toBeTruthy();
+    expect(posts()).toHaveLength(0);
+  });
+
+  it('F2-C2: a pending request that fits the chain keeps Confirm enabled, and the decision names its own digest', async () => {
+    const actionDigest = 'e'.repeat(64);
+    const fitting = pendingRow({
+      correctionKind: 'withdraw',
+      sequence: 2,
+      previousCorrectionDigest: DIG,
+      actionDigest,
+    });
+    mount({
+      [CORRECTIONS]: () => movedChain([fitting]),
+      [DECISION]: () => ({ approvalId: 'ap1', status: 'approved' }),
+    });
+    const user = userEvent.setup();
+    const group = await screen.findByRole('group', { name: GATE_TEXT });
+    expect(within(group).queryByText(CORRECTION_COPY.gateOutOfDate)).toBeNull();
+    await user.click(within(group).getByRole('button', { name: 'Confirm correction' }));
+    await waitFor(() => expect(posts()).toHaveLength(1));
+    expect(posts()[0]?.path).toBe(DECISION);
+    expect(posts()[0]?.headers['if-match']).toBe(`"${actionDigest}"`);
+    expect(bodyOf(0)).toEqual({
+      decision: 'approved',
+      attestationId: ATT,
+      correctionKind: 'withdraw',
+      explanation: null,
+    });
+  });
+
+  it('L3: a request held for the first Goal and released after a switch leaves the second Goal showing only its own gate', async () => {
+    const held = deferredResponse();
+    servePage(
+      serveSecondGoal({
+        [CORRECTIONS]: () => history(),
+        [`POST ${CORRECTIONS}`]: async () => {
+          await held.gate;
+          return requested();
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await requestDisputeOnFirstGoal(user);
+    const group = await openSecondGoalGate(user);
+    expect(within(group).getByRole('button', { name: 'Confirm correction' })).toHaveProperty(
+      'disabled',
+      false,
+    );
+    held.release();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(screen.getByRole('group', { name: GATE_TEXT })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Dispute this attestation' })).toBeNull();
+    expect(posts().map((call) => call.path)).toEqual([CORRECTIONS]);
+  });
+
+  it('L3b: a request lost after a switch shows no reconciling notice on the second Goal', async () => {
+    const held = deferredResponse();
+    servePage(
+      serveSecondGoal({
+        [CORRECTIONS]: () => history(),
+        [`POST ${CORRECTIONS}`]: async () => {
+          await held.gate;
+          throw new TypeError('Failed to fetch');
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await requestDisputeOnFirstGoal(user);
+    await openSecondGoalGate(user);
+    held.release();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 30)));
+    expect(screen.queryByText(/could not confirm/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('group', { name: GATE_TEXT })).toBeTruthy();
+    expect(posts().map((call) => call.path)).toEqual([CORRECTIONS]);
   });
 });

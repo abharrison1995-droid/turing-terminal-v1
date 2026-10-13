@@ -185,7 +185,7 @@ describe('copy', () => {
   it('an unknown standing value is never printed raw', () => {
     expect(correctionStandingLabel('x_raw')).toBe('Not recognised');
     expect(correctionStandingLabel(null)).toBe('Not available');
-    expect(correctionStandingLabel('disputed')).toBe('Disputed by you');
+    expect(correctionStandingLabel('disputed')).toBe('Disputed');
   });
 
   it('the request-only line says that nothing changes until the next step', () => {
@@ -839,5 +839,134 @@ describe('correction recovery copy', () => {
       expect(text).not.toMatch(/\b(clean|no other|all good)\b/i);
       expect(text).not.toMatch(/[a-z]+_[a-z]+/);
     }
+  });
+});
+
+// --- A pending request is adopted only when it fits the chain (D.4F.2) -------------------------------------------------
+
+const TIP_DISPUTE = {
+  correctionId: 'c0',
+  kind: 'dispute' as const,
+  sequence: 1,
+  correctionDigest: DIG2,
+  replacementAttestationId: null,
+};
+
+/** A history whose chain has moved on: one dispute is the tip, and the chain position is that dispute's digest. */
+const movedHistory = (over: Partial<GoalAttestationCorrectionHistory> = {}) =>
+  history({
+    standing: standingView({ standing: 'disputed', correctionCount: 1, tip: TIP_DISPUTE }),
+    chainPosition: DIG2,
+    ...over,
+  });
+
+describe('pending requests against the chain (D.4F.2)', () => {
+  it('a recovery read whose pending row does not fit the chain adopts it only as out of date, with no saved notice', () => {
+    const reconciling = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const after = runC(reconciling, [
+      { type: 'loaded', history: movedHistory({ pending: [pendingRow()] }) },
+    ]).state;
+    expect(after.phase).toBe('gate_pending');
+    expect(after.gate?.outOfDate).toBe(true);
+    expect(after.notice).not.toBe(CORRECTION_RECOVERY_COPY.requestSaved);
+    expect(reduceCorrection(after, { type: 'confirm' }).effects).toEqual([]);
+    expect(reduceCorrection(after, { type: 'decline' }).effects).toEqual([
+      expect.objectContaining({ type: 'decide', decision: 'denied', approvalId: 'ap1', actionDigest: DIG }),
+    ]);
+  });
+
+  it('a plain read that finds a pending row which does not fit shows it only as out of date', () => {
+    const after = run(initialCorrectionState('att1'), [
+      { type: 'loaded', history: movedHistory({ pending: [pendingRow()] }) },
+    ]).state;
+    expect(after.phase).toBe('gate_pending');
+    expect(after.gate?.outOfDate).toBe(true);
+    expect(reduceCorrection(after, { type: 'confirm' }).effects).toEqual([]);
+  });
+
+  it('a gate already on screen becomes out of date when the chain moves under it', () => {
+    const moved = run(gated(false), [
+      { type: 'loaded', history: movedHistory({ pending: [pendingRow()] }) },
+    ]).state;
+    expect(moved.phase).toBe('gate_pending');
+    expect(moved.gate?.outOfDate).toBe(true);
+    expect(reduceCorrection(moved, { type: 'confirm' }).effects).toEqual([]);
+    expect(reduceCorrection(moved, { type: 'decline' }).effects).toHaveLength(1);
+  });
+
+  it('a review open on a chain that has since moved is closed, and its draft cannot be sent', () => {
+    const moved = run(reviewing('withdraw'), [{ type: 'loaded', history: movedHistory() }]).state;
+    expect(moved).toMatchObject({
+      phase: 'idle',
+      kind: null,
+      notice: CORRECTION_RECOVERY_COPY.historyChanged,
+    });
+    expect(reduceCorrection(moved, { type: 'request', draft: draft({ kind: 'withdraw' }) }).effects).toEqual(
+      [],
+    );
+  });
+
+  it('a pending row that fits a non-empty chain is adopted as actionable, and the default fixture still fits', () => {
+    const fitting = pendingRow({ correctionKind: 'withdraw', sequence: 2, previousCorrectionDigest: DIG2 });
+    const after = run(initialCorrectionState('att1'), [
+      { type: 'loaded', history: movedHistory({ pending: [fitting] }) },
+    ]).state;
+    expect(after.phase).toBe('gate_pending');
+    expect(after.gate?.outOfDate).toBe(false);
+    expect(reduceCorrection(after, { type: 'confirm' }).effects).toEqual([
+      {
+        type: 'decide',
+        approvalId: 'ap1',
+        actionDigest: DIG,
+        decision: 'approved',
+        attestationId: 'att1',
+        correctionKind: 'withdraw',
+        explanation: null,
+      },
+    ]);
+    const defaultFit = run(initialCorrectionState('att1'), [
+      { type: 'loaded', history: history({ pending: [pendingRow()] }) },
+    ]).state;
+    expect(defaultFit.gate?.outOfDate).toBe(false);
+  });
+
+  it('no start state reaches a write from any read, whatever the chain shows', () => {
+    const reconcilingRequest = reduceCorrection(requestingState(), {
+      type: 'request_failed',
+      refusal: unknownRequestRefusal(),
+      unknown: true,
+    }).state;
+    const states: CorrectionState[] = [
+      initialCorrectionState('att1'),
+      reviewing(),
+      gated(false),
+      requestingState(),
+      reduceCorrection(gated(false), { type: 'confirm' }).state,
+      reconcilingRequest,
+      runC(reconcilingRequest, [{ type: 'loaded', history: history({ pendingUnreadableCount: 1 }) }]).state,
+      decidingGate(),
+    ];
+    const reads = [
+      history(),
+      history({ pending: [pendingRow()] }),
+      movedHistory({ pending: [pendingRow()] }),
+      movedHistory(),
+      history({ pendingUnreadableCount: 1 }),
+    ];
+    for (const start of states)
+      for (const read of reads) {
+        const { effects } = reduceCorrection(start, { type: 'loaded', history: read });
+        for (const effect of effects) expect(WRITE_TYPES.has(effect.type)).toBe(false);
+      }
+  });
+
+  it('the correction standing labels name the standing without attributing it to the user', () => {
+    expect(correctionStandingLabel('disputed')).toBe('Disputed');
+    expect(correctionStandingLabel('withdrawn')).toBe('Withdrawn');
+    expect(correctionStandingLabel('superseded')).toBe('Superseded');
   });
 });

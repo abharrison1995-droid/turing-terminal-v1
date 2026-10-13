@@ -14,8 +14,10 @@ import {
   type CompletionEvent,
   type CompletionRefusal,
   type CompletionState,
+  completionReadRefusal,
   completionRefusal,
   contentPreservationCopy,
+  correctionStandingCopy,
   initialCompletionState,
   preflightReasonCopy,
   qualifierCopy,
@@ -417,7 +419,9 @@ describe('copy', () => {
 
   it('a completed Goal is never headed as success and always carries the content-preservation line', () => {
     const completed = standingPresentation(statusFor('completed'));
-    expect(completed.heading).toBe('Completed on your decision');
+    expect(completed.heading).toBe(
+      'Completed on a recorded decision. Turing has not proven content preservation.',
+    );
     expect(completed.contentPreservation).toBe('Content preservation: not proven.');
     const text = [completed.heading, completed.qualifier ?? '', completed.contentPreservation ?? ''].join(
       ' ',
@@ -760,7 +764,7 @@ describe('unknown outcome of a Goal completion POST', () => {
     const after = run(reconciling, [decidedLoad(ACTION)]).state;
     expect(after).toMatchObject({
       phase: 'decided',
-      notice: COMPLETION_COPY.recordedNotCompleted,
+      notice: COMPLETION_RECOVERY_COPY.completeStillRecorded,
       actionDigest: ACTION,
       acknowledgeComplete: true,
     });
@@ -778,6 +782,24 @@ describe('unknown outcome of a Goal completion POST', () => {
     const after = run(reconciling, [decidedLoad(null)]).state;
     expect(after.notice).toBe(COMPLETION_RECOVERY_COPY.completeAbsent);
     expect(after.unknown).toBeNull();
+  });
+
+  it('a read still showing the decision after a lost Complete keeps the caution that the request may still finish', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(ACTION)]).state;
+    expect(after.notice).toMatch(/may still finish/);
+    expect(after.notice).toMatch(/decision is still recorded/);
+    expect(after.notice).not.toBe(COMPLETION_COPY.recordedNotCompleted);
+    expect(after).toMatchObject({
+      phase: 'decided',
+      actionDigest: ACTION,
+      acknowledgeComplete: true,
+      unknown: null,
+    });
   });
 });
 
@@ -908,5 +930,169 @@ describe('copy for a competing decision, a history that cannot be verified, and 
     }
     expect(COMPLETION_COPY.ownDecisionSetAside).toMatch(/does not complete the Goal/);
     expect(COMPLETION_COPY.othersSetAside).toMatch(/does not complete the Goal/);
+  });
+});
+
+// --- Recovery, busy refusals, read-only refusals and attribution (D.4F.2) ---------------------------------------------
+
+describe('completion recovery after a lost write (D.4F.2)', () => {
+  const busy = () => refusal(429, 'completion_busy');
+  const completing = () => run(decidedState(), [{ type: 'complete_requested' }]).state;
+
+  it('a recovery read showing a recorded decision after a lost record says it was saved, with no completion caution', () => {
+    const reconciling = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(ACTION)]).state;
+    expect(after.notice).toBe(COMPLETION_RECOVERY_COPY.recordSaved);
+    expect(after.notice).not.toMatch(/may still finish/);
+  });
+
+  it('a recovery read with no decision after a lost Complete still says the Goal was not completed', () => {
+    const reconciling = reduceCompletion(completing(), {
+      type: 'complete_failed',
+      refusal: unknownRefusal(),
+      unknown: true,
+    }).state;
+    const after = run(reconciling, [decidedLoad(null)]).state;
+    expect(after.notice).toBe(COMPLETION_RECOVERY_COPY.completeAbsent);
+  });
+
+  it('a busy decision keeps the reviewed digest and the acknowledgement, and a second press sends the same digest', () => {
+    const failed = run(recordingState(), [{ type: 'record_failed', refusal: busy() }]);
+    expect(failed.state).toMatchObject({
+      phase: 'preflight_ready',
+      preflightDigest: DIGEST_A,
+      acknowledgeRecord: true,
+      reading: false,
+    });
+    expect(failed.state.refusal?.retryable).toBe(true);
+    expect(failed.effects).toEqual([]);
+    expect(run(failed.state, [{ type: 'record_requested' }]).effects).toEqual([
+      { type: 'record', preflightDigest: DIGEST_A },
+    ]);
+  });
+
+  it('an unknown record outcome stays unknown even when its refusal is retryable', () => {
+    const next = reduceCompletion(recordingState(), {
+      type: 'record_failed',
+      refusal: busy(),
+      unknown: true,
+    });
+    expect(next.state).toMatchObject({
+      phase: 'reconciling',
+      unknown: { write: 'record', digest: DIGEST_A },
+    });
+    expect(next.effects).toEqual([{ type: 'reload' }]);
+  });
+
+  it('no event except the two click requests emits a write, from any start state and for any busy or unknown answer', () => {
+    const events: CompletionEvent[] = [
+      { type: 'refresh' },
+      { type: 'loaded', settled: false, decidedActionDigest: ACTION, preflight: null, preflightError: null },
+      {
+        type: 'loaded',
+        settled: false,
+        decidedActionDigest: null,
+        preflight: report(),
+        preflightError: null,
+      },
+      { type: 'load_failed', refusal: refusal(503, 'external_completion_unavailable') },
+      { type: 'acknowledge_record', checked: true },
+      { type: 'acknowledge_complete', checked: true },
+      { type: 'record_requested' },
+      { type: 'record_succeeded', actionDigest: ACTION },
+      { type: 'record_failed', refusal: busy() },
+      { type: 'record_failed', refusal: unknownRefusal(), unknown: true },
+      { type: 'complete_requested' },
+      { type: 'complete_succeeded' },
+      { type: 'complete_failed', refusal: busy() },
+      { type: 'complete_failed', refusal: unknownRefusal(), unknown: true },
+      { type: 'check_again' },
+    ];
+    const starts: CompletionState[] = [
+      initialCompletionState(false),
+      initialCompletionState(true),
+      readyState(),
+      recordingState(),
+      decidedState(),
+      completing(),
+      reduceCompletion(recordingState(), { type: 'record_failed', refusal: unknownRefusal(), unknown: true })
+        .state,
+      reduceCompletion(completing(), { type: 'complete_failed', refusal: busy() }).state,
+    ];
+    for (const start of starts)
+      for (const event of events)
+        for (const effect of reduceCompletion(start, event).effects) {
+          if (effect.type === 'record') expect(event.type).toBe('record_requested');
+          if (effect.type === 'complete') expect(event.type).toBe('complete_requested');
+        }
+  });
+});
+
+describe('completion read refusals (D.4F.2)', () => {
+  it('a failed read-only review says it could not be read and changed nothing, and never that a write may have happened', () => {
+    const failures: unknown[] = [
+      new ApiError('server text that must not be shown', 503, 'external_completion_unavailable'),
+      new ApiError('server text that must not be shown', 500, 'completion_read_failed'),
+      new ApiError('server text that must not be shown', 503),
+      new TypeError('Failed to fetch'),
+    ];
+    for (const error of failures) {
+      const mapped = completionReadRefusal(error);
+      expect(mapped.message).toBe(COMPLETION_COPY.reviewUnreadable);
+      expect(mapped.message).not.toMatch(/Do not assume|failed or succeeded|could not confirm/);
+      expect(mapped.action).toBe('none');
+      expect(mapped.retryable).toBe(false);
+    }
+  });
+
+  it('a known read refusal passes through exactly as completionRefusal maps it', () => {
+    const known: Array<[number, string, string | undefined]> = [
+      [429, 'completion_busy', undefined],
+      [404, 'goal_not_found', undefined],
+      [409, 'preflight_refused', 'attestation_disputed'],
+    ];
+    for (const [status, code, detail] of known) {
+      const error = new ApiError('server text that must not be shown', status, code, detail);
+      expect(completionReadRefusal(error)).toEqual(completionRefusal(error));
+    }
+  });
+});
+
+describe('completion attribution copy (D.4F.2)', () => {
+  it('a completed heading names a recorded decision, never the user, and says content is not proven', () => {
+    const heading = standingPresentation(statusFor('completed')).heading;
+    expect(heading).toBe('Completed on a recorded decision. Turing has not proven content preservation.');
+    expect(heading).toContain('has not proven content preservation');
+    expect(heading).not.toMatch(/\b(your|you)\b/i);
+  });
+
+  it('no qualifier sentence speaks to the user', () => {
+    const values = [
+      'disputed_by_user',
+      'withdrawn_by_user',
+      'superseded_by_user',
+      'replacement_failed',
+      'proof_unverified',
+      'legacy_not_v2_attested',
+      'not_completed',
+    ] as const;
+    for (const value of values) expect(qualifierCopy(value)).not.toMatch(/\b(you|your)\b/i);
+  });
+
+  it('a correction standing names the standing without attributing it to the user', () => {
+    expect(correctionStandingCopy('disputed')).toBe('Disputed');
+    expect(correctionStandingCopy('withdrawn')).toBe('Withdrawn');
+    expect(correctionStandingCopy('superseded')).toBe('Superseded');
+  });
+
+  it('the recorded-decision line never begins with Your', () => {
+    expect(COMPLETION_COPY.recordedNotCompleted).not.toMatch(/^Your\b/);
+    expect(COMPLETION_COPY.recordedNotCompleted).toBe(
+      'A completion decision is recorded. The Goal is not completed yet.',
+    );
   });
 });

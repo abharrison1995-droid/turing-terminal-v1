@@ -27,6 +27,8 @@ export const COMPLETION_COPY = {
   limitationPointInTime: 'Point-in-time history check, not a lasting guarantee.',
   loading: 'Checking the completion review. This is read-only.',
   statusUnavailable: 'The saved completion state could not be read.',
+  reviewUnreadable:
+    'The completion review could not be read. Nothing was recorded or changed by this check. Check again.',
   noBlockers: 'No blockers in this review.',
   recordLabel: 'Record completion decision',
   recordAcknowledgement:
@@ -40,7 +42,7 @@ export const COMPLETION_COPY = {
   reviewChanged: 'The review changed; read it again before recording a decision.',
   refreshReview: 'Refresh review',
   checkAgain: 'Check again',
-  recordedNotCompleted: 'Your completion decision is recorded. The Goal is not completed yet.',
+  recordedNotCompleted: 'A completion decision is recorded. The Goal is not completed yet.',
   recording: 'Recording your decision…',
   completing: 'Completing the Goal…',
   reviewAvailable: 'The review is ready. Recording a decision completes nothing.',
@@ -70,6 +72,8 @@ export const COMPLETION_RECOVERY_COPY = {
     'Nothing was saved. The review has changed since your earlier request, so review the new summary before recording a decision.',
   completeAbsent:
     'The Goal was not completed when Turing last checked. If the earlier request is still running it may still finish, so check again before trying again.',
+  completeStillRecorded:
+    'The Goal was not completed when Turing last checked, and the decision is still recorded. If the earlier request is still running it may still finish, so check again before pressing Complete Goal again.',
   unavailable:
     'Turing still cannot read the saved state, so it cannot confirm the result. Check again before doing anything else.',
 } as const;
@@ -88,9 +92,9 @@ export function contentPreservationCopy(value: unknown): string {
 
 const QUALIFIER_COPY: Record<GoalCompletionStandingClaim['qualifier'], string | null> = {
   none: null,
-  disputed_by_user: 'You disputed the attestation this completion relies on.',
-  withdrawn_by_user: 'You withdrew the attestation this completion relies on.',
-  superseded_by_user: 'You replaced the attestation this completion relies on with another.',
+  disputed_by_user: 'A dispute was recorded against the attestation this completion relies on.',
+  withdrawn_by_user: 'The attestation this completion relies on was withdrawn.',
+  superseded_by_user: 'The attestation this completion relies on was replaced by another.',
   replacement_failed: 'The replacement attestation did not restore this completion.',
   proof_unverified: 'The stored completion proof could not be checked.',
   legacy_not_v2_attested: 'This completion was recorded before external attestation existed.',
@@ -199,7 +203,7 @@ export function standingPresentation(status: GoalExternalCompletionStatus): Stan
   switch (status.state) {
     case 'completed':
       return {
-        heading: 'Completed on your decision',
+        heading: 'Completed on a recorded decision. Turing has not proven content preservation.',
         qualifier: qualifierCopy(claim.qualifier),
         contentPreservation: contentPreservationCopy(claim.contentPreservation),
       };
@@ -234,9 +238,9 @@ export function standingPresentation(status: GoalExternalCompletionStatus): Stan
 
 const CORRECTION_COPY: Record<string, string> = {
   active_uncontested: 'Uncontested',
-  disputed: 'Disputed by you',
-  withdrawn: 'Withdrawn by you',
-  superseded: 'Superseded by you',
+  disputed: 'Disputed',
+  withdrawn: 'Withdrawn',
+  superseded: 'Superseded',
   invalid: 'Invalid',
 };
 
@@ -373,6 +377,15 @@ export function completionRefusal(error: unknown): CompletionRefusal {
     return refuse('Another completion request is in progress. Try again shortly.', 'none', true);
   if (status === null || status >= 500) return refuse(UNCONFIRMED_RESULT);
   return refuse('The request was refused. Nothing was changed.');
+}
+
+/**
+ * The refusal for a failed read of the completion review. A read never writes, so an unconfirmed read says only that
+ * the review could not be read; every other read failure keeps its completionRefusal wording.
+ */
+export function completionReadRefusal(error: unknown): CompletionRefusal {
+  const refusal = completionRefusal(error);
+  return refusal.message === UNCONFIRMED_RESULT ? refuse(COMPLETION_COPY.reviewUnreadable, 'none') : refusal;
 }
 
 // --- Reducer ----------------------------------------------------------------------------------------------------------
@@ -538,7 +551,9 @@ function settleUnknown(
   let notice: string | null;
   if (settled.phase === 'decided')
     notice =
-      marker.write === 'record' ? COMPLETION_RECOVERY_COPY.recordSaved : COMPLETION_COPY.recordedNotCompleted;
+      marker.write === 'record'
+        ? COMPLETION_RECOVERY_COPY.recordSaved
+        : COMPLETION_RECOVERY_COPY.completeStillRecorded;
   else if (settled.phase === 'completed')
     notice =
       marker.write === 'complete'
@@ -660,6 +675,12 @@ export function reduceCompletion(state: CompletionState, event: CompletionEvent)
             notice: COMPLETION_RECOVERY_COPY.reconciling,
           },
           effects: [{ type: 'reload' }],
+        };
+      // A busy answer is definite and wrote nothing, so the reviewed digest and the acknowledgement stay, as for Complete.
+      if (event.refusal.retryable)
+        return {
+          state: { ...state, phase: 'preflight_ready', refusal: event.refusal, refusalFromLoad: false },
+          effects: [],
         };
       return {
         state: {
