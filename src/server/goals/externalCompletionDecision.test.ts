@@ -44,6 +44,7 @@ import {
   v2RunningAttestedFixture,
   type GoalFixture,
 } from './goalV2TestKit.js';
+import { completeGoalFromExternalDecision } from './externalCompletion.js';
 import { GoalStateError, transitionGoal } from './stateMachine.js';
 import { cleanupRepoFixtures, copyGoalApprovalRow, REAL_GIT_TEST_TIMEOUT_MS, testDigest } from './repoKit.js';
 
@@ -1460,6 +1461,113 @@ describe('external completion decision: correction digests stay out of the compl
         'not_completion_approval',
       );
       expectNoChange(attested, before);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('external completion decision: class 5 history and decision_corrupt stay distinct (C5)', () => {
+  // Three stored states, each refused with its own literal code and nothing written. A row that fails the row validator is
+  // decision_corrupt. A row that passes it but whose attestation the classifier cannot establish is class 5, which the
+  // decision refuses as preflight_refused completion_history_invalid. The terminal refuses a stored row that is no longer a
+  // valid approval as decision_corrupt. The class-5 case found inside the decision transaction is D11d in
+  // externalCompletionDecisionSeams.test.ts, which needs that file's seam, so it is not repeated here.
+  const C5_CASES = [
+    {
+      label: 'decision_corrupt: a stored row fails the row validator before any Git read (pinned by D18)',
+      expected: { code: 'decision_corrupt', detail: 'digest_mismatch' },
+      arrange: async () => {
+        const decided = await v2DecidedFixture('sha1');
+        const { fx } = decided;
+        fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+        fx.db
+          .prepare('UPDATE goal_approvals SET external_completion_action_digest = ? WHERE id = ?')
+          .run('f'.repeat(64), decided.recorded.approvalId);
+        return {
+          db: fx.db,
+          goalId: fx.goalId,
+          attempt: () =>
+            recordExternalCompletionDecision(
+              fx.db,
+              decisionInput(fx.goalId, decided.attestationId, decided.digest),
+            ),
+        };
+      },
+    },
+    {
+      label:
+        'class 5: a stored row passes the row validator, but its attestation is not found (pinned by D17b)',
+      expected: { code: 'preflight_refused', detail: 'completion_history_invalid' },
+      arrange: async () => {
+        const attested = await v2RunningAttestedFixture('sha1');
+        const { db, goalId } = attested.fx;
+        const digest = await reviewedDigest(attested);
+        const report = await computeExternalCompletionPreflight(
+          db,
+          goalId,
+          { attestationId: attested.attestationId },
+          { allowRecordedDecision: true },
+        );
+        const foreign = randomUUID();
+        const fields = report.actionFields as Record<string, Record<string, unknown>>;
+        const foreignAction = buildExternalCompletionAction({
+          ...fields,
+          attestation: { ...fields.attestation, id: foreign },
+          correctionChain: { ...fields.correctionChain, attestationId: foreign },
+          userReviewedPreflightDigest: 'e'.repeat(64),
+        })!;
+        const row = requestGoalApproval(db, {
+          goalId,
+          gate: 'user_confirmation',
+          risk: 'high',
+          reason: 'Decision for a fabricated attestation.',
+          requestedBy: 'user',
+          detail: { ...foreignAction },
+          externalCompletionActionDigest: foreignAction.actionDigest,
+        });
+        decideGoalApproval(db, { goalId, approvalId: row.id, decision: 'approved', decidedBy: 'user' });
+        return {
+          db,
+          goalId,
+          attempt: () =>
+            recordExternalCompletionDecision(db, decisionInput(goalId, attested.attestationId, digest)),
+        };
+      },
+    },
+    {
+      label:
+        'decision_corrupt from the completion terminal: a stored row is no longer a valid approval (pinned by externalCompletion.test.ts)',
+      expected: { code: 'decision_corrupt', detail: 'approval_fields_invalid' },
+      arrange: async () => {
+        const decided = await v2DecidedFixture('sha1');
+        const { fx } = decided;
+        fx.db.exec('DROP TRIGGER trg_goal_approval_identity; DROP TRIGGER trg_goal_approval_terminal;');
+        fx.db
+          .prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?")
+          .run(decided.recorded.approvalId);
+        return {
+          db: fx.db,
+          goalId: fx.goalId,
+          attempt: () =>
+            completeGoalFromExternalDecision(
+              fx.db,
+              decisionInput(fx.goalId, decided.attestationId, decided.digest),
+            ),
+        };
+      },
+    },
+  ];
+
+  it.each(C5_CASES.map((testCase) => [testCase.label, testCase] as const))(
+    '%s',
+    async (_label, testCase) => {
+      const arranged = await testCase.arrange();
+      const before = databaseSnapshot(arranged.db);
+
+      const error = await captureError(arranged.attempt());
+
+      expect(error).toMatchObject(testCase.expected);
+      expect(databaseSnapshot(arranged.db)).toEqual(before);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

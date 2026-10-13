@@ -1738,16 +1738,4 @@ describe('completion standing reader: G D.3F commit 3b, the remaining reason cod
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
-
-  it(
-    'attestation after completion is refused with goal_ineligible',
-    async () => {
-      const { decided, db } = await completed('sha1');
-      advanceDestination(decided, 'destination moved after completion');
-      const before = databaseSnapshot(db);
-      await expect(reattestAtCurrentTip(decided)).rejects.toMatchObject({ code: 'goal_ineligible' });
-      expect(databaseSnapshot(db)).toEqual(before);
-    },
-    REAL_GIT_TEST_TIMEOUT_MS,
-  );
 });

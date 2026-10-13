@@ -206,11 +206,6 @@ function policyDigest(body: unknown): string {
   return createHash('sha256').update(POLICY_DOMAIN).update('\0').update(canonicalJson(body)).digest('hex');
 }
 
-/**
- * Classifies the completion authority state of one Goal for one selected attestation. Precedence: 6 terminal proof
- * exists, 5 history invalid or unavailable (including the row cap), 4 another attestation has an eligible decision,
- * 2 a decision exists for the selected attestation, 3 decisions exist but all are corrected elsewhere, 1 none exist.
- */
 /** The result of one classification. Every result, including a fail-closed one, gets its digest the same way. */
 function classification(
   goalId: string,
@@ -238,6 +233,11 @@ function classification(
   };
 }
 
+/**
+ * Classifies the completion authority state of one Goal for one selected attestation. Precedence: 6 terminal proof
+ * exists, 5 history invalid or unavailable (including the row cap), 4 another attestation has an eligible decision,
+ * 2 a decision exists for the selected attestation, 3 decisions exist but all are corrected elsewhere, 1 none exist.
+ */
 export function classifyCompletionAuthority(
   db: Db,
   goalId: string,

@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { advanceGoalRef } from '../goalGit.js';
+import type { Db } from '../db.js';
 import { decideGoalApproval, pendingGoalApprovals } from './approvals.js';
 import { DisabledGoalExecutor } from './executor.js';
 import { listGoalEvents } from './events.js';
@@ -870,7 +871,7 @@ describe('completion authority', () => {
   );
 
   /** A version-2 Goal whose final review passed and whose user acceptance and final apply are not yet recorded. */
-  async function v2AwaitingAcceptance() {
+  async function v2AwaitingAcceptance(options: { establishedIndependence?: boolean } = {}) {
     const definition = simpleDefinition({
       milestones: [milestone('m1', ['build', 'tests'])],
       policy: {
@@ -892,9 +893,31 @@ describe('completion authority', () => {
     completeReview(h.fx.db, {
       reviewId: review.id,
       report: reportOf(),
-      independence: { established: true, policy: h.fx.definition.routing.independence.finalReview },
+      independence: {
+        established: options.establishedIndependence ?? true,
+        policy: h.fx.definition.routing.independence.finalReview,
+      },
     });
     return h;
+  }
+
+  /** The failure codes the latest completion_evaluated event lists, as the evaluation recorded them. */
+  function lastCompletionFailureCodes(db: Db, goalId: string): unknown {
+    const latest = listGoalEvents(db, goalId)
+      .filter((event) => event.type === 'completion_evaluated')
+      .at(-1);
+    return (latest!.payload as { failureCodes: unknown }).failureCodes;
+  }
+
+  /** The rows a completion_pending tick must not change: the Goal row, its approvals and its completion proofs. */
+  function completionRowState(db: Db, goalId: string) {
+    return {
+      goal: db.prepare('SELECT * FROM goals WHERE id = ?').get(goalId),
+      approvals: db.prepare('SELECT * FROM goal_approvals WHERE goal_id = ? ORDER BY rowid').all(goalId),
+      proofs: db
+        .prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ? ORDER BY rowid')
+        .all(goalId),
+    };
   }
 
   it(
@@ -981,6 +1004,54 @@ describe('completion authority', () => {
         .at(-1)!.payload.failureCodes;
       expect(failureCodes).toEqual(['final_acceptance_missing', 'final_apply_required']);
       expect(failureCodes).not.toContain('external_completion_not_activated');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  // D3-5 regression negative: an extra failing condition whose code is outside TERMINAL_USER_FAILURES and is not the
+  // version-2 marker. Here it is final_review_independence, from a completed final review that did not establish
+  // independence. The Goal is otherwise eligible for the final_acceptance gate, so the extra failure must block it.
+  it(
+    'D3-5 an extra failing condition (final_review_independence) blocks the final_acceptance gate: completion_pending, nothing written',
+    async () => {
+      const h = await v2AwaitingAcceptance({ establishedIndependence: false });
+      await h.start();
+      const before = completionRowState(h.fx.db, h.fx.goalId);
+
+      expect(await h.supervisor.tickGoal(h.fx.goalId)).toEqual({
+        action: 'completion_pending',
+        goalId: h.fx.goalId,
+        code: 'final_review_independence',
+      });
+      expect(
+        h.fx.db
+          .prepare("SELECT COUNT(*) AS n FROM goal_approvals WHERE goal_id = ? AND gate = 'final_acceptance'")
+          .get(h.fx.goalId),
+      ).toEqual({ n: 0 });
+      expect(completionRowState(h.fx.db, h.fx.goalId)).toEqual(before);
+      expect(lastCompletionFailureCodes(h.fx.db, h.fx.goalId)).toEqual([
+        'final_review_independence',
+        'final_acceptance_missing',
+        'external_completion_not_activated',
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'D3-5 control: the same Goal with independence established requests the final_acceptance gate',
+    async () => {
+      const h = await v2AwaitingAcceptance({ establishedIndependence: true });
+      await h.start();
+
+      expect(await h.tick()).toBe('gate_requested');
+      expect(pendingGoalApprovals(h.fx.db, h.fx.goalId)).toEqual([
+        expect.objectContaining({ gate: 'final_acceptance' }),
+      ]);
+      expect(lastCompletionFailureCodes(h.fx.db, h.fx.goalId)).toEqual([
+        'final_acceptance_missing',
+        'external_completion_not_activated',
+      ]);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
