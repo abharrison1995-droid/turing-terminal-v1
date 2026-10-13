@@ -12,6 +12,7 @@ vi.mock('../providers.js', () => ({
 }));
 
 import { discoverProviders, executeProvider, type ProviderRunRequest } from '../providers.js';
+import { RunEngine } from '../runEngine.js';
 import { startQueuedRun } from '../runLauncher.js';
 import { queryUsageAnalytics } from '../usageAnalytics.js';
 import {
@@ -22,6 +23,7 @@ import {
   retryGoalAuthoring,
   startGoalAuthoring,
 } from './authoring.js';
+import { transitionCycle } from './cycles.js';
 import { simpleDefinition, cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { inspectRunRetention } from './retention.js';
 import { transitionGoal } from './stateMachine.js';
@@ -622,6 +624,59 @@ describe('Goal authoring: retry is re-proven in the final transaction', () => {
       h = await realRunHarness();
       const { outcome } = await raced(() => undefined);
       expect(outcome).toBe('started');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('Goal authoring: engine recovery of queued authoring runs (HR-Q4)', () => {
+  const queuedAuthoringRun = async () => {
+    h = await realRunHarness();
+    const started = await startGoalAuthoring(db(), input() as never, vi.fn());
+    expect(h.runRow(started.runId).status).toBe('queued');
+    return started;
+  };
+
+  for (const to of ['failed', 'cancelled'] as const) {
+    it(
+      `engine recovery never starts a queued authoring run whose cycle is ${to}`,
+      async () => {
+        const started = await queuedAuthoringRun();
+        // The authoring cycle owns its run through runs.goal_cycle_id with purpose 'authoring'; there is no cycle column.
+        expect(
+          db().prepare('SELECT goal_cycle_id, goal_run_purpose FROM runs WHERE id = ?').get(started.runId),
+        ).toEqual({ goal_cycle_id: started.cycleId, goal_run_purpose: 'authoring' });
+        // Migration 015 makes the origin immutable, so no authoring run can be left with a NULL cycle link.
+        expect(() =>
+          db().prepare('UPDATE runs SET goal_cycle_id = NULL WHERE id = ?').run(started.runId),
+        ).toThrow(/goal run origin is immutable/);
+        transitionCycle(db(), { cycleId: started.cycleId, to });
+
+        const restarted = new RunEngine(db(), () => undefined);
+        const engineStart = vi.spyOn(restarted, 'start');
+        restarted.reconcileInterruptedRuns();
+        expect(engineStart).not.toHaveBeenCalled();
+        expect(h.runRow(started.runId).status).toBe('queued');
+        expect(calls).toHaveLength(0);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+  }
+
+  it(
+    'leaves a queued authoring run with a live cycle to AuthoringReconciler, which starts it once',
+    async () => {
+      const started = await queuedAuthoringRun();
+      const restarted = new RunEngine(db(), () => undefined);
+      const engineStart = vi.spyOn(restarted, 'start');
+      restarted.reconcileInterruptedRuns();
+      // Owner path: AuthoringReconciler.reconcile() -> reconcileAuthoringCycle -> startRun is the only starter here.
+      expect(engineStart).not.toHaveBeenCalled();
+      expect(h.runRow(started.runId).status).toBe('queued');
+      const spy = vi.fn(startRun);
+      await new AuthoringReconciler(db(), spy).reconcile();
+      expect(spy).toHaveBeenCalledExactlyOnceWith(started.runId);
+      await waitRun(started.runId, 'completed');
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

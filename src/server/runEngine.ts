@@ -265,10 +265,14 @@ export class RunEngine {
   }
 
   /**
-   * Starts ordinary runs persisted as `queued` that were never started (a crash between queueRun and start). Goal-owned
-   * runs (goal_cycle_id) and route-probe runs (route_validation_probes) are excluded: their owners re-verify their own
-   * pre-start proofs and are the only code that starts them. Each run is claimed by a compare-and-set `queued` ->
-   * `preparing` update, and the claim commits with its event before `start` is called.
+   * Starts ordinary runs persisted as `queued` that were never started (a crash between queueRun and start). Excluded,
+   * because their owners are the only code that starts them:
+   * - Goal-owned runs (goal_cycle_id), and authoring runs among them. They are started through startQueuedRun by their
+   *   owners (AuthoringReconciler, the supervisor), without the fixture and identity proofs that startProbe performs.
+   * - Route-probe runs (route_validation_probes). startProbe re-verifies the pinned fixture and the persisted identity
+   *   before it starts them; only probe runs carry that proof.
+   * Each run is claimed by a compare-and-set `queued` -> `preparing` update, and the claim commits with its event before
+   * `start` is called.
    */
   private startRecoveredQueuedRuns(): void {
     const queued = this.db
@@ -276,6 +280,7 @@ export class RunEngine {
         `SELECT id FROM runs
          WHERE status = 'queued'
            AND goal_cycle_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM goal_cycles c WHERE c.id = runs.goal_cycle_id AND c.kind = 'authoring')
            AND NOT EXISTS (SELECT 1 FROM route_validation_probes p WHERE p.run_id = runs.id)
          ORDER BY created_at, id`,
       )
