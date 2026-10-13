@@ -637,6 +637,77 @@ CI cancellation note: the cause of the two earlier cancellations (`6540002` and 
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 4 (21-case adversarial qualification) and Slice 5 (documentation, whole-programme review, final report) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open. The owner should also confirm the in-transaction class-5 reason (`completion_history_invalid`, not `decision_corrupt`).
 
+### D.4R Slice 4: adversarial qualification of the 21 cases: ACCEPTED on `93c6e4f` (lead record, with one partial and one seeded case)
+
+Commit: `93c6e4f` (test-only; parent `98720fc`). Reconciliation: `scratchpad/d4r_s4_brief.md` (Sonnet 5.5 Medium, GO; it noted that the design's test anchors had drifted and that the B-after-A flow needed new tests). Implementer: Haiku 5.5 High (uncommitted working tree; the lead gated, reviewed and committed). Independent review: Sonnet 5.5 Medium (`scratchpad/d4r_s4_review.md`).
+
+What was added: `src/server/goals/completionRecoveryQualification.test.ts` (52 tests across the 21 cases, sha1 and sha256 where the case is parametrised), and Q1b in `goalLifecycleQualification.test.ts`. Q1's assertions are unchanged; its setup moved into a helper `driveToVerifiedHandoff`. No production code, migration, route or hook was touched.
+
+Case results:
+
+| # | Result | Test(s) |
+|---|---|---|
+| 1 | PASS | QR01 (dispute variant; B recorded and completed) |
+| 2 | PASS | QR02 (withdrawn A allows B) |
+| 3 | PASS | QR03 (superseded A gives no decision for B; no retarget) |
+| 4 | PASS | QR04 (eligible A, including Git-stale uncorrected A, blocks every route to B) |
+| 5 | PASS | QR05 (six seeded corrupt-history variants) |
+| 6 | PASS | QR06a (A-side), QR06b (B-side) |
+| 7 | PASS | QR07 (tampered B attestation) |
+| 8 | PASS | QR08a (record), QR08b (Complete) |
+| 9 | PASS | QR09 (destination changes, both formats) |
+| 10 | PARTIAL | QR10a (criterion stale), QR10b (pending review); stale acceptance not asserted for B after A |
+| 11 | PASS | QR11a (Complete refuses `active_work`), QR11b (record refused; see pins) |
+| 12 | PASS | QR12i and QR12ii (real windows); QR12iii (seam) |
+| 13 | PASS | QR13a, b, c (seam retry and fail-closed paths) |
+| 14 | PASS | QR14 (identical concurrent requests: one row, one proof) |
+| 15 | PASS (seam) | QR15 (B/C concurrency via seam; no true OS parallelism) |
+| 16 | PASS | QR16 (A and B corrected, C completes, one proof) |
+| 17 | PASS (seeded) | QR17 (seeded B row; the public path is asserted separately as `goal_not_running`) |
+| 18 | PASS | QR18 (lost response: no duplicate row, proof or event) |
+| 19 | PASS | QR19 (digest, attestation and Goal bindings) |
+| 20 | PASS | QR20 (B after corrected decided A: one proof, one event pair) |
+| 21 | PASS | QR21 (dispute, withdraw and supersede after B completes: standing only) |
+
+Stale-A stale-correction test, Q1b: PASS on sha1 and sha256. A is decided; a real destination commit advances the tip; A's preflight reports `destination_advanced_after_observation`; B is blocked with whole state unchanged. After a real dispute of A, B records and completes separately, and an exact replay writes nothing.
+
+Partials and seeded cases (disclosed):
+
+1. Case 10 is partial. Stale acceptance for a single attestation is covered by `externalCompletionSeams.test.ts` at lines 351 and 418. Those anchors, not the design's D8, are the existing cover, and no B-after-A repeat exists.
+2. Case 17 is seeded. The seeded B row uses the same primitives as the decision service, and the public path is asserted too.
+3. Case 15 is seam-based. It proves the classifier logic on the interleaving, not OS-level parallelism.
+
+Observed-behaviour pins (accepted by review; each refuses with nothing written):
+
+- A stale or advanced tip reports `destination_advanced_after_observation`, not `attestation_stale` (Q1b, case 8).
+- Recording B while a verification cycle is open is refused as `preflight_refused` with detail `active_work`. Complete returns `active_work` directly (QR11a and QR11b). Review noted this is stricter than the design text.
+- A record of B after A completes is refused as `goal_not_running` before `completion_already_recorded`. The class-6 record refusal is not reachable through the public path (QR17).
+- A's id with B's digest gives `competing_decision`, not `attestation_disputed`, because the eligible B blocks A (QR19).
+- The first differing identity key is `policy_digest` (QR12iii).
+- QR21 supersede moves the tip, attests and restores B's tip, because the same-tip observation has a unique-digest collision.
+
+Evidence:
+
+- Gate on the working tree, run by the lead: format, lint, typecheck, build and `npm audit --omit=dev` exit 0 (0 vulnerabilities).
+- `npm test`, first run: 153 files passed, 1 test failed, 2,999 passed. The failure was `goalHandoff.test.tsx` "requires a deliberate confirmation to resume an approved orphan without replaying POST automatically". It is the same test as in Slice 3. It times out a 5-second wait for a message under full-suite load, the test is unchanged from `HEAD`, and it passes on its own.
+- `npm test`, rerun once: 154 files and 3,000 tests passed. The first failure is recorded here, not counted as a clean pass.
+- Hosted CI on `93c6e4f`: run 38336542437, success, 21.6 minutes. That is inside the 30-minute job limit set in `036d098`, but the headroom is shrinking as the suite grows.
+- Independent review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, 52 of 52 tests passing when run alone, no blocking findings.
+
+Non-blocking items carried forward:
+
+1. Cite `externalCompletionSeams.test.ts:351` and `:418` as the case 10 acceptance anchors (the design's D8 is wrong for this).
+2. QR08b (stale B) is a plain decided Goal, not a B-after-A test; QR19 has no separate wrong-handoff assertion.
+3. The design's note for case 11 needs updating to match the observed `active_work` behaviour; the comment near lines 950-957 needs tidying.
+4. Keep the seam and seeded labels for QR15 and QR17 in the final report.
+
+Hardening risks recorded for Slice 5 and the owner:
+
+- The `goalHandoff.test.tsx` orphan-resume test has now failed under full-suite load twice (Slices 3 and 4), and passed on rerun both times. It has a comment recording an earlier load flake. Its 5-second wait is the cause of record for the failure. It is a residual risk for H.x (measure and reduce fixture cost, or a justified per-test timeout with measured headroom). Global timeouts must not be raised to hide it.
+- CI gate duration: 21.6 minutes on this SHA, against a 30-minute limit. Track it in H.x.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 5 (documentation, the whole-programme Sonnet review, the final report with the 21/21 matrix and the case 10 and 17 caveats) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open. The owner should also confirm the in-transaction class-5 reason (`completion_history_invalid`, not `decision_corrupt`).
+
 ## Remediation iterations
 
 - D.1a: 0 substantive remediation iterations.
