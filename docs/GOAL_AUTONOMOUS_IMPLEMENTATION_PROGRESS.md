@@ -595,7 +595,47 @@ Deviations and residual risks:
 2. The terminal's class 4, 5 and 6 branches and the own-id and own-digest mismatch branches have no direct test. Class 4, 5 and 6 are refused at the identity read first, so these branches are defensive only.
 3. The in-transaction class 5 reason of the decision path (`completion_history_invalid`) is still a product choice for the owner.
 
-Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 3 (API, client copy, explicit attestation selection) not started; it needs its own reconciliation. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open.
+### D.4R Slice 3: status eligibility, copy and explicit attestation selection: ACCEPTED on `47bd3de` (lead record)
+
+Commit: `47bd3de` (parent `7561b6e`). Reconciliation: `scratchpad/d4r_s3_brief.md` (Sonnet 5.5 Medium, GO). Implementer: Haiku 5.5 High, in two passes (uncommitted working tree; the lead gated, reviewed and committed). Independent review: Sonnet 5.5 Medium (`scratchpad/d4r_s3_review.md`).
+
+Behaviour:
+
+- The completion status exposes `eligibility` and `correctionStanding` on each decision. Both come from correction standing only. Git is never used for eligibility, so an uncorrected Git-stale attestation stays eligible. The status reports `state: decided` only when an eligible decision exists. The classifier runs read-only with an empty selection. No route, write or migration is added.
+- The client no longer auto-selects the first attestation. The selection is held by the cockpit, is cleared when the Goal changes, and only applies to the handoff it was made in. A selection does nothing on its own: Record and Complete still need their own explicit clicks.
+- A competing decision is no longer described as "A completion has already been recorded". `completion_history_invalid` has its own sentence, and no raw code or field name is printed.
+
+Decisions made during this slice (the lead's, disclosed):
+
+1. The five remount and tab-switch tests were not changed in their bodies. The lead chose to keep the selection across Handoff remounts (keyed to the Goal and handoff) rather than add selection clicks inside those tests, because their names describe recovering the saved decision after a remount.
+2. Two Goal-switch tests each gained one selection click on Goal B and one on the first Goal after the return. Explicit selection requires these clicks, because the removed auto-select used to make them unnecessary. No assertion changed.
+3. The D.4E recovery selections in `GoalExternalIntegration` still select the attestation the user just submitted or created. They are unchanged, because they are not the auto-select the plan asked to remove.
+4. The selection props on `GoalExternalIntegration` are optional, with local-state fallback, so direct renders in `goalHandoff.test.tsx` still compile.
+
+Flipped tests (all disclosed and reviewed as legitimate):
+
+- F1 and F2 (`externalCompletionApi.test.ts`): `toEqual` additions for `eligibility` and `correctionStanding` on the invalid and contested views.
+- F3 (`goalCompletion.test.tsx`): the blocked-by-another-decision sentence changed. The old sentence is retired copy; the other assertions are kept.
+- F4: the `decisionRow` fixture gains the two new fields.
+- F5: `openHandoffTab` and `openPageHandoffTab` each gain one click on the attestation-history control (helper setup, not an assertion).
+- F6: `externalCompletionApi.ts` joins the `classifier_entry` allow-list, with one negative control.
+
+Evidence:
+
+- Gate on the working tree, run by the lead: format, lint, typecheck, build and `npm audit --omit=dev` exit 0 (0 vulnerabilities).
+- `npm test`, first run: 152 files passed, 1 test failed, 2,945 passed. The failure was `goalHandoff.test.tsx` "requires a deliberate confirmation to resume an approved orphan without replaying POST automatically". Its 5-second wait for a message ran out under full-suite load. The test is unchanged from `HEAD`, has a comment recording an earlier load flake, and passes on its own (38 of 38).
+- `npm test`, rerun once: 153 files and 2,946 tests passed. The first failure is recorded here, not counted as a clean pass. It is a residual load-sensitivity risk, and it belongs in the hardening list (H.x), not in a global timeout change.
+- Hosted CI on `47bd3de`: run 38328257945, success, 20.7 minutes. This is above the old 20-minute job limit, which is why the timeout was raised in `036d098`.
+
+Review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, no blocking findings. The non-blocking notes are carried forward:
+
+1. The remount and tab-switch tests get their selection click through the shared Handoff helper, not in their own bodies. Their assertions are unchanged, as intended. Noted here for the record.
+2. `row_unreadable` is a new `invalidReason` fallback that is not documented in the design. The client never prints it.
+3. The `goalId`/`handoffId` guard in `GoalHandoff` must be kept if this code is refactored. It makes the single render before the clearing effect safe.
+
+CI cancellation note: the cause of the two earlier cancellations (`6540002` and `d952df2`) is recorded under Slice 2c above. The 20-minute job limit is the cause for those runs.
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale, live provider gates. Slice 4 (21-case adversarial qualification) and Slice 5 (documentation, whole-programme review, final report) not started. Owner decisions from the D.3 record and the cross-attestation stuck-Goal question remain open. The owner should also confirm the in-transaction class-5 reason (`completion_history_invalid`, not `decision_corrupt`).
 
 ## Remediation iterations
 
