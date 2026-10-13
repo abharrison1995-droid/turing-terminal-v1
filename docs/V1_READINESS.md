@@ -244,7 +244,7 @@ The version-2 completion refusal remains inactive. No change was made to migrati
 
 Stage 7C.2B.5D.2 adds append-only per-attestation correction authority (migration 028) with a read-only history route, service-level dispute, withdrawal and supersession, correction events, and restart, rollback, migration-upgrade and SHA-1/SHA-256 coverage. Details and deferred items are in [GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md](GOAL_ATTESTATION_CORRECTION_WITHDRAWAL_DESIGN.md).
 
-This is not a V1 release claim. There is no correction write route, desktop correction UI, completion-standing projection, or v2 completion. Production still uses `DisabledGoalExecutor`. Windows is unverified for this stage, and no physical or live acceptance was exercised.
+This is not a V1 release claim. There is no correction write route, desktop correction UI, completion-standing projection, or v2 completion. (Dated note: this was true at this stage. The D.4 correction route and desktop UI and the D.4F hardening have since been added; see the D.4F status section at the end of this file.) Production still uses `DisabledGoalExecutor`. Windows is unverified for this stage, and no physical or live acceptance was exercised.
 
 Known limits and prerequisites recorded from the full-stage D.2 review (not release blockers for this candidate):
 
@@ -312,10 +312,48 @@ Known limitations: a concurrent duplicate decision is refused by the preflight s
 
 ## D.4R cross-attestation completion recovery status (2026-10-13)
 
-| Item                                                                   | Status                                                                                                                                                                                                                                 |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D.4R cross-attestation completion recovery                             | Implemented and accepted on `feature/grand-project-goal-engine`, with the 21-case qualification at the Slice 4 commit `93c6e4f` and later documentation commits. The qualification has disclosed partial, seam-based and seeded cases. |
-| V1 release readiness                                                   | V1 is NOT release-ready. V1 is not qualified by this workstream alone.                                                                                                                                                                 |
-| D.4F accessibility and mobile                                          | Not started.                                                                                                                                                                                                                           |
-| Physical Windows, physical iPhone, live Tailscale, live provider gates | PENDING. Not performed.                                                                                                                                                                                                                |
-| Pull request                                                           | PR #3 is open and has not been merged.                                                                                                                                                                                                 |
+| Item                                                                   | Status                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D.4R cross-attestation completion recovery                             | Implemented and accepted on `feature/grand-project-goal-engine`, with the 21-case qualification at the Slice 4 commit `93c6e4f` and later documentation commits. The qualification has disclosed partial, seam-based and seeded cases.     |
+| V1 release readiness                                                   | V1 is NOT release-ready. V1 is not qualified by this workstream alone.                                                                                                                                                                     |
+| D.4F accessibility and mobile                                          | Accepted on `feature/grand-project-goal-engine`: D.4F.1 `cd8ab18`, D.4F.2 `4c02286`, D.4F.3 `f4c555f`, D.4F.4 qualification and remediation `c886397`, each with hosted CI green. Not V1 release-ready. See the D.4F status section below. |
+| Physical Windows, physical iPhone, live Tailscale, live provider gates | PENDING. Not performed.                                                                                                                                                                                                                    |
+| Pull request                                                           | PR #3 is open and has not been merged.                                                                                                                                                                                                     |
+
+## D.4F accessibility, mobile visibility and completion/correction UX status (2026-10-13)
+
+Accepted on `feature/grand-project-goal-engine`. Every accepted slice has a record in [GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md](GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md).
+
+| Slice                                         | Code commit                      | Hosted CI (gate job)                                       | Tests after the slice             |
+| --------------------------------------------- | -------------------------------- | ---------------------------------------------------------- | --------------------------------- |
+| D.4F.0 audit and plan                         | `7eded75` (planning record only) | not a code gate                                            | 154 files, 3,000 tests (baseline) |
+| D.4F.1 desktop presentation and accessibility | `cd8ab18`                        | success, about 22 minutes                                  | 155 files, 3,048 tests            |
+| D.4F.2 recovery and async safety              | `4c02286`                        | success, about 24 minutes                                  | 155 files, 3,081 tests            |
+| D.4F.3 mobile read-only standing              | `f4c555f`                        | success, about 27 minutes (closest to the 30-minute limit) | 157 files, 3,166 tests            |
+| D.4F.4 qualification and remediation          | `c886397`                        | success, about 15 minutes                                  | 158 files, 3,232 tests            |
+
+What the stage establishes, as tested in jsdom and by static scans:
+
+- A persistent polite status region in each completion and correction panel, with refusal alerts kept separate and focus moved only after the user's own click, the user's own finished write, or Escape.
+- The completion decision is shown as a decision, not as a completed Goal. The completed heading says "Completed on a recorded decision. Turing has not proven content preservation." Qualifiers and correction labels no longer say "by you", because the client has no evidence of who decided.
+- Reads never initiate a completion or correction write. A busy Record keeps its digest and acknowledgement and offers a manual retry; nothing retries automatically.
+- Unusable read bodies are reported as read failures, not as silent states or crashes. A failed read does not claim that a write persisted.
+- A pending correction is adopted as actionable only when it fits the current chain tip. A stale row shows out of date with Confirm disabled, and a reviewing draft closes when the chain moves.
+- The phone shows the saved completion standing read-only, with no button, form or request. A standing is shown as settled only when it is genuinely trusted; a completed status alone is never shown as a success headline.
+
+Not claimed, and not verified in this stage:
+
+- WCAG 2.2 AA conformance or any certification. The checks run are jsdom tests and static scans; they do not establish conformance.
+- Rendered layout, narrow-width wrapping, the phone's amber and red contrast, the real tab order, focus-visible rendering, and screen-reader output.
+- Phone enforcement. The server does not enforce a desktop-only rule on Goal completion or correction routes (owner item S1). The phone interface offers no completion or correction control; that is the only claim made.
+
+Known limits, recorded and not fixed in this stage:
+
+- G14: a pending correction approval can be shown on the phone with Approve and Deny buttons, and the server then refuses the decision (`readModel.ts`, about lines 1060 to 1073). This is an owner decision.
+- S1: no server desktop-only enforcement on Goal completion or correction routes (owner decision).
+- The phone list rows and the desktop Overview card still say "Completed" for any completed Goal, because the list carries no standing. Fixing that needs a read-projection change (owner decision).
+- `GoalExternalIntegration.tsx` line 877 still prints a raw reason code, pinned by `goalHandoff.test.tsx`.
+- The D.4F.4 qualification file's server-text absence checks and one conditional disabled-state check are noted as test-strength follow-ups.
+- Remount while a completion or correction write is in flight can show the control again before its response arrives (residual P5e; server idempotency and the lock bound the harm).
+
+Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. V1 is NOT release-ready, and this workstream does not qualify V1 by itself.
