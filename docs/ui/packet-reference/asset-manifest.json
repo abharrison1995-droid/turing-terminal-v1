@@ -1,0 +1,95 @@
+{
+  "package": "Turing Terminal UI handoff",
+  "assets": [
+    {
+      "file": "visuals/ui/overview-dashboard.png",
+      "source_file": "exec-9daa330f-64b4-41bc-af36-68dbea5a4861.png",
+      "description": "Current desktop app-shell and overview dashboard concept.",
+      "size_px": [1586, 992],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "340c4997f4f70bd08416e43d1aed67a79bd5b9ec72dcb78e49429091012c2f0a"
+    },
+    {
+      "file": "visuals/ui/goal-engine-cockpit-first-pass.png",
+      "source_file": "exec-51993620-6d45-452a-bb01-e39bfcc5b40f.png",
+      "description": "Early Goal Engine cockpit concept; retained as design history.",
+      "size_px": [1586, 992],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "e05a77cf3b6a7fc8b306433784601166be829aaae811b5fb9b8fb36360c55ae1"
+    },
+    {
+      "file": "visuals/ui/goal-engine-cockpit-refined.png",
+      "source_file": "exec-57f1aadc-4ef0-4739-93ee-73294e7174d4.png",
+      "description": "Refined Goal Engine cockpit concept.",
+      "size_px": [1586, 992],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "ecbaabe848b95312be85d080d2ed2f41c8f5c30efa1ea22ca83b3b3681c6ea5f"
+    },
+    {
+      "file": "visuals/ui/new-task-provider-routing.png",
+      "source_file": "exec-a0eb8130-bb49-4fce-a7aa-1204fa456fdc.png",
+      "description": "New Task composer with provider and model routing.",
+      "size_px": [1586, 992],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "3f4b85575b2b6db5c5d870fea30f0d1460d21be6e280cf795cfd2b01cfb09784"
+    },
+    {
+      "file": "visuals/ui/workbench-agent-run.png",
+      "source_file": "exec-cf92509f-dd50-4cbd-8efe-584b2b2a7e43.png",
+      "description": "Workbench with editor, run timeline and Goal Engine panel.",
+      "size_px": [1586, 992],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "54dc3f5150976b6bdb3fe68f4d508a380c7969bacdafd50a886b0b9ff360a764"
+    },
+    {
+      "file": "visuals/mood/black-metal-forest-atmosphere.png",
+      "source_file": "exec-bd64c8bb-f8d2-4b85-b570-a23440154c9e.png",
+      "description": "Atmospheric forest and red horizon mood reference; not a literal UI background.",
+      "size_px": [1672, 941],
+      "mode": "RGB",
+      "transparency": "no alpha channel",
+      "sha256": "8041f444ba83e952c9ed8334f4fb68f4157b173ff002ca171a9310c7f75c06a4"
+    },
+    {
+      "file": "visuals/mascot/skull-status-atlas-detailed-exploration.png",
+      "source_file": "exec-5870c59f-3b83-495d-8e80-eca5f30b71a2.png",
+      "description": "Earlier, more detailed skull status animation exploration.",
+      "size_px": [1536, 1024],
+      "mode": "RGBA",
+      "transparency": "alpha channel",
+      "sha256": "1b4678ab56ee47937671a82b75654227feef81e55ac7eb5fc8fc58b75431b45e"
+    },
+    {
+      "file": "visuals/mascot/skull-status-atlas-simplified.png",
+      "source_file": "exec-319ad91e-a683-4085-8835-bcd7823b76ec.png",
+      "description": "Preferred simplified square skull status animation direction.",
+      "size_px": [1536, 1024],
+      "mode": "RGBA",
+      "transparency": "alpha channel",
+      "sha256": "d16f884bea4c09db5c328dddb17405ad2627d10dbbb2f78f4bb2a2df59742a46"
+    },
+    {
+      "file": "visuals/mascot/skull-directional-wipes-early.png",
+      "source_file": "exec-1011f0e3-0176-4c9f-966a-60daec0166f1.png",
+      "description": "First directional wipe atlas; superseded by the six-visible-pose version.",
+      "size_px": [1536, 1024],
+      "mode": "RGBA",
+      "transparency": "alpha channel",
+      "sha256": "a400964a9a69f224c62ad70e637f9cea9cff776d91bfb7eb9a83fde739d94b2d"
+    },
+    {
+      "file": "visuals/mascot/skull-directional-wipes-six-visible-poses.png",
+      "source_file": "exec-e9e91f6f-61a7-41ca-9659-9ad070dfd47a.png",
+      "description": "Current transition concept: six wipe directions, six visible stages per row.",
+      "size_px": [1536, 1024],
+      "mode": "RGBA",
+      "transparency": "alpha channel",
+      "sha256": "682c61e2746b977312011f58ab7663cb7d0465159d3b40858fe6556bf7d70be5"
+    }
+  ]
+}
