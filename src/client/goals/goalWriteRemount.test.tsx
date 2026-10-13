@@ -356,10 +356,12 @@ describe('launch controls fired twice synchronously in one act() (GH.6c item 1)'
 });
 
 describe('the known read-before-settle window (GH.6c item 1b)', () => {
-  // Known window, pinned so that a change to it is deliberate. Panel B's read begins while attestation A's Complete write
-  // is unresolved in this page. That write settles before B's read completes. Settling notifies only panels for the same
-  // Goal and attestation, so B is not told and does not read again. B's read therefore shows Record enabled, and the
-  // registry holds nothing against the click. The server decides that click: it may reuse an earlier write or refuse it.
+  // Known window, pinned so that a change to it is deliberate. Panel B's read begins while attestation A's Complete write is
+  // unresolved in this page, and that write settles before B's read completes. The mechanism is that settleInflight
+  // notifies only the panels for the same Goal and attestation scope, so B is not told and does not read again. The
+  // GET count below observes that mechanism: B issues exactly one status GET, its initial read, and none after A's write
+  // settles. A change that notifies every scope makes B refresh, which issues a second GET and fails this test. A fix that
+  // closes the window must change that assertion, and this comment, deliberately. The server decides the click.
   it('shows Record enabled from a read begun before another attestation settled, and sends the click', async () => {
     const user = userEvent.setup();
     const read = deferred<unknown>();
@@ -369,14 +371,22 @@ describe('the known read-before-settle window (GH.6c item 1b)', () => {
         { [`POST ${DECISION_PATH}`]: () => created(recordedDecision(ATT_B)) },
       ),
     );
+    const statusGets = () =>
+      calls.filter((call) => call.method === 'GET' && call.path === COMPLETION_PATH).length;
     render(<GoalCompletion goalId={GOAL} attestationId={ATT_B} refresh={0} />);
+    await waitFor(() => expect(statusGets()).toBe(1));
+
     const handleA = beginInflight(completeWrite(), 'panel-a');
     expect(handleA).not.toBe('busy');
-    settleInflight(handleA as InflightHandle);
+    await act(async () => {
+      settleInflight(handleA as InflightHandle);
+    });
+    await flushMicrotasks();
+    expect(statusGets()).toBe(1);
+
     await act(async () => {
       read.resolve(completionStatus('not_completed'));
     });
-
     const region = await settledCompletion();
     await user.click(within(region).getByRole('checkbox'));
     const record = within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel });
