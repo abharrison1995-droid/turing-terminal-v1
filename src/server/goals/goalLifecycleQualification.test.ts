@@ -329,7 +329,7 @@ describe('Q1 one version-2 Goal from real bounded execution to a corrected compl
   );
 
   it(
-    'a same-family final reviewer is refused as review_queue_error with queueCode plan_unavailable, attributed to the family check by contrast with the passing different-family run (sha1)',
+    'a final reviewer that shares the implementer model is refused as review_queue_error with queueCode plan_unavailable and reason same_model, with no review-stage provider call; the same_family branch is not separately exercised (sha1)',
     async () => {
       const harness = await openGoal('claude-opus-5-5', 'sha1');
       const { db, repo, goalId } = harness.fx;

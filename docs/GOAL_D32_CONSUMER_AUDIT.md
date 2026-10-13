@@ -38,7 +38,7 @@ The two cast rows are impossible pairings reachable only through a type cast. Th
 
 Command: `grep -rn "unqualifiedSuccessAllowed\|trustedForDownstream\|contentPreservation" src docs`, then the same two names outside `src` and `docs`.
 
-Outside `src` and `docs`: no hit. No file outside `src` reads either Boolean.
+Outside `src` and `docs`: no hit for either Boolean name. The word `contentPreservation` does appear in `src/server/migrations/027_goal_external_completion_proofs.sql` (lines 33, 152, 226), as a SQL check on the stored proof. No file outside `src` reads either Boolean.
 
 ### Production reads of the Booleans (src, not test files)
 
@@ -70,7 +70,7 @@ These read or emit `contentPreservation` and never read a Boolean. They are disp
 
 ### Test files
 
-Fourteen test files mention a Boolean. They are excluded from the production guard by the file-name rule, as in the existing consumer guard.
+Fourteen test files mention a Boolean name (a count of files mentioning either Boolean; other test files mention only `contentPreservation`). They are excluded from the production guard by the file-name rule, as in the existing consumer guard.
 
 ### Docs
 
