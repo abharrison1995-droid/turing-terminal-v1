@@ -261,6 +261,38 @@ export class RunEngine {
         reason: 'The desktop service restarted while this run was active.',
       });
     }
+    this.startRecoveredQueuedRuns();
+  }
+
+  /**
+   * Starts ordinary runs persisted as `queued` that were never started (a crash between queueRun and start). Goal-owned
+   * runs (goal_cycle_id) and route-probe runs (route_validation_probes) are excluded: their owners re-verify their own
+   * pre-start proofs and are the only code that starts them. Each run is claimed by a compare-and-set `queued` ->
+   * `preparing` update, and the claim commits with its event before `start` is called.
+   */
+  private startRecoveredQueuedRuns(): void {
+    const queued = this.db
+      .prepare(
+        `SELECT id FROM runs
+         WHERE status = 'queued'
+           AND goal_cycle_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM route_validation_probes p WHERE p.run_id = runs.id)
+         ORDER BY created_at, id`,
+      )
+      .all() as Array<{ id: string }>;
+    for (const { id } of queued) {
+      const claimed = this.db.transaction(() => {
+        const changes = this.db
+          .prepare("UPDATE runs SET status = 'preparing' WHERE id = ? AND status = 'queued'")
+          .run(id).changes;
+        if (!changes) return false;
+        this.event(id, 'run_recovered_after_restart', {
+          reason: 'Queued when the desktop service restarted.',
+        });
+        return true;
+      })();
+      if (claimed) this.start(id);
+    }
   }
 
   private async execute(runId: string, controller: AbortController, resume: boolean): Promise<void> {

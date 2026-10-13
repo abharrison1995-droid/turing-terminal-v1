@@ -5,7 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
 import { openDatabase } from './db.js';
 import { RunEngine } from './runEngine.js';
-import { buildPreview, createRun, queueRun, startQueuedRun, type RunPreview } from './runLauncher.js';
+import {
+  buildPreview,
+  cancelQueuedRun,
+  createRun,
+  queueRun,
+  startQueuedRun,
+  type RunPreview,
+} from './runLauncher.js';
 
 describe('run launcher', () => {
   let root = '';
@@ -141,5 +148,88 @@ describe('run launcher', () => {
         .prepare('SELECT goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = ?')
         .get(run.id),
     ).toEqual({ goal_cycle_id: null, goal_run_purpose: null, goal_base_commit: null });
+  });
+
+  describe('queued ordinary run recovery after a restart (HR-Q4)', () => {
+    const queuedIds = () =>
+      (
+        db.prepare("SELECT id FROM runs WHERE status = 'queued' ORDER BY created_at, id").all() as Array<{
+          id: string;
+        }>
+      ).map((row) => row.id);
+    const statusOf = (runId: string) =>
+      (db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string }).status;
+    const recoveredEvents = (runId: string) =>
+      (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND type = 'run_recovered_after_restart'",
+          )
+          .get(runId) as { n: number }
+      ).n;
+
+    it('forged-state: starts an ordinary run left queued by a crash between queueRun and start, exactly once', async () => {
+      // Forged crash: createRun commits the queued row, then the process dies before the engine starts it.
+      const prepared = await preview();
+      vi.spyOn(engine, 'start').mockImplementation(() => {
+        throw new Error('simulated crash before start');
+      });
+      expect(() => createRun(db, engine, prepared)).toThrow('simulated crash before start');
+      expect(queuedIds()).toHaveLength(1);
+      const runId = queuedIds()[0]!;
+
+      const restarted = new RunEngine(db, () => undefined);
+      const start = vi.spyOn(restarted, 'start');
+      restarted.reconcileInterruptedRuns();
+      expect(start).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(queuedIds()).toEqual([]);
+      expect(recoveredEvents(runId)).toBe(1);
+      await vi.waitFor(() => expect(statusOf(runId)).toBe('waiting_for_approval'));
+    });
+
+    it('does not start a queued run that was cancelled before the restart', async () => {
+      const { runId } = queueRun(db, await preview());
+      expect(cancelQueuedRun(db, runId, 'Cancelled before the restart.')).toEqual({ cancelled: true });
+      const restarted = new RunEngine(db, () => undefined);
+      const start = vi.spyOn(restarted, 'start');
+      restarted.reconcileInterruptedRuns();
+      expect(start).not.toHaveBeenCalled();
+      expect(statusOf(runId)).toBe('cancelled');
+      expect(recoveredEvents(runId)).toBe(0);
+    });
+
+    it('two fresh engines over one database start a queued run once; the owner path then reports not-queued', async () => {
+      const { runId } = queueRun(db, await preview());
+      const first = new RunEngine(db, () => undefined);
+      const second = new RunEngine(db, () => undefined);
+      const firstStart = vi.spyOn(first, 'start');
+      const secondStart = vi.spyOn(second, 'start');
+      first.reconcileInterruptedRuns();
+      expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(startQueuedRun(db, second, runId)).toEqual({ started: false, reason: 'not-queued' });
+      await vi.waitFor(() => expect(statusOf(runId)).toBe('waiting_for_approval'));
+      // The second reconcile's existing interrupted-run pass may pause the live run; it must never start it again.
+      second.reconcileInterruptedRuns();
+      expect(secondStart).not.toHaveBeenCalled();
+      expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(recoveredEvents(runId)).toBe(1);
+    });
+
+    it('a second engine reconciling from inside the first start cannot start the same run again', async () => {
+      const { runId } = queueRun(db, await preview());
+      const first = new RunEngine(db, () => undefined);
+      const second = new RunEngine(db, () => undefined);
+      const realStart = first.start.bind(first);
+      const firstStart = vi.spyOn(first, 'start').mockImplementation((id: string) => {
+        // Re-entrant recovery: the claim must already be persisted, or this pass would see the run as queued.
+        second.reconcileInterruptedRuns();
+        realStart(id);
+      });
+      const secondStart = vi.spyOn(second, 'start');
+      first.reconcileInterruptedRuns();
+      expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(secondStart).not.toHaveBeenCalled();
+      expect(recoveredEvents(runId)).toBe(1);
+    });
   });
 });

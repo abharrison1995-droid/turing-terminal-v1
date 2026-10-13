@@ -30,6 +30,7 @@ import {
   createRouteProbe,
   profilesForRoles,
   reconcileRouteProbe,
+  RouteProbeReconciler,
   routeProbeRequestSchema,
   writeProbeRecord,
 } from './routeProbe.js';
@@ -644,6 +645,31 @@ describe('probe lifecycle and the validation record writer', () => {
     expect(starts).toEqual([queued.runId]);
     expect(probeRow(queued.probeId).status).toBe('consumed');
     expect(n('SELECT COUNT(*) AS n FROM route_validations')).toBe(2);
+  });
+
+  it('does not let engine recovery start a queued probe run; only its reconciler starts it, once (HR-Q4)', async () => {
+    h = await probeHarness();
+    const queued = await createRouteProbe(h.db, probeRequest(), () => {
+      throw new Error('crashed before start');
+    });
+    h.restart();
+    const start = vi.spyOn(h.engine, 'start');
+    h.engine.reconcileInterruptedRuns();
+    expect(start).not.toHaveBeenCalled();
+    expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(queued.runId)).toEqual({
+      status: 'queued',
+    });
+    const starts: string[] = [];
+    const reconciler = new RouteProbeReconciler(h.db, (runId) => {
+      starts.push(runId);
+      return h.startRun(runId);
+    });
+    await reconciler.reconcile();
+    expect(starts).toEqual([queued.runId]);
+    await h.waitRun(queued.runId, 'completed');
+    await reconciler.reconcile();
+    expect(starts).toEqual([queued.runId]);
+    expect(probeRow(queued.probeId).status).toBe('consumed');
   });
 
   it('cancels, rather than starts, a queued probe whose fixture is no longer the verified base', async () => {

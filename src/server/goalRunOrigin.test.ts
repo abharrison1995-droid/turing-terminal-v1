@@ -430,6 +430,22 @@ describe('Goal-origin run launch', () => {
       expect(start).toHaveBeenCalledExactlyOnceWith(runId);
       await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
     });
+
+    it('does not let engine recovery start a queued Goal-owned run (HR-Q4)', async () => {
+      const { runId } = queueRun(db, await goalPreview());
+      const restarted = new RunEngine(db, () => undefined);
+      const start = vi.spyOn(restarted, 'start');
+      restarted.reconcileInterruptedRuns();
+      expect(start).not.toHaveBeenCalled();
+      expect(rowOf(runId).status).toBe('queued');
+      expect(
+        db
+          .prepare(
+            "SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND type = 'run_recovered_after_restart'",
+          )
+          .get(runId),
+      ).toEqual({ n: 0 });
+    });
   });
 
   describe('subject state during a Goal run', () => {
