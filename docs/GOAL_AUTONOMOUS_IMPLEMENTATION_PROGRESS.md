@@ -730,7 +730,7 @@ Still pending and not performed: physical Windows, physical iPhone, live Tailsca
 
 ## D.4R Slice 5: documentation and final review (status)
 
-Recorded 2026-10-13. Parent HEAD for this slice: `786c64b`. Slice 5 documentation is done. It is uncommitted at the time of writing; the lead gates and commits it.
+Recorded 2026-10-13. Parent HEAD for this slice: `786c64b`. Slice 5 documentation is committed as `12eb221`. Hosted CI on `12eb221`: run 38338582774, success, 16.2 minutes (format, lint, typecheck, test, build and audit, as the workflow runs them). The docs commit touches no source, test or migration file, so the tests are unchanged from `93c6e4f`, which passed the full gate.
 
 Files changed by this slice (documentation only; no source, test or migration file changed):
 
@@ -739,10 +739,18 @@ Files changed by this slice (documentation only; no source, test or migration fi
 - `docs/V1_READINESS.md`: one status entry for the D.4R workstream.
 - `docs/GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md`: this section. No existing D.4R record was changed.
 
-Commits that carry this slice: [PLACEHOLDER: lead to record the Slice 5 documentation commit SHA(s) after committing].
+Commits that carry this slice: `12eb221` (documentation). The Slice 4 record that precedes it is `786c64b`.
 
-Whole-programme review: [PLACEHOLDER: lead to record the verdict and reference]. Not performed by this slice, and not claimed here.
+Whole-programme review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, Sonnet 5.5 Medium, read-only, over `bd67cb0` to `12eb221` (`scratchpad/d4r_whole_review.md`). No blocking finding. The review checked: every write path runs the classifier or preflight inside its transaction; `allowRecordedDecision` is class-2-only at its three callers; the classifier is read-only; eligibility uses correction standing only; the client never records or completes on render, selection, remount or switch; `competing_decision` maps to 409; V1 is declared not release-ready; no migration changed.
 
-Final report: [PLACEHOLDER: lead to record the final report reference]. Not written by this slice, and not claimed here.
+Non-blocking findings from the whole-programme review, carried forward as follow-ups:
+
+1. The header comment in `externalCompletionDecision.ts` (around lines 21-24) describes the pre-D.4R behaviour and is stale.
+2. The D.3 candidate paragraph in `V1_READINESS.md` (around line 311) says a concurrent duplicate decision is refused rather than reused. That was true at D.3, and it is a historical record. It is not a current claim, but it should not be read as one.
+3. The classifier's isolation guard forbids the preflight, decision, terminal, route and lock modules. It does not forbid the Git or child-process imports reachable through `externalIntegration.js`. The imports used are DB-only readers, but a tighter guard would make the isolation claim exact.
+4. The decision service can return `reused: true` for a decision whose attestation was disputed in a narrow race. The terminal refuses it (`own_decision_ineligible`, seam test B5). No test drives that race through the decision service itself.
+5. The in-transaction class-5 reason is `completion_history_invalid`, while the pre-lock check and the terminal return `decision_corrupt`. This is the owner decision recorded in the Slice 2b record.
+
+Final report: the final report is the lead's message for this workstream, not a repository file. It states the matrix as 21 cases with case 10 partial, case 15 seam-based and case 17 seeded. It does not claim a bare 21 of 21.
 
 Still pending and not performed: physical Windows, physical iPhone, live Tailscale and live provider gates. PR #3 is open and has not been merged. D.4F (accessibility and mobile) has not started.
