@@ -1,8 +1,11 @@
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import ts from 'typescript';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Db } from '../db.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
 import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
@@ -21,6 +24,65 @@ import {
   v2RunningAttestedFixture,
 } from './goalV2TestKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+
+/**
+ * Call counts of the spied exports, keyed `module.export`. The spies below only count and then call the real export, so
+ * fixtures and results are unchanged. The runtime isolation test reads and clears this map.
+ */
+const spiedCalls = vi.hoisted(() => new Map<string, number>());
+
+// Pass-through spies. Factories run before this module's top-level code, so they inline their lists.
+vi.mock('node:child_process', async (importOriginal) => {
+  const { promisify: promisifyFn } = await import('node:util');
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  const out: Record<string, unknown> = { ...actual };
+  for (const name of [
+    'exec',
+    'execFile',
+    'execFileSync',
+    'execSync',
+    'fork',
+    'spawn',
+    'spawnSync',
+  ] as const) {
+    const real = actual[name] as unknown as (...args: unknown[]) => unknown;
+    const count = () =>
+      spiedCalls.set(`child_process.${name}`, (spiedCalls.get(`child_process.${name}`) ?? 0) + 1);
+    const spy = vi.fn((...args: unknown[]) => {
+      count();
+      return real(...args);
+    });
+    // externalIntegration.ts and repository.ts promisify execFile. A spy without this symbol would resolve with stdout
+    // only, which changes behaviour. The promisified path is counted too, so it cannot evade the spy.
+    const custom = (real as unknown as Record<symbol, unknown>)[promisifyFn.custom] as
+      ((...args: unknown[]) => Promise<unknown>) | undefined;
+    if (custom) {
+      Object.defineProperty(spy, promisifyFn.custom, {
+        value: (...args: unknown[]) => {
+          count();
+          return custom(...args);
+        },
+      });
+    }
+    out[name] = spy;
+  }
+  return out;
+});
+
+vi.mock('../goalGit.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../goalGit.js')>();
+  const out: Record<string, unknown> = { ...actual };
+  for (const [name, value] of Object.entries(actual)) {
+    // Classes (such as GoalGitError) keep their real constructors.
+    if (typeof value !== 'function' || /^[A-Z]/.test(name)) continue;
+    const real = value as (...args: unknown[]) => unknown;
+    out[name] = vi.fn((...args: unknown[]) => {
+      spiedCalls.set(`goalGit.${name}`, (spiedCalls.get(`goalGit.${name}`) ?? 0) + 1);
+      return real(...args);
+    });
+  }
+  return out;
+});
 
 afterEach(() => {
   cleanupRepoFixtures();
@@ -1083,3 +1145,357 @@ function proofRow(goalId: string): Record<string, string | number> {
     payload_json: JSON.stringify(proof),
   };
 }
+
+/** Makes one completion row's stored approval detail disagree with its digest. The same tamper as the class 5 test. */
+function tamperApprovalDetail(decided: Awaited<ReturnType<typeof v2DecidedFixture>>): void {
+  const { db } = decided.fx;
+  const id = decided.recorded.approvalId;
+  const stored = db.prepare('SELECT detail_json FROM goal_approvals WHERE id = ?').get(id) as {
+    detail_json: string;
+  };
+  db.exec('DROP TRIGGER trg_goal_approval_identity;');
+  db.exec('DROP TRIGGER trg_goal_approval_terminal;');
+  db.prepare('UPDATE goal_approvals SET detail_json = ? WHERE id = ?').run(
+    JSON.stringify({
+      ...(JSON.parse(stored.detail_json) as Record<string, unknown>),
+      userReviewedPreflightDigest: 'e'.repeat(64),
+    }),
+    id,
+  );
+}
+
+describe('completion authority classifier: runtime isolation from Git and child processes (GH.5c)', () => {
+  it(
+    'classes 1, 2 and 5 call no spied child_process or goalGit export, and the spies do count a direct call',
+    async () => {
+      // Fixtures run Git legitimately, so they are built first. Their calls must reach the spies, or the zero below
+      // would prove nothing.
+      const running = await v2RunningAttestedFixture('sha1');
+      const decided = await v2DecidedFixture('sha1');
+      const tampered = await v2DecidedFixture('sha1');
+      tamperApprovalDetail(tampered);
+      expect([...spiedCalls.values()].reduce((sum, count) => sum + count, 0)).toBeGreaterThan(0);
+      spiedCalls.clear();
+
+      const one = classifyCompletionAuthority(running.fx.db, running.fx.goalId, running.attestationId);
+      const two = classifyCompletionAuthority(decided.fx.db, decided.fx.goalId, decided.attestationId);
+      const five = classifyCompletionAuthority(tampered.fx.db, tampered.fx.goalId, tampered.attestationId);
+      expect([one.class, two.class, five.class]).toEqual([1, 2, 5]);
+      expect(five.reason).toBe('digest_mismatch');
+      expect(Object.fromEntries(spiedCalls)).toEqual({});
+
+      // Control: a direct call through the plain and the promisified path is counted, so the zero above is not vacuous.
+      execFileSync('git', ['--version']);
+      await promisify(execFile)('git', ['--version']);
+      expect(Object.fromEntries(spiedCalls)).toEqual({
+        'child_process.execFileSync': 1,
+        'child_process.execFile': 1,
+      });
+      spiedCalls.clear();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+/**
+ * Static import ratchet (GH.5c). RESIDUAL, NOT A CLOSED ITEM, for GH.6 review: the static import closure of
+ * completionAuthorityPolicy.ts REACHES write-capable modules (Goal database writes, Git ref writes, goal status
+ * transitions). The chains are recorded below. This suite does not prove static isolation. What holds for the classifier
+ * path is the runtime spy test above, plus this ratchet, which only makes a change visible: the closure must equal the
+ * committed list, so any new module fails until a reviewer classifies it; the decision, terminal, route and lock modules
+ * stay out; and the write-capable set must match exactly. The write check is a text scan, a heuristic that catches a new
+ * writer, not a proof that a module is read-only. Walked: src/server only, static, export-from, dynamic import() and
+ * import types, all counted. Type-only edges are counted too, so the list is an upper bound.
+ */
+
+const SERVER_ROOT = resolve(GOAL_DIR, '..');
+const CLASSIFIER_FILE = join(GOAL_DIR, 'completionAuthorityPolicy.ts');
+const NON_LITERAL_IMPORT = '<non-literal import()>';
+
+/** Modules the classifier must never reach: the decision, terminal, route and lock paths. */
+const FORBIDDEN_MODULES = [
+  'goals/externalCompletionPreflight.ts',
+  'goals/externalCompletionDecision.ts',
+  'goals/externalCompletionTerminal.ts',
+  'goals/goalRoutes.ts',
+  'goals/goalCompletionLock.ts',
+];
+
+/** Text signatures of a write: a mutating or DDL statement, a `db.exec`, a Git ref write, a file write, a status transition. */
+const WRITE_SIGNATURES = [
+  /\b(?:INSERT INTO|UPDATE [a-z_]+ SET|DELETE FROM|CREATE TABLE|DROP TRIGGER|ALTER TABLE)\b/,
+  /\bdb\.exec\(/,
+  /'(?:update-ref|commit-tree|push|merge|reset|checkout|tag|branch)'/,
+  /\b(?:writeFileSync|mkdirSync|rmSync|unlinkSync|renameSync|appendFileSync|chmodSync)\(/,
+  /\btransitionGoal\(/,
+];
+
+function isRelativeSpecifier(spec: string): boolean {
+  return spec.startsWith('./') || spec.startsWith('../');
+}
+
+function resolveLocal(file: string, spec: string): string {
+  // NodeNext: a relative specifier names the emitted .js file, whose source is the .ts file beside it.
+  return resolve(dirname(file), spec.replace(/\.js$/, '.ts'));
+}
+
+/** Every module specifier of one source file: static, export-from, dynamic import(), and import types. */
+function specifiersOf(file: string): string[] {
+  const sf = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+  const specs: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      specs.push(node.moduleSpecifier.text);
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [arg] = node.arguments;
+      specs.push(arg && ts.isStringLiteral(arg) ? arg.text : NON_LITERAL_IMPORT);
+    } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      specs.push(node.argument.literal.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return specs;
+}
+
+/** The transitive closure of src/server files reachable from the classifier, as sorted paths relative to src/server. */
+function localClosure(): string[] {
+  const seen = new Set<string>([CLASSIFIER_FILE]);
+  const queue = [CLASSIFIER_FILE];
+  for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
+    for (const spec of specifiersOf(file)) {
+      if (spec === NON_LITERAL_IMPORT)
+        throw new Error(`${relative(SERVER_ROOT, file)}: import() with a non-literal`);
+      if (!isRelativeSpecifier(spec)) continue;
+      const target = resolveLocal(file, spec);
+      if (!target.startsWith(SERVER_ROOT + sep)) continue;
+      if (!existsSync(target)) throw new Error(`${relative(SERVER_ROOT, file)}: unresolved ${spec}`);
+      if (!seen.has(target)) {
+        seen.add(target);
+        queue.push(target);
+      }
+    }
+  }
+  return [...seen].map((file) => relative(SERVER_ROOT, file).split(sep).join('/')).sort();
+}
+
+function importsProcessOrGit(file: string): boolean {
+  return specifiersOf(file).some(
+    (spec) =>
+      spec === 'node:child_process' ||
+      spec === 'child_process' ||
+      (isRelativeSpecifier(spec) && resolveLocal(file, spec) === join(SERVER_ROOT, 'goalGit.ts')),
+  );
+}
+
+/**
+ * The committed classification of every module in the closure. `read-only` means the module's own source has no write
+ * signature. `WRITE-CAPABLE` modules carry the write they perform and the import chain from the classifier, as recorded
+ * when this ratchet was written. `process` records a direct node:child_process or goalGit import and why it is accepted.
+ */
+type Classified =
+  | { kind: 'read-only'; process?: string }
+  | { kind: 'WRITE-CAPABLE'; reason: string; chain: string; process?: string };
+
+const VIA_EXTERNAL = 'completionAuthorityPolicy.ts -> externalIntegration.ts';
+const VIA_HANDOFF = `${VIA_EXTERNAL} -> manualHandoff.ts`;
+
+const CLOSURE: Record<string, Classified> = {
+  'commandPolicy.ts': { kind: 'read-only' },
+  'db.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason:
+      'opens the database: CREATE TABLE, db.exec and INSERT for migrations and seed rows; mkdirSync and chmodSync',
+    chain: 'completionAuthorityPolicy.ts -> db.ts (type-only import)',
+  },
+  'executionBroker.ts': { kind: 'read-only' },
+  'goalGit.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason:
+      'Git ref writes (update-ref through advanceGoalRef and initGoalRef), INSERT goal_integration_ops, UPDATE goal_runtime, mkdirSync',
+    chain: `${VIA_EXTERNAL} -> goalGit.ts`,
+    process: 'is the Git kit: imports node:child_process (execFile, spawn)',
+  },
+  'goals/activeWork.ts': { kind: 'read-only' },
+  'goals/amendmentAuthority.ts': { kind: 'read-only' },
+  'goals/approvals.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_approvals (requestGoalApproval) and UPDATE goal_approvals (decideGoalApproval)',
+    chain: 'completionAuthorityPolicy.ts -> attestationCorrection.ts -> approvals.ts',
+  },
+  'goals/approvedCompletionAuthority.ts': { kind: 'read-only' },
+  'goals/attestationCorrection.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_attestation_corrections',
+    chain: 'completionAuthorityPolicy.ts -> attestationCorrection.ts (direct)',
+  },
+  'goals/attestationCorrectionDetail.ts': { kind: 'read-only' },
+  'goals/bounds.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'calls transitionGoal, which writes the goal status',
+    chain: `${VIA_HANDOFF} -> readModel.ts -> bounds.ts`,
+  },
+  'goals/completionAuthorityPolicy.ts': { kind: 'read-only' },
+  'goals/completionEvaluation.ts': { kind: 'read-only' },
+  'goals/completionPolicy.ts': { kind: 'read-only' },
+  'goals/cycles.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT and UPDATE goal_cycles, UPDATE goal_runtime',
+    chain: `${VIA_EXTERNAL} -> finalApplyOperation.ts -> finalApplyAuthority.ts (type-only edge) -> cycles.ts`,
+  },
+  'goals/definitionHash.ts': { kind: 'read-only' },
+  'goals/definitionValidation.ts': { kind: 'read-only' },
+  'goals/definitions.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason:
+      'INSERT goals and goal_definition_versions, UPDATE goal_milestones and goal_definition_versions, calls transitionGoal',
+    chain: `${VIA_HANDOFF} -> definitions.ts`,
+  },
+  'goals/events.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_events',
+    chain: 'completionAuthorityPolicy.ts -> attestationCorrection.ts -> events.ts',
+  },
+  'goals/externalCompletionDecisionRows.ts': { kind: 'read-only' },
+  'goals/externalCompletionProof.ts': { kind: 'read-only' },
+  'goals/externalIntegration.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_external_integration_attestations (persistExternalIntegrationAttestation)',
+    chain: `${VIA_EXTERNAL} (direct)`,
+    process: 'imports node:child_process (promisified execFile runs git reads) and goalGit.ts',
+  },
+  'goals/externalIntegrationApproval.ts': { kind: 'read-only' },
+  'goals/finalApply.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'update-ref on the base branch (applyApprovedGoalToBase), UPDATE goal_integration_ops',
+    chain:
+      'completionAuthorityPolicy.ts -> externalIntegration.ts -> goalGit.ts -> finalApply.ts (dynamic import() in goalGit.ts)',
+    process: 'imports node:child_process (execFileSync runs git reads and update-ref) and goalGit.ts',
+  },
+  'goals/finalApplyAuthority.ts': {
+    kind: 'read-only',
+    process: 'imports goalGit.ts; reads only',
+  },
+  'goals/finalApplyOperation.ts': {
+    kind: 'read-only',
+    process: 'imports goalGit.ts; reads only',
+  },
+  'goals/findings.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT and UPDATE goal_findings and goal_finding_observations',
+    chain: `${VIA_HANDOFF} -> completionEvaluation.ts -> findings.ts`,
+  },
+  'goals/freshness.ts': { kind: 'read-only' },
+  'goals/independence.ts': { kind: 'read-only' },
+  'goals/manualHandoff.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_result_handoffs',
+    chain: `${VIA_EXTERNAL} -> manualHandoff.ts`,
+    process: 'imports goalGit.ts; the handoff write itself is a database write',
+  },
+  'goals/milestones.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'UPDATE goal_milestones (satisfy and reopen)',
+    chain: `${VIA_HANDOFF} -> completionEvaluation.ts -> milestones.ts`,
+  },
+  'goals/modelFamily.ts': { kind: 'read-only' },
+  'goals/readModel.ts': { kind: 'read-only' },
+  'goals/remediationPlan.ts': { kind: 'read-only' },
+  'goals/repository.ts': {
+    kind: 'read-only',
+    process:
+      'imports node:child_process (promisified execFile runs git cat-file blob) and goalGit.ts; reads only',
+  },
+  'goals/reviewPlan.ts': { kind: 'read-only' },
+  'goals/reviews.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT and UPDATE goal_reviews',
+    chain: `${VIA_HANDOFF} -> reviews.ts`,
+  },
+  'goals/routeAudit.ts': { kind: 'read-only' },
+  'goals/routeIdentity.ts': { kind: 'read-only' },
+  'goals/routeResolution.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'UPDATE goal_cycles route_resolution_json',
+    chain: `${VIA_HANDOFF} -> readModel.ts -> routeResolution.ts`,
+  },
+  'goals/routeValidation.ts': { kind: 'read-only' },
+  'goals/routing.ts': { kind: 'read-only' },
+  'goals/stateMachine.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'transitionGoal: UPDATE goals status and status reason, the goal status writer',
+    chain: `${VIA_HANDOFF} -> definitions.ts -> stateMachine.ts`,
+  },
+  'goals/verifierDigest.ts': { kind: 'read-only' },
+  'security.ts': { kind: 'read-only' },
+  'serialize.ts': { kind: 'read-only' },
+};
+
+/** The write-capable members, committed. A writer that becomes reachable, or a classified writer that stops writing, fails. */
+const WRITE_CAPABLE = [
+  'db.ts',
+  'goalGit.ts',
+  'goals/approvals.ts',
+  'goals/attestationCorrection.ts',
+  'goals/bounds.ts',
+  'goals/cycles.ts',
+  'goals/definitions.ts',
+  'goals/events.ts',
+  'goals/externalIntegration.ts',
+  'goals/finalApply.ts',
+  'goals/findings.ts',
+  'goals/manualHandoff.ts',
+  'goals/milestones.ts',
+  'goals/reviews.ts',
+  'goals/routeResolution.ts',
+  'goals/stateMachine.ts',
+];
+
+describe('completion authority classifier: static import closure ratchet (GH.5c, residual for GH.6)', () => {
+  it('the walker counts dynamic import() and import types, so the edge that reaches finalApply.ts is seen', () => {
+    expect(specifiersOf(join(SERVER_ROOT, 'goalGit.ts'))).toContain('./goals/finalApply.js');
+    expect(specifiersOf(CLASSIFIER_FILE)).toContain('../db.js');
+  });
+
+  it('the closure is exactly the committed list, so a newly reachable module fails until it is classified', () => {
+    expect(localClosure()).toEqual(Object.keys(CLOSURE).sort());
+  });
+
+  it('no decision, terminal, route or lock module is in the closure', () => {
+    const closure = localClosure();
+    for (const forbidden of FORBIDDEN_MODULES) {
+      expect(existsSync(join(SERVER_ROOT, forbidden)), forbidden).toBe(true);
+      expect(closure, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it('the write-capable members equal the committed set, by classification and by the text scan', () => {
+    const closure = localClosure();
+    const declared = Object.entries(CLOSURE)
+      .filter(([, entry]) => entry.kind === 'WRITE-CAPABLE')
+      .map(([file]) => file)
+      .sort();
+    const scanned = closure.filter((file) =>
+      WRITE_SIGNATURES.some((signature) => signature.test(readFileSync(join(SERVER_ROOT, file), 'utf8'))),
+    );
+    expect(declared).toEqual(WRITE_CAPABLE);
+    expect(scanned).toEqual(WRITE_CAPABLE);
+  });
+
+  it('every module that imports node:child_process or goalGit is in the closure with a recorded reason', () => {
+    const importers = localClosure().filter((file) => importsProcessOrGit(join(SERVER_ROOT, file)));
+    const listed = Object.entries(CLOSURE)
+      .filter(([, entry]) => entry.process !== undefined)
+      .map(([file]) => file)
+      .sort();
+    expect(importers).toEqual(listed);
+  });
+});
