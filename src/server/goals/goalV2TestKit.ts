@@ -258,7 +258,7 @@ export async function integratedExternalFixture(
 }
 
 export function approveExternalObservation(
-  fx: Awaited<ReturnType<typeof acceptedFixture>>['fx'],
+  fx: Pick<GoalFixture, 'db' | 'goalId'>,
   observation: Awaited<ReturnType<typeof buildExternalIntegrationObservation>>,
 ) {
   const approval = requestGoalApproval(fx.db, {
@@ -385,8 +385,17 @@ export function appendCorrectionForTest(
   });
 }
 
+/**
+ * The part of an attested fixture that a re-attestation reads: the Goal's database and id, and its handoff. A real-run
+ * harness Goal (its fixture and a prepared handoff) satisfies it as well as a v2 attested fixture does.
+ */
+export interface ReattestableHandoff {
+  fx: Pick<GoalFixture, 'db' | 'goalId'>;
+  handoff: { handoffId: string };
+}
+
 /** Attests the destination's current tip as a new observation for the same immutable handoff. */
-export async function reattestAtCurrentTip(attested: Awaited<ReturnType<typeof v2AttestedFixture>>) {
+export async function reattestAtCurrentTip(attested: ReattestableHandoff) {
   const observation = await buildExternalIntegrationObservation(
     attested.fx.db,
     attested.fx.goalId,
