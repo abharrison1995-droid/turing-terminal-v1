@@ -2,11 +2,23 @@ import { AlertTriangle, LoaderCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { GoalStatus } from '../../shared/goals';
 import type { Loaded } from './useLoad';
-import { STATUS_TONE, humanize } from './presentation';
+import { STATUS_TONE, humanize, type Tone } from './presentation';
 
-export function GoalStatusPill({ status, reason }: { status: GoalStatus; reason?: string | null }) {
+/** The tone defaults to the stored status. A caller may pass a tone that the Goal's completion standing supports. */
+export function GoalStatusPill({
+  status,
+  reason,
+  tone,
+}: {
+  status: GoalStatus;
+  reason?: string | null;
+  tone?: Tone;
+}) {
   return (
-    <span className={`status-pill goal-tone goal-tone-${STATUS_TONE[status]}`} data-goal-status={status}>
+    <span
+      className={`status-pill goal-tone goal-tone-${tone ?? STATUS_TONE[status]}`}
+      data-goal-status={status}
+    >
       {humanize(status)}
       {reason ? <span className="goal-pill-reason"> · {humanize(reason)}</span> : null}
     </span>

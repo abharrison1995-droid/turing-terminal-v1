@@ -228,6 +228,18 @@
 .goal-mobile-integration code {
   overflow-wrap: anywhere;
 }
+.goal-mobile-standing {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-mobile-standing > p {
+  margin: 0;
+}
+.goal-mobile-standing-note {
+  color: var(--ink-2);
+}
 .goal-tabs {
   display: flex;
   flex-wrap: wrap;

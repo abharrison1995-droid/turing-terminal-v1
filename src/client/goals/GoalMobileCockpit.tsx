@@ -6,6 +6,19 @@ import { GoalStatusPill } from './parts';
 import { formatTime, humanize, shortHash } from './presentation';
 import { NextActionCard } from './NextAction';
 import { goalAcceptsDecisions } from './controls';
+import {
+  STANDING_READ_ONLY_NOTE,
+  STANDING_SECTION_TITLE,
+  phoneStandingView,
+  type PhoneStandingState,
+} from './completionStandingCopy';
+
+/** The colour class each standing state reuses from the desktop completion panel. Other states keep the base colour. */
+const STANDING_COLOUR: Partial<Record<PhoneStandingState, string>> = {
+  contested: 'goal-completion-contested',
+  invalid: 'goal-completion-invalid',
+  legacy: 'goal-completion-legacy',
+};
 
 const expectedApprovalId = (action: GoalNextAction): string | null =>
   action.kind === 'review_approval' || action.kind === 'final_acceptance' ? action.approvalId : null;
@@ -43,6 +56,7 @@ export function GoalMobileCockpit({
   const cycle = goal.activeCycle ?? goal.lastCycle;
   const findings = Object.values(goal.openFindingCounts).reduce((sum, count) => sum + count, 0);
   const desktopMessage = desktopOnlyMessage(goal.nextAction);
+  const standing = phoneStandingView(goal);
   return (
     <div className="goal-mobile-cockpit">
       <div className="goal-cockpit-top goal-mobile-top">
@@ -61,7 +75,7 @@ export function GoalMobileCockpit({
           </h1>
           <p>{goal.projectName}</p>
         </div>
-        <GoalStatusPill status={goal.status} reason={goal.reasonCode} />
+        <GoalStatusPill status={goal.status} reason={goal.reasonCode} tone={standing?.tone} />
       </header>
 
       {goal.needsUser && (
@@ -77,8 +91,23 @@ export function GoalMobileCockpit({
         </section>
       )}
 
-      <NextActionCard action={goal.nextAction} />
+      <NextActionCard action={goal.nextAction} standing={standing ?? undefined} />
       {desktopMessage && <p className="goal-mobile-desktop-note">{desktopMessage}</p>}
+
+      {standing && (
+        <section className="surface-panel goal-mobile-standing" aria-label={STANDING_SECTION_TITLE}>
+          <h2>{STANDING_SECTION_TITLE}</h2>
+          <p className={`goal-completion-state ${STANDING_COLOUR[standing.state] ?? ''}`.trim()}>
+            {standing.heading}
+          </p>
+          {standing.detail && <p>{standing.detail}</p>}
+          {standing.qualifier && <p className="goal-completion-qualifier">{standing.qualifier}</p>}
+          {standing.contentPreservation && (
+            <p className="goal-completion-preservation">{standing.contentPreservation}</p>
+          )}
+          <p className="goal-mobile-standing-note">{STANDING_READ_ONLY_NOTE}</p>
+        </section>
+      )}
 
       <GoalControls goal={goal} onChanged={onChanged} compact />
 
