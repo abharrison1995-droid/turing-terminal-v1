@@ -131,9 +131,11 @@ export function subscribeInflight(
 }
 
 /**
- * Test support only: forgets every unresolved entry, so one case cannot hold a later case's writes. It exists only for
- * tests and must not be imported by production modules.
+ * Test support only: forgets every unresolved entry, so one case cannot hold a later case's writes. It throws outside
+ * Vitest test mode, and a static test fails if any production module other than this one names it.
  */
 export function clearInflightWritesForTests(): void {
+  if (import.meta.env.MODE !== 'test')
+    throw new Error('clearInflightWritesForTests is available only in Vitest test mode.');
   entries.clear();
 }

@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   beginInflight,
   clearInflightWritesForTests,
@@ -177,5 +180,56 @@ describe('subscriptions', () => {
     settleInflight(handle);
     expect(notified).toEqual([]);
     unsubscribeOld();
+  });
+});
+
+describe('the test-only reset is guarded', () => {
+  it('C1 clearInflightWritesForTests throws outside Vitest test mode and keeps the entries', () => {
+    acceptedHandle(recordWrite());
+    vi.stubEnv('MODE', 'production');
+    try {
+      expect(() => clearInflightWritesForTests()).toThrow();
+      expect(isInflight(recordWrite())).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    clearInflightWritesForTests();
+    expect(isInflight(recordWrite())).toBe(false);
+  });
+});
+
+/*
+ * Static guard for the test-only reset. Every non-test .ts and .tsx file under src is scanned with the same recursive
+ * walk as goalAuthorityStaticGuard.test.ts. Only inflightWrites.ts may name the reset.
+ */
+const SRC_ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const RESET_NAME = 'clearInflightWritesForTests';
+const OWNER_PATH = 'client/goals/inflightWrites.ts';
+
+function productionSources(dir = SRC_ROOT): { path: string; source: string }[] {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) return productionSources(full);
+    const isProduction = (name.endsWith('.ts') || name.endsWith('.tsx')) && !/\.test\.tsx?$/.test(name);
+    return isProduction ? [{ path: relative(SRC_ROOT, full), source: readFileSync(full, 'utf8') }] : [];
+  });
+}
+
+const referencing = (sources: { path: string; source: string }[], name: string) =>
+  sources.filter((file) => file.source.includes(name)).map((file) => file.path);
+
+describe('the test-only reset is referenced only by its owner', () => {
+  it('C2 no production .ts or .tsx file other than inflightWrites.ts names the reset', () => {
+    const sources = productionSources();
+    expect(sources.length).toBeGreaterThan(100);
+    expect(referencing(sources, RESET_NAME)).toEqual([OWNER_PATH]);
+  });
+
+  it('C3 the scanner flags a seeded production import of the reset and passes a clean file', () => {
+    const seeded = [
+      { path: 'client/goals/Seeded.tsx', source: "import { clearInflightWritesForTests } from './inflightWrites';" },
+      { path: 'client/goals/Clean.ts', source: 'export const clean = 1;' },
+    ];
+    expect(referencing(seeded, RESET_NAME)).toEqual(['client/goals/Seeded.tsx']);
   });
 });
