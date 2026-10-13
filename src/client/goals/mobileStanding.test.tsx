@@ -114,14 +114,14 @@ describe('compact Goal standing: pins at HEAD', () => {
   });
 
   it.each([
-    ['no standing', undefined],
-    ['a trusted standing', trustedStanding()],
-    ['a contested standing', contestedStanding('disputed', 'disputed_by_user')],
-  ])('M-P3 the pill of a completed Goal keeps the text and status with %s', async (_label, value) => {
+    ['no standing', undefined, 'Standing could not be read'],
+    ['a trusted standing', trustedStanding(), 'Completed'],
+    ['a contested standing', contestedStanding('disputed', 'disputed_by_user'), 'Completion contested'],
+  ])('M-P3 the pill of a completed Goal keeps the status with %s and shows its label', async (_label, value, label) => {
     await renderGoal(standingDetail(value));
     await screen.findByLabelText('Next action');
     expect(pill()).toHaveAttribute('data-goal-status', 'completed');
-    expect(pill()).toHaveTextContent('Completed');
+    expect(pill()).toHaveTextContent(label);
   });
 
   it.each([
@@ -319,17 +319,18 @@ describe('compact Goal standing: read-only section and pill tone', () => {
   });
 
   it.each([
-    ['a contested standing', contestedStanding('disputed', 'disputed_by_user')],
+    ['a contested standing', contestedStanding('disputed', 'disputed_by_user'), 'Completion contested'],
     [
       'an invalid standing',
       standing('invalid', 'invalid_unverified', claimWith('proof_unverified', 'not_applicable')),
+      'Completion could not be verified',
     ],
-    ['no standing', undefined],
-  ])('M-R10 %s does not keep the done tone on the pill', async (_label, value) => {
+    ['no standing', undefined, 'Standing could not be read'],
+  ])('M-R10 %s does not keep the done tone on the pill and shows its label', async (_label, value, label) => {
     await renderGoal(standingDetail(value));
     await screen.findByLabelText('Next action');
     expect(pill().className).not.toContain('goal-tone-done');
-    expect(pill()).toHaveTextContent('Completed');
+    expect(pill()).toHaveTextContent(label);
     expect(pill()).toHaveAttribute('data-goal-status', 'completed');
   });
 
@@ -363,5 +364,34 @@ describe('compact Goal standing: read-only section and pill tone', () => {
   ])('M-R12 the Corrections row still says Made on the desktop interface with %s', async (_label, value) => {
     await renderGoal(standingDetail(value));
     expect(screen.getByLabelText('Current progress')).toHaveTextContent('Made on the desktop interface.');
+  });
+});
+
+// --- GH.6b residual A: the phone header label follows the saved standing --------------------------------------------
+
+describe('compact Goal header label (GH.6b)', () => {
+  const header = () => document.querySelector('.goal-mobile-heading') as HTMLElement;
+
+  it('H1 a contested completed Goal does not show the bare Completed text in the header and shows the contested label', async () => {
+    await renderGoal(standingDetail(contestedStanding('disputed', 'disputed_by_user')));
+    await screen.findByRole('region', { name: 'Completion standing' });
+    expect(pill().textContent?.trim()).not.toBe('Completed');
+    expect(within(header()).queryByText('Completed', { exact: true })).toBeNull();
+    expect(within(header()).getByText('Completion contested', { exact: true })).toBeTruthy();
+  });
+
+  it('H2 a trusted completed Goal keeps its trusted Completed label in the header', async () => {
+    await renderGoal(standingDetail(trustedStanding()));
+    await screen.findByRole('region', { name: 'Completion standing' });
+    expect(pill().textContent?.trim()).toBe('Completed');
+    expect(within(header()).getByText('Completed', { exact: true })).toBeTruthy();
+  });
+
+  it('H3 a completed Goal with no saved standing fails closed and never shows the bare Completed text in the header', async () => {
+    await renderGoal(standingDetail(undefined));
+    await screen.findByRole('region', { name: 'Completion standing' });
+    expect(pill().textContent?.trim()).not.toBe('Completed');
+    expect(within(header()).queryByText('Completed', { exact: true })).toBeNull();
+    expect(within(header()).getByText('Standing could not be read', { exact: true })).toBeTruthy();
   });
 });

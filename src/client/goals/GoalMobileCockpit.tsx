@@ -75,7 +75,12 @@ export function GoalMobileCockpit({
           </h1>
           <p>{goal.projectName}</p>
         </div>
-        <GoalStatusPill status={goal.status} reason={goal.reasonCode} tone={standing?.tone} />
+        <GoalStatusPill
+          status={goal.status}
+          reason={goal.reasonCode}
+          label={standing?.nextLabel}
+          tone={standing?.tone}
+        />
       </header>
 
       {goal.needsUser && (
