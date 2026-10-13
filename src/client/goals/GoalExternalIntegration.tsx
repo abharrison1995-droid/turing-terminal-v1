@@ -872,11 +872,7 @@ export function GoalExternalIntegration({
       {verification && (
         <>
           <h4>{verificationLabel(verification)}</h4>
-          {verification.reason && (
-            <p className="goal-handoff-reason">
-              {verification.reason.message} ({verification.reason.code})
-            </p>
-          )}
+          {verification.reason && <p className="goal-handoff-reason">{verification.reason.message}</p>}
           {verification.state === 'verified' && (
             <>
               <dl className="goal-handoff-identities">

@@ -1307,7 +1307,8 @@ describe('desktop external integration confirmation', () => {
       await openHandoff(user);
       await user.click(await screen.findByRole('button', { name: 'Verify external integration' }));
       expect(await screen.findByRole('heading', { name: label })).toBeInTheDocument();
-      expect(screen.getByText(`Safe ${state} explanation. (${state})`)).toBeInTheDocument();
+      expect(screen.getByText(`Safe ${state} explanation.`)).toBeInTheDocument();
+      expect(document.body.textContent).not.toContain(`(${state})`);
       expect(screen.queryByRole('button', { name: 'Confirm external integration' })).toBeNull();
       expect(posts()).toEqual([]);
     },

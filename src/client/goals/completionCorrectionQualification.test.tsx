@@ -19,6 +19,7 @@ import { CORRECTION_COPY, CORRECTION_RECOVERY_COPY } from './correctionModel';
 import { GoalCompletion } from './GoalCompletion';
 import { type CorrectionReplacementOption, GoalCorrection } from './GoalCorrection';
 import { GoalsPage } from './GoalsPage';
+import { clearInflightWritesForTests } from './inflightWrites';
 import { calls, detail, openGoal, posts, refuse, serve, type Routes } from './testKit';
 import {
   ACTION_A,
@@ -66,6 +67,7 @@ const GOALS_DIR = resolve(SRC_CLIENT, 'goals');
 
 afterEach(() => {
   cleanup();
+  clearInflightWritesForTests();
   vi.unstubAllGlobals();
 });
 
@@ -153,6 +155,17 @@ const describeElement = (element: HTMLElement) => `${element.tagName}:${accessib
 /** The wording a failed read may show: it names the read, not a write. */
 const READ_FAILURE_FORBIDDEN = /may have|may still|reconcil|unconfirmed|do not assume|check again before/i;
 
+/** The server text and the raw codes the read fixtures inject. None of them may reach the rendered text. */
+const SERVER_SENTINEL = 'Server text that must not show.';
+const RAW_SERVER_CODES = /external_completion_unavailable|completion_read_failed|correction_read_failed/;
+
+/** Asserts that the page as a whole shows neither the injected server text nor a raw server code. */
+function expectNoServerText() {
+  const text = document.body.textContent ?? '';
+  expect(text).not.toContain(SERVER_SENTINEL);
+  expect(text).not.toMatch(RAW_SERVER_CODES);
+}
+
 const historyDisputed = (attestationId: string) =>
   correctionHistory(attestationId, {
     corrections: [
@@ -200,6 +213,9 @@ const STATUS_READ_FAILURES = READ_FAILURES;
 /** A read failure may say only that the review could not be read. It must not claim a write, and it offers none. */
 function expectReadFailureOnly(root: HTMLElement) {
   expect(wording(root)).not.toMatch(READ_FAILURE_FORBIDDEN);
+  expect(wording(root)).not.toContain(SERVER_SENTINEL);
+  expect(wording(root)).not.toMatch(RAW_SERVER_CODES);
+  expectNoServerText();
   expect(within(root).queryByRole('button', { name: COMPLETION_COPY.recordLabel })).toBeNull();
   expect(within(root).queryByRole('button', { name: COMPLETION_COPY.completeLabel })).toBeNull();
   expect(within(root).queryByRole('checkbox')).toBeNull();
@@ -235,6 +251,19 @@ const COMPLETION_STATES: Array<[string, () => Routes]> = [
   ['an invalid Goal', () => completionRoutes({ status: () => completionStatus('invalid') })],
 ];
 
+/**
+ * The Complete control each completion state shows once it is read after a remount, with no tick. Only a decided review
+ * offers the control, and it is disabled until the user acknowledges it. Every other state shows no control at all.
+ */
+const COMPLETE_CONTROL_BY_STATE: Record<string, 'present-disabled' | 'absent'> = {
+  'a ready review': 'absent',
+  'a decided review': 'present-disabled',
+  'a completed Goal': 'absent',
+  'a contested Goal': 'absent',
+  'a legacy Goal': 'absent',
+  'an invalid Goal': 'absent',
+};
+
 const CORRECTION_STATES: Array<[string, () => Routes]> = [
   ['an idle history', () => ({ [CORRECTIONS_PATH(ATT_A)]: () => correctionHistory(ATT_A) })],
   [
@@ -254,7 +283,7 @@ const CORRECTION_STATES: Array<[string, () => Routes]> = [
 describe('QF01 ambient triggers never write', () => {
   it.each(COMPLETION_STATES)(
     'QF01 (requirements 1, 2, 3): %s sends no write on refresh, remount or window events',
-    async (_label, build) => {
+    async (label, build) => {
       serve(build());
       const first = render(completionMounts(0));
       const region = await settledCompletion();
@@ -275,9 +304,16 @@ describe('QF01 ambient triggers never write', () => {
       await settledCompletion();
       await fireAmbientEvents();
       expect(posts()).toEqual([]);
-      // Complete Goal is never enabled without its own tick.
+      // Complete Goal is never enabled without its own tick. Each state has an expected control, so a missing entry fails.
+      const expected = COMPLETE_CONTROL_BY_STATE[label];
+      expect(expected).toBeDefined();
       const complete = screen.queryByRole('button', { name: COMPLETION_COPY.completeLabel });
-      if (complete) expect(complete).toHaveProperty('disabled', true);
+      if (expected === 'present-disabled') {
+        expect(complete).not.toBeNull();
+        expect(complete).toHaveProperty('disabled', true);
+      } else {
+        expect(complete).toBeNull();
+      }
     },
   );
 
@@ -613,6 +649,7 @@ describe('QF04 focus stays where the user put it', () => {
       await settledCompletion();
       if (failure !== null) await screen.findByRole('alert');
       await act(async () => {});
+      expectNoServerText();
       expect(document.activeElement).toBe(outside);
     },
   );
@@ -640,6 +677,7 @@ describe('QF04 focus stays where the user put it', () => {
       await act(async () => {});
       if (failure !== null) await screen.findByRole('alert');
       await act(async () => {});
+      expectNoServerText();
       expect(document.activeElement).toBe(outside);
     },
   );
@@ -730,6 +768,7 @@ describe('QF06 reconciliation holds under ambient pressure', () => {
     await user.click(within(region).getByRole('checkbox'));
     await user.click(within(region).getByRole('button', { name: COMPLETION_COPY.recordLabel }));
     expect(await within(region).findByText(COMPLETION_RECOVERY_COPY.unavailable)).toBeTruthy();
+    expectNoServerText();
 
     for (const refresh of [1, 2, 3]) {
       view.rerender(completionMounts(refresh));
@@ -767,6 +806,7 @@ describe('QF06 reconciliation holds under ambient pressure', () => {
     await user.selectOptions(screen.getByLabelText(CORRECTION_COPY.reasonLabel), 'observation_error');
     await user.click(screen.getByRole('button', { name: 'Request dispute' }));
     expect(await screen.findByText(CORRECTION_RECOVERY_COPY.unavailable)).toBeTruthy();
+    expectNoServerText();
 
     for (const refresh of [1, 2, 3]) {
       view.rerender(correctionMounts(refresh));

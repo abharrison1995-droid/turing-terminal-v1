@@ -28,6 +28,7 @@ import {
   type Routes,
   serve,
 } from './testKit';
+import { clearInflightWritesForTests } from './inflightWrites';
 
 const source = 'a'.repeat(40);
 const base = 'b'.repeat(40);
@@ -339,6 +340,7 @@ async function completionSection() {
 
 afterEach(() => {
   cleanup();
+  clearInflightWritesForTests();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });

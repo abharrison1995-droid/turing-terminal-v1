@@ -45,6 +45,9 @@ export const COMPLETION_COPY = {
   recordedNotCompleted: 'A completion decision is recorded. The Goal is not completed yet.',
   recording: 'Recording your decision…',
   completing: 'Completing the Goal…',
+  inFlightElsewhere: 'A write for this review is still in progress. Reading the saved state…',
+  inFlightBusy:
+    'Other completion writes are still in progress in this window. Wait for them to finish, then refresh the review.',
   reviewAvailable: 'The review is ready. Recording a decision completes nothing.',
   blockedByEligibleDecision:
     'A completion decision for a different attestation of this Goal can still complete it, so no decision can be recorded here. Open that attestation to complete the Goal, or correct it (dispute, withdraw or supersede it) to set it aside.',

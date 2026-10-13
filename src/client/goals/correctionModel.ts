@@ -42,6 +42,9 @@ export const CORRECTION_COPY = {
   requesting: 'Sending the request…',
   deciding: 'Recording your decision…',
   verifying: 'Checking the saved history…',
+  inFlightElsewhere: 'A write for this history is still in progress. Reading the saved history…',
+  inFlightBusy:
+    'Other correction writes are still in progress in this window. Wait for them to finish, then refresh the history.',
   confirmLabel: 'Confirm correction',
   declineLabel: 'Decline this request',
   gateHeading: 'A correction is waiting for your decision',

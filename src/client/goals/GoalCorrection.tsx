@@ -25,6 +25,13 @@ import {
   reduceCorrection,
 } from './correctionModel';
 import { ConfirmPanel } from './DefinitionParts';
+import {
+  beginInflight,
+  type InflightWrite,
+  isInflightAt,
+  settleInflight,
+  subscribeInflight,
+} from './inflightWrites';
 import { formatTime } from './presentation';
 import { isUnknownOutcome } from './unknownOutcome';
 
@@ -35,6 +42,44 @@ export interface CorrectionReplacementOption {
 }
 
 const NONE_AVAILABLE = 'No correction is available for this attestation from its current standing.';
+
+/**
+ * The holds on this panel's write controls. `request` disables sending a request, `decision` disables the gate. `elsewhere`
+ * is set when a read found the matching write unresolved in another panel, so the status line can say so.
+ */
+interface WriteHold {
+  request: boolean;
+  decision: boolean;
+  elsewhere: boolean;
+}
+
+const NO_HOLD: WriteHold = { request: false, decision: false, elsewhere: false };
+
+/**
+ * The holds a read sets. A request is named by its chain position, which the read shows and which the server checks, so
+ * any request at this position still unresolved elsewhere holds the request control. The gate's decision is named by its
+ * approval, so only a decision on the pending approval holds the gate.
+ */
+function holdFor(
+  goalId: string,
+  handoffId: string,
+  attestationId: string,
+  owner: string,
+  history: GoalAttestationCorrectionHistory,
+): WriteHold {
+  const request = isInflightAt(
+    { goalId, handoffId, attestationId, kind: 'correction-request', identity: history.chainPosition },
+    owner,
+  );
+  const approvalId = history.pending[0]?.approvalId ?? null;
+  const decision =
+    approvalId !== null &&
+    isInflightAt(
+      { goalId, handoffId: null, attestationId, kind: 'correction-decision', identity: approvalId },
+      owner,
+    );
+  return { request, decision, elsewhere: request || decision };
+}
 
 /**
  * The correction controls for one selected attestation, desktop only, in the Handoff tab. Three actions, each with its own
@@ -65,6 +110,9 @@ export function GoalCorrection({
   const focusRefusal = useRef(false);
   // The action whose review the user closed with Cancel or Escape. Focus returns to it.
   const reopenKind = useRef<GoalAttestationCorrectionKind | null>(null);
+  // This panel's identity in the in-flight registry, stable for its life.
+  const owner = useId();
+  const [hold, setHold] = useState<WriteHold>(NO_HOLD);
 
   // Applies one event to the latest state and returns the effects. Effects are data, so only a click reaches a write.
   const apply = (event: CorrectionEvent): CorrectionEffect[] => {
@@ -90,15 +138,51 @@ export function GoalCorrection({
       if (effect.type === 'reload') {
         setReloadTick((tick) => tick + 1);
       } else if (effect.type === 'request') {
-        goalsApi.requestCorrection(goalId, handoffId, attestationId, effect.chainPosition, effect.body).then(
-          (response) => run(apply({ type: 'requested', response })),
-          (error: unknown) =>
-            failed({
-              type: 'request_failed',
-              refusal: correctionRefusal(error, 'request'),
-              unknown: isUnknownOutcome(error),
-            }),
-        );
+        const write: InflightWrite = {
+          goalId,
+          handoffId,
+          attestationId,
+          kind: 'correction-request',
+          identity: effect.chainPosition,
+          detail: JSON.stringify(effect.body),
+        };
+        const handle = beginInflight(write, owner);
+        if (handle === 'busy') {
+          // Not sent. The reducer keeps the draft at this position, and the request control stays disabled.
+          setHold((prior) => ({ ...prior, request: true }));
+          failed({
+            type: 'request_failed',
+            refusal: { message: CORRECTION_COPY.inFlightBusy, next: 'keep' },
+            unknown: false,
+          });
+          continue;
+        }
+        try {
+          goalsApi
+            .requestCorrection(goalId, handoffId, attestationId, effect.chainPosition, effect.body)
+            .then(
+              (response) => {
+                settleInflight(handle);
+                run(apply({ type: 'requested', response }));
+              },
+              (error: unknown) => {
+                settleInflight(handle);
+                failed({
+                  type: 'request_failed',
+                  refusal: correctionRefusal(error, 'request'),
+                  unknown: isUnknownOutcome(error),
+                });
+              },
+            );
+        } catch (error: unknown) {
+          // The call threw before it returned a promise, so neither handler above was attached. This is the only settle.
+          settleInflight(handle);
+          failed({
+            type: 'request_failed',
+            refusal: correctionRefusal(error, 'request'),
+            unknown: isUnknownOutcome(error),
+          });
+        }
       } else {
         const body =
           effect.decision === 'approved'
@@ -109,15 +193,48 @@ export function GoalCorrection({
                 explanation: effect.explanation,
               }
             : { decision: 'denied' as const };
-        goalsApi.decideCorrection(goalId, effect.approvalId, effect.actionDigest, body).then(
-          () => run(apply({ type: 'decided' })),
-          (error: unknown) =>
-            failed({
-              type: 'decide_failed',
-              refusal: correctionRefusal(error, 'decide'),
-              unknown: isUnknownOutcome(error),
-            }),
-        );
+        const write: InflightWrite = {
+          goalId,
+          handoffId: null,
+          attestationId: effect.attestationId,
+          kind: 'correction-decision',
+          identity: effect.approvalId,
+          detail: JSON.stringify({ actionDigest: effect.actionDigest, body }),
+        };
+        const handle = beginInflight(write, owner);
+        if (handle === 'busy') {
+          setHold((prior) => ({ ...prior, decision: true }));
+          failed({
+            type: 'decide_failed',
+            refusal: { message: CORRECTION_COPY.inFlightBusy, next: 'keep' },
+            unknown: false,
+          });
+          continue;
+        }
+        try {
+          goalsApi.decideCorrection(goalId, effect.approvalId, effect.actionDigest, body).then(
+            () => {
+              settleInflight(handle);
+              run(apply({ type: 'decided' }));
+            },
+            (error: unknown) => {
+              settleInflight(handle);
+              failed({
+                type: 'decide_failed',
+                refusal: correctionRefusal(error, 'decide'),
+                unknown: isUnknownOutcome(error),
+              });
+            },
+          );
+        } catch (error: unknown) {
+          // The call threw before it returned a promise, so neither handler above was attached. This is the only settle.
+          settleInflight(handle);
+          failed({
+            type: 'decide_failed',
+            refusal: correctionRefusal(error, 'decide'),
+            unknown: isUnknownOutcome(error),
+          });
+        }
       }
     }
   };
@@ -134,6 +251,7 @@ export function GoalCorrection({
           return;
         }
         setHistory(next);
+        setHold(holdFor(goalId, handoffId, attestationId, owner, next));
         dispatch({ type: 'loaded', history: next });
       },
       () => {
@@ -144,7 +262,14 @@ export function GoalCorrection({
     return () => {
       live = false;
     };
-  }, [goalId, handoffId, attestationId, refresh, reloadTick]);
+  }, [goalId, handoffId, attestationId, refresh, reloadTick, owner]);
+
+  // A write for this attestation that another panel began settles: read the saved history again. This panel's own writes
+  // are not notified, because its reducer already holds their result.
+  useEffect(
+    () => subscribeInflight(goalId, attestationId, owner, () => setReloadTick((tick) => tick + 1)),
+    [goalId, attestationId, owner],
+  );
 
   // A refusal from the user's own click moves focus to its alert. A refusal from a read does not, so a background read
   // cannot take focus away from the user.
@@ -188,6 +313,7 @@ export function GoalCorrection({
         {phase === 'requesting' && <p>{CORRECTION_COPY.requesting}</p>}
         {phase === 'deciding' && <p>{CORRECTION_COPY.deciding}</p>}
         {phase === 'verifying' && <p>{CORRECTION_COPY.verifying}</p>}
+        {hold.elsewhere && <p>{CORRECTION_COPY.inFlightElsewhere}</p>}
       </div>
       {state.refusal !== null && (
         <p className="form-error" role="alert" tabIndex={-1} ref={alertRef}>
@@ -223,6 +349,7 @@ export function GoalCorrection({
           kind={state.kind}
           held={state.unknown?.write === 'request' ? state.unknown.body : null}
           blocked={history !== null && history.pendingUnreadableCount > 0}
+          inFlight={hold.request}
           replacementOptions={replacementOptions}
           working={phase === 'requesting'}
           onCancel={() => {
@@ -239,6 +366,7 @@ export function GoalCorrection({
         <GatePanel
           gate={state.gate}
           working={working}
+          inFlight={hold.decision}
           onExplanation={(value) => dispatch({ type: 'explanation', value })}
           onConfirm={() => dispatch({ type: 'confirm' })}
           onDecline={() => dispatch({ type: 'decline' })}
@@ -280,6 +408,7 @@ function ReviewPanel({
   kind,
   held,
   blocked,
+  inFlight,
   replacementOptions,
   working,
   onCancel,
@@ -290,6 +419,8 @@ function ReviewPanel({
   held: CorrectionRequestBody | null;
   /** True while a pending request cannot be read. No request can be sent then. */
   blocked: boolean;
+  /** True while a request at this chain position is unresolved in this page or elsewhere. No request can be sent then. */
+  inFlight: boolean;
   replacementOptions: CorrectionReplacementOption[];
   working: boolean;
   onCancel: () => void;
@@ -390,7 +521,7 @@ function ReviewPanel({
         <button
           type="button"
           className="primary-button"
-          disabled={working || !ready || (locked && blocked)}
+          disabled={working || inFlight || !ready || (locked && blocked)}
           aria-busy={working}
           onClick={submit}
         >
@@ -405,12 +536,15 @@ function ReviewPanel({
 function GatePanel({
   gate,
   working,
+  inFlight,
   onExplanation,
   onConfirm,
   onDecline,
 }: {
   gate: CorrectionGate;
   working: boolean;
+  /** True while this pending request's decision is unresolved in this page or elsewhere. Neither decision can be sent then. */
+  inFlight: boolean;
   onExplanation: (value: string) => void;
   onConfirm: () => void;
   onDecline: () => void;
@@ -418,6 +552,7 @@ function GatePanel({
   const explanationId = useId();
   const confirmBlocked =
     working ||
+    inFlight ||
     gate.outOfDate ||
     (gate.explanationRequired && (gate.explanation === null || gate.explanation === ''));
   return (
@@ -454,7 +589,7 @@ function GatePanel({
         >
           {CORRECTION_COPY.confirmLabel}
         </button>
-        <button type="button" className="secondary-button" disabled={working} onClick={onDecline}>
+        <button type="button" className="secondary-button" disabled={working || inFlight} onClick={onDecline}>
           {CORRECTION_COPY.declineLabel}
         </button>
       </div>

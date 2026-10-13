@@ -23,6 +23,13 @@ import {
   reduceCompletion,
   standingPresentation,
 } from './completionModel';
+import {
+  beginInflight,
+  type InflightWrite,
+  isInflightAt,
+  settleInflight,
+  subscribeInflight,
+} from './inflightWrites';
 import { formatTime } from './presentation';
 import { isUnknownOutcome } from './unknownOutcome';
 
@@ -83,6 +90,33 @@ function relationCopy(relation: DecisionRelation): string | null {
   }
 }
 
+/** The write refused by this page, not by the server: it was not sent, and the panel may ask again after a read. */
+const INFLIGHT_BUSY_REFUSAL = {
+  message: COMPLETION_COPY.inFlightBusy,
+  action: 'refresh',
+  retryable: true,
+} as const;
+
+/**
+ * True when the write this review would send next, a decision or a completion, is unresolved in another panel. Only the
+ * identity the read has just shown is compared, so a write for a different review never holds this one.
+ */
+function heldElsewhere(goalId: string, attestationId: string, owner: string, next: CompletionView): boolean {
+  const recordDigest = next.preflight?.outcome === 'ready' ? next.preflight.digest : null;
+  const actionDigest = decidedActionDigest(next.status, attestationId);
+  const probe = (kind: InflightWrite['kind'], identity: string) => ({
+    goalId,
+    handoffId: null,
+    attestationId,
+    kind,
+    identity,
+  });
+  return (
+    (recordDigest !== null && isInflightAt(probe('record', recordDigest), owner)) ||
+    (actionDigest !== null && isInflightAt(probe('complete', actionDigest), owner))
+  );
+}
+
 /**
  * The completion review for one current attestation, desktop only, in the Handoff tab. Two writes exist and each is one
  * click: "Record completion decision" (completes nothing) and "Complete Goal" (only after a recorded decision). Every
@@ -106,6 +140,11 @@ export function GoalCompletion({
   const headingRef = useRef<HTMLHeadingElement>(null);
   const previousPhase = useRef(state.phase);
   const focusAfterWrite = useRef<'complete' | 'heading' | null>(null);
+  // This panel's identity in the in-flight registry, stable for its life.
+  const owner = useId();
+  // Set while the write this review would send is unresolved in another panel ('elsewhere'), or after this page refused a
+  // write for lack of room in the registry ('busy'). Either disables the write control until the next read clears it.
+  const [held, setHeld] = useState<'elsewhere' | 'busy' | null>(null);
 
   // Applies one event to the latest state and runs the effects it returns. Effects are data, so only a click can reach
   // the two POST calls below.
@@ -123,35 +162,102 @@ export function GoalCompletion({
       if (effect.type === 'reload') {
         setReloadTick((tick) => tick + 1);
       } else if (effect.type === 'record') {
-        goalsApi
-          .recordCompletionDecision(goalId, {
+        const handle = beginInflight(
+          {
+            goalId,
+            handoffId: null,
             attestationId,
-            preflightDigest: effect.preflightDigest,
-            acknowledgeContentNotProven: true,
-          })
-          .then(
-            (recorded) => run(apply({ type: 'record_succeeded', actionDigest: recorded.actionDigest })),
-            (error: unknown) =>
+            kind: 'record',
+            identity: effect.preflightDigest,
+            detail: null,
+          },
+          owner,
+        );
+        if (handle === 'busy') {
+          // Not sent. The reducer keeps the reviewed digest and the acknowledgement, and the control stays disabled.
+          setHeld('busy');
+          run(apply({ type: 'record_failed', refusal: { ...INFLIGHT_BUSY_REFUSAL }, unknown: false }));
+          continue;
+        }
+        try {
+          goalsApi
+            .recordCompletionDecision(goalId, {
+              attestationId,
+              preflightDigest: effect.preflightDigest,
+              acknowledgeContentNotProven: true,
+            })
+            .then(
+              (recorded) => {
+                settleInflight(handle);
+                run(apply({ type: 'record_succeeded', actionDigest: recorded.actionDigest }));
+              },
+              (error: unknown) => {
+                settleInflight(handle);
+                run(
+                  apply({
+                    type: 'record_failed',
+                    refusal: completionRefusal(error),
+                    unknown: isUnknownOutcome(error),
+                  }),
+                );
+              },
+            );
+        } catch (error: unknown) {
+          // The call threw before it returned a promise, so neither handler above was attached. This is the only settle.
+          settleInflight(handle);
+          run(
+            apply({
+              type: 'record_failed',
+              refusal: completionRefusal(error),
+              unknown: isUnknownOutcome(error),
+            }),
+          );
+        }
+      } else {
+        const handle = beginInflight(
+          {
+            goalId,
+            handoffId: null,
+            attestationId,
+            kind: 'complete',
+            identity: effect.actionDigest,
+            detail: null,
+          },
+          owner,
+        );
+        if (handle === 'busy') {
+          setHeld('busy');
+          run(apply({ type: 'complete_failed', refusal: { ...INFLIGHT_BUSY_REFUSAL }, unknown: false }));
+          continue;
+        }
+        try {
+          goalsApi.completeGoal(goalId, effect.actionDigest, true).then(
+            () => {
+              settleInflight(handle);
+              run(apply({ type: 'complete_succeeded' }));
+            },
+            (error: unknown) => {
+              settleInflight(handle);
               run(
                 apply({
-                  type: 'record_failed',
+                  type: 'complete_failed',
                   refusal: completionRefusal(error),
                   unknown: isUnknownOutcome(error),
                 }),
-              ),
+              );
+            },
           );
-      } else {
-        goalsApi.completeGoal(goalId, effect.actionDigest, true).then(
-          () => run(apply({ type: 'complete_succeeded' })),
-          (error: unknown) =>
-            run(
-              apply({
-                type: 'complete_failed',
-                refusal: completionRefusal(error),
-                unknown: isUnknownOutcome(error),
-              }),
-            ),
-        );
+        } catch (error: unknown) {
+          // The call threw before it returned a promise, so neither handler above was attached. This is the only settle.
+          settleInflight(handle);
+          run(
+            apply({
+              type: 'complete_failed',
+              refusal: completionRefusal(error),
+              unknown: isUnknownOutcome(error),
+            }),
+          );
+        }
       }
     }
   };
@@ -165,6 +271,7 @@ export function GoalCompletion({
       (next) => {
         if (!live) return;
         setView(next);
+        setHeld(heldElsewhere(goalId, attestationId, owner, next) ? 'elsewhere' : null);
         dispatch({
           type: 'loaded',
           settled: isSettledState(next.status),
@@ -185,7 +292,14 @@ export function GoalCompletion({
     return () => {
       live = false;
     };
-  }, [goalId, attestationId, refresh, reloadTick]);
+  }, [goalId, attestationId, refresh, reloadTick, owner]);
+
+  // A write for this review that another panel began settles: read the saved state again. This panel's own writes are
+  // not in this list, because its reducer already holds their result.
+  useEffect(
+    () => subscribeInflight(goalId, attestationId, owner, () => setReloadTick((tick) => tick + 1)),
+    [goalId, attestationId, owner],
+  );
 
   // A refusal from a click moves focus to the alert. A refusal from a read does not steal focus.
   useEffect(() => {
@@ -256,6 +370,7 @@ export function GoalCompletion({
         {state.notice !== null && <p>{state.notice}</p>}
         {phase === 'recording' && <p>{COMPLETION_COPY.recording}</p>}
         {phase === 'completing' && <p>{COMPLETION_COPY.completing}</p>}
+        {held === 'elsewhere' && <p>{COMPLETION_COPY.inFlightElsewhere}</p>}
       </div>
       {phase === 'preflight_refused' && (
         <button type="button" className="secondary-button" disabled={reading} onClick={reload}>
@@ -265,7 +380,7 @@ export function GoalCompletion({
       {(phase === 'preflight_ready' || phase === 'recording') && (
         <RecordControl
           acknowledged={state.acknowledgeRecord}
-          disabled={reading || busy}
+          disabled={reading || busy || held !== null}
           pending={phase === 'recording'}
           onAcknowledge={(checked) => dispatch({ type: 'acknowledge_record', checked })}
           onRecord={() => dispatch({ type: 'record_requested' })}
@@ -275,7 +390,7 @@ export function GoalCompletion({
         <CompleteControl
           inputRef={completeRef}
           acknowledged={state.acknowledgeComplete}
-          disabled={reading || busy}
+          disabled={reading || busy || held !== null}
           pending={phase === 'completing'}
           onAcknowledge={(checked) => dispatch({ type: 'acknowledge_complete', checked })}
           onComplete={() => dispatch({ type: 'complete_requested' })}

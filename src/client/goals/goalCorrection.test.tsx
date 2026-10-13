@@ -30,6 +30,7 @@ import {
   serve,
   type Routes,
 } from './testKit';
+import { clearInflightWritesForTests } from './inflightWrites';
 
 const GOAL = 'goal-1';
 const HANDOFF = 'handoff-v2';
@@ -115,6 +116,7 @@ const bodyOf = (index: number) => posts()[index]?.body as Record<string, unknown
 
 afterEach(() => {
   cleanup();
+  clearInflightWritesForTests();
   vi.unstubAllGlobals();
 });
 
