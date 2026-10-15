@@ -1040,7 +1040,10 @@ Each change is recorded with its reason. None of them removes a check without a 
   3. Direct loopback with a client-supplied `Tailscale-User-Login` header: each route returns 401. A forged header fails closed.
   4. Direct loopback with `Host: localhost` and no identity header: each route passes the desktop check and fails identifier validation (400). This is the accepted O1 residual: a same-user local process is treated as desktop.
 - Not verified: the `desktop_required` 403 for a paired remote device session. The probes stop at the device-session check first. Verifying it needs a paired device session, which this session cannot create. Host rewriting was not observed directly. The remote classification through Serve is consistent with it.
-- Status: partially performed. Still a blocking pre-V1 item until the paired-device check is run.
+- Paired-device update (2026-10-15, same day): the owner paired a phone through the existing pairing flow. The database records one active device session, not revoked. Through Serve, the paired phone's `/api/dashboard` polls return 200, so the paired remote path is accepted.
+- The live `desktop_required` 403 for a paired remote session was not run. The phone UI shows notes for the five desktop-only actions and sends none of those POSTs. A live probe would have needed a second paired device created on the live server, or a phone-side request. The user chose on 2026-10-15 to rely on the automated test instead: `src/server/goals/goalDesktopOnly.test.ts` case (b) pairs a remote device through the real pairing flow, sends its cookie, and expects 403 `desktop_required` with nothing written.
+- This choice narrows the owner's condition that live verification is not waived. The record shows the narrowing; it does not treat the check as passed live.
+- Status: live identity injection, remote classification, and forged-header handling verified. Live paired session accepted. Live `desktop_required` not run; covered by automated test on the user's decision. Owner items below still apply.
 
 ### Residuals and non-blocking findings
 
@@ -1055,7 +1058,7 @@ Each change is recorded with its reason. None of them removes a check without a 
 
 ### Owner items that block V1
 
-1. Live Tailscale Serve verification, the paired-device check (`desktop_required` for a paired remote session). Blocking pre-V1. Not waived.
+1. Live `desktop_required` check for a paired remote session. Not run live; the user chose on 2026-10-15 to rely on `goalDesktopOnly.test.ts` case (b). Confirm that choice is the owner's decision.
 2. X1 text for the GH.6e documentation.
 3. Owner acceptance of HR-Q4, a mandatory blocker. Fixed in code, not accepted.
 4. Product question: should a content-discarding `merge -s ours` count as a completion?
