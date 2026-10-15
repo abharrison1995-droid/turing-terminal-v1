@@ -49,12 +49,12 @@ describe('UI.1a page extraction', () => {
   it('App.tsx no longer defines the page components or shared page parts', () => {
     const app = read(join(clientDir, 'App.tsx'));
     const moved =
-      'DevicePairingPage|CommandCenter|WorkflowsPage|ProjectsPage|RunsPage|RunDetail|UsagePage|MachinesPage|SettingsPage|RulesSettings|PairingSettings|StudioSection|WorkflowStageEditor|PageHeading|EmptyState|Loading';
+      'DevicePairingPage|CommandCenter|WorkflowsPage|ProjectsPage|RunsPage|RunDetail|UsagePage|MachinesPage|SettingsPage|RulesSettings|PairingSettings|StudioSection|WorkflowStageEditor|PageHeading|EmptyState|Loading|Meta|StatusIcon|RuleListDetails|RunListRow|RunGroup|ProviderHealth';
     expect(app).not.toMatch(new RegExp(`^(export )?function (${moved})\\b`, 'm'));
   });
 
   it('App.tsx is the shell only', () => {
-    expect(read(join(clientDir, 'App.tsx')).split('\n').length).toBeLessThan(900);
+    expect(read(join(clientDir, 'App.tsx')).split('\n').length).toBeLessThan(650);
   });
 
   it('App.tsx imports every page from ./pages/', () => {
