@@ -10,7 +10,7 @@ by application code. The CSS palette in the page is documentation-only, not toke
 import html, shutil, sys
 from pathlib import Path
 
-sup, out = Path(sys.argv[1]), Path(sys.argv[2])
+sup, out = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
 if (out / '.git').exists() or any(p.name == '.git' for p in out.parents):
     sys.exit('refusing: output must be outside any git worktree')
 (out / 'fonts').mkdir(parents=True, exist_ok=True)
@@ -52,13 +52,13 @@ def surface_block(cls, title):
     <figure><div class="cell m">{idle}</div><figcaption>32 px (mobile, non-integer — see note)</figcaption></figure>
   </div>
   <div class="row">
-    <div class="status"><span class="cell s2">{thinking}</span><span>Thinking · Planner running</span></div>
-    <div class="status"><span class="cell s2">{loading}</span><span>Loading providers…</span></div>
-    <div class="status"><span class="cell s2">{transition}</span><span>Phase changed: Implementer started</span></div>
+    <div class="status"><span class="cell s2">{thinking}</span><span>Thinking · Planner running <i>(sample text)</i></span></div>
+    <div class="status"><span class="cell s2">{loading}</span><span>Loading providers… <i>(sample text)</i></span></div>
+    <div class="status"><span class="cell s2">{transition}</span><span>Phase changed: Implementer started <i>(sample text)</i></span></div>
   </div>
   <div class="row">
-    <div class="player" data-speed="70"><div class="cell s4 stage">{wipe[0]}</div><div><b>Wipe, normal (70 ms/frame)</b><br><button type="button" class="play">Play</button></div></div>
-    <div class="player" data-speed="350"><div class="cell s4 stage">{wipe[0]}</div><div><b>Wipe, slow (350 ms/frame)</b><br><button type="button" class="play">Play</button></div></div>
+    <div class="player" data-speed="70"><div class="cell s4 stage">{wipe[0]}</div><div><b>Wipe, normal (70 ms/frame)</b><br><button type="button" class="play" aria-label="Play wipe at normal speed">Play</button></div></div>
+    <div class="player" data-speed="350"><div class="cell s4 stage">{wipe[0]}</div><div><b>Wipe, slow (350 ms/frame)</b><br><button type="button" class="play" aria-label="Play wipe at slow speed">Play</button></div></div>
   </div>
 </section>'''
 
@@ -92,7 +92,7 @@ button:focus-visible{{outline:2px solid var(--doc-crimson);outline-offset:2px}}
 .mob{{max-width:390px}}.mob .title{{font-size:26px}}
 </style></head><body><main>
 <h1 class="display wordmark">Turing Terminal</h1>
-<p class="note">D-3 / D-4 visual approval preview. <b>Candidates only.</b> Isolated from application code; the palette on this page is documentation styling, not production tokens. Fonts are the unchanged upstream TTFs (no conversion, no subsetting). Sizes below are proposals, not specified sizes.</p>
+<p class="note">D-3 / D-4 visual approval preview. <b>Candidates only.</b> Isolated from application code; the palette on this page is documentation styling, not production tokens. Fonts are the unchanged upstream TTFs (no conversion, no subsetting). Sizes below are proposals, not specified sizes. Playback starts only when you press Play; the production mascot must show a static frame under reduced motion. Status strings are sample text, not product data.</p>
 
 <h2>1 · UnifrakturCook on static branding and fixed titles</h2>
 <div class="surface canvas">
