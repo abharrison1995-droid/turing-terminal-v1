@@ -950,3 +950,116 @@ No independent review verdict is cited in this amendment for GH.1, GH.2, GH.3a o
 - GH.6: follow-ups (a) to (h) above, the D3-2 consumer audit, and the cross-attestation stuck-Goal owner question (the item marked "still an open owner decision" in the D.4E record). The stuck-Goal question is not resolved by this amendment.
 - Physical Windows, physical iPhone and live provider gates remain pending.
 - V1 is not release-ready.
+
+## 2026-10-15 amendment: GH.5, GH.6 and HR-Q4 record
+
+Dated 2026-10-15. Branch `feature/grand-project-goal-engine`, HEAD `392064d` when written. This amendment is additive. It does not declare V1 release-ready, does not pass live Tailscale verification, does not resolve the X1 text, and does not decide the owner questions listed at the end.
+
+### Status
+
+| Item                                                   | Commits                                    | Hosted CI (exact SHA)                                                       | Status                                                          |
+| ------------------------------------------------------ | ------------------------------------------ | --------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| HR-Q4 queued-run restart (mandatory blocker)           | `2ba3a22`, `3e77b60`, `c775a6b`            | run 38477357295 on `c775a6b`, success, 26 min 20 s                          | Fixed in code. Still a mandatory blocker until owner acceptance |
+| GH.5b real-supervisor lifecycle qualification          | `b3e7a35`, `e2190e9`                       | run 38461824692 on `e2190e9` (tip covering `b3e7a35`), success, 26 min 45 s | Accepted, with the changed-assertion record below               |
+| GH.5c completion classifier isolation                  | `63c82bb`                                  | same tip as above                                                           | Accepted, with residuals below                                  |
+| GH.6a D3-2 consumer audit and Boolean guard            | `245049d`, `e2190e9`                       | same tip as above                                                           | Accepted                                                        |
+| GH.6b phone standing label and handoff copy            | `0028c5e`, `e7b9125`                       | same tip as above                                                           | Accepted, with the changed-assertion record below               |
+| GH.6c in-flight registry follow-ups                    | `674038f`, `a539292`, `2769fd1`, `0be7fa7` | run 38469115407 on `0be7fa7`, success, 25 min 57 s                          | Accepted after focused re-review (APPROVE)                      |
+| GH.6d U6 orphan-resume measurement                     | none                                       | n/a                                                                         | Not reproduced on a quiet machine. Residual recorded            |
+| GH.6e documentation                                    | this amendment                             | pending on the commit that carries it                                       | In progress. X1 text still needed from the owner                |
+| GH.6f final independent review over `1cbe58a..c775a6b` | none                                       | n/a                                                                         | APPROVE. No blocking findings. Non-blocking items below         |
+
+Intermediate commits between `5deed09` and `e2190e9` have no hosted run on their own SHA. Each is covered by the next pushed tip's run. Test-count progression in this amendment: 165 files and 3,307 tests (GH.4 gate); 167 files and 3,365 tests (gate on `c775a6b`, including the HR-Q4 fix and the wiring assertion).
+
+### HR-Q4: queued ordinary runs after a restart
+
+- Defect: a run persisted as `queued` before the engine started it was never started after a restart.
+- Fix: `recoverQueuedRunsAfterRestart` in `src/server/runLauncher.ts`, wired in `src/server/index.ts` immediately after `engine.reconcileInterruptedRuns()`. It claims each run by a compare-and-set `queued` to `preparing` update, committed with its `run_recovered_after_restart` event, before `engine.start`. Goal-owned runs (`goal_cycle_id`, authoring runs included) and route-probe runs are excluded, because their owners start them.
+- Why it moved: the first version kept the selection in `RunEngine`. That failed the static guard in `goalStage4a.test.ts`, which forbids Goal identifiers in `runEngine.ts`. The guard was not changed. The selection now sits with the launcher, which already owns queued-run start policy.
+- Reviews: focused re-review APPROVE on the authoring follow-up (`3e77b60`); independent review APPROVE on the move (`c775a6b`). The move review's non-blocking suggestion, a static wiring assertion for `index.ts`, was added to `supervisor.test.ts`.
+- Residual: if `engine.start` ever threw synchronously, startup would stop with the remaining claimed runs in `preparing`. The current `start` does not throw synchronously, so this is recorded and not fixed.
+
+### GH.5 real-supervisor lifecycle qualification and classifier isolation
+
+- GH.5b (`b3e7a35`): real-supervisor lifecycle qualification for withdraw, supersede, a second Goal, and `merge -s ours`. A review-stage provider-call assertion that could never match (no `final-reviewer` role exists) was changed to `REVIEW_STAGE_ROLES`. An independent mutation check confirmed the new assertion is not vacuous. The Q1 title was corrected to the observed reason `same_model` (`e2190e9`).
+- GH.5c (`63c82bb`): a runtime spy on `node:child_process` and `goalGit.js` (pass-through, with `promisify.custom`), and a TypeScript-parser closure walk over 46 modules with a write-capable ratchet of 16 members, in `completionAuthorityPolicy.test.ts`. The static closure still reaches `finalApply.ts` through a dynamic import in `goalGit.ts`. This residual is recorded, not fixed. The write-scan is a heuristic.
+
+### GH.6a D3-2 consumer audit and standing Booleans
+
+- `src/server/goals/completionStanding.ts`: `trusted` and `unqualifiedSuccessAllowed` are both true only for a version-2 completion with uncontested standing. `contentPreservation` is `'not_proven'` for version 2 and `'not_applicable'` otherwise. `completionStandingIsContentVerified` is the constant `false`. The completion-standing Boolean guard test asserts these values.
+- Consumer audit: `docs/GOAL_D32_CONSUMER_AUDIT.md`, corrected in `e2190e9`. Each consumer of the standing is listed. Migration 027 holds `contentPreservation`.
+- Final review found no path that reports content as proven, and no client copy claiming content was preserved.
+
+### GH.6b phone standing and handoff copy
+
+- `0028c5e`: the phone cockpit header shows the saved standing label for completed Goals. This closes GH.4 follow-up (d).
+- `e7b9125`: the handoff preparation refusal prints only the error message, not the raw refusal code. This closes GH.4 follow-up (e).
+
+### GH.6c in-flight registry follow-ups
+
+- Known-window test (`2769fd1`, `0be7fa7`): counts status GETs, one before and one after the write settles. It fails under a notify-all mutation (line 385 of `goalWriteRemount.test.tsx`). A first review requested changes because the test was not tied to the mechanism. That was fixed in `48ac4c4`, and the focused re-review returned APPROVE.
+- Synchronous throws: all four launch points (`requestCorrection`, `decideCorrection`, `recordCompletionDecision`, `completeGoal`) have tests that settle the entry, send nothing, and show the saved-history copy.
+- `clearInflightWritesForTests` (`674038f`): throws outside Vitest test mode. It is still exported from a production module, so this follow-up is mitigated, not closed.
+
+### GH.6d U6 measurement
+
+- Five isolated runs of the `goalHandoff.test.tsx` orphan-resume test all passed, at 163 to 186 ms each, on a quiet machine.
+- The earlier flake (about 5.1 s under six-file batch load, failing 2 of 5) was not reproduced. It is recorded as a residual. It is not a known cause, and the test is not weakened.
+
+### Changed assertions (GH.5 and GH.6)
+
+Each change is recorded with its reason. None of them removes a check without a replacement.
+
+1. `src/client/goals/mobileStanding.test.tsx` M-P3 (about lines 117 to 128) and M-R10 (about lines 325 to 337): `toHaveTextContent('Completed')` became a per-case standing label. Reason: the header now shows the saved standing (`0028c5e`). The change is stricter. M-R6 gained a null case, and H1 to H3 were added.
+2. `src/server/goals/goalLifecycleQualification.test.ts` Q1 same-family case: the provider-call check changed from the vacuous `final-reviewer` role to `REVIEW_STAGE_ROLES`. The title was corrected to the observed reason `same_model`. Reason: the old check could never match. Coverage effect: the lifecycle-level `same_family` branch is no longer exercised separately. The branch is covered by unit tests in `src/server/goals/independence.test.ts` (reasons at about lines 95 and 171).
+3. `src/server/goals/goalLifecycleQualification.test.ts` destination-head check (moved to `goalLifecycleKit.ts`): keyed by integration strategy (`DEFAULT_INTEGRATION`: `sha1` to fast-forward, `sha256` to two-parent merge, as before), instead of by object format. A `merge -s ours` case was added. Equivalent for the default mapping.
+4. `src/client/goals/goalHandoff.test.tsx` B1 (new) and the refusal copy change (`e7b9125`): the refusal prints the error message only.
+5. `src/client/goals/goalWriteRemount.test.tsx` known-window test (`2769fd1`, `0be7fa7`): changed to count status GETs and observe the notify scope, as described above.
+6. `src/server/goals/completionAuthorityPolicy.test.ts` (`63c82bb`): the runtime spy and the closure ratchet were added. Nothing was removed.
+
+### GH.4 follow-ups: status
+
+| Follow-up | Status                                                                                                                                       |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| (a)       | Open and pinned. A read that started before another panel's write settled can briefly show a reusable control. The server decides the write. |
+| (b)       | Open. The registry lives in page memory only, so a reload or another window bypasses it.                                                     |
+| (c)       | Closed. Synchronous-throw tests exist for all four launch points (GH.6c).                                                                    |
+| (d)       | Closed (`0028c5e`).                                                                                                                          |
+| (e)       | Closed (`e7b9125`).                                                                                                                          |
+| (f)       | Mitigated (`674038f`). Throws outside test mode, still exported from a production module.                                                    |
+| (g)       | Residual. Not reproduced on a quiet machine (GH.6d).                                                                                         |
+| (h)       | Fixed in code (`c775a6b`). Mandatory blocker until owner acceptance.                                                                         |
+
+### Live Tailscale Serve verification (2026-10-15): partial
+
+- Tailscale is installed and logged in on the verification machine, and Serve proxies HTTPS to the desktop Master on `127.0.0.1:4317`. The tailnet hostname is not recorded in this repository.
+- The running Master was started from a worktree at `1cbe58a`. `src/server/app.ts` and `src/server/goals/goalRoutes.ts` are unchanged between `1cbe58a` and `HEAD`, so the probed boundary code is the same as `HEAD`.
+- Results, with no state change in any case:
+  1. Serve injects the identity header. A non-health request through Serve is refused with "Pair this device with the desktop before using it." (401). A direct loopback request reports `identityHeaderPresent: false`.
+  2. The five desktop-only POST routes, called through Serve with nonexistent identifiers, each return 401. The remote caller is refused before the desktop check.
+  3. Direct loopback with a client-supplied `Tailscale-User-Login` header: each route returns 401. A forged header fails closed.
+  4. Direct loopback with `Host: localhost` and no identity header: each route passes the desktop check and fails identifier validation (400). This is the accepted O1 residual: a same-user local process is treated as desktop.
+- Not verified: the `desktop_required` 403 for a paired remote device session. The probes stop at the device-session check first. Verifying it needs a paired device session, which this session cannot create. Host rewriting was not observed directly. The remote classification through Serve is consistent with it.
+- Status: partially performed. Still a blocking pre-V1 item until the paired-device check is run.
+
+### Residuals and non-blocking findings
+
+- Final review, non-blocking: the `same_family` lifecycle coverage loss (see changed assertion 2). Add a dedicated lifecycle case if it is wanted.
+- Final review, non-blocking: recovery calls `engine.start` directly, not `startQueuedRun`, so it skips the `isActive` check. It runs once at startup, so the risk is low.
+- Final review, non-blocking: the reviewer did not verify every relocated expectation line by line. This session checked each removed `expect` line against the current files. Three did not match by text: the intentional Q1 change, a `confirmationA`/`confirmationB` status pair that is now covered by a kit helper, and the `destinationHead` check (changed assertion 3).
+- Classifier static closure reaches `finalApply.ts` via a dynamic import in `goalGit.ts`. The write-scan is a heuristic.
+- Duplicate-submit read-before-settle window and the reload or second-window bypass remain (GH.4 follow-ups a and b).
+- API cancel gap for queued runs, and the content-discarding `merge -s ours` completion question, remain open.
+- Typecheck does not cover server test files (pre-existing).
+- Physical Windows, physical iPhone and live provider gates remain pending.
+
+### Owner items that block V1
+
+1. Live Tailscale Serve verification, the paired-device check (`desktop_required` for a paired remote session). Blocking pre-V1. Not waived.
+2. X1 text for the GH.6e documentation.
+3. Owner acceptance of HR-Q4, a mandatory blocker. Fixed in code, not accepted.
+4. Product question: should a content-discarding `merge -s ours` count as a completion?
+5. API cancel gap for queued runs.
+6. The cross-attestation stuck-Goal question from the D.4E record.
+
+V1 is not release-ready. PR #3 is not merged. The Model Opportunity Layer has not been started.
