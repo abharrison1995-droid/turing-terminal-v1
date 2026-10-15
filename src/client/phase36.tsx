@@ -1475,9 +1475,9 @@ export function MeteredBudgetSettingsPanel({ onNotice }: { onNotice: (message: s
 /* ───────────────────────── Usage explorer ───────────────────────── */
 
 const SERIES = [
-  { key: 'uncached', label: 'Input (uncached)', color: '#2a78d6' },
-  { key: 'cached', label: 'Cached input', color: '#1baf7a' },
-  { key: 'output', label: 'Output', color: '#eb6834' },
+  { key: 'uncached', label: 'Input (uncached)', color: 'var(--chart-1)' },
+  { key: 'cached', label: 'Cached input', color: 'var(--chart-2)' },
+  { key: 'output', label: 'Output', color: 'var(--chart-3)' },
 ] as const;
 
 export function formatMetric(metric: MetricTotal | undefined, kind: 'tokens' | 'usd' = 'tokens'): string {
@@ -1585,7 +1585,7 @@ function TokenChart({ analytics }: { analytics: UsageAnalytics }) {
                       width={barWidth}
                       height={Math.max(0.5, segment - 2)}
                       rx={2}
-                      fill={series.color}
+                      style={{ fill: series.color }}
                     />
                   );
                 })}

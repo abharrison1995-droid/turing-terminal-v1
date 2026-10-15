@@ -12,8 +12,8 @@ export default defineConfig({
         name: 'Turing Terminal',
         short_name: 'Turing',
         description: 'Control your local AI engineering workflows.',
-        theme_color: '#dce8f4',
-        background_color: '#dce8f4',
+        theme_color: '#08080a',
+        background_color: '#08080a',
         display: 'standalone',
         start_url: '/',
         icons: [{ src: '/turing.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }],
@@ -21,7 +21,7 @@ export default defineConfig({
       workbox: {
         importScripts: ['/push-handler.js'],
         navigateFallback: '/index.html',
-        globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+        globPatterns: ['**/*.{js,css,html,svg,woff2,ttf}'],
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith('/api/'),

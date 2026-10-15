@@ -1,2 +1,4 @@
 # Vendored third-party agent skill files are not project source.
 .claude/
+# Upstream Linux Libertine README: vendored byte-for-byte (UI.1b, SHA-256 pinned by fonts.test.ts).
+src/client/assets/fonts/README

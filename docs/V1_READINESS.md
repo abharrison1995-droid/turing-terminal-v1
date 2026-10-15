@@ -69,7 +69,7 @@ None of these has been performed on real devices. CI smoke tests do not count.
 - Provider allowance and reset are not queried for CLI backends.
 - Cline CLI has no documented model catalog; explicit model/provider values are required.
 - OpenRouter and the Decision Layer are optional and off by default.
-- Light theme only.
+- Dark theme only. This supersedes the earlier light-theme-only note: UI.1b (docs/ui/UI1B_SCOPE.md) replaces the light palette with a dark theme and no theme switch.
 
 ## V1 scope still to implement
 

@@ -319,7 +319,7 @@ input[type='radio'] {
   left: 2px;
   width: 14px;
   height: 14px;
-  background: var(--white);
+  background: var(--on-accent);
   border-radius: 50%;
   content: '';
   transition: transform var(--dur) var(--ease);

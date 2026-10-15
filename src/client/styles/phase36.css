@@ -75,7 +75,7 @@
   margin-top: var(--s-1);
 }
 .breakdown-table .usage-key .bar-track i {
-  background: #2a78d6;
+  background: var(--chart-1);
 }
 .usage-table-row span small {
   display: block;
@@ -128,7 +128,7 @@
 }
 .chart-tick {
   fill: var(--ink-3);
-  font-size: 10px;
+  font-size: var(--fs-micro);
   font-variant-numeric: tabular-nums;
 }
 .chart-tooltip {

@@ -14,7 +14,8 @@
   text-align: center;
 }
 .home-intro h1 {
-  font-size: var(--fs-title);
+  font-family: var(--font-display);
+  font-size: var(--fs-display-title);
   line-height: var(--lh-title);
   letter-spacing: -0.02em;
   text-wrap: balance;
@@ -47,7 +48,7 @@
   transition: background-color var(--dur) var(--ease);
 }
 .glance-item:hover {
-  background: var(--white);
+  background: var(--field-hover);
 }
 .glance-item strong {
   font-variant-numeric: tabular-nums;
@@ -77,7 +78,7 @@
 }
 .composer:focus-within {
   border-color: var(--accent-fill);
-  outline: 3px solid rgb(181 83 47 / 22%);
+  outline: 3px solid var(--focus-halo);
   outline-offset: 0;
 }
 .composer textarea {
@@ -232,7 +233,7 @@ button.agent-chip:hover {
   margin-left: var(--s-1);
   padding: 0 var(--s-1);
   color: inherit;
-  border-color: var(--white-45);
+  border-color: var(--on-accent-line);
 }
 .run-button:disabled kbd {
   border-color: var(--line);

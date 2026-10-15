@@ -32,10 +32,9 @@ const lineText = (text: string, index: number) =>
 
 const cssFiles = walk(clientRoot, (path) => path.endsWith('.css'));
 const sourceFiles = walk(clientRoot, (path) => /\.tsx?$/.test(path) && !/\.test\.tsx?$/.test(path));
-const svgFiles = [
-  join(repoRoot, 'public', 'turing.svg'),
-  ...walk(clientRoot, (path) => path.endsWith('.svg')),
-];
+/** The PWA/app icon is a standalone image: it cannot read page CSS variables, so it is the one allow-listed asset. */
+const standaloneIcon = join(repoRoot, 'public', 'turing.svg');
+const svgFiles = [standaloneIcon, ...walk(clientRoot, (path) => path.endsWith('.svg'))];
 
 /** The CSS named colours (CSS Color 4, 148 keywords). A bare keyword in a declaration value is a literal. */
 const NAMED_COLOURS = [
@@ -247,12 +246,23 @@ describe('colour literals are confined to tokens.css (T5)', () => {
     expect(offenders).toEqual([]);
   });
 
-  it('every SVG under src/client or public, including turing.svg, holds no colour literal', () => {
-    const offenders = svgFiles.flatMap((path) => {
-      const text = read(path);
-      return [...literalsIn(path, text, true), ...namedColourPropsIn(path, text)];
-    });
+  it('every SVG under src/client holds no colour literal', () => {
+    const offenders = svgFiles
+      .filter((path) => path !== standaloneIcon)
+      .flatMap((path) => {
+        const text = read(path);
+        return [...literalsIn(path, text, true), ...namedColourPropsIn(path, text)];
+      });
     expect(offenders).toEqual([]);
+  });
+
+  it('the standalone icon turing.svg uses only hex values that equal declared tokens (full-text scan)', () => {
+    const tokens = read(join(clientRoot, 'styles', 'tokens.css')).toLowerCase();
+    const text = read(standaloneIcon);
+    expect(text).not.toMatch(/<style|rgb\(|hsl\(/i);
+    const hexes = [...text.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0].toLowerCase());
+    expect(hexes.length).toBeGreaterThan(0);
+    for (const hex of hexes) expect(tokens, `${hex} must be a tokens.css value`).toContain(hex);
   });
 
   it('every var(--name) without a fallback resolves to a declaration in a stylesheet or inline style', () => {

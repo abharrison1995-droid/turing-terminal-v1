@@ -629,12 +629,12 @@
   overflow-x: auto;
 }
 .goal-diff-addition {
-  color: #14532d;
-  background: #eaf5ec;
+  color: var(--diff-add-ink);
+  background: var(--diff-add-bg);
 }
 .goal-diff-removal {
-  color: #7f1d1d;
-  background: #f9eaea;
+  color: var(--diff-del-ink);
+  background: var(--diff-del-bg);
 }
 .goal-diff-context {
   color: var(--ink);

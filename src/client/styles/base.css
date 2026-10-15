@@ -15,7 +15,7 @@ html {
 }
 body {
   min-height: 100vh;
-  background: var(--canvas);
+  background: var(--canvas-gradient);
   font-feature-settings:
     'ss01' off,
     'tnum' on;

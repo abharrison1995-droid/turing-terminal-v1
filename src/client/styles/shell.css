@@ -1,7 +1,7 @@
 .app-shell {
   display: flex;
   min-height: 100vh;
-  background: var(--canvas);
+  background: var(--canvas-gradient);
 }
 
 /* ───────────── Navigation rail ───────────── */
@@ -44,7 +44,8 @@
   stroke-width: 2;
 }
 .brand-name {
-  font-size: var(--fs-body);
+  font-family: var(--font-display);
+  font-size: var(--fs-display-brand);
   font-weight: var(--fw-semibold);
   letter-spacing: -0.01em;
 }
@@ -64,7 +65,7 @@
   transition: background-color var(--dur) var(--ease);
 }
 .new-task-button:hover {
-  background: var(--white);
+  background: var(--field-hover);
 }
 .new-task-button svg.lucide {
   color: var(--accent-ink);
@@ -169,7 +170,7 @@
   margin-left: auto;
   padding: 0 6px;
   color: var(--ink);
-  background: var(--white-70);
+  background: var(--badge-bg);
   border-radius: var(--r-pill);
   font-size: var(--fs-micro);
   font-weight: var(--fw-semibold);
@@ -231,7 +232,7 @@
   justify-content: space-between;
   gap: var(--s-3);
   padding: 0 var(--page-pad);
-  background: rgb(220 232 244 / 90%);
+  background: var(--topbar-bg);
   backdrop-filter: blur(10px);
 }
 .topbar-title {
@@ -281,7 +282,8 @@
   margin-bottom: var(--s-6);
 }
 .page-heading h1 {
-  font-size: var(--fs-title);
+  font-family: var(--font-display);
+  font-size: var(--fs-display-title);
   line-height: var(--lh-title);
   letter-spacing: -0.02em;
 }

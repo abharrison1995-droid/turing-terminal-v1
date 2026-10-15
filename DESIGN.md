@@ -101,6 +101,8 @@ components:
     height: '36px'
 ---
 
+> **Superseded by UI.1b.** The app is dark theme only (docs/ui/UI1B_SCOPE.md). The light palette in the front matter and the light-theme contrast notes below are retired. `src/client/styles/tokens.css` is now the source of truth for colour, type and contrast.
+
 # Design System: Turing Terminal
 
 The single source of truth in code is `src/client/styles/tokens.css`. This document describes the intent behind it.

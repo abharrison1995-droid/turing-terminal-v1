@@ -33,7 +33,7 @@ export default defineConfig({
     browserName: 'chromium',
     locale: 'en-GB',
     timezoneId: 'UTC',
-    colorScheme: 'light',
+    colorScheme: 'dark',
     reducedMotion: 'reduce',
     deviceScaleFactor: 1,
     serviceWorkers: 'block',

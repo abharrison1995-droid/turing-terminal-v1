@@ -620,7 +620,7 @@
 }
 .intervention-box:focus-within {
   border-color: var(--accent-fill);
-  outline: 3px solid rgb(181 83 47 / 22%);
+  outline: 3px solid var(--focus-halo);
 }
 .intervention-box .form-field {
   flex: 1;
