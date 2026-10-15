@@ -381,3 +381,7 @@ Corrections to earlier text (dated 2026-10-13; the earlier text is not rewritten
 - **Known blockers for 1.0.0:** this list does not yet name HR-Q4 or live Tailscale verification. The table above is the current record for both.
 - **D.4F status, "Phone enforcement" item (line 348):** S1b is no longer "owner pending". O1 is approved for V1, conditionally. Live Tailscale remains pending and is blocking.
 - **D.4F status, known limits:** G14 is partly addressed (see table). CS-1 is addressed for the Goal list and desktop Overview. The phone cockpit header still shows bare "Completed" for contested Goals. U1 is addressed: `GoalExternalIntegration` no longer prints a raw reason code. P5e is partly addressed.
+
+## 2026-10-15: UI overhaul, limited baseline acceptance
+
+The owner accepted `67af34f2f633aa2c8570a74990c6097f6aafbf4d` as the baseline for UI development **only**. HR-Q4 remains a mandatory V1 blocker (fixed in code, not owner-accepted). Live Tailscale verification, physical Windows/iPhone and live-provider gates, and every outstanding owner decision remain open and are not waived. V1 is NOT release-ready. The UI overhaul is an owner-approved exception to the post-Goal-Engine feature freeze and does not start the Model Opportunity Layer. The overhaul makes the product dark-only, which supersedes the "Light theme only" limitation when UI.1b lands; that line is not changed before then. Evidence, scope and wording: [docs/ui/UI_BASELINE_ACCEPTANCE.md](ui/UI_BASELINE_ACCEPTANCE.md).
