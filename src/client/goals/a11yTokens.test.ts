@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 
 /*
  * Static checks on the stylesheets and the completion and correction sources. They read files and compute colour
- * contrast from the light-theme tokens. They prove that rules are declared; they do not prove how a browser renders them.
+ * contrast from the dark tokens in tokens.css (UI.1b, docs/ui/UI1B_SCOPE.md sections 2 and 5). They prove that rules
+ * are declared; they do not prove how a browser renders them.
+ *
+ * Background rule: T1 checks each opaque surface token. T2 and T3 check every opaque surface and its hover and pressed
+ * composites (the declared overlay tokens, alpha-composited onto the surface). The only exemption is the accepted
+ * accent caveat on pressed selected rows (scope section 2). The disabled-text exemption is not tested.
  */
 
 const styles = (file: string) => readFileSync(new URL(`../styles/${file}`, import.meta.url), 'utf8');
@@ -46,24 +51,120 @@ const tokensCss = styles('tokens.css');
 const goalsCss = styles('goals.css');
 const baseCss = styles('base.css');
 
-function token(name: string): string {
-  const match = new RegExp(`--${name}:\\s*(#[0-9a-fA-F]{6})\\s*;`).exec(tokensCss);
-  if (!match) throw new Error(`token --${name} is not a six-digit hex colour`);
-  return match[1]!;
+/** The declared value of a token in tokens.css. Throws when the token is not declared, so a missing token fails. */
+function tokenValue(name: string): string {
+  const declaration = new RegExp(`(?:^|[\\s;{])--${name}:\\s*([^;]+);`).exec(stripComments(tokensCss));
+  if (!declaration) throw new Error(`token --${name} is not declared in tokens.css`);
+  return declaration[1]!.trim();
 }
 
-/** WCAG 2.x relative luminance of a six-digit hex colour. */
-function luminance(hex: string): number {
-  const [red, green, blue] = [1, 3, 5].map((index) => {
-    const channel = Number.parseInt(hex.slice(index, index + 2), 16) / 255;
-    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+interface Colour {
+  red: number;
+  green: number;
+  blue: number;
+  alpha: number;
+}
+
+/** Parses #rrggbb, rgb(r g b) and rgb(r g b / a%) (or the comma forms). Anything else throws. */
+function parseColour(value: string): Colour {
+  const text = value.trim();
+  const hex = /^#([0-9a-fA-F]{6})$/.exec(text);
+  if (hex) {
+    const digits = hex[1]!;
+    return {
+      red: Number.parseInt(digits.slice(0, 2), 16),
+      green: Number.parseInt(digits.slice(2, 4), 16),
+      blue: Number.parseInt(digits.slice(4, 6), 16),
+      alpha: 1,
+    };
+  }
+  const functional =
+    /^rgba?\(\s*(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)[\s,]+(\d+(?:\.\d+)?)\s*(?:[/,]\s*(\d+(?:\.\d+)?)(%?)\s*)?\)$/.exec(
+      text,
+    );
+  if (functional) {
+    const alpha = functional[4] === undefined ? 1 : Number(functional[4]) / (functional[5] === '%' ? 100 : 1);
+    return { red: Number(functional[1]), green: Number(functional[2]), blue: Number(functional[3]), alpha };
+  }
+  throw new Error(`unsupported colour value "${value}": use #rrggbb or rgb(r g b / a%)`);
+}
+
+function colourToken(name: string): Colour {
+  return parseColour(tokenValue(name));
+}
+
+/** `top` alpha-composited over an opaque `below`. */
+function composite(top: Colour, below: Colour): Colour {
+  const a = top.alpha;
+  return {
+    red: a * top.red + (1 - a) * below.red,
+    green: a * top.green + (1 - a) * below.green,
+    blue: a * top.blue + (1 - a) * below.blue,
+    alpha: 1,
+  };
+}
+
+/** WCAG 2.x relative luminance. */
+function luminance(colour: Colour): number {
+  const [red, green, blue] = [colour.red, colour.green, colour.blue].map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!;
 }
 
-function contrast(foreground: string, background: string): number {
+/** WCAG 2.x contrast ratio. The foreground must be opaque. */
+function contrast(foreground: Colour, background: Colour): number {
+  if (foreground.alpha < 1) throw new Error('a foreground colour must be opaque');
   const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
   return (lighter! + 0.05) / (darker! + 0.05);
+}
+
+/** Hue in degrees (0 to 360) of an opaque colour. */
+function hueOf(colour: Colour): number {
+  const [r, g, b] = [colour.red, colour.green, colour.blue].map((channel) => channel / 255);
+  const max = Math.max(r!, g!, b!);
+  const min = Math.min(r!, g!, b!);
+  const delta = max - min;
+  if (delta === 0) return 0;
+  let hue: number;
+  if (max === r) hue = 60 * (((g! - b!) / delta) % 6);
+  else if (max === g) hue = 60 * ((b! - r!) / delta + 2);
+  else hue = 60 * ((r! - g!) / delta + 4);
+  return (hue + 360) % 360;
+}
+
+const SURFACES = [
+  'canvas-top',
+  'canvas-bottom',
+  'canvas',
+  'nav',
+  'surface',
+  'surface-2',
+  'surface-3',
+  'selected',
+];
+
+/** Every opaque surface, then its hover and pressed composites, each labelled for failure messages. */
+function backgroundsWithOverlays(): Array<{ label: string; colour: Colour }> {
+  const hover = colourToken('hover');
+  const pressed = colourToken('pressed');
+  return SURFACES.flatMap((surface) => {
+    const base = colourToken(surface);
+    return [
+      { label: surface, colour: base },
+      { label: `${surface}+hover`, colour: composite(hover, base) },
+      { label: `${surface}+pressed`, colour: composite(pressed, base) },
+    ];
+  });
+}
+
+/** Labels of the backgrounds on which `foreground` falls below `minimum`, ignoring any labels in `exempt`. */
+function shortfalls(foreground: Colour, minimum: number, exempt: readonly string[] = []): string[] {
+  return backgroundsWithOverlays()
+    .filter(({ label }) => !exempt.includes(label))
+    .filter(({ colour }) => contrast(foreground, colour) < minimum)
+    .map(({ label, colour }) => `${label} ${contrast(foreground, colour).toFixed(2)}`);
 }
 
 /** The colour declared by the first rule that selects `selector` and declares a colour. */
@@ -75,27 +176,120 @@ function colourOf(selector: string): string {
   return /(?:^|[^-])color\s*:\s*([^;]+);/.exec(rule.body)![1]!.trim();
 }
 
-describe('colour contrast of the light-theme tokens (S1)', () => {
-  it.each([
-    ['ink-3', 'surface', 4.5],
-    ['ink-2', 'surface', 4.5],
-    ['amber', 'surface', 4.5],
-    ['red', 'surface', 4.5],
-    ['amber', 'amber-wash', 4.5],
-    ['ink-3', 'amber-wash', 4.5],
-    ['red', 'red-wash', 4.5],
-    ['on-accent', 'accent-fill', 4.5],
-    ['focus-ring', 'surface', 3],
-    ['focus-ring', 'amber-wash', 3],
-  ] as const)('--%s on --%s meets %s:1', (foreground, background, minimum) => {
-    expect(contrast(token(foreground), token(background))).toBeGreaterThanOrEqual(minimum);
+describe('dark premise (T1)', () => {
+  it('declares one color-scheme, and it is dark', () => {
+    const declared = readdirSync(new URL('../styles/', import.meta.url))
+      .filter((file) => file.endsWith('.css'))
+      .flatMap((file) => [...stripComments(styles(file)).matchAll(/color-scheme\s*:\s*([^;]+);/g)])
+      .map((match) => match[1]!.trim());
+    expect(declared).toEqual(['dark']);
   });
 
-  it('the tokens are light-theme only: no dark, forced-colors or theme-attribute rule exists in any stylesheet', () => {
+  it('every opaque surface token has relative luminance below 0.05', () => {
+    const bright = SURFACES.filter((surface) => luminance(colourToken(surface)) >= 0.05);
+    expect(bright).toEqual([]);
+  });
+
+  it('no prefers-color-scheme, forced-colors or data-theme rule exists in any stylesheet', () => {
     const files = readdirSync(new URL('../styles/', import.meta.url)).filter((file) => file.endsWith('.css'));
     for (const file of files) {
       expect(stripComments(styles(file))).not.toMatch(/prefers-color-scheme|forced-colors|data-theme/);
     }
+  });
+});
+
+describe('text contrast on the dark surfaces, hover and pressed composites included (T2)', () => {
+  it.each(['ink', 'ink-2', 'ink-3', 'accent-ink', 'green', 'amber', 'red', 'info'])(
+    '--%s meets 4.5:1 on every surface and hover/pressed composite',
+    (name) => {
+      expect(shortfalls(colourToken(name), 4.5)).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['green', 'green-wash'],
+    ['amber', 'amber-wash'],
+    ['red', 'red-wash'],
+    ['info', 'info-wash'],
+    ['accent-ink', 'accent-wash'],
+  ])('status text --%s meets 4.5:1 on its own wash --%s', (foreground, background) => {
+    expect(contrast(colourToken(foreground), colourToken(background))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it.each(['accent-fill', 'accent-fill-hover', 'accent-fill-pressed'])(
+    '--on-accent meets 4.5:1 on --%s',
+    (background) => {
+      expect(contrast(colourToken('on-accent'), colourToken(background))).toBeGreaterThanOrEqual(4.5);
+    },
+  );
+
+  it.each([
+    ['diff-add-ink', 'diff-add-bg'],
+    ['diff-del-ink', 'diff-del-bg'],
+  ])('--%s meets 4.5:1 on --%s', (foreground, background) => {
+    expect(contrast(colourToken(foreground), colourToken(background))).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe('non-text contrast (T3)', () => {
+  it.each(['focus-ring', 'control-line', 'chart-1', 'chart-2', 'chart-3'])(
+    '--%s meets 3:1 on every surface and hover/pressed composite',
+    (name) => {
+      expect(shortfalls(colourToken(name), 3)).toEqual([]);
+    },
+  );
+
+  it('--accent meets 3:1 on every surface and composite except the accepted pressed selected row', () => {
+    expect(shortfalls(colourToken('accent'), 3, ['selected+pressed'])).toEqual([]);
+  });
+});
+
+describe('mascot tokens (T4)', () => {
+  it.each([
+    ['outline', [20, 20, 24]],
+    ['body', [188, 188, 192]],
+    ['shade', [164, 164, 170]],
+    ['accent', [188, 48, 60]],
+  ] as const)('--tt-mascot-%s equals the supplement value', (name, [red, green, blue]) => {
+    expect(colourToken(`tt-mascot-${name}`)).toEqual({ red, green, blue, alpha: 1 });
+  });
+
+  it('the mascot accent meets 3:1 against the mascot body, its only neighbouring colour', () => {
+    expect(contrast(colourToken('tt-mascot-accent'), colourToken('tt-mascot-body'))).toBeGreaterThanOrEqual(
+      3,
+    );
+  });
+
+  it('the mascot body and shade meet 3:1 on every surface and composite', () => {
+    expect(shortfalls(colourToken('tt-mascot-body'), 3)).toEqual([]);
+    expect(shortfalls(colourToken('tt-mascot-shade'), 3)).toEqual([]);
+  });
+
+  // The outline is decorative (supplement section 13.2, item 1) and is deliberately not held to 3:1.
+});
+
+describe('failure red is distinct from accent ink (T2)', () => {
+  it('--red and --accent-ink are different colours, at least 12 degrees of hue apart', () => {
+    expect(tokenValue('red')).not.toEqual(tokenValue('accent-ink'));
+    const gap = Math.abs(hueOf(colourToken('red')) - hueOf(colourToken('accent-ink')));
+    expect(Math.min(gap, 360 - gap)).toBeGreaterThanOrEqual(12);
+  });
+});
+
+describe('reduced motion (T10, guard)', () => {
+  it('the global reduced-motion rule is present and comes after every keyframes block in cascade order', () => {
+    const cascade = stripComments(
+      [...styles('index.css').matchAll(/@import\s+'\.\/([^']+)';/g)]
+        .map((match) => styles(match[1]!))
+        .join('\n'),
+    );
+    const reducedAt = cascade.indexOf('@media (prefers-reduced-motion: reduce)');
+    expect(reducedAt).toBeGreaterThan(-1);
+    expect(reducedAt).toBeGreaterThan(cascade.lastIndexOf('@keyframes'));
+    const block = mediaBlock(baseCss, '(prefers-reduced-motion: reduce)');
+    expect(block).toMatch(/\*,\s*\*::before,\s*\*::after/);
+    expect(block).toMatch(/animation-duration:/);
+    expect(block).toMatch(/transition-duration:/);
   });
 });
 
