@@ -55,3 +55,7 @@ New: `styles/colourLiterals.test.ts`, `styles/typography.test.ts`, `styles/fonts
 | G1  | No diff in server, shared, migrations, Goal models, existing goals tests                                                                         | `git diff --stat` review |
 | G2  | Full gate green; hosted CI on the pushed SHA under 30 minutes                                                                                    | gate and CI              |
 | V1  | Before/after captures at six viewports; two viewports per page committed under a size cap; written discrepancy notes; no pixel-perfect claims    | `docs/ui/evidence/`      |
+
+## 6. Implementation record (added after review)
+
+Five token values were tuned from section 2 so the strict contrast tests pass with hover and pressed overlays: `--accent-ink #f78e98`, `--red #ff8b7a`, `--info #77b0f1`, `--control-line #8b8b92`, `--accent #e14d60`. Section 2 shows the planner's first values; the final values and worst-case ratios are in [EVIDENCE.md](EVIDENCE.md). `turing.svg` is the single allow-listed standalone asset (hex values must equal `tokens.css` values). `.desktop-startup-mark` uses `--accent-fill` because white on `--accent` is 3.87:1. Known low-severity test gaps from independent review: the display-face and literal scans do not catch a literal `font-family: UnifrakturCook`, CSS system colours or unquoted SVG attributes (none exist today).

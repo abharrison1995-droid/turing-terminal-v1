@@ -776,7 +776,7 @@
   height: 40px;
   place-items: center;
   color: var(--on-accent);
-  background: var(--accent);
+  background: var(--accent-fill);
   border-radius: var(--r-md);
   font-weight: var(--fw-semibold);
 }
