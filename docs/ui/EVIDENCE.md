@@ -4,7 +4,7 @@ Evidence for UI stages. UI approval is for development only; none of this marks 
 
 ## UI.1b: dark tokens, fonts, CSS primitive layer, PWA meta
 
-- **Scope and matrix:** [UI1B_SCOPE.md](UI1B_SCOPE.md). Implementation commit and review outcome are recorded in the stage report; the final tested SHA and CI run are appended here after hosted CI.
+- **Scope and matrix:** [UI1B_SCOPE.md](UI1B_SCOPE.md). See the CI and review record at the end of this section.
 - **What changed:** dark-only token set (`tokens.css`); three unchanged upstream TTFs with their licences under `src/client/assets/fonts/`; `fonts.css`; the display face on five fixed selectors only; colour literals moved into `tokens.css` (8 CSS, 3 chart, icon values); Geist Sans removed (Geist Mono kept); `theme-color` and manifest colours; `color-scheme: dark`; Playwright pinned to dark. No server, shared, migration, Goal-model or Tauri change.
 - **Mascot:** only the four `--tt-mascot-*` tokens and their contrast tests are in this stage. The `Mascot` component and animation are UI.6.
 
@@ -43,3 +43,11 @@ Observed discrepancies (not pixel-perfect claims; no packet mockup is in the rep
 - On mobile the Home page still lists Recent above the heading (existing layout, not changed here).
 - The brand tile still uses the accent colour at full strength; judge against accent scarcity in UI.1c.
 - Not performed: any physical iPhone, native Tauri, Windows or forced-colors check. The focus ring, native form-control chrome and scrollbars were not exercised beyond the static captures.
+
+### CI and review record
+
+- **Review:** fresh independent Sonnet 5.5 review of `86b1e63..0474057`: APPROVE, no blocking findings. Low findings: `on-accent` on `--accent` was 3.87:1 for the desktop-startup mark (fixed in `35b6192` by using `--accent-fill`); scope doc lacked the tuned values (recorded); display-face and literal scans have known gaps, none exploited today; red and accent-ink differ by 13.4 degrees of hue and similar luminance, so failure always needs an icon and a word.
+- **Tested source:** `35b6192f9c42ca4b0f5ff353c817c7fc4e9f6c05` on `ui/overhaul` (push event; the checkout log shows this exact SHA, no merge commit).
+- **Run:** https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/38815726948, conclusion success, 2026-10-15 22:14:25Z to 22:40:00Z (about 25 min 35 s of the 30-minute budget; the margin is small).
+- **Gates:** `npm ci`, `format:check`, `lint`, `typecheck`, `npm test` (173 files, 3,471 tests), `build`, `npm audit --omit=dev` (0 vulnerabilities) all passed.
+- **Limits:** this CI run does not execute Playwright or `typecheck:e2e`; the e2e harness ran locally. Later docs-only commits are not themselves CI-tested until pushed.
