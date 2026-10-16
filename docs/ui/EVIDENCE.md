@@ -86,3 +86,5 @@ Known limitations (not fixed in UI.2):
 - Diff lines clip on phone with no visible hint that the pane scrolls.
 - No artifacts tab (no endpoint), no run drafts, file tree, editor or terminal (deferred).
 - No physical iPhone, native Tauri or forced-colors check; CI does not run Playwright.
+
+UI.2 CI: run 38840346275, event push, tested exact `5ba015804f4d8c986aa1a3d26ac245461b6c323b`, conclusion success, 02:25:24Z to 02:51:40Z (about 26m16s of the 30-minute budget; margin is small).
