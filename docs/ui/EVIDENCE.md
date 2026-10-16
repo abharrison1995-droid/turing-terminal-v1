@@ -69,3 +69,5 @@ Known limitations:
 - Settings captures show only the first viewport; Usage, Workflows, Projects, Machines not yet captured in populated state.
 - Ctrl/Cmd+K collision with browser or Tauri shortcuts is untested outside jsdom.
 - Physical iPhone and native checks: NOT PERFORMED.
+
+UI.1c CI: run 38830237379, event push, tested exact `ff4dcc546866b69c128d256effb9107a4aaa8b8b`, conclusion success, 00:34:26Z to 00:47:00Z (about 12.5 minutes).
