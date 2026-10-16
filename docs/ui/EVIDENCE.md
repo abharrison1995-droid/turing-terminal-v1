@@ -88,3 +88,16 @@ Known limitations (not fixed in UI.2):
 - No physical iPhone, native Tauri or forced-colors check; CI does not run Playwright.
 
 UI.2 CI: run 38840346275, event push, tested exact `5ba015804f4d8c986aa1a3d26ac245461b6c323b`, conclusion success, 02:25:24Z to 02:51:40Z (about 26m16s of the 30-minute budget; margin is small).
+
+## UI.3: Goal cockpit (styling and layout only)
+
+Scope: `docs/ui/UI3_SCOPE.md`. Planner Sonnet 5.5 Medium; RED and guard tests `8ea5fa1` (22 tests: 7 RED, 15 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (compact list-row spacing cascade, a positive control for the phone "no completion controls" test, active-tab hover, comments). The change is CSS only (`goals-cockpit.css` plus one `@import`); `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts` and `src/client/goals`. Pinned `a11yTokens`/QF09 rules are untouched.
+
+Captures: `docs/ui/evidence/ui3/after/` (11 PNGs, `SHA256SUMS`) from labelled fixtures (`e2e/fixtures/goals.ts`). Desktop and phone cover the list, active and needs-user cockpits; phone covers contested and legacy standing; desktop covers the Definitions tab, Handoff tab and completion standing. The phone spec asserts that completion, correction, attestation and apply controls are absent from the DOM, with a desktop positive control.
+
+Limitations:
+
+- The two-column layout applies to the cockpit header only: the DOM has no side rail and no DOM reorder was allowed.
+- The desktop completion-standing fixture is not fully consistent: the handoff Goal's detail still reports the final-apply completion check as failing and external verification as "not integrated" beside a recorded attestation. These are fixture values, not product behaviour, and the capture does not show a successful completion.
+- `goalHandoff.test.tsx` has a known timing flake under full-suite load (one failure in one local full run, passing alone and on rerun).
+- Playwright is not run by CI; no physical iPhone, native Tauri or forced-colors check; fixtures only.
