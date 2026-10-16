@@ -25,19 +25,19 @@ Registry (`kind: navigate | open-run | refresh`): the 7 destinations, "New task"
 
 ## 4. Acceptance matrix
 
-| ID | Criterion | Evidence |
-|---|---|---|
-| S1 | Seven destinations, labels and order unchanged | existing characterization tests |
-| S2 | Landmarks and accessible names preserved | existing tests |
-| S3 | Nav guard works on all paths (sidebar, palette, bell, brand) | appGoalsNavigation + new tests |
-| S4 | Esc closes drawer/palette/guard; focus returns to invoker | new tests |
-| S5 | Visible focus; 44px touch targets on compact | CSS test + Playwright |
-| S6 | Only the active bar adds crimson; no colour literals | colourLiterals + shellCss test |
-| S7 | Loading, first-load error, stale banner and empty states | new tests |
-| S8 | Palette allow-list exact; no mutation; no restricted commands | new tests |
-| S9 | `UnifiedApprovals`/Goal files untouched | `git diff --stat` |
-| S10 | Reduced motion respected; no new JS-driven animation | existing guard |
-| S11 | Full gate green | gate |
+| ID  | Criterion                                                     | Evidence                        |
+| --- | ------------------------------------------------------------- | ------------------------------- |
+| S1  | Seven destinations, labels and order unchanged                | existing characterization tests |
+| S2  | Landmarks and accessible names preserved                      | existing tests                  |
+| S3  | Nav guard works on all paths (sidebar, palette, bell, brand)  | appGoalsNavigation + new tests  |
+| S4  | Esc closes drawer/palette/guard; focus returns to invoker     | new tests                       |
+| S5  | Visible focus; 44px touch targets on compact                  | CSS test + Playwright           |
+| S6  | Only the active bar adds crimson; no colour literals          | colourLiterals + shellCss test  |
+| S7  | Loading, first-load error, stale banner and empty states      | new tests                       |
+| S8  | Palette allow-list exact; no mutation; no restricted commands | new tests                       |
+| S9  | `UnifiedApprovals`/Goal files untouched                       | `git diff --stat`               |
+| S10 | Reduced motion respected; no new JS-driven animation          | existing guard                  |
+| S11 | Full gate green                                               | gate                            |
 
 ## 5. RED tests
 

@@ -1,0 +1,129 @@
+/* ───────────── Command palette (UI.1c, scope section 3) ─────────────
+   Tokens only: no colour literals, no display face, and no size below the typography floor (12px). The palette has no
+   animation of its own, so the global reduced-motion rule in base.css covers it. */
+
+.palette-trigger {
+  color: var(--ink-2);
+}
+.palette-trigger:hover {
+  color: var(--ink);
+}
+
+.palette-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh var(--s-4) var(--s-4);
+  background: var(--scrim);
+}
+.palette {
+  display: flex;
+  width: min(560px, 100%);
+  max-height: min(480px, 70vh);
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-2);
+  color: var(--ink);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--elev-float);
+}
+
+.palette-input {
+  min-height: var(--h-control);
+  flex: 0 0 auto;
+  padding: 0 var(--s-3);
+  color: var(--ink);
+  font-size: var(--fs-control);
+  background: var(--field);
+  border: 1px solid var(--control-line);
+  border-radius: var(--r-md);
+}
+.palette-input::placeholder {
+  color: var(--ink-3);
+}
+
+.palette-listbox {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  overflow-y: auto;
+}
+.palette-group {
+  display: grid;
+  gap: 1px;
+}
+.palette-group-label {
+  padding: var(--s-2) var(--s-3) var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+}
+.palette-option {
+  display: flex;
+  min-height: var(--h-control);
+  align-items: center;
+  gap: var(--s-3);
+  padding: 0 var(--s-3);
+  color: var(--ink-2);
+  font-size: var(--fs-control);
+  line-height: var(--lh-control);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.palette-option > svg.lucide {
+  flex: 0 0 auto;
+}
+.palette-option[aria-selected='true'] {
+  color: var(--ink);
+  background: var(--selected);
+}
+
+.palette-empty {
+  margin: var(--s-2) var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--fs-control);
+  line-height: var(--lh-body);
+}
+.palette-hint {
+  margin: 0 var(--s-3) var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+}
+
+.palette-input:focus-visible,
+.palette-trigger:focus-visible,
+.palette-option:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Phone: a full-width sheet anchored to the bottom edge, 44px rows, and the home-indicator inset. */
+@media (max-width: 680px) {
+  .palette-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+  .palette {
+    width: 100%;
+    max-height: 80vh;
+    padding: var(--s-2) var(--s-2) calc(var(--s-2) + env(safe-area-inset-bottom));
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+  }
+  .palette-input {
+    min-height: 44px;
+    font-size: var(--fs-input);
+  }
+  .palette-option {
+    min-height: 44px;
+  }
+  .palette-trigger {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

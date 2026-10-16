@@ -33,8 +33,8 @@
   width: 24px;
   height: 24px;
   place-items: center;
-  color: var(--on-accent);
-  background: var(--accent);
+  color: var(--accent-ink);
+  background: var(--surface-3);
   border-radius: var(--r-sm);
 }
 .brand-mark svg.lucide {
@@ -129,6 +129,17 @@
 .nav-link-active {
   color: var(--ink);
   background: var(--selected);
+}
+/* The active destination is marked by a 2px accent bar at its leading edge, not by a fill change alone. */
+.nav-link-active::before {
+  content: '';
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 2px;
 }
 .task-link-active:hover,
 .nav-link-active:hover {
@@ -257,6 +268,9 @@
   color: var(--ink-2);
   font-size: var(--fs-meta);
 }
+.connection-state .presence-dot {
+  flex: 0 0 auto;
+}
 .notification-button i {
   position: absolute;
   top: 8px;
@@ -303,4 +317,41 @@
 }
 .topbar-title-quiet {
   visibility: hidden;
+}
+
+/* ───────────── First-load failure and master state ───────────── */
+.error-state {
+  display: flex;
+  min-height: 60vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-5);
+  color: var(--ink-2);
+  text-align: center;
+}
+.error-state > svg.lucide {
+  color: var(--red);
+}
+.error-state h1 {
+  font-size: var(--fs-section);
+  line-height: var(--lh-section);
+}
+.error-state p {
+  max-width: 46ch;
+  color: var(--ink-3);
+  font-size: var(--fs-control);
+  line-height: var(--lh-body);
+}
+.error-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+}
+.machine-rail-unavailable .presence-dot {
+  background: var(--red);
 }

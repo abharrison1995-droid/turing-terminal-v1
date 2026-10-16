@@ -141,6 +141,9 @@ async function runEveryCommand(open: () => Promise<void>) {
   const labels = optionsOf().map((option) => option.textContent?.trim() ?? '');
   const user = userEvent.setup();
   const reads: Array<{ label: string; dashboardReads: number }> = [];
+  // Close the palette used to read the labels; opening again while open would toggle it shut.
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(dialog()).toBeNull());
   for (const label of labels) {
     await open();
     const before = dashboard.mock.calls.length;

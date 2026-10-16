@@ -1,20 +1,58 @@
 import {
+  AlertTriangle,
   Check,
   CircleHelp,
   Clock3,
   LoaderCircle,
   LockKeyhole,
   Pause,
+  RefreshCw,
   Square,
   X,
   type LucideIcon,
 } from 'lucide-react';
 
+/** Shown in the main landmark while the first dashboard request is pending. The status region sits inside it. */
 export function Loading() {
   return (
-    <main className="loading-state">
-      <LoaderCircle size={22} className="spin" />
-      <span>Connecting to the local master…</span>
+    <main className="page-content">
+      <div className="loading-state" role="status" aria-live="polite">
+        <LoaderCircle size={22} className="spin" aria-hidden="true" />
+        <span>Connecting to the local master…</span>
+      </div>
+    </main>
+  );
+}
+
+export interface ErrorStateProps {
+  message: string;
+  onRetry: () => void;
+  /** Passed only in the desktop shell, where restarting the bundled master is a real recovery action. */
+  onRestart?: () => void;
+}
+
+/**
+ * First-load failure in the main landmark: there is no snapshot to show, so the page is replaced by this alert. The
+ * title is the page's h1, so the shell's heading focus can reach it.
+ */
+export function ErrorState({ message, onRetry, onRestart }: ErrorStateProps) {
+  return (
+    <main className="page-content">
+      <div className="error-state" role="alert">
+        <AlertTriangle size={20} aria-hidden="true" />
+        <h1>Could not load the workspace</h1>
+        <p>{message}</p>
+        <div className="error-state-actions">
+          <button type="button" className="secondary-button" onClick={() => onRetry()}>
+            <RefreshCw size={14} aria-hidden="true" /> Retry
+          </button>
+          {onRestart && (
+            <button type="button" className="secondary-button" onClick={() => onRestart()}>
+              <RefreshCw size={14} aria-hidden="true" /> Restart Master
+            </button>
+          )}
+        </div>
+      </div>
     </main>
   );
 }

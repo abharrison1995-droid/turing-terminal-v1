@@ -51,3 +51,21 @@ Observed discrepancies (not pixel-perfect claims; no packet mockup is in the rep
 - **Run:** https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/38815726948, conclusion success, 2026-10-15 22:14:25Z to 22:40:00Z (about 25 min 35 s of the 30-minute budget; the margin is small).
 - **Gates:** `npm ci`, `format:check`, `lint`, `typecheck`, `npm test` (173 files, 3,471 tests), `build`, `npm audit --omit=dev` (0 vulnerabilities) all passed.
 - **Limits:** this CI run does not execute Playwright or `typecheck:e2e`; the e2e harness ran locally. Later docs-only commits are not themselves CI-tested until pushed.
+
+## UI.1c: shell, states and command palette
+
+Scope: `docs/ui/UI1C_SCOPE.md`. Planner: Sonnet 5.5 Medium. RED tests: Haiku 5.5 High (commit `46b94fd`). Implementation and review fixes: Haiku 5.5 High. Independent review: fresh Sonnet 5.5 Medium, verdict APPROVE WITH FIXES; all six findings fixed (Restart Master on first-load error, `<main>` landmark for Loading/ErrorState, palette dialog focus, palette closed on pairing, drawer reset on widen, combobox `aria-expanded`), covered by `src/client/ui/shell/shellReview.test.tsx`.
+
+One RED test was corrected, not weakened: `paletteNoMutations.test.tsx` re-pressed the toggle shortcut on an already-open palette, which closes it. The helper now presses Escape after reading the labels; every assertion is unchanged.
+
+Screenshots: `docs/ui/evidence/ui1c/after/` (14 PNGs, `SHA256SUMS`), generated from deterministic fixtures (`e2e/fixtures/populated.ts`, names prefixed "Fixture"), not live data.
+
+Known limitations:
+
+- Fixture stages have no model, so Home shows the "Set up the stage models first" warning.
+- No run-detail capture yet (needs a run fixture; UI.2).
+- Phone palette: the fifth recent-run row may sit under the hint line; scrolling not yet verified (UI.5).
+- Compact Home opens with an h2 rather than an h1 (existing heading structure; revisit in UI.2).
+- Settings captures show only the first viewport; Usage, Workflows, Projects, Machines not yet captured in populated state.
+- Ctrl/Cmd+K collision with browser or Tauri shortcuts is untested outside jsdom.
+- Physical iPhone and native checks: NOT PERFORMED.

@@ -1,23 +1,6 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
-import {
-  Activity,
-  AlertTriangle,
-  Bell,
-  Command,
-  FileCode2,
-  Menu,
-  Monitor,
-  Plus,
-  Radio,
-  RefreshCw,
-  Settings,
-  Target,
-  Workflow as WorkflowIcon,
-  X,
-  type LucideIcon,
-} from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { notificationsForSnapshot } from './notificationEvents.js';
-import { APP_VERSION } from '../shared/version';
 import type { DashboardSnapshot } from '../shared/types';
 import { api } from './api';
 import { pendingApprovalCounts } from './goals/dashboard';
@@ -35,9 +18,9 @@ import {
   type MachineProfile,
 } from './machineProfiles';
 import type { Page } from './pages/shared/types';
-import { activeStatuses, shortTask, humanStatus } from './pages/shared/runStatus';
+import { activeStatuses } from './pages/shared/runStatus';
 import { DevicePairingPage } from './pages/DevicePairingPage';
-import { StatusIcon, Loading } from './pages/shared/parts';
+import { ErrorState, Loading } from './pages/shared/parts';
 import { CommandCenter } from './pages/CommandCenter';
 import { WorkflowsPage } from './pages/WorkflowsPage';
 import { ProjectsPage } from './pages/ProjectsPage';
@@ -45,16 +28,16 @@ import { RunsPage } from './pages/RunsPage';
 import { UsagePage } from './pages/UsagePage';
 import { MachinesPage } from './pages/MachinesPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { CommandPalette } from './ui/shell/CommandPalette';
+import { ConnectionBanner } from './ui/shell/ConnectionBanner';
+import { NavGuardDialog } from './ui/shell/NavGuardDialog';
+import { Sidebar } from './ui/shell/Sidebar';
+import { Topbar } from './ui/shell/Topbar';
+import { buildPaletteCommands, type PaletteActions } from './ui/shell/commands';
+import { NAV_PANEL_ID, pageTitle } from './ui/shell/navModel';
 
-const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
-  { id: 'workflows', label: 'Workflows', icon: WorkflowIcon },
-  { id: 'projects', label: 'Projects', icon: FileCode2 },
-  { id: 'goals', label: 'Grand Projects', icon: Target },
-  { id: 'runs', label: 'Runs & history', icon: Activity },
-  { id: 'usage', label: 'Usage', icon: Radio },
-  { id: 'machines', label: 'Machines', icon: Monitor },
-  { id: 'settings', label: 'Settings', icon: Settings },
-];
+/** The compact shell breakpoint in shell.css and mobile.css: below it the navigation is a drawer. */
+const COMPACT_SHELL_QUERY = '(max-width: 680px)';
 
 function App() {
   const [goalNavigation] = useState(() => parseGoalNavigationRequest(window.location.href));
@@ -68,6 +51,9 @@ function App() {
   const [requiresPairing, setRequiresPairing] = useState(false);
   const [notice, setNotice] = useState('');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const paletteInvoker = useRef<HTMLElement | null>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
   const priorSnapshot = useRef<DashboardSnapshot | null>(null);
 
   const refresh = useCallback(async (quiet = false) => {
@@ -171,7 +157,6 @@ function App() {
   // Unsaved Goal definition work (a boolean reported by the Goals page; the text never leaves it).
   const [goalsUnsaved, setGoalsUnsaved] = useState(false);
   const [queuedNav, setQueuedNav] = useState<{ next: Page; then?: () => void } | null>(null);
-  const navGuardId = useId();
   const navGuard = useRef<HTMLDivElement>(null);
   const navGuardTrigger = useRef<HTMLElement | null>(null);
   const navGuardCancelled = useRef(false);
@@ -197,6 +182,38 @@ function App() {
     }
     focusNextPageHeading.current = false;
   }, [page]);
+  // The drawer's Escape and scrim paths hand focus back to the hamburger. The hand-back runs after the commit, because
+  // .app-main is inert while the drawer is open and focus() on an inert element does nothing.
+  const returnFocusToMenu = useRef(false);
+  const closeMenu = (returnFocus: boolean) => {
+    returnFocusToMenu.current = returnFocus;
+    setMobileMenuOpen(false);
+  };
+  useLayoutEffect(() => {
+    if (mobileMenuOpen) {
+      const sidebar = document.getElementById(NAV_PANEL_ID);
+      (
+        sidebar?.querySelector<HTMLElement>('.nav-link-active') ??
+        sidebar?.querySelector<HTMLElement>('.nav-link')
+      )?.focus();
+      return;
+    }
+    if (!returnFocusToMenu.current) return;
+    returnFocusToMenu.current = false;
+    menuButton.current?.focus();
+  }, [mobileMenuOpen]);
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // The Grand Projects guard handles its own Escape; it must not also close the drawer behind it.
+      if (event.key !== 'Escape' || event.defaultPrevented || queuedNav) return;
+      event.preventDefault();
+      returnFocusToMenu.current = true;
+      setMobileMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [mobileMenuOpen, queuedNav]);
   /**
    * Every shell navigation that can leave Goals goes through here. Destination side effects (`then`) run only once the
    * navigation is actually accepted, so cancelling leaves the app exactly where it was.
@@ -206,6 +223,19 @@ function App() {
       setQueuedNav({ next, ...(then ? { then } : {}) });
       return;
     }
+    then?.();
+    changePage(next);
+  };
+  const cancelNavigation = () => {
+    navGuardCancelled.current = true;
+    setQueuedNav(null);
+  };
+  const discardAndLeave = () => {
+    if (!queuedNav) return;
+    const { next, then } = queuedNav;
+    setQueuedNav(null);
+    setGoalsUnsaved(false);
+    focusNextPageHeading.current = true;
     then?.();
     changePage(next);
   };
@@ -219,8 +249,62 @@ function App() {
       setError(reason instanceof Error ? reason.message : 'Turing Terminal Master could not be restarted.');
     }
   };
-  const pageLabel =
-    page === 'command' ? 'New task' : (navItems.find((item) => item.id === page)?.label ?? '');
+  /** Palette navigation, like every palette command, moves focus to the new page heading once the page really changes. */
+  const paletteNavigate = (next: Page, then?: () => void) =>
+    navigate(next, () => {
+      then?.();
+      if (next !== page) focusNextPageHeading.current = true;
+    });
+  const paletteActions: PaletteActions = {
+    navigate: (next) =>
+      paletteNavigate(next, next === 'command' || next === 'runs' ? () => setSelectedRunId(null) : undefined),
+    openRun: (runId) => paletteNavigate('runs', () => setSelectedRunId(runId)),
+    refresh: () => void refresh(true),
+  };
+  const openPalette = () => {
+    const active = document.activeElement;
+    paletteInvoker.current = active instanceof HTMLElement ? active : null;
+    setMobileMenuOpen(false);
+    setPaletteOpen(true);
+  };
+  const closePalette = () => {
+    setPaletteOpen(false);
+    paletteInvoker.current?.focus();
+  };
+  // A palette left open must not reappear after pairing; the pairing page replaces the shell entirely.
+  useEffect(() => {
+    if (requiresPairing) setPaletteOpen(false);
+  }, [requiresPairing]);
+  // The drawer exists only in the compact shell (shell.css, 680px). Widening the viewport closes it, so .app-main is
+  // never left inert on a layout that shows no drawer.
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return;
+    const compact = window.matchMedia(COMPACT_SHELL_QUERY);
+    const onChange = () => {
+      if (!compact.matches) setMobileMenuOpen(false);
+    };
+    compact.addEventListener('change', onChange);
+    return () => compact.removeEventListener('change', onChange);
+  }, []);
+  // Ctrl/Cmd+K toggles the palette. Not while the Grand Projects guard is open, nor while this device must be paired.
+  useEffect(() => {
+    if (requiresPairing) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== 'k' || !(event.ctrlKey || event.metaKey)) return;
+      if (event.altKey || event.shiftKey || event.isComposing) return;
+      if (paletteOpen) {
+        event.preventDefault();
+        closePalette();
+        return;
+      }
+      if (queuedNav) return;
+      event.preventDefault();
+      openPalette();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [requiresPairing, paletteOpen, queuedNav]);
+  const pageLabel = pageTitle(page);
   const approvalCounts = pendingApprovalCounts(snapshot);
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
@@ -239,312 +323,177 @@ function App() {
   if (requiresPairing) return <DevicePairingPage onPaired={pairedSuccessfully} />;
 
   return (
-    <div className="app-shell">
-      {queuedNav && (
-        <div className="nav-guard-backdrop">
-          <div
-            ref={navGuard}
-            className="goal-confirm nav-guard"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby={`${navGuardId}-title`}
-            aria-describedby={`${navGuardId}-description`}
-            tabIndex={-1}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                navGuardCancelled.current = true;
-                setQueuedNav(null);
-                return;
-              }
-              if (event.key !== 'Tab') return;
-              const focusable = navGuard.current?.querySelectorAll<HTMLElement>('button:not(:disabled)');
-              if (!focusable?.length) return;
-              const first = focusable[0]!;
-              const last = focusable[focusable.length - 1]!;
-              const focusIsInside = navGuard.current?.contains(document.activeElement) ?? false;
-              if (!focusIsInside) {
-                event.preventDefault();
-                (event.shiftKey ? last : first).focus();
-              } else if (event.shiftKey && document.activeElement === first) {
-                event.preventDefault();
-                last.focus();
-              } else if (!event.shiftKey && document.activeElement === last) {
-                event.preventDefault();
-                first.focus();
-              }
-            }}
-          >
-            <h2 id={`${navGuardId}-title`}>Discard unsaved Grand Project changes?</h2>
-            <p id={`${navGuardId}-description`}>
-              You have definition text that has not been saved. Leaving Grand Projects will discard those
-              local changes.
-            </p>
-            <div className="goal-control-buttons">
-              <button
-                type="button"
-                className="secondary-button"
-                data-confirm-safe
-                onClick={() => {
-                  navGuardCancelled.current = true;
-                  setQueuedNav(null);
-                }}
-              >
-                Keep editing
-              </button>
-              <button
-                type="button"
-                className="secondary-button goal-danger"
-                onClick={() => {
-                  const { next, then } = queuedNav;
-                  setQueuedNav(null);
-                  setGoalsUnsaved(false);
-                  focusNextPageHeading.current = true;
-                  then?.();
-                  changePage(next);
-                }}
-              >
-                Discard and leave
+    <>
+      <div className="app-shell" aria-hidden={paletteOpen || undefined}>
+        {queuedNav && (
+          <NavGuardDialog dialogRef={navGuard} onKeepEditing={cancelNavigation} onDiscard={discardAndLeave} />
+        )}
+        <Sidebar
+          open={mobileMenuOpen}
+          page={page}
+          selectedRunId={selectedRunId}
+          railTasks={railTasks}
+          activeRunCount={activeRuns.length}
+          pendingApprovalCount={snapshot?.approvals.length ?? 0}
+          goalApprovalCount={approvalCounts.goal}
+          machineName={snapshot?.machine.name}
+          connection={error ? 'unavailable' : snapshot ? 'online' : 'connecting'}
+          onNavigate={navigate}
+          onSelectRun={setSelectedRunId}
+        />
+
+        {mobileMenuOpen && (
+          <button className="mobile-scrim" aria-label="Close menu" onClick={() => closeMenu(true)} />
+        )}
+
+        <div className="app-main" inert={mobileMenuOpen}>
+          <Topbar
+            title={pageLabel}
+            titleQuiet={titleQuiet}
+            menuOpen={mobileMenuOpen}
+            menuButtonRef={menuButton}
+            connectionError={error !== ''}
+            pendingApprovalCount={approvalCounts.total}
+            onToggleMenu={() => setMobileMenuOpen((value) => !value)}
+            onNotifications={() => navigate('runs')}
+            onOpenPalette={openPalette}
+          />
+
+          {error && snapshot && (
+            <ConnectionBanner
+              message={error}
+              onRetry={() => void refresh()}
+              {...(isDesktopShell() ? { onRestart: () => void restartDesktopMaster() } : {})}
+            />
+          )}
+          {notice && (
+            <div
+              className={`toast ${notice.toLowerCase().includes('could not') || notice.toLowerCase().includes('before') || notice.toLowerCase().includes('not available') ? 'toast-error' : ''}`}
+              role="status"
+            >
+              {notice}
+              <button onClick={() => setNotice('')} aria-label="Dismiss">
+                <X size={14} />
               </button>
             </div>
-          </div>
-        </div>
-      )}
-      <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`} aria-label="Primary navigation">
-        <button
-          className="brand-lockup"
-          onClick={() => navigate('command', () => setSelectedRunId(null))}
-          aria-label="Turing Terminal home"
-        >
-          <span className="brand-mark">
-            <Command size={16} />
-          </span>
-          <span className="brand-name">Turing Terminal</span>
-        </button>
-        <button className="new-task-button" onClick={() => navigate('command', () => setSelectedRunId(null))}>
-          <Plus size={16} /> New task
-        </button>
-        <p className="nav-label">Recent</p>
-        <nav className="task-nav" aria-label="Tasks">
-          {railTasks.length === 0 ? (
-            <p className="task-nav-empty">Tasks you start appear here, newest first.</p>
-          ) : (
-            railTasks.map((run) => (
-              <button
-                key={run.id}
-                className={`task-link ${page === 'runs' && selectedRunId === run.id ? 'task-link-active' : ''}`}
-                onClick={() => navigate('runs', () => setSelectedRunId(run.id))}
-                aria-current={page === 'runs' && selectedRunId === run.id ? 'page' : undefined}
-              >
-                <span className={`run-status-glyph run-glyph-${run.status}`}>
-                  <StatusIcon status={run.status} />
-                </span>
-                <span className="task-link-copy">
-                  <strong>{shortTask(run.prompt)}</strong>
-                  <small>
-                    {humanStatus(run.status)} · {run.projectName}
-                  </small>
-                </span>
-              </button>
-            ))
           )}
-        </nav>
-        <nav className="primary-nav" aria-label="Workspace">
-          {navItems.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-              onClick={() => navigate(id, id === 'runs' ? () => setSelectedRunId(null) : undefined)}
-              aria-current={page === id ? 'page' : undefined}
-            >
-              <Icon size={16} /> <span>{label}</span>
-              {id === 'runs' && activeRuns.length > 0 && (
-                <span className="nav-count">{activeRuns.length}</span>
-              )}
-              {id === 'runs' && snapshot && snapshot.approvals.length > 0 && (
-                <span
-                  className="nav-alert-dot"
-                  aria-label={`${snapshot.approvals.length} approvals pending`}
+
+          {loading && !snapshot ? (
+            <Loading />
+          ) : !snapshot && error ? (
+            <ErrorState
+              message={error}
+              onRetry={() => void refresh()}
+              {...(isDesktopShell() ? { onRestart: () => void restartDesktopMaster() } : {})}
+            />
+          ) : (
+            <>
+              {page === 'command' && snapshot && (
+                <CommandCenter
+                  snapshot={snapshot}
+                  onRefresh={() => refresh(true)}
+                  onNavigate={changePage}
+                  onStart={(id) => {
+                    setSelectedRunId(id);
+                    setPage('runs');
+                  }}
+                  onNotice={setNotice}
                 />
               )}
-              {id === 'goals' && approvalCounts.goal > 0 && (
-                <span
-                  className="nav-alert-dot"
-                  aria-label={`${approvalCounts.goal} Goal approvals pending`}
+              {page === 'workflows' && snapshot && (
+                <WorkflowsPage
+                  workflows={snapshot.workflows}
+                  providers={snapshot.providers}
+                  onSaved={() => void refresh(true)}
+                  onNotice={setNotice}
                 />
               )}
-            </button>
-          ))}
-        </nav>
-        <div className="machine-rail">
-          <span className="presence-dot" />
-          <span className="machine-rail-copy">
-            <strong>{snapshot?.machine.name ?? 'Desktop master'}</strong>
-            <small>Online · v{APP_VERSION}</small>
-          </span>
-        </div>
-      </aside>
-
-      {mobileMenuOpen && (
-        <button className="mobile-scrim" aria-label="Close menu" onClick={() => setMobileMenuOpen(false)} />
-      )}
-
-      <div className="app-main">
-        <header className="topbar">
-          <button
-            className="mobile-menu-button icon-button"
-            onClick={() => setMobileMenuOpen((value) => !value)}
-            aria-label="Open navigation"
-          >
-            <Menu size={19} />
-          </button>
-          <p className={`topbar-title ${titleQuiet ? 'topbar-title-quiet' : ''}`}>{pageLabel}</p>
-          <div className="topbar-right">
-            <span className={`connection-state ${error ? 'connection-state-error' : ''}`}>
-              <span className="presence-dot" />{' '}
-              {error ? 'Desktop Master unavailable' : 'Desktop Master online'}
-            </span>
-            <button
-              className="icon-button notification-button"
-              aria-label={
-                approvalCounts.total ? `${approvalCounts.total} pending approvals` : 'Notifications'
-              }
-              onClick={() => navigate('runs')}
-            >
-              <Bell size={17} />
-              {approvalCounts.total > 0 && <i />}
-            </button>
-          </div>
-        </header>
-
-        {error && (
-          <div className="global-error" role="alert">
-            <AlertTriangle size={16} />
-            <span>{error}</span>
-            <button onClick={() => void refresh()}>
-              <RefreshCw size={14} /> Retry
-            </button>
-            {isDesktopShell() && (
-              <button onClick={() => void restartDesktopMaster()}>
-                <RefreshCw size={14} /> Restart Master
-              </button>
-            )}
-          </div>
-        )}
-        {notice && (
-          <div
-            className={`toast ${notice.toLowerCase().includes('could not') || notice.toLowerCase().includes('before') || notice.toLowerCase().includes('not available') ? 'toast-error' : ''}`}
-            role="status"
-          >
-            {notice}
-            <button onClick={() => setNotice('')} aria-label="Dismiss">
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        {loading && !snapshot ? (
-          <Loading />
-        ) : (
-          <>
-            {page === 'command' && snapshot && (
-              <CommandCenter
-                snapshot={snapshot}
-                onRefresh={() => refresh(true)}
-                onNavigate={changePage}
-                onStart={(id) => {
-                  setSelectedRunId(id);
-                  setPage('runs');
-                }}
-                onNotice={setNotice}
-              />
-            )}
-            {page === 'workflows' && snapshot && (
-              <WorkflowsPage
-                workflows={snapshot.workflows}
-                providers={snapshot.providers}
-                onSaved={() => void refresh(true)}
-                onNotice={setNotice}
-              />
-            )}
-            {page === 'projects' && snapshot && (
-              <ProjectsPage
-                projects={snapshot.projects}
-                onChanged={() => void refresh(true)}
-                onNotice={setNotice}
-              />
-            )}
-            {page === 'goals' && (
-              <GoalsPage
-                projects={snapshot?.projects ?? []}
-                initialGoalId={initialGoalId}
-                onInitialGoalConsumed={() => setInitialGoalId(null)}
-                onOpenProjects={() => navigate('projects')}
-                onUnsavedChange={setGoalsUnsaved}
-                navigationGuardActive={queuedNav !== null}
-              />
-            )}
-            {page === 'runs' && snapshot && (
-              <RunsPage
-                snapshot={snapshot}
-                selectedRun={selectedRun}
-                selectedRunId={selectedRunId}
-                onSelect={setSelectedRunId}
-                onRefresh={() => refresh(true)}
-                onNotice={setNotice}
-                onNavigate={changePage}
-              />
-            )}
-            {page === 'usage' && snapshot && <UsagePage snapshot={snapshot} />}
-            {page === 'machines' && snapshot && (
-              <MachinesPage
-                snapshot={snapshot}
-                profiles={machineProfiles}
-                onAddProfile={(origin, name) => {
-                  const updated = addMachineProfile(machineProfiles, { origin, name });
-                  if (!updated) {
-                    setNotice('Enter a machine name and a valid HTTPS or local loopback address.');
-                    return false;
-                  }
-                  writeBrowserMachineProfiles(updated);
-                  setMachineProfiles(updated);
-                  setNotice('Machine profile saved on this device. Pair with that master separately.');
-                  return true;
-                }}
-                onRemoveProfile={(origin) => {
-                  const updated = removeMachineProfile(machineProfiles, origin);
-                  writeBrowserMachineProfiles(updated);
-                  setMachineProfiles(updated);
-                }}
-                onReachability={(origin, reachability) => {
-                  setMachineProfiles((current) => {
-                    const updated = current.map((profile) =>
-                      profile.origin === origin
-                        ? {
-                            ...profile,
-                            reachability,
-                            lastSeenAt:
-                              reachability === 'online' ? new Date().toISOString() : profile.lastSeenAt,
-                          }
-                        : profile,
-                    );
+              {page === 'projects' && snapshot && (
+                <ProjectsPage
+                  projects={snapshot.projects}
+                  onChanged={() => void refresh(true)}
+                  onNotice={setNotice}
+                />
+              )}
+              {page === 'goals' && (
+                <GoalsPage
+                  projects={snapshot?.projects ?? []}
+                  initialGoalId={initialGoalId}
+                  onInitialGoalConsumed={() => setInitialGoalId(null)}
+                  onOpenProjects={() => navigate('projects')}
+                  onUnsavedChange={setGoalsUnsaved}
+                  navigationGuardActive={queuedNav !== null}
+                />
+              )}
+              {page === 'runs' && snapshot && (
+                <RunsPage
+                  snapshot={snapshot}
+                  selectedRun={selectedRun}
+                  selectedRunId={selectedRunId}
+                  onSelect={setSelectedRunId}
+                  onRefresh={() => refresh(true)}
+                  onNotice={setNotice}
+                  onNavigate={changePage}
+                />
+              )}
+              {page === 'usage' && snapshot && <UsagePage snapshot={snapshot} />}
+              {page === 'machines' && snapshot && (
+                <MachinesPage
+                  snapshot={snapshot}
+                  profiles={machineProfiles}
+                  onAddProfile={(origin, name) => {
+                    const updated = addMachineProfile(machineProfiles, { origin, name });
+                    if (!updated) {
+                      setNotice('Enter a machine name and a valid HTTPS or local loopback address.');
+                      return false;
+                    }
                     writeBrowserMachineProfiles(updated);
-                    return updated;
-                  });
-                }}
-                onSelectProfile={(profile) => {
-                  if (profile.origin === window.location.origin) return;
-                  window.location.assign(machineSwitchUrl(profile, machineProfiles));
-                }}
-              />
-            )}
-            {page === 'settings' && snapshot && (
-              <SettingsPage snapshot={snapshot} onNotice={setNotice} onChanged={() => void refresh(true)} />
-            )}
-          </>
-        )}
+                    setMachineProfiles(updated);
+                    setNotice('Machine profile saved on this device. Pair with that master separately.');
+                    return true;
+                  }}
+                  onRemoveProfile={(origin) => {
+                    const updated = removeMachineProfile(machineProfiles, origin);
+                    writeBrowserMachineProfiles(updated);
+                    setMachineProfiles(updated);
+                  }}
+                  onReachability={(origin, reachability) => {
+                    setMachineProfiles((current) => {
+                      const updated = current.map((profile) =>
+                        profile.origin === origin
+                          ? {
+                              ...profile,
+                              reachability,
+                              lastSeenAt:
+                                reachability === 'online' ? new Date().toISOString() : profile.lastSeenAt,
+                            }
+                          : profile,
+                      );
+                      writeBrowserMachineProfiles(updated);
+                      return updated;
+                    });
+                  }}
+                  onSelectProfile={(profile) => {
+                    if (profile.origin === window.location.origin) return;
+                    window.location.assign(machineSwitchUrl(profile, machineProfiles));
+                  }}
+                />
+              )}
+              {page === 'settings' && snapshot && (
+                <SettingsPage snapshot={snapshot} onNotice={setNotice} onChanged={() => void refresh(true)} />
+              )}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+      {paletteOpen && (
+        <CommandPalette
+          commands={buildPaletteCommands(railTasks)}
+          actions={paletteActions}
+          onClose={closePalette}
+        />
+      )}
+    </>
   );
 }
 
