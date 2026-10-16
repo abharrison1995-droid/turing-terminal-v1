@@ -9,6 +9,40 @@
   gap: var(--s-4);
   margin: 0 auto;
 }
+/* The DOM leads with the intro so the h1 is the first heading. These orders keep the desktop visual order. */
+.home-column > .approval-inbox {
+  order: 0;
+}
+.home-column > .glance {
+  order: 1;
+}
+.home-column > .home-intro {
+  order: 2;
+}
+.home-column > .run-preview-panel {
+  order: 3;
+}
+.home-column > .launch-blockers {
+  order: 4;
+}
+.home-column > .composer {
+  order: 5;
+}
+.home-column > .composer-hint {
+  order: 6;
+}
+.home-column > .safeguards {
+  order: 7;
+}
+.home-column > .home-status {
+  order: 8;
+}
+.home-column > .home-providers {
+  order: 9;
+}
+.home-column > .home-tasks {
+  order: 10;
+}
 .home-intro {
   padding: clamp(var(--s-2), 5vh, var(--s-12)) 0 var(--s-1);
   text-align: center;
@@ -459,8 +493,23 @@ button.agent-chip:hover {
   gap: var(--s-2);
   background: var(--surface);
 }
-.launch-blockers h3 {
+.launch-blockers h2 {
   font-size: var(--fs-control);
+  font-weight: var(--fw-semibold);
+}
+.launch-blockers-count {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+}
+.launch-blocker-tag {
+  flex: 0 0 auto;
+  padding: 2px var(--s-2);
+  color: var(--amber);
+  background: var(--amber-wash);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
 }
 .launch-blockers ul {
   width: 100%;
@@ -489,6 +538,32 @@ button.agent-chip:hover {
   color: var(--ink-3);
   font-size: var(--fs-meta);
   line-height: var(--lh-meta);
+}
+
+/* Safeguards: the selected workflow's defaults, read only. No controls live here. */
+.safeguards {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+  padding: var(--s-2) var(--s-4);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  background: var(--surface-2);
+  border-radius: var(--r-lg);
+}
+.safeguards > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s-1);
+}
+.safeguards strong {
+  color: var(--ink-2);
+  font-weight: var(--fw-medium);
+}
+.safeguards p {
+  flex-basis: 100%;
+  margin: 0;
 }
 
 /* Provider health */

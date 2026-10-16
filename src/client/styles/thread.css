@@ -20,8 +20,7 @@
   margin-right: auto;
   margin-left: auto;
 }
-.approval-inbox + .runs-layout,
-.approval-inbox + .home-intro {
+.approval-inbox + .runs-layout {
   margin-top: var(--s-4);
 }
 .runs-list-panel {
@@ -181,10 +180,6 @@
   flex-basis: 100%;
   color: var(--amber);
 }
-.run-detail-meta + .run-runtime-summary {
-  margin-top: calc(var(--s-3) * -1);
-}
-
 /* State strip: same anatomy for running, approval, completed, failed */
 .thread-state {
   display: flex;
@@ -312,8 +307,7 @@
   justify-content: space-between;
   margin-bottom: var(--s-2);
 }
-.timeline-heading h3,
-.diff-viewer-head h3 {
+.timeline-heading h3 {
   font-size: var(--fs-section);
   line-height: var(--lh-section);
 }
@@ -455,7 +449,6 @@
 }
 .stage-output pre,
 .raw-log pre,
-.diff-viewer pre,
 .execution-operation pre,
 .stage-model-history pre {
   max-height: 320px;
@@ -581,24 +574,6 @@
 }
 .rule-snapshot li small {
   color: var(--ink-3);
-}
-
-/* Diff */
-.diff-viewer {
-  display: grid;
-  gap: var(--s-2);
-}
-.diff-viewer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.diff-viewer pre {
-  max-height: 480px;
-  padding: var(--s-3);
-  background: var(--surface);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-lg);
 }
 
 /* Follow-up: docked like a composer */

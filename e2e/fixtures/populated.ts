@@ -9,10 +9,13 @@ import type {
 import type {
   Approval,
   DashboardSnapshot,
+  ExecutionOperation,
+  GitOperation,
   MachineStatus,
   ModelPreset,
   ProjectProfile,
   ProviderStatus,
+  RunPreview,
   RunStage,
   RunStatus,
   RunSummary,
@@ -32,6 +35,7 @@ import type {
   UnifiedApprovalsResponse,
 } from '../../src/shared/goalApi';
 import { FIXED_NOW } from './dashboard';
+import { RawResponse } from './mockApi';
 
 /**
  * FIXTURE DATA. Every value in this file is invented for deterministic UI evidence: no project, run, provider, goal,
@@ -951,3 +955,334 @@ export const populatedRoutes: Record<string, unknown> = {
     reason: 'Fixture: web push is not configured.',
   },
 };
+
+// ---- UI.2 evidence: run detail, Changes and Home preview (used by e2e/ui2.spec.ts only) ---------------------------------
+
+/*
+ * `populatedRoutes` and `POPULATED_SNAPSHOT` above are not changed, so the UI.1c captures keep the inputs they were
+ * taken with. The run detail reads stage logs and output from the snapshot's run stages, which the populated list leaves
+ * empty, so the UI.2 spec uses `ui2Snapshot` (a copy with those fields added to two runs) instead.
+ */
+
+/** The task text the UI.2 spec types into Home. The fixture preview echoes it back. */
+export const FIXTURE_TASK = 'Fixture: add bounded retry backoff to the Atlas client.';
+
+const FAILED_RUN = 'fixture-run-005';
+const RUNNING_RUN = 'fixture-run-001';
+
+const stageEvidence: Record<string, Partial<Pick<RunStage, 'logs' | 'output'>>> = {
+  [`${RUNNING_RUN}-implement`]: {
+    logs: 'Fixture: provider stream open\nFixture: 2 files edited so far\n',
+    output: { text: 'Fixture: partial agent output. The stage is still running.' },
+  },
+  [`${FAILED_RUN}-implement`]: {
+    output: { text: 'Fixture: retry backoff added to the ledger totals path.' },
+  },
+  [`${FAILED_RUN}-test`]: {
+    logs: 'Fixture: $ npm test -- ledger-totals\nFixture: FAIL ledger-totals.test.ts\nFixture: 2 tests failed, 14 passed\n',
+  },
+};
+
+/** The populated snapshot plus stage logs and output on the failed run and the running run. Used by the UI.2 spec only. */
+export const ui2Snapshot: DashboardSnapshot = {
+  ...POPULATED_SNAPSHOT,
+  runs: POPULATED_SNAPSHOT.runs.map((run) => ({
+    ...run,
+    stages: run.stages.map((stage) => ({ ...stage, ...stageEvidence[stage.id] })),
+  })),
+};
+
+// Diff text in git's unified format. Paths start with fixture/ so no real file name can be mistaken for product data.
+const DIFF_FILES = [
+  [
+    'diff --git a/fixture/ledger/totals.ts b/fixture/ledger/totals.ts',
+    'index 1a2b3c4..5d6e7f8 100644',
+    '--- a/fixture/ledger/totals.ts',
+    '+++ b/fixture/ledger/totals.ts',
+    '@@ -12,7 +12,10 @@ export function sumLedgerRows(rows: LedgerRow[]) {',
+    '   // Fixture: illustrative change only.',
+    '   let total = 0;',
+    '-  for (const row of rows) total += row.amount;',
+    '+  for (const row of rows) {',
+    '+    if (row.header) continue;',
+    '+    total += row.amount;',
+    '+  }',
+    '   return total;',
+    ' }',
+  ].join('\n'),
+  [
+    'diff --git a/fixture/ledger/totals.test.ts b/fixture/ledger/totals.test.ts',
+    'index 9f8e7d6..0a1b2c3 100644',
+    '--- a/fixture/ledger/totals.test.ts',
+    '+++ b/fixture/ledger/totals.test.ts',
+    "@@ -40,4 +40,11 @@ describe('sumLedgerRows', () => {",
+    "  it('sums rows without a header', () => {",
+    '    expect(sumLedgerRows(rows)).toBe(120);',
+    '  });',
+    '+',
+    "+  it('skips the header row', () => {",
+    '+    expect(sumLedgerRows(withHeader)).toBe(120);',
+    '+  });',
+    "-  it('keeps the old total', () => {",
+    '-    expect(sumLedgerRows(legacy)).toBe(150);',
+    '-  });',
+    ' });',
+  ].join('\n'),
+  [
+    'diff --git a/fixture/docs/ledger-totals.md b/fixture/docs/ledger-totals.md',
+    'new file mode 100644',
+    'index 0000000..4c5d6e7',
+    '--- /dev/null',
+    '+++ b/fixture/docs/ledger-totals.md',
+    '@@ -0,0 +1,3 @@',
+    '+# Ledger totals (fixture)',
+    '+',
+    '+Header rows are skipped when totals are computed. Fixture: illustrative note only.',
+  ].join('\n'),
+];
+
+const DIFF_CWD = `/fixture/worktrees/${FAILED_RUN}`;
+const FULL_DIFF = `${DIFF_FILES.join('\n')}\n`;
+/** The first file whole, then the second file cut off part way through its first hunk. */
+const TRUNCATED_DIFF = `${DIFF_FILES[0]}\n${DIFF_FILES[1]!.split('\n').slice(0, 7).join('\n')}\n`;
+
+function diffResponse(runId: string) {
+  if (runId === FAILED_RUN) return { diff: FULL_DIFF, truncated: false, cwd: DIFF_CWD };
+  return { diff: '', truncated: false, cwd: `/fixture/worktrees/${runId}` };
+}
+
+/** Used by the truncated-diff capture. Exact-key override on top of `ui2Routes`. */
+const ui2TruncatedDiff = {
+  diff: TRUNCATED_DIFF,
+  truncated: true,
+  cwd: DIFF_CWD,
+  message: 'Fixture: the diff stopped at the server size limit. Later files are not shown.',
+};
+
+function operation(
+  overrides: Partial<ExecutionOperation> &
+    Pick<ExecutionOperation, 'id' | 'stageId' | 'operationType' | 'status'>,
+): ExecutionOperation {
+  return {
+    backendId: 'fixture-backend',
+    providerId: 'fixture-provider-a',
+    modelId: 'fixture-model-1',
+    role: 'implementer',
+    action: {},
+    cwd: DIFF_CWD,
+    projectRoot: `/fixture/projects/${PROJECT_LEDGER}`,
+    classification: 'read-only',
+    approvalRequired: false,
+    approvalId: null,
+    createdAt: at(170),
+    startedAt: at(170),
+    finishedAt: at(169),
+    exitCode: null,
+    result: null,
+    stdout: null,
+    stderr: null,
+    ...overrides,
+  };
+}
+
+function operationsFor(runId: string): ExecutionOperation[] {
+  if (runId === FAILED_RUN) {
+    return [
+      operation({
+        id: 'fixture-op-005-read',
+        stageId: `${FAILED_RUN}-implement`,
+        operationType: 'file.read',
+        status: 'completed',
+        action: { path: 'fixture/ledger/totals.ts' },
+        result: { bytes: 2048 },
+      }),
+      operation({
+        id: 'fixture-op-005-test',
+        stageId: `${FAILED_RUN}-test`,
+        operationType: 'command.run',
+        status: 'failed',
+        role: 'tester',
+        classification: 'command',
+        action: { command: ['npm', 'test', '--', 'ledger-totals'] },
+        exitCode: 1,
+        stderr: 'Fixture: FAIL ledger-totals.test.ts (2 tests failed)',
+      }),
+    ];
+  }
+  if (runId === RUNNING_RUN) {
+    return [
+      operation({
+        id: 'fixture-op-001-write',
+        stageId: `${RUNNING_RUN}-implement`,
+        operationType: 'file.write',
+        status: 'running',
+        classification: 'write',
+        action: { path: 'fixture/atlas/retry.ts' },
+        startedAt: at(11),
+        finishedAt: null,
+      }),
+    ];
+  }
+  return [];
+}
+
+const failedFinding = {
+  id: 'fixture-finding-005-1',
+  run_id: FAILED_RUN,
+  stage_id: `${FAILED_RUN}-test`,
+  severity: 'high',
+  category: 'test',
+  description: 'Fixture: the totals count the header row as a data row.',
+  evidence: 'Fixture: ledger-totals.test.ts expected 120 and received 150.',
+  affected_files_json: ['fixture/ledger/totals.ts'],
+  status: 'open',
+};
+
+const failedCheckpoint: GitOperation = {
+  id: 'fixture-git-005-checkpoint',
+  runId: FAILED_RUN,
+  stageId: `${FAILED_RUN}-implement`,
+  operation: 'checkpoint',
+  branch: `fixture/${FAILED_RUN}`,
+  target: null,
+  approvalId: null,
+  approvalRequired: false,
+  status: 'completed',
+  beforeCommit: 'fixture0000001',
+  afterCommit: 'fixture0000002',
+  result: null,
+  createdAt: at(175),
+  finishedAt: at(174),
+};
+
+/** `GET /api/runs/:id`. Every run in the UI.2 snapshot answers; only the failed run has findings and Git history. */
+function runDetails(runId: string) {
+  const run = ui2Snapshot.runs.find((item) => item.id === runId);
+  if (!run) return { error: 'fixture_missing' };
+  const failed = runId === FAILED_RUN;
+  return {
+    run,
+    effectiveRules: failed ? rules : [],
+    findings: failed ? [failedFinding] : [],
+    decisions: [],
+    gitOperations: failed ? [failedCheckpoint] : [],
+    events: [
+      { type: 'run.created', payload: {}, createdAt: run.createdAt },
+      ...(run.startedAt ? [{ type: 'run.started', payload: {}, createdAt: run.startedAt }] : []),
+    ],
+  };
+}
+
+function assignment(stage: WorkflowStage, ready: boolean): RunPreview['providerAssignments'][number] {
+  return {
+    stage: stage.label,
+    stageId: stage.id,
+    kind: stage.kind,
+    role: stage.label.toLowerCase(),
+    workload: 'generative',
+    identity: 'pinned',
+    billingAllowed: true,
+    billingReason: null,
+    backendId: ready ? 'fixture-backend' : null,
+    providerId: ready ? 'fixture-provider-a' : null,
+    modelId: ready ? 'fixture-model-1' : null,
+    modelDisplayName: ready ? 'Fixture model 1' : null,
+    variantId: null,
+    connectionProfileName: ready ? 'Fixture subscription profile' : null,
+    billingLane: 'claude-subscription',
+    catalogStatus: ready ? 'current' : undefined,
+    context: {
+      label: 'Focused context',
+      estimatedInputTokens: 18_400,
+      maxEstimatedTokens: 60_000,
+      maxFiles: 40,
+      maxFileBytes: 200_000,
+      onLimitExceeded: 'compact',
+      estimateOnly: true,
+    },
+    reasoning: ready ? 'balanced' : null,
+    nativeSettings: {},
+    ready,
+  };
+}
+
+/** A preview of the standard workflow for the Atlas project. `canStart` false leaves the Implement stage unassigned. */
+function previewFor(canStart: boolean): RunPreview {
+  const aiStages = standard.stages.filter((stage) =>
+    ['planner', 'implementer', 'reviewer'].includes(stage.kind),
+  );
+  const labels = aiStages.map((stage) => stage.label);
+  return {
+    project: projects[0]!,
+    workflow: standard,
+    machine,
+    task: FIXTURE_TASK,
+    profile: standard.executionProfile,
+    permissionMode: standard.permissionMode,
+    refinePrompt: false,
+    subscriptionOnly: true,
+    billingMode: 'subscriptions-only',
+    lockProviders: false,
+    effectiveRules: rules,
+    branchStrategy: 'worktree',
+    expectedAiStages: aiStages.length,
+    canStart,
+    warnings: canStart
+      ? []
+      : [
+          'Fixture: the Implement stage has no provider or model assigned. Assign one in Workflow Studio before this run can start.',
+        ],
+    providerAssignments: aiStages.map((stage) => assignment(stage, canStart || stage.kind !== 'implementer')),
+    billingSummary: [{ billingLane: 'claude-subscription', stages: labels }],
+    routingSummary: {
+      subscriptions: [
+        { billingLane: 'claude-subscription', label: 'Fixture subscription profile', stages: labels },
+      ],
+      metered: [],
+      meteredNone: true,
+      runMeteredCapUsd: null,
+      dailyBudgetUsd: 10,
+      monthlyBudgetUsd: 100,
+      unknownCostPolicy: 'block',
+      paygFallback: 'none',
+      externalDecisionDataPolicy: 'block',
+    },
+    providerFallbackStatus: [
+      {
+        backendId: 'fixture-backend',
+        billingLane: 'claude-subscription',
+        status: 'unknown',
+        message: 'Fixture: provider-side PAYG fallback cannot be verified, so it is shown as unknown.',
+      },
+    ],
+    contextWarnings: [],
+  };
+}
+
+/** `POST /api/runs/preview` answers. The UI.2 spec swaps `needsSetup` in with `ui2Variants`. */
+export const ui2Preview = {
+  ready: { preview: previewFor(true) },
+  needsSetup: { preview: previewFor(false) },
+};
+
+/** Route table for the UI.2 captures. Exact keys win over the `:param` patterns. */
+export const ui2Routes: Record<string, unknown> = {
+  ...populatedRoutes,
+  '/api/dashboard': ui2Snapshot,
+  // The run view subscribes to a run's event stream. This fixture is a stream with no events, so nothing is pushed.
+  '/api/events': new RawResponse('text/event-stream', ': fixture stream with no events\n\n'),
+  '/api/runs/preview': ui2Preview.ready,
+  '/api/runs/:id': (_url: URL, _method: string, params: Record<string, string>) =>
+    runDetails(params.id ?? ''),
+  '/api/runs/:id/execution-operations': (_url: URL, _method: string, params: Record<string, string>) => ({
+    operations: operationsFor(params.id ?? ''),
+  }),
+  '/api/runs/:id/diff': (_url: URL, _method: string, params: Record<string, string>) =>
+    diffResponse(params.id ?? ''),
+};
+
+/** Per-capture swaps on top of `ui2Routes`. A key here replaces the `:param` pattern it names. */
+export const ui2Variants = {
+  needsSetup: { '/api/runs/preview': ui2Preview.needsSetup },
+  truncatedDiff: { [`/api/runs/${FAILED_RUN}/diff`]: ui2TruncatedDiff },
+} as const;

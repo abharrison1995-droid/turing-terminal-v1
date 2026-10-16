@@ -3,9 +3,7 @@ import {
   Activity,
   AlertTriangle,
   ArrowUp,
-  CheckCircle2,
   ChevronRight,
-  CircleHelp,
   Clock3,
   FileCode2,
   LoaderCircle,
@@ -14,7 +12,6 @@ import {
   Play,
   Settings,
   SlidersHorizontal,
-  Shield,
   Workflow as WorkflowIcon,
 } from 'lucide-react';
 import type {
@@ -29,21 +26,14 @@ import type {
 import { api } from '../api';
 import { approvalSignature, pendingApprovalCounts } from '../goals/dashboard';
 import { UnifiedApprovals } from '../goals/UnifiedApprovals';
-import { billingLaneLabel, billingModeLabel } from '../../shared/billing';
-import { classifyModelIdentity } from '../../shared/modelSettings';
-import { RoutingSummaryPanel, decisionAssignmentLine } from '../phase36';
+import { billingModeLabel } from '../../shared/billing';
 import type { Page } from './shared/types';
 import { isAiStage } from './shared/stageMeta';
-import {
-  activeStatuses,
-  waitingStatuses,
-  capitalize,
-  shortTask,
-  humanStatus,
-  rowTime,
-} from './shared/runStatus';
-import { RuleListDetails } from './shared/RuleListDetails';
+import { activeStatuses, waitingStatuses, shortTask, humanStatus, rowTime } from './shared/runStatus';
 import { StatusIcon } from './shared/parts';
+import { LaunchBlockers } from './home/LaunchBlockers';
+import { RunPreviewPanel } from './home/RunPreviewPanel';
+import { Safeguards } from './home/Safeguards';
 
 export function CommandCenter({
   snapshot,
@@ -138,7 +128,11 @@ export function CommandCenter({
         lockProviders,
       });
       setPreview(response.preview);
-      onNotice('Run preview is ready. Check its project, stages, and Git strategy before starting.');
+      onNotice(
+        response.preview.canStart
+          ? 'Run preview is ready. Check its project, stages, and Git strategy before starting.'
+          : 'Preview loaded. Setup is needed before this can start.',
+      );
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : 'Could not prepare the run preview.');
     } finally {
@@ -229,50 +223,19 @@ export function CommandCenter({
       return { stage, config, ready: Boolean(config.backendId && config.providerId && config.modelId) };
     });
   const shortcutLabel = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘↵' : 'Ctrl ↵';
-
-  const blockers = (
-    <>
-      {(missingAssignments.length > 0 || !selectedProject) && (
-        <div className="launch-blockers" role="group" aria-labelledby="launch-blockers-title">
-          <h3 id="launch-blockers-title">Before you can run</h3>
-          <ul>
-            {missingAssignments.length > 0 && (
-              <li>
-                <CircleHelp size={16} />
-                <div>
-                  <strong>Set up the stage models first</strong>
-                  <p>
-                    {missingAssignments.length} active AI{' '}
-                    {missingAssignments.length === 1 ? 'stage needs' : 'stages need'} a backend, provider, and
-                    model.
-                  </p>
-                </div>
-                <button type="button" className="text-button" onClick={() => onNavigate('workflows')}>
-                  Configure workflow <ChevronRight size={14} />
-                </button>
-              </li>
-            )}
-            {!selectedProject && (
-              <li>
-                <FileCode2 size={16} />
-                <div>
-                  <strong>No project registered</strong>
-                  <p>Add a local repository before creating a run.</p>
-                </div>
-                <button type="button" className="text-button" onClick={() => onNavigate('projects')}>
-                  Add project <ChevronRight size={14} />
-                </button>
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
-    </>
-  );
+  const blockersShown = missingAssignments.length > 0 || !selectedProject;
+  const describedBy =
+    [blockersShown ? 'launch-blockers' : null, reviewBlockedReason ? 'launch-hint' : null]
+      .filter(Boolean)
+      .join(' ') || undefined;
 
   return (
     <main className="page-content command-page">
       <div className={`home-column ${snapshot.runs.length > 0 ? 'home-has-activity' : ''}`}>
+        <div className="home-intro">
+          <h1>What should the agents do?</h1>
+          <p>Your task stays on this machine and follows its saved workflow.</p>
+        </div>
         {pendingApprovalCounts(snapshot).total > 0 && (
           <UnifiedApprovals
             heading="Approval required"
@@ -314,12 +277,12 @@ export function CommandCenter({
             )}
           </div>
         )}
-        <div className="home-intro">
-          <h1>What should the agents do?</h1>
-          <p>Your task stays on this machine and follows its saved workflow.</p>
-        </div>
         {preview && <RunPreviewPanel preview={preview} />}
-        {blockers}
+        <LaunchBlockers
+          missingCount={missingAssignments.length}
+          projectMissing={!selectedProject}
+          onNavigate={onNavigate}
+        />
         <form className="composer" onSubmit={makePreview} aria-label="Start a workflow">
           <label className="sr-only" htmlFor="task-input">
             What should the agents do?
@@ -449,7 +412,7 @@ export function CommandCenter({
                 title={`Review run preview (${shortcutLabel})`}
                 aria-busy={busy}
                 disabled={busy || !task.trim() || !projectId || !workflowId}
-                aria-describedby={reviewBlockedReason ? 'launch-hint' : undefined}
+                aria-describedby={describedBy}
               >
                 {busy ? <LoaderCircle size={16} className="spin" /> : <ArrowUp size={16} />}
                 Run
@@ -598,6 +561,16 @@ export function CommandCenter({
           </p>
         )}
 
+        {selectedWorkflow && (
+          <Safeguards
+            billingMode={
+              selectedWorkflow.billingMode ??
+              (selectedWorkflow.subscriptionOnly ? 'subscriptions-only' : 'custom')
+            }
+            lockProviders={selectedWorkflow.lockProviders}
+            permissionMode={selectedWorkflow.permissionMode}
+          />
+        )}
         <div className="home-status" aria-label="Workspace status">
           <span>
             <span className="presence-dot" /> {snapshot.machine.name} · online
@@ -606,7 +579,9 @@ export function CommandCenter({
             {snapshot.projects.length} {snapshot.projects.length === 1 ? 'project' : 'projects'}
           </span>
           <span>{pending.length} active</span>
-          <span>{snapshot.usage.events} events today</span>
+          <span>
+            {snapshot.usage.events} events today · {snapshot.usage.provenance}
+          </span>
           <button type="button" className="text-button" onClick={() => onNavigate('machines')}>
             Machines
           </button>
@@ -638,181 +613,6 @@ export function CommandCenter({
         </div>
       </div>
     </main>
-  );
-}
-
-function RunPreviewPanel({ preview }: { preview: RunPreview }) {
-  const plan = preview.workflow.stages.filter((stage) => stage.enabled !== false);
-  return (
-    <section className="run-preview-panel surface-panel" aria-label="Run preview">
-      <div className="preview-heading">
-        <div>
-          <span className="preview-label">
-            <CheckCircle2 size={15} /> RUN PREVIEW
-          </span>
-          <h2>Ready to hand off</h2>
-        </div>
-        <span className={`status-pill ${preview.canStart ? 'status-ready' : 'status-waiting_for_user'}`}>
-          {preview.canStart ? 'Ready to start' : 'Needs setup'}
-        </span>
-      </div>
-      <div className="preview-summary">
-        <div>
-          <span>Task</span>
-          <strong>{preview.task}</strong>
-        </div>
-        <div>
-          <span>Machine</span>
-          <strong>{preview.machine.name}</strong>
-        </div>
-        <div>
-          <span>Project</span>
-          <strong>{preview.project.name}</strong>
-          <small>{preview.project.path}</small>
-        </div>
-        <div>
-          <span>Workflow</span>
-          <strong>{preview.workflow.name}</strong>
-          <small>
-            {capitalize(preview.profile)} depth · {capitalize(preview.permissionMode)} permissions
-          </small>
-        </div>
-        <div>
-          <span>Git strategy</span>
-          <strong>
-            {preview.branchStrategy === 'worktree' ? 'Create isolated worktree' : 'Use project working tree'}
-          </strong>
-          <small>
-            {preview.project.branch ?? 'No current branch detected'}
-            {preview.project.dirty ? ' · uncommitted changes' : ''}
-          </small>
-        </div>
-        <div>
-          <span>Prompt refinement</span>
-          <strong>{preview.refinePrompt ? 'On · confirmation required' : 'Off'}</strong>
-          <small>
-            {preview.refinePrompt
-              ? 'The workflow pauses until you accept the refined task.'
-              : 'The configured workflow starts directly.'}
-          </small>
-        </div>
-      </div>
-      <div className="stage-plan">
-        <div className="stage-plan-head">
-          <span>STAGE SEQUENCE</span>
-          <span>{preview.expectedAiStages} configured AI stages</span>
-        </div>
-        <div className="stage-chips">
-          {plan.map((stage, index) => (
-            <span className="stage-chip" key={stage.id}>
-              <i>{index + 1}</i>
-              <span>
-                {stage.label}
-                <small>
-                  {stage.timeoutMinutes ? `${stage.timeoutMinutes} min timeout` : 'run limit'} ·{' '}
-                  {stage.retryPolicy?.maxRetries ?? preview.workflow.retryPolicy.maxRetries} retries
-                </small>
-              </span>
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="preview-bounds">
-        <span>
-          <strong>Billing mode</strong>{' '}
-          {billingModeLabel(
-            preview.billingMode ?? (preview.subscriptionOnly ? 'subscriptions-only' : 'custom'),
-          )}
-        </span>
-        <span>
-          <strong>Provider lock</strong> {preview.lockProviders ? 'On · exact configured routes' : 'Off'}
-        </span>
-        <span>
-          <strong>Run limit</strong> {preview.workflow.maxDurationMinutes} minutes
-        </span>
-        <span>
-          <strong>Transient retries</strong> up to {preview.workflow.retryPolicy.maxRetries} · starts at{' '}
-          {preview.workflow.retryPolicy.initialDelayMs} ms, capped at{' '}
-          {preview.workflow.retryPolicy.maxDelayMs} ms
-        </span>
-        <span>
-          <strong>Remediation</strong> up to {preview.workflow.maxRemediationRounds} rounds
-        </span>
-        <span>
-          <strong>Parallelism</strong> up to {preview.workflow.maxParallelAgents} agents
-        </span>
-        <span>
-          <strong>Approval gates</strong>{' '}
-          {
-            plan.filter((stage) =>
-              ['humanApproval', 'gitPush', 'gitMerge', 'gitRollback'].includes(stage.kind),
-            ).length
-          }
-        </span>
-        <span>
-          <strong>Target</strong> {preview.machine.name} · {preview.project.name} ·{' '}
-          {preview.branchStrategy === 'worktree' ? 'isolated worktree' : 'project working tree'}
-        </span>
-      </div>
-      <RoutingSummaryPanel preview={preview} />
-      <RuleListDetails rules={preview.effectiveRules} title="Effective run rules" />
-      {preview.providerAssignments.length > 0 && (
-        <div className="assignment-summary">
-          {preview.providerAssignments.map((item) => (
-            <div key={`${item.stage}-${item.backendId}`}>
-              <span className={item.ready ? 'assignment-dot-ready' : 'assignment-dot-error'} />
-              {item.stage}
-              <strong>
-                {item.decision
-                  ? `Decision Gate · ${item.modelId ?? 'Deterministic Rules'}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
-                  : item.ready
-                    ? `${item.backendId} · ${item.providerId}/${item.modelId}${item.variantId ? ` · variant ${item.variantId}` : ''}${item.connectionProfileName ? ` · ${item.connectionProfileName}` : ''}`
-                    : 'Needs provider/model setup'}
-              </strong>
-              {item.decision && (
-                <small className="assignment-native-config">{decisionAssignmentLine(item)}</small>
-              )}
-              {item.billingAllowed === false && (
-                <small className="assignment-native-config">BLOCKED · {item.billingReason}</small>
-              )}
-              {item.ready && (
-                <small className="assignment-native-config">
-                  {item.workload === 'deterministic'
-                    ? 'decision-gate · local deterministic rules · no provider, no billing lane'
-                    : `${item.role ? `${item.role} · ` : ''}${billingLaneLabel(item.billingLane ?? 'unknown')}${item.catalogStatus ? ` · ${item.catalogStatus.toUpperCase().replace('-', ' ')}` : ''} · ${(item.identity ?? classifyModelIdentity(item.backendId ?? undefined, item.modelId ?? undefined)) === 'floating' ? 'FLOATING / ROUTED' : 'PINNED'}`}
-                  {item.reasoning ? ` · provider reasoning ${item.reasoning}` : ''}
-                  {item.nativeSettings && Object.keys(item.nativeSettings).length
-                    ? ` · ${Object.entries(item.nativeSettings)
-                        .map(([key, value]) => `${key}=${value}`)
-                        .join(', ')}`
-                    : ''}
-                </small>
-              )}
-              <small>
-                {item.context.label} · ESTIMATED initial input ~
-                {item.context.estimatedInputTokens.toLocaleString()} tokens · configured limit{' '}
-                {item.context.maxEstimatedTokens.toLocaleString()}
-              </small>
-            </div>
-          ))}
-        </div>
-      )}
-      {preview.warnings.length > 0 && (
-        <ul className="preview-warnings">
-          {preview.warnings.map((warning) => (
-            <li key={warning}>
-              <AlertTriangle size={14} />
-              {warning}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="preview-footnote">
-        <Shield size={14} /> Credentials remain in desktop-side storage and are never sent to this device.
-        Turing never falls back to API, PAYG, or OpenRouter billing on its own; provider-side PAYG fallback is
-        shown as unknown because no supported check can verify it. Token figures are ESTIMATED.
-      </p>
-    </section>
   );
 }
 

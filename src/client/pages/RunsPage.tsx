@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -20,7 +20,6 @@ import {
   Sparkles,
   Square,
   StopCircle,
-  X,
   type LucideIcon,
 } from 'lucide-react';
 import type { DashboardSnapshot, ExecutionOperation, GitOperation, RunSummary } from '../../shared/types';
@@ -35,6 +34,8 @@ import { PageHeading, StatusIcon, EmptyState } from './shared/parts';
 import { formatDate, formatDuration, formatMilliseconds } from './shared/format';
 import { RuleListDetails } from './shared/RuleListDetails';
 import { iconForStage } from './shared/stageMeta';
+import { RunWorkspaceTabs, type RunTab } from './runs/RunWorkspaceTabs';
+import { RunDiff, type RunDiffState } from './runs/RunDiff';
 
 export function RunsPage({
   snapshot,
@@ -54,12 +55,29 @@ export function RunsPage({
   onNavigate: (page: Page) => void;
 }) {
   const [filter, setFilter] = useState('all');
+  const listRef = useRef<HTMLDivElement>(null);
+  const openedFrom = useRef<string | null>(null);
   const runs = snapshot.runs.filter(
     (run) => filter === 'all' || activeStatuses.has(run.status) === (filter === 'active'),
   );
+  // Closing a run returns focus to the row that opened it. The first render never moves focus.
+  useEffect(() => {
+    if (selectedRunId) {
+      openedFrom.current = selectedRunId;
+      return;
+    }
+    const id = openedFrom.current;
+    openedFrom.current = null;
+    if (!id) return;
+    Array.from(listRef.current?.querySelectorAll<HTMLElement>('.full-run-row') ?? [])
+      .find((row) => row.dataset.runId === id)
+      ?.focus();
+  }, [selectedRunId]);
   return (
     <main className="page-content">
-      {!selectedRun && (
+      {selectedRun ? (
+        <h1 className="sr-only">Runs &amp; history</h1>
+      ) : (
         <PageHeading
           title="Runs & history"
           description="Follow active stages, inspect provider output, and review changes from recent workflows."
@@ -99,10 +117,11 @@ export function RunsPage({
             </select>
           </div>
           {runs.length ? (
-            <div className="full-run-list">
+            <div className="full-run-list" ref={listRef}>
               {runs.map((run) => (
                 <button
                   key={run.id}
+                  data-run-id={run.id}
                   className={`full-run-row ${selectedRunId === run.id ? 'full-run-selected' : ''}`}
                   onClick={() => onSelect(run.id)}
                 >
@@ -140,6 +159,7 @@ export function RunsPage({
         </section>
         {selectedRun ? (
           <RunDetail
+            key={selectedRun.id}
             run={selectedRun}
             onNotice={onNotice}
             onRefresh={onRefresh}
@@ -171,9 +191,13 @@ export function RunDetail({
   onClose: () => void;
 }) {
   const [details, setDetails] = useState<Awaited<ReturnType<typeof api.run>> | null>(null);
-  const [operations, setOperations] = useState<ExecutionOperation[]>([]);
-  const [diff, setDiff] = useState('');
-  const [showDiff, setShowDiff] = useState(false);
+  const [detailsFailed, setDetailsFailed] = useState(false);
+  const [detailsAttempt, setDetailsAttempt] = useState(0);
+  // Null until the execution operations have been fetched, so a count is never shown for data that was not loaded.
+  const [operations, setOperations] = useState<ExecutionOperation[] | null>(null);
+  const [tab, setTab] = useState<RunTab>('activity');
+  const [diffState, setDiffState] = useState<RunDiffState>({ status: 'idle' });
+  const diffRequest = useRef(0);
   const [intervention, setIntervention] = useState('');
   const isActive = activeStatuses.has(run.status);
   useEffect(() => {
@@ -183,21 +207,42 @@ export function RunDetail({
         if (live) {
           setDetails(result);
           setOperations(operationResult.operations);
+          setDetailsFailed(false);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (live) setDetailsFailed(true);
+      });
     return () => {
       live = false;
     };
-  }, [run.id, run.status, run.stages.map((stage) => stage.status).join(',')]);
+  }, [run.id, run.status, run.stages.map((stage) => stage.status).join(','), detailsAttempt]);
+  // Each request gets a number. A response that is not the latest request is dropped, so a slow earlier call cannot
+  // overwrite a newer diff.
   const loadDiff = async () => {
+    const request = ++diffRequest.current;
+    setDiffState({ status: 'loading' });
     try {
       const result = await api.diff(run.id);
-      setDiff(result.diff);
-      setShowDiff(true);
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Diff could not be loaded.');
+      if (request === diffRequest.current) setDiffState({ status: 'ready', result });
+    } catch {
+      if (request === diffRequest.current) setDiffState({ status: 'error' });
     }
+  };
+  // The working tree of an active run keeps changing, so Changes refetches on every activation. A finished run's diff
+  // is fetched once, on first activation, and kept with this run's detail.
+  const selectTab = (next: RunTab) => {
+    setTab(next);
+    if (next === 'changes' && (isActive || diffState.status === 'idle')) void loadDiff();
+  };
+  // "View diff" selects Changes and moves focus to its tab. When Changes is already selected it only moves focus.
+  const viewDiff = () => {
+    if (tab !== 'changes') selectTab('changes');
+    document.getElementById('run-tab-changes')?.focus();
+  };
+  const retryDetails = () => {
+    setDetailsFailed(false);
+    setDetailsAttempt((attempt) => attempt + 1);
   };
   const sendIntervention = async () => {
     if (!intervention.trim()) return;
@@ -377,207 +422,238 @@ export function RunDetail({
               Stop run
             </button>
           )}
-          <button className="secondary-button" onClick={() => void loadDiff()}>
+          <button className="secondary-button" onClick={viewDiff}>
             <GitCompareArrows size={14} />
             View diff
           </button>
         </div>
       </div>
-      <div className="thread-user">
-        <p>{run.prompt}</p>
-      </div>
-      <div className="run-detail-meta">
-        <span>
-          <Clock3 size={13} />
-          {formatDuration(run.startedAt, run.completedAt)}
-        </span>
-        <span>
-          <GitBranch size={13} />
-          {run.branch ?? 'Project branch'}
-        </span>
-        <span>{run.profile} profile</span>
-        <span>{run.permissionMode}</span>
-      </div>
-      <div className="run-runtime-summary">
-        <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
-        {run.remainingMs !== null && <span>Run time remaining: {formatMilliseconds(run.remainingMs)}</span>}
-        {run.status === 'paused_limit_reached' && (
-          <strong>Maximum workflow duration reached. The working tree is preserved for inspection.</strong>
-        )}
-      </div>
-      {run.summary && (
-        <div className="run-summary-banner">
-          <strong>Run summary</strong>
-          <p>{run.summary}</p>
-        </div>
+      {!details && !detailsFailed && (
+        <p className="run-details-status" role="status">
+          Loading run details…
+        </p>
       )}
-      {run.status === 'waiting_for_user' &&
-        run.stages.some(
-          (stage) => stage.kind === 'promptRefinement' && stage.status === 'waiting_for_user',
-        ) && (
-          <PromptRefinementConfirmation
-            runId={run.id}
-            stage={run.stages.find(
-              (stage) => stage.kind === 'promptRefinement' && stage.status === 'waiting_for_user',
-            )!}
-            onRefresh={onRefresh}
-            onNotice={onNotice}
-          />
-        )}
-      <div className="run-timeline">
-        <div className="timeline-heading">
-          <h3>Stages</h3>
-          <span>
-            {run.stages.filter((stage) => stage.status === 'passed').length} / {run.stages.length} complete
-          </span>
-        </div>
-        <div className="stage-list">
-          {run.stages.map((stage) => (
-            <RunStageRow
-              key={stage.id}
-              stage={stage}
-              findings={findings.filter((finding) => finding.stage_id === stage.id)}
-            />
-          ))}
-        </div>
-      </div>
-      <section className="execution-activity">
-        <div className="timeline-heading">
-          <h3>Execution activity</h3>
-          <span>{operations.length} brokered operations</span>
-        </div>
-        {operations.length ? (
-          <div className="execution-operation-list">
-            {operations.map((operation) => (
-              <details className="execution-operation" key={operation.id}>
-                <summary>
-                  <strong>{humanize(operation.operationType)}</strong>
-                  <span>{operation.classification}</span>
-                  <span className={`status-pill status-${operation.status}`}>
-                    {humanize(operation.status)}
-                  </span>
-                </summary>
-                <dl>
-                  <dt>Role</dt>
-                  <dd>{operation.role}</dd>
-                  <dt>Backend</dt>
-                  <dd>
-                    {operation.backendId} · {operation.providerId} · {operation.modelId}
-                  </dd>
-                  <dt>Directory</dt>
-                  <dd>{operation.cwd}</dd>
-                  <dt>Approval</dt>
-                  <dd>
-                    {operation.approvalRequired ? (operation.approvalId ?? 'Required') : 'Not required'}
-                  </dd>
-                  <dt>Action</dt>
-                  <dd>
-                    <pre>{JSON.stringify(operation.action, null, 2)}</pre>
-                  </dd>
-                  {(operation.stdout || operation.stderr) && (
-                    <>
-                      <dt>Result output</dt>
-                      <dd>
-                        <pre>{[operation.stdout, operation.stderr].filter(Boolean).join('\n')}</pre>
-                      </dd>
-                    </>
-                  )}
-                </dl>
-              </details>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-inline">No mediated provider tools have been requested yet.</div>
-        )}
-      </section>
-      <section className="execution-activity git-activity">
-        <div className="timeline-heading">
-          <h3>Git activity</h3>
-          <span>{gitOperations.length} recorded operations</span>
-        </div>
-        {gitOperations.length ? (
-          <div className="execution-operation-list">
-            {gitOperations.map((operation: GitOperation) => (
-              <details className="execution-operation" key={operation.id}>
-                <summary>
-                  <strong>{humanize(operation.operation)}</strong>
-                  <span>{operation.branch ?? 'No branch'}</span>
-                  <span className={`status-pill status-${operation.status}`}>
-                    {humanize(operation.status)}
-                  </span>
-                </summary>
-                <dl>
-                  <dt>Target</dt>
-                  <dd>{operation.target ?? '—'}</dd>
-                  <dt>Approval</dt>
-                  <dd>
-                    {operation.approvalRequired
-                      ? (operation.approvalId ?? 'Required')
-                      : 'Not required by this permission mode'}
-                  </dd>
-                  <dt>Before</dt>
-                  <dd>{operation.beforeCommit ?? '—'}</dd>
-                  <dt>After</dt>
-                  <dd>{operation.afterCommit ?? '—'}</dd>
-                  {operation.result && (
-                    <>
-                      <dt>Result</dt>
-                      <dd>
-                        <pre>{JSON.stringify(operation.result, null, 2)}</pre>
-                      </dd>
-                    </>
-                  )}
-                </dl>
-              </details>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-inline">No first-class Git operations have run.</div>
-        )}
-      </section>
-      <DecisionResultsPanel decisions={details?.decisions ?? []} />
-      <RuleListDetails rules={details?.effectiveRules ?? []} title="Saved rule snapshot" />
-      {showDiff && (
-        <div className="diff-viewer">
-          <div className="diff-viewer-head">
-            <h3>Current diff</h3>
-            <button
-              className="icon-button tiny-icon"
-              onClick={() => setShowDiff(false)}
-              aria-label="Close diff"
-            >
-              <X size={14} />
-            </button>
-          </div>
-          {diff ? (
-            <pre>{diff}</pre>
+      {detailsFailed && (
+        <div className="run-details-error" role="alert">
+          <AlertTriangle size={14} aria-hidden="true" />
+          {details ? (
+            <p>
+              <strong>Showing earlier details.</strong> The latest run details could not be loaded.
+            </p>
           ) : (
-            <div className="empty-inline">No tracked changes are present in this working tree.</div>
+            <p>
+              <strong>Error:</strong> Run details could not be loaded.
+            </p>
           )}
-        </div>
-      )}
-      {isActive && (
-        <div className="intervention-box">
-          <label className="form-field">
-            <span className="sr-only">Intervene in this run</span>
-            <textarea
-              rows={2}
-              maxLength={4_000}
-              value={intervention}
-              onChange={(event) => setIntervention(event.target.value)}
-              placeholder="Add a constraint or redirect the next stage…"
-            />
-          </label>
-          <button
-            className="primary-button"
-            onClick={() => void sendIntervention()}
-            disabled={!intervention.trim()}
-          >
-            <Send size={14} />
-            <span className="btn-label">Record intervention</span>
+          <button type="button" className="secondary-button" onClick={retryDetails}>
+            Retry
           </button>
         </div>
       )}
+      <RunWorkspaceTabs
+        tab={tab}
+        onSelect={selectTab}
+        panels={{
+          activity: (
+            <>
+              <div className="thread-user">
+                <p>{run.prompt}</p>
+              </div>
+              <div className="run-runtime-summary">
+                <span>Elapsed: {formatMilliseconds(run.elapsedMs)}</span>
+                {run.remainingMs !== null && (
+                  <span>Run time remaining: {formatMilliseconds(run.remainingMs)}</span>
+                )}
+                {run.status === 'paused_limit_reached' && (
+                  <strong>
+                    Maximum workflow duration reached. The working tree is preserved for inspection.
+                  </strong>
+                )}
+              </div>
+              {run.summary && (
+                <div className="run-summary-banner">
+                  <strong>Run summary</strong>
+                  <p>{run.summary}</p>
+                </div>
+              )}
+              {run.status === 'waiting_for_user' &&
+                run.stages.some(
+                  (stage) => stage.kind === 'promptRefinement' && stage.status === 'waiting_for_user',
+                ) && (
+                  <PromptRefinementConfirmation
+                    runId={run.id}
+                    stage={run.stages.find(
+                      (stage) => stage.kind === 'promptRefinement' && stage.status === 'waiting_for_user',
+                    )!}
+                    onRefresh={onRefresh}
+                    onNotice={onNotice}
+                  />
+                )}
+              <div className="run-timeline">
+                <div className="timeline-heading">
+                  <h3>Stages</h3>
+                  <span>
+                    {run.stages.filter((stage) => stage.status === 'passed').length} / {run.stages.length}{' '}
+                    complete
+                  </span>
+                </div>
+                <div className="stage-list">
+                  {run.stages.map((stage) => (
+                    <RunStageRow
+                      key={stage.id}
+                      stage={stage}
+                      findings={findings.filter((finding) => finding.stage_id === stage.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+              {isActive && (
+                <div className="intervention-box">
+                  <label className="form-field">
+                    <span className="sr-only">Intervene in this run</span>
+                    <textarea
+                      rows={2}
+                      maxLength={4_000}
+                      value={intervention}
+                      onChange={(event) => setIntervention(event.target.value)}
+                      placeholder="Add a constraint or redirect the next stage…"
+                    />
+                  </label>
+                  <button
+                    className="primary-button"
+                    onClick={() => void sendIntervention()}
+                    disabled={!intervention.trim()}
+                  >
+                    <Send size={14} />
+                    <span className="btn-label">Record intervention</span>
+                  </button>
+                </div>
+              )}
+            </>
+          ),
+          changes: <RunDiff state={diffState} onRetry={() => void loadDiff()} />,
+          details: (
+            <>
+              <div className="run-detail-meta">
+                <span>
+                  <Clock3 size={13} />
+                  {formatDuration(run.startedAt, run.completedAt)}
+                </span>
+                <span>
+                  <GitBranch size={13} />
+                  {run.branch ?? 'Project branch'}
+                </span>
+                <span>{run.profile} profile</span>
+                <span>{run.permissionMode}</span>
+              </div>
+              {details && operations && (
+                <>
+                  <section className="execution-activity">
+                    <div className="timeline-heading">
+                      <h3>Execution activity</h3>
+                      <span>{operations.length} brokered operations</span>
+                    </div>
+                    {operations.length ? (
+                      <div className="execution-operation-list">
+                        {operations.map((operation) => (
+                          <details className="execution-operation" key={operation.id}>
+                            <summary>
+                              <strong>{humanize(operation.operationType)}</strong>
+                              <span>{operation.classification}</span>
+                              <span className={`status-pill status-${operation.status}`}>
+                                {humanize(operation.status)}
+                              </span>
+                            </summary>
+                            <dl>
+                              <dt>Role</dt>
+                              <dd>{operation.role}</dd>
+                              <dt>Backend</dt>
+                              <dd>
+                                {operation.backendId} · {operation.providerId} · {operation.modelId}
+                              </dd>
+                              <dt>Directory</dt>
+                              <dd>{operation.cwd}</dd>
+                              <dt>Approval</dt>
+                              <dd>
+                                {operation.approvalRequired
+                                  ? (operation.approvalId ?? 'Required')
+                                  : 'Not required'}
+                              </dd>
+                              <dt>Action</dt>
+                              <dd>
+                                <pre>{JSON.stringify(operation.action, null, 2)}</pre>
+                              </dd>
+                              {(operation.stdout || operation.stderr) && (
+                                <>
+                                  <dt>Result output</dt>
+                                  <dd>
+                                    <pre>
+                                      {[operation.stdout, operation.stderr].filter(Boolean).join('\n')}
+                                    </pre>
+                                  </dd>
+                                </>
+                              )}
+                            </dl>
+                          </details>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-inline">No mediated provider tools have been requested yet.</div>
+                    )}
+                  </section>
+                  <section className="execution-activity git-activity">
+                    <div className="timeline-heading">
+                      <h3>Git activity</h3>
+                      <span>{gitOperations.length} recorded operations</span>
+                    </div>
+                    {gitOperations.length ? (
+                      <div className="execution-operation-list">
+                        {gitOperations.map((operation: GitOperation) => (
+                          <details className="execution-operation" key={operation.id}>
+                            <summary>
+                              <strong>{humanize(operation.operation)}</strong>
+                              <span>{operation.branch ?? 'No branch'}</span>
+                              <span className={`status-pill status-${operation.status}`}>
+                                {humanize(operation.status)}
+                              </span>
+                            </summary>
+                            <dl>
+                              <dt>Target</dt>
+                              <dd>{operation.target ?? '—'}</dd>
+                              <dt>Approval</dt>
+                              <dd>
+                                {operation.approvalRequired
+                                  ? (operation.approvalId ?? 'Required')
+                                  : 'Not required by this permission mode'}
+                              </dd>
+                              <dt>Before</dt>
+                              <dd>{operation.beforeCommit ?? '—'}</dd>
+                              <dt>After</dt>
+                              <dd>{operation.afterCommit ?? '—'}</dd>
+                              {operation.result && (
+                                <>
+                                  <dt>Result</dt>
+                                  <dd>
+                                    <pre>{JSON.stringify(operation.result, null, 2)}</pre>
+                                  </dd>
+                                </>
+                              )}
+                            </dl>
+                          </details>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="empty-inline">No first-class Git operations have run.</div>
+                    )}
+                  </section>
+                  <DecisionResultsPanel decisions={details.decisions ?? []} />
+                  <RuleListDetails rules={details.effectiveRules} title="Saved rule snapshot" />
+                </>
+              )}
+            </>
+          ),
+        }}
+      />
     </section>
   );
 }

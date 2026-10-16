@@ -1,0 +1,204 @@
+/* ───────────── Run workspace: tabs, changes, detail states ─────────────
+   Tokens only. No display face, no literal colours, and motion only under the reduced-motion guard. */
+
+.run-workspace {
+  display: grid;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.run-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s-1);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.run-tab {
+  min-height: var(--h-control);
+  padding: 0 var(--s-3);
+  color: var(--ink-3);
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-control);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  cursor: pointer;
+}
+
+.run-tab:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.run-tab[aria-selected='true'] {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.run-tab-panel {
+  display: grid;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.run-tab-panel[hidden] {
+  display: none;
+}
+
+.run-tab-panel:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.run-details-status {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+
+.run-details-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  color: var(--ink-2);
+  font-size: var(--fs-control);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+
+.run-details-error p {
+  margin: 0;
+}
+
+/* Changes: a read-only diff, split per file */
+.run-diff {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+.run-diff-notice,
+.run-diff-empty,
+.run-diff-error p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+}
+
+.run-diff-notice {
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+
+.run-diff-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+
+.run-diff-pane {
+  max-height: 480px;
+  min-width: 0;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-lg);
+}
+
+.run-diff-pane:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.run-diff-file + .run-diff-file {
+  border-top: 1px solid var(--hairline);
+}
+
+.run-diff-file h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--s-2) var(--s-3);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.run-diff-lines {
+  display: grid;
+  min-width: max-content;
+  padding: var(--s-1) 0;
+}
+
+.run-diff-line {
+  display: grid;
+  grid-template-columns: 2ch minmax(0, 1fr);
+  padding: 0 var(--s-3);
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.run-diff-line code {
+  font: inherit;
+  white-space: pre;
+}
+
+.run-diff-marker {
+  font-weight: var(--fw-medium);
+  user-select: none;
+}
+
+.run-diff-add {
+  color: var(--diff-add-ink);
+  background: var(--diff-add-bg);
+}
+
+.run-diff-remove {
+  color: var(--diff-del-ink);
+  background: var(--diff-del-bg);
+}
+
+.run-diff-meta {
+  grid-template-columns: minmax(0, 1fr);
+  color: var(--ink-3);
+}
+
+.run-diff-context {
+  color: var(--ink-2);
+}
+
+/* Compact: every tab is a 44px target */
+@media (max-width: 680px) {
+  [role='tab'] {
+    min-height: 44px;
+  }
+
+  .run-diff-pane {
+    max-height: 60vh;
+  }
+}
+
+/* Motion only for users who have not asked for less */
+@media (prefers-reduced-motion: no-preference) {
+  .run-tab {
+    transition:
+      color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease);
+  }
+}

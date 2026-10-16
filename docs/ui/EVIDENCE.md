@@ -71,3 +71,18 @@ Known limitations:
 - Physical iPhone and native checks: NOT PERFORMED.
 
 UI.1c CI: run 38830237379, event push, tested exact `ff4dcc546866b69c128d256effb9107a4aaa8b8b`, conclusion success, 00:34:26Z to 00:47:00Z (about 12.5 minutes).
+
+## UI.2: Home composer, run preview, read-only run workspace
+
+Scope: `docs/ui/UI2_SCOPE.md`. Planner Sonnet 5.5 Medium; RED tests `7f5863a` (38 tests, 29 RED); implementation and review fixes Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, all findings fixed (invented Details empty states, diff refresh for active runs, "View diff" focus, rename/quoted-path and cap handling in `diffModel`, stale-details alert, compact CSS order tie, preview notice copy, error icon+word) with 22 new tests. No change under `src/server`, `src/shared`, `src/client/goals` or `src/client/api.ts`. No paid-fallback control added; Safeguards is read-only; the pre-existing "Custom metered lanes" billing option is untouched and flagged for the owner.
+
+Captures: `docs/ui/evidence/ui2/after/` (18 PNGs, `SHA256SUMS`) from labelled fixtures. The UI.1c PNGs were deliberately not regenerated; they remain the UI.1c record and differ from a rerun because Home changed.
+
+Known limitations (not fixed in UI.2):
+
+- Notices (toast) never auto-dismiss and can cover the heading or Start controls on phone.
+- On phone the "Before you can run" group sits below the recent list; the composer is sticky.
+- The running-run intervention box appears docked over stage content on phone (read from a screenshot, not measured).
+- Diff lines clip on phone with no visible hint that the pane scrolls.
+- No artifacts tab (no endpoint), no run drafts, file tree, editor or terminal (deferred).
+- No physical iPhone, native Tauri or forced-colors check; CI does not run Playwright.
