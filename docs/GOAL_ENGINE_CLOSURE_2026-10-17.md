@@ -7,11 +7,11 @@ Status: Owner decision d3e4 (2026-10-17) applied. This report does **not** decla
 | Item                              | Outcome                                                                                                                                                                 |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | HR-Q4 (queued-run crash/restart)  | **Accepted in code** by the owner for the implemented scope at `c775a6b`. Final physical and release-candidate restart qualification is still outstanding.              |
-| Queued-run user cancellation      | **Fixed** in `0701f9f`, with focused tests. Hosted CI for that SHA did **not run** (account billing block, see section 3).                                              |
+| Queued-run user cancellation      | **Fixed** in `0701f9f`, with focused tests. Hosted CI for `0701f9f` was blocked by billing. The exact head `d2dcd52` passed (section 3).                                |
 | Live Tailscale `desktop_required` | **Performed** from a disposable second paired browser through the real Serve origin. All checks passed. The genuine iPhone session is **no longer active** (section 4). |
 | Content-discarding merges         | **Assessed.** Requires an owner decision on a new versioned policy before any implementation (section 5).                                                               |
-| Cross-attestation stuck Goals     | **Assessed.** Fail-closed behaviour is in place. The user-facing copy has a recovery gap (section 6).                                                                   |
-| X1                                | **Defined as a proposal** for owner acceptance (section 7).                                                                                                             |
+| Cross-attestation stuck Goals     | **Assessed.** Fail-closed behaviour is in place. The recovery copy gap is addressed in `2a3430b` (section 7).                                                           |
+| X1                                | **Defined as a proposal** for owner acceptance (section 8).                                                                                                             |
 
 ## 2. Accepted changes this round
 
@@ -56,7 +56,7 @@ Status: Owner decision d3e4 (2026-10-17) applied. This report does **not** decla
 **Caveats.**
 
 - This is a disposable browser session. It is **not** physical iPhone interaction and must not be cited as one. The genuine-iPhone dashboard test is a separate gate.
-- The live Master runs build `ba59308` from the `fix/pairing-empty-json-body` worktree. Its boundary code (`app.ts`, `goalRoutes.ts`) is identical to `0701f9f`. The cancellation change is **not** exercised by the live Master.
+- The live Master runs build `ba59308` from the `fix/pairing-empty-json-body` worktree. The remote-guard and desktop-only route code in `app.ts` and `goalRoutes.ts` is unchanged since `67af34f`, the commit the live build's boundary matches. The cancellation route in `app.ts` differs and is **not** exercised by the live Master. (`ba59308` is not present in this repository, so this was checked against `67af34f`.)
 - The four extra `pairing_requests` rows are pending or expired requests from the attempts. They have no effect on Goal state.
 
 ## 5. IPhone session finding (needs owner attention)
@@ -106,17 +106,17 @@ Status: Owner decision d3e4 (2026-10-17) applied. This report does **not** decla
 
 Withdrawn, disputed and superseded authority is not treated as eligible. Fail-closed behaviour matches the owner's rule.
 
-**Gap found: recovery copy.**
+**Recovery copy gap: addressed in `2a3430b`.** The corrected-attestation and invalid-history refusals now name the ways forward. Caveats:
 
-- `src/client/goals/completionModel.ts` says "The attestation was corrected, so it cannot be used." for withdrawn, disputed and superseded attestations. It gives **no next action**.
-- `completion_history_invalid` says "Refresh to check them again." That cannot resolve history that is permanently invalid, so the Goal is stuck with no path.
+- Before `2a3430b`, the copy for withdrawn, disputed and superseded attestations gave no next action, and the invalid-history copy said only to refresh.
+- The "pause then abandon" option is only correct from `running`. From `needs_user` or `blocked`, abandon is direct. Abandon is refused while a Goal run is non-terminal or an integration operation is still planned, so the copy should say that abandon waits for in-flight work. This is a should-fix from review, pending the owner's confirmation.
 
 **Recovery options** the owner asked to be explained:
 
 - **Fresh attestation.** Requires a new external attestation with current authority.
 - **Manual reconciliation.** The user reconciles the Git state, then re-attests.
 - **New Goal.** The user starts again. Terminal Goals never reopen.
-- **Abandonment.** Confirm the route exists before offering it in copy. I did not verify it in this session.
+- **Abandonment.** The route exists (`POST /api/goals/:goalId/abandon`) and is legal from `draft`, `ready`, `needs_user`, `blocked` and `paused`. It is refused while Goal work is in flight (`goal_work_in_flight`).
 
 Coverage: `completionAuthorityPolicy.test.ts` has 49 test cases that reference classes 1–6, and they passed in the full suite run (section 2).
 
@@ -129,7 +129,7 @@ The full locations, the conflicting statements and the proposed wording are in [
 
 ## 9. Remaining gates before release
 
-1. Hosted CI for `0701f9f`: blocked by billing. Re-run after the owner resolves it.
+1. Hosted CI: `gate` passed on `d2dcd52` (section 3). Re-check CI on the latest head after any further push.
 2. Physical iPhone verification, including re-pairing the genuine iPhone (section 5).
 3. Physical Windows verification.
 4. Live provider verification.
