@@ -24,7 +24,7 @@ export interface MascotStatusProps {
 }
 
 /** One merged rectangle path per colour for a frame. Each run of identical cells in a row becomes one 1-high rect. */
-function framePaths(rows: readonly string[]): Array<{ role: MascotRole; d: string }> {
+export function framePaths(rows: readonly string[]): Array<{ role: MascotRole; d: string }> {
   const data: Record<MascotRole, string> = { outline: '', body: '', shade: '', accent: '' };
   rows.forEach((row, y) => {
     let x = 0;

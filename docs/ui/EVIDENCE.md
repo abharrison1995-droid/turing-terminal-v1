@@ -181,3 +181,8 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 - Fix: the JSON content type is only declared when a body is sent. Second fix: `DevicePairingPage` returned early from the completion poll when `code` was empty, so after a QR claim the phone never completed pairing; it now polls whenever a request id exists and either a QR request or a code is present.
 - Tests (new files only, RED before the fix): `src/client/apiBodyless.test.ts`, `src/client/pages/qrPairingCompletion.test.tsx`.
 - This supersedes the earlier "QR completion poll" and "bodyless-JSON" limitations recorded in UI.4. Not yet verified on a physical phone or against the live desktop app (the running app was not restarted). The QR still requires an HTTPS Tailscale Serve origin with no path in the Settings field.
+
+## Brand skull (owner request)
+
+- The sidebar brand icon is now the static first idle frame of the approved skull (`src/client/ui/shell/BrandSkull.tsx`): no timers, `aria-hidden`, token colours, "Turing Terminal" as adjacent text. This is a logo, not a status mark. The UI.6 placement guard allow-list gained this one file by owner request. The startup "TT" tile and `public/turing.svg` are unchanged.
+- The UI.7 captures were regenerated to show it (`docs/ui/evidence/ui7/after/`, checksums refreshed); earlier stage captures keep the old icon as their record.

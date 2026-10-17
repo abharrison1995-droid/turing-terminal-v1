@@ -1,10 +1,11 @@
-import { Command, Plus } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import type { RunSummary } from '../../../shared/types';
 import { APP_VERSION } from '../../../shared/version';
 import type { Page } from '../../pages/shared/types';
 import { StatusIcon } from '../../pages/shared/parts';
 import { humanStatus, shortTask } from '../../pages/shared/runStatus';
 import { NAV_ITEMS, NAV_PANEL_ID } from './navModel';
+import { BrandSkull } from './BrandSkull';
 
 /** What the machine rail reports: the real refresh state, never a fixed "Online". */
 export type MasterConnection = 'online' | 'unavailable' | 'connecting';
@@ -55,7 +56,7 @@ export function Sidebar({
         aria-label="Turing Terminal home"
       >
         <span className="brand-mark">
-          <Command size={16} />
+          <BrandSkull />
         </span>
         <span className="brand-name">Turing Terminal</span>
       </button>

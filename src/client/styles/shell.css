@@ -48,6 +48,11 @@
   color: inherit;
   stroke-width: 2;
 }
+.brand-mark svg[data-brand-skull] {
+  width: 24px;
+  height: 24px;
+  image-rendering: pixelated;
+}
 .brand-name {
   font-family: var(--font-display);
   font-size: var(--fs-display-brand);

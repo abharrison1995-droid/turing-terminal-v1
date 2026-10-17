@@ -53,9 +53,13 @@ describe('mascot placement (UI6 A5)', () => {
   // [GUARD] only the three allow-listed pages, and ui/mascot itself, may import the mascot.
   it('lets only the allow-listed pages import the mascot', () => {
     const allowed = new Set(
-      ['pages/shared/parts.tsx', 'pages/CommandCenter.tsx', 'pages/RunsPage.tsx'].map((path) =>
-        join(clientRoot, path),
-      ),
+      [
+        'pages/shared/parts.tsx',
+        'pages/CommandCenter.tsx',
+        'pages/RunsPage.tsx',
+        // Owner request after UI.6: the static, non-animated brand skull replaces the sidebar brand icon.
+        'ui/shell/BrandSkull.tsx',
+      ].map((path) => join(clientRoot, path)),
     );
     const importers = sourceFiles.filter((file) => !insideMascot(file) && importsMascot(file));
     expect(importers.filter((file) => !allowed.has(file)).map(rel)).toEqual([]);
