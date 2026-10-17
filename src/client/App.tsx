@@ -35,6 +35,7 @@ import { Sidebar } from './ui/shell/Sidebar';
 import { Topbar } from './ui/shell/Topbar';
 import { buildPaletteCommands, type PaletteActions } from './ui/shell/commands';
 import { NAV_PANEL_ID, pageTitle } from './ui/shell/navModel';
+import { isErrorNotice, useNoticeTimeout } from './useNoticeTimeout';
 
 /** The compact shell breakpoint in shell.css and mobile.css: below it the navigation is a drawer. */
 const COMPACT_SHELL_QUERY = '(max-width: 680px)';
@@ -50,6 +51,7 @@ function App() {
   const [error, setError] = useState('');
   const [requiresPairing, setRequiresPairing] = useState(false);
   const [notice, setNotice] = useState('');
+  const noticeHandlers = useNoticeTimeout(notice, () => setNotice(''));
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const paletteInvoker = useRef<HTMLElement | null>(null);
@@ -368,10 +370,11 @@ function App() {
           )}
           {notice && (
             <div
-              className={`toast ${notice.toLowerCase().includes('could not') || notice.toLowerCase().includes('before') || notice.toLowerCase().includes('not available') ? 'toast-error' : ''}`}
+              className={`toast ${isErrorNotice(notice) ? 'toast-error' : ''}`}
               role="status"
+              {...noticeHandlers}
             >
-              {notice}
+              <span className="toast-text">{notice}</span>
               <button onClick={() => setNotice('')} aria-label="Dismiss">
                 <X size={14} />
               </button>

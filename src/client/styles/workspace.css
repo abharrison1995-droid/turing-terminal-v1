@@ -192,6 +192,11 @@
   .run-diff-pane {
     max-height: 60vh;
   }
+  @supports (height: 100dvh) {
+    .run-diff-pane {
+      max-height: 60dvh;
+    }
+  }
 }
 
 /* Motion only for users who have not asked for less */

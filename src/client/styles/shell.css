@@ -3,6 +3,11 @@
   min-height: 100vh;
   background: var(--canvas-gradient);
 }
+@supports (height: 100dvh) {
+  .app-shell {
+    min-height: 100dvh;
+  }
+}
 
 /* ───────────── Navigation rail ───────────── */
 .sidebar {
@@ -233,6 +238,11 @@
   min-height: 100vh;
   margin-left: var(--nav-width);
 }
+@supports (height: 100dvh) {
+  .app-main {
+    min-height: 100dvh;
+  }
+}
 .topbar {
   position: sticky;
   z-index: 10;
@@ -330,6 +340,11 @@
   padding: var(--s-6) var(--s-5);
   color: var(--ink-2);
   text-align: center;
+}
+@supports (height: 100dvh) {
+  .error-state {
+    min-height: 60dvh;
+  }
 }
 .error-state > svg.lucide {
   color: var(--red);

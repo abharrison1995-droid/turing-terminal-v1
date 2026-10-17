@@ -13,6 +13,11 @@
   max-height: calc(100vh - var(--topbar-h) - var(--s-6));
   overflow-y: auto;
 }
+@supports (height: 100dvh) {
+  .studio-rail {
+    max-height: calc(100dvh - var(--topbar-h) - var(--s-6));
+  }
+}
 .studio-rail-group {
   display: grid;
   gap: 1px;

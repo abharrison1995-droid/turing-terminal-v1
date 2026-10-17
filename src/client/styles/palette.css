@@ -19,6 +19,11 @@
   padding: 12vh var(--s-4) var(--s-4);
   background: var(--scrim);
 }
+@supports (height: 100dvh) {
+  .palette-backdrop {
+    padding-top: 12dvh;
+  }
+}
 .palette {
   display: flex;
   width: min(560px, 100%);
@@ -30,6 +35,11 @@
   background: var(--surface);
   border-radius: var(--r-lg);
   box-shadow: var(--elev-float);
+}
+@supports (height: 100dvh) {
+  .palette {
+    max-height: min(480px, 70dvh);
+  }
 }
 
 .palette-input {
@@ -114,6 +124,11 @@
     max-height: 80vh;
     padding: var(--s-2) var(--s-2) calc(var(--s-2) + env(safe-area-inset-bottom));
     border-radius: var(--r-xl) var(--r-xl) 0 0;
+  }
+  @supports (height: 100dvh) {
+    .palette {
+      max-height: 80dvh;
+    }
   }
   .palette-input {
     min-height: 44px;

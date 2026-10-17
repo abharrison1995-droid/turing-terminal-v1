@@ -443,6 +443,11 @@
   padding: var(--s-5);
   background: var(--canvas);
 }
+@supports (height: 100dvh) {
+  .pairing-page {
+    min-height: 100dvh;
+  }
+}
 .pairing-panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -747,6 +752,12 @@
   padding: var(--s-6);
   color: var(--ink);
   background: var(--canvas);
+}
+@supports (height: 100dvh) {
+  .desktop-startup-loading,
+  .desktop-startup-error {
+    min-height: 100dvh;
+  }
 }
 .desktop-startup-card {
   width: min(100%, 560px);

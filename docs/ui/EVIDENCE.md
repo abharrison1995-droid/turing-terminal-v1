@@ -118,3 +118,29 @@ Findings and limitations:
 - The OpenRouter "Store" buttons sit slightly off their fields; pairing requests still show raw "Awaiting_approval" copy (a TSX copy change, out of scope); the revoked device is shown as an expired fixture.
 - The 44px control minimum applies at all widths.
 - **CI not run:** GitHub Actions is unavailable (billing) for the UI.3 and UI.4 commits; only the local gate has run. Playwright is not run by CI in any case. No physical iPhone, native Tauri or forced-colors check.
+
+## UI.5: mobile PWA (remote control only)
+
+Scope: `docs/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/ui5Review.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileUi5Css.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-ui5.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/ui5.spec.ts`.
+
+Review fixes:
+
+- **Timer release.** `onPointerCancel` and `onTouchCancel` release the pointer and touch sources. `onPointerLeave` releases hover and pointer. `App.tsx` already spreads the handlers onto the toast, so no further wiring was needed.
+- **Failure classification.** `isErrorNotice` keeps the three original rules ('could not', 'before', 'not available') and adds whole-word failure terms: failed, did not, cannot, can't, stopped, unable, denied, error, rejected, refused.
+- **Preview-ready success.** A notice that starts "Run preview is ready" is not an error because of its "before starting" wording. It stays an error if it also reports 'could not', 'not available' or a failure term. The literal rule (always false for that prefix) would hide a real failure that begins with the same words, so the narrower rule was used. "Preview loaded. Setup is needed before this can start." stays an error.
+- **Toast clamp.** Status toasts clamp to three lines. Error toasts are not clamped: their text scrolls inside a box capped at 30dvh, so no failure text is cut off.
+- **Same-text re-notice (known limitation, not fixed).** The timer restarts only when the notice text changes. Setting the same status text again while a toast is showing does not restart it, so it clears on the first schedule. A fix needs a notice identity (a counter or key) alongside the text; the text itself was to stay unchanged, so this is recorded for a later pass.
+- **Backdrops.** `.palette-backdrop` and `.nav-guard-backdrop` take left and right `env(safe-area-inset-*)` inside the 680px block. The palette sheet has its own inset as well, so a landscape notch is inset twice. Not verified on a device.
+- **Diff pane fade.** A mask fade at the inline (right) end, using the `--surface` token. It is always on and does not follow scroll position, so it also shows on a short diff. Left-to-right layout only.
+- **Usage switcher.** A 3-column grid on compact. "Custom" now shares its row with "30d" and "This month" at 375 and 390 px.
+- **Machines.** Connect and Remove already measure 44px tall with the same centre line (0 px difference at 375 and 390 px), so no CSS was changed. The spec now asserts it.
+- **Home cushion.** A 16px bottom padding on `.home-column`, under the docked composer. Before the cushion, the composer sat at its natural position at the end of the scroll with nothing under it, so the cushion guards the edge rather than fixing an existing overlap. The scrolling element is the window. The cushion moves the Home background behind the drawer scrim; the drawer capture changed for that reason, confirmed by removing the cushion for one run.
+- **Palette `@supports`.** The desktop `dvh` values equal HEAD's `vh` values where the two units match, which is every desktop window. Measured at 1440x900: backdrop padding-top 108px (12vh of 900) and palette max-height 480px (min(480px, 70vh) is 480px at 900px). The phone `80dvh` changes only where browser chrome moves the viewport.
+
+Captures: `docs/ui/evidence/ui5/after/`, 32 PNGs at 375x812 and 390x844: the 14 earlier captures plus `toast-preview` and `home-end`. Three full runs of `e2e/ui5.spec.ts` (30 tests each) produced identical hashes, and `SHA256SUMS` was refreshed from them. Captures use fixtures only. Chromium reports every `env(safe-area-inset-*)` as 0.
+
+Precache (method: `vite build` at HEAD in a scratch export, and in the working tree; `sw.js` reports the total): HEAD 18 entries, 2420.39 KiB; UI.5 18 entries, 2424.71 KiB (+4.32 KiB).
+
+Not verified: physical iPhone (not performed); WebKit; notched or landscape safe areas; CI (GitHub Actions unavailable, so no CI run exists for the UI.3 to UI.5 SHAs).
+
+UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
