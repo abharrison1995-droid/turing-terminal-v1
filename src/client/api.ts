@@ -65,8 +65,10 @@ export async function call<T>(
 ): Promise<T> {
   const response = await fetch(masterApiUrl(path), {
     ...init,
+    // A JSON content type with no body is rejected by the server (FST_ERR_CTP_EMPTY_JSON_BODY), so bodyless
+    // requests such as creating, approving or denying a pairing request must not declare one.
     headers: {
-      'content-type': 'application/json',
+      ...(init?.body === undefined || init.body === null ? {} : { 'content-type': 'application/json' }),
       ...init?.headers,
     },
   });

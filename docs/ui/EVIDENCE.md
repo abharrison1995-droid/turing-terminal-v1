@@ -174,3 +174,10 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 ## CI record: UI.3 to UI.8 stack
 
 - Run 39046711892 on `c72f582129a9460bde62a614ddfedf645a332023`: success (format, lint, typecheck, test, build, audit all green), 2026-10-17 15:49 to 16:11 UTC (about 22 minutes of the 30-minute budget). This covers UI.3 to UI.8 together; there is no per-stage CI for those. The earlier billing block is resolved.
+
+## Pairing fix (owner-reported: no QR to pair)
+
+- Root cause: `call()` in `src/client/api.ts` sent `content-type: application/json` on every request, including the bodyless pairing POSTs. The server (Fastify 5) rejects that with 400 `FST_ERR_CTP_EMPTY_JSON_BODY`, so "Create pairing code" failed and no code or QR was produced. Approve and deny were affected the same way. The server tests did not catch it because `app.inject` sends no content type.
+- Fix: the JSON content type is only declared when a body is sent. Second fix: `DevicePairingPage` returned early from the completion poll when `code` was empty, so after a QR claim the phone never completed pairing; it now polls whenever a request id exists and either a QR request or a code is present.
+- Tests (new files only, RED before the fix): `src/client/apiBodyless.test.ts`, `src/client/pages/qrPairingCompletion.test.tsx`.
+- This supersedes the earlier "QR completion poll" and "bodyless-JSON" limitations recorded in UI.4. Not yet verified on a physical phone or against the live desktop app (the running app was not restarted). The QR still requires an HTTPS Tailscale Serve origin with no path in the Settings field.

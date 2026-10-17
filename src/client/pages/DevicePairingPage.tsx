@@ -19,7 +19,7 @@ export function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
   }, [qrRequestId]);
 
   useEffect(() => {
-    if (!requestId || !code) return;
+    if (!requestId || (!qrRequestId && !code)) return;
     let live = true;
     const check = async () => {
       try {
