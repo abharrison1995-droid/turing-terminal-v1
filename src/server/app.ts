@@ -2003,14 +2003,20 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
   app.post('/api/runs/:id/cancel', async (request, reply) => {
     const id = (request.params as { id: string }).id;
     if (!getRunRow(db, id)) return reply.code(404).send({ error: 'Run was not found.' });
+    // An owned run that is still queued is refused: its owner starts it. An owned run that is executing stays stoppable
+    // through RunEngine, because the Goal supervisor has no other cancel path and a wedged Goal run must be stoppable.
     const queued = cancelOrdinaryQueuedRun(db, engine, id);
     if (queued.cancelled) return { accepted: true, status: 'cancelled' };
     if (queued.reason === 'goal-owned')
-      return reply
-        .code(409)
-        .send({ error: 'This run belongs to a Grand Project. Cancel it from the Grand Project.' });
+      return reply.code(409).send({
+        error:
+          'This run belongs to a Grand Project, which starts and retires it. It cannot be cancelled here.',
+      });
     if (queued.reason === 'route-probe')
       return reply.code(409).send({ error: 'This run is a route validation probe. Its reconciler owns it.' });
+    // A repeated Stop on a run that is already cancelled is idempotent, unless something is still executing it.
+    if (getRunRow(db, id)?.status === 'cancelled' && !engine.isActive(id))
+      return { accepted: true, status: 'cancelled' };
     if (!engine.cancel(id)) return reply.code(409).send({ error: 'This run is not active.' });
     return { accepted: true };
   });

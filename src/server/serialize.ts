@@ -15,6 +15,38 @@ import type { Db } from './db.js';
 
 type Row = Record<string, unknown>;
 
+/**
+ * The owner that alone may cancel a run, or null for an ordinary run the user may stop. Goal-owned runs (goal_cycle_id)
+ * are retired by their Grand Project, and route-probe runs (route_validation_probes) by their reconciler, in every
+ * status. It lives here, below runLauncher and app, so the cancel routes and the run projection share one rule.
+ */
+export function runCancellationOwner(db: Db, runId: string): 'goal-owned' | 'route-probe' | null {
+  const row = db.prepare('SELECT goal_cycle_id FROM runs WHERE id = ?').get(runId) as
+    { goal_cycle_id: string | null } | undefined;
+  if (row && row.goal_cycle_id !== null) return 'goal-owned';
+  if (db.prepare('SELECT 1 FROM route_validation_probes WHERE run_id = ?').get(runId)) return 'route-probe';
+  return null;
+}
+
+/**
+ * Statuses the Stop control acts on, matching the client's active set without `cancelling`: a stop already in flight
+ * needs no second control. A queued run is stoppable only when no owner must start it. An executing run stays
+ * stoppable whatever its owner, because RunEngine.cancel is the only cancel path for a wedged Goal run.
+ */
+const STOPPABLE_RUN_STATUSES = new Set([
+  'queued',
+  'preparing',
+  'running',
+  'waiting_for_approval',
+  'waiting_for_user',
+  'retrying',
+]);
+
+function runIsStoppable(db: Db, runId: string, status: string): boolean {
+  if (!STOPPABLE_RUN_STATUSES.has(status)) return false;
+  return status !== 'queued' || runCancellationOwner(db, runId) === null;
+}
+
 export function localMachine(db: Db): Row {
   const id = (
     db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as
@@ -227,6 +259,7 @@ export function toRun(db: Db, row: Row): RunSummary {
     }),
     elapsedMs,
     remainingMs: ['completed', 'failed', 'cancelled'].includes(String(row.status)) ? null : remainingMs,
+    cancellable: runIsStoppable(db, String(row.id), String(row.status)),
   };
 }
 

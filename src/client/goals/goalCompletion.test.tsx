@@ -389,7 +389,7 @@ describe('desktop completion review (read-only)', () => {
     const blockers = await section.findByRole('list', { name: 'Blockers' });
     expect(
       within(blockers).getByText(
-        'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or pause this Goal and then abandon it. Completed and abandoned Goals do not reopen.',
+        'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish). Completed and abandoned Goals do not reopen.',
       ),
     ).toBeTruthy();
     expect(section.queryByText(/attestation_disputed/)).toBeNull();

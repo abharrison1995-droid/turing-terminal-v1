@@ -510,7 +510,7 @@ describe('refusal map', () => {
 
   it('a disputed attestation says the attestation was corrected and cannot be used', () => {
     expect(refusal(409, 'preflight_refused', 'attestation_disputed').message).toBe(
-      'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or pause this Goal and then abandon it. Completed and abandoned Goals do not reopen.',
+      'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish). Completed and abandoned Goals do not reopen.',
     );
   });
 
@@ -529,7 +529,9 @@ describe('refusal map', () => {
       const message = refusal(409, 'preflight_refused', code).message;
       expect(message).toMatch(/Confirm the external integration for the current handoff again/);
       expect(message).toMatch(/start a new Goal/);
-      expect(message).toMatch(/pause this Goal and then abandon it/);
+      expect(message).toMatch(
+        /abandon this Goal \(pause it first if it is running; abandon waits for any work in flight to finish\)/,
+      );
       expect(message).toMatch(/do not reopen/);
     }
     expect(refusal(409, 'preflight_refused', 'completion_history_invalid').message).toMatch(

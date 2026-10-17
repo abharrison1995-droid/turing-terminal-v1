@@ -29,7 +29,15 @@ import { getBudgetSettings } from './meteredBudget.js';
 import { decisionConfigHash } from './decisionEngines.js';
 import { applyExecutionProfile } from './workflowValidation.js';
 import type { Db } from './db.js';
-import { getRunRow, localMachine, toConnectionProfile, toProject, toRun, toWorkflow } from './serialize.js';
+import {
+  getRunRow,
+  localMachine,
+  runCancellationOwner,
+  toConnectionProfile,
+  toProject,
+  toRun,
+  toWorkflow,
+} from './serialize.js';
 import type { RunEngine } from './runEngine.js';
 import { resolveEffectiveRules } from './rules.js';
 
@@ -341,21 +349,20 @@ export type CancelOrdinaryQueuedRunResult =
  * refused: their owners cancel them, and a user cancel must not bypass their reconciliation. A run the engine is already
  * executing is left to RunEngine.cancel. This is synchronous. Its checks and the cancellation commit in one JavaScript
  * turn, and engine.start persists `preparing` before it returns, so a queued run cannot start between the check and the
- * commit. The commit is cancelQueuedRun, the same path the Goal supervisor uses for its own queued runs.
+ * commit. The commit is cancelQueuedRun, the same path the Goal supervisor uses for its own queued runs. Ownership is
+ * runCancellationOwner, the rule the cancel route also applies to executing runs.
  */
 export function cancelOrdinaryQueuedRun(
   db: Db,
   engine: RunEngine,
   runId: string,
 ): CancelOrdinaryQueuedRunResult {
-  const row = db.prepare('SELECT status, goal_cycle_id FROM runs WHERE id = ?').get(runId) as
-    { status: string; goal_cycle_id: string | null } | undefined;
+  const row = db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string } | undefined;
   if (!row) return { cancelled: false, reason: 'not-found' };
   if (row.status !== 'queued') return { cancelled: false, reason: 'not-queued' };
   if (engine.isActive(runId)) return { cancelled: false, reason: 'already-active' };
-  if (row.goal_cycle_id !== null) return { cancelled: false, reason: 'goal-owned' };
-  if (db.prepare('SELECT 1 FROM route_validation_probes WHERE run_id = ?').get(runId))
-    return { cancelled: false, reason: 'route-probe' };
+  const owner = runCancellationOwner(db, runId);
+  if (owner) return { cancelled: false, reason: owner };
   const result = cancelQueuedRun(db, runId, 'Cancelled by the user before the run started.');
   if (!result.cancelled) return { cancelled: false, reason: result.reason };
   engine.publishRunStatus(runId, 'cancelled');

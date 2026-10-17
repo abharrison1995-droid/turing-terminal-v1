@@ -4354,7 +4354,7 @@ function RunDetail({
               Resume run
             </button>
           )}
-          {isActive && (
+          {isActive && run.cancellable && (
             <button className="danger-button" onClick={stop}>
               <StopCircle size={14} />
               Stop run

@@ -432,17 +432,57 @@ describe('Goal-origin run launch', () => {
       await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
     });
 
+    const goalOwnedRefusal =
+      'This run belongs to a Grand Project, which starts and retires it. It cannot be cancelled here.';
+
     it('refuses a user cancel of a queued Goal-owned run: its Grand Project owns the cancellation', async () => {
       const { runId } = queueRun(db, await goalPreview());
+      const published = vi.spyOn(engine, 'publishRunStatus');
       const response = await app.inject({ method: 'POST', url: `/api/runs/${runId}/cancel` });
       expect(response.statusCode).toBe(409);
-      expect(response.json().error).toMatch(/Grand Project/);
+      expect(response.json().error).toBe(goalOwnedRefusal);
       expect(rowOf(runId).status).toBe('queued');
+      expect(published).not.toHaveBeenCalled();
       expect(
         db
           .prepare("SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND type = 'run_cancelled'")
           .get(runId),
       ).toEqual({ n: 0 });
+    });
+
+    it('lets a user stop an executing Goal-owned run through RunEngine, so a wedged Goal run can be stopped', async () => {
+      const { runId } = queueRun(db, await goalPreview());
+      expect(startQueuedRun(db, engine, runId)).toEqual({ started: true });
+      await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
+      expect(engine.isActive(runId)).toBe(true);
+      const response = await app.inject({ method: 'POST', url: `/api/runs/${runId}/cancel` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ accepted: true });
+      await vi.waitFor(() => expect(rowOf(runId).status).not.toBe('waiting_for_approval'));
+    });
+
+    it('serializes a queued Goal-owned run as not cancellable and an ordinary queued run as cancellable', async () => {
+      const { runId: goalRunId } = queueRun(db, await goalPreview());
+      const ordinary = await buildPreview(db, input(plainWorkflowId));
+      const { runId: ordinaryRunId } = queueRun(db, ordinary!);
+      const runOf = async (runId: string) =>
+        (await app.inject({ method: 'GET', url: `/api/runs/${runId}` })).json().run as {
+          status: string;
+          cancellable: boolean;
+        };
+      expect(await runOf(goalRunId)).toMatchObject({ status: 'queued', cancellable: false });
+      expect(await runOf(ordinaryRunId)).toMatchObject({ status: 'queued', cancellable: true });
+    });
+
+    it('keeps an executing Goal-owned run cancellable, the only stop path for a wedged Goal run', async () => {
+      const { runId } = queueRun(db, await goalPreview());
+      expect(startQueuedRun(db, engine, runId)).toEqual({ started: true });
+      await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
+      const body = (await app.inject({ method: 'GET', url: `/api/runs/${runId}` })).json().run as {
+        status: string;
+        cancellable: boolean;
+      };
+      expect(body).toMatchObject({ status: 'waiting_for_approval', cancellable: true });
     });
 
     it('does not let engine recovery start a queued Goal-owned run (HR-Q4)', async () => {

@@ -3,7 +3,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DashboardSnapshot } from '../shared/types';
+import type { DashboardSnapshot, RunSummary } from '../shared/types';
 
 const dashboard = vi.fn<() => Promise<DashboardSnapshot>>();
 const claimPairing = vi.fn();
@@ -40,6 +40,7 @@ vi.mock('./api', async (importActual) => ({
   },
 }));
 
+import { api } from './api';
 import App from './App';
 
 describe('Turing Terminal shell', () => {
@@ -188,6 +189,75 @@ describe('Turing Terminal shell', () => {
     expect(claimPairingRequest).toHaveBeenCalledWith(requestId, 'My phone');
     cleanup();
     window.history.replaceState({}, '', '/');
+  });
+
+  describe('Stop control', () => {
+    const runFixture = (overrides: Partial<RunSummary>): RunSummary => ({
+      id: 'run-1',
+      machineId: 'machine',
+      projectId: 'project-1',
+      projectName: 'Project',
+      workflowId: 'workflow-1',
+      workflowName: 'Workflow',
+      prompt: 'Stop control task',
+      profile: 'economy',
+      permissionMode: 'normal',
+      refinePrompt: false,
+      status: 'queued',
+      branch: null,
+      worktreePath: null,
+      summary: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      startedAt: null,
+      completedAt: null,
+      stages: [],
+      elapsedMs: 0,
+      remainingMs: null,
+      cancellable: true,
+      ...overrides,
+    });
+    const openRun = async (run: RunSummary) => {
+      const base = await dashboard();
+      dashboard.mockResolvedValue({ ...base, runs: [run] });
+      vi.mocked(api.run).mockRejectedValue(new Error('offline'));
+      vi.stubGlobal(
+        'EventSource',
+        class {
+          addEventListener() {}
+          close() {}
+        },
+      );
+      const user = userEvent.setup();
+      render(<App />);
+      await user.click(
+        await within(screen.getByRole('navigation', { name: 'Tasks' })).findByRole('button', {
+          name: /Stop control task/,
+        }),
+      );
+      return user;
+    };
+
+    it('reports a cancelled queued run as one that will not start', async () => {
+      const user = await openRun(runFixture({ status: 'queued' }));
+      vi.mocked(api.cancelRun).mockResolvedValue({ accepted: true, status: 'cancelled' });
+      await user.click(await screen.findByRole('button', { name: 'Stop run' }));
+      expect(await screen.findByText('Queued run cancelled. It will not start.')).toBeTruthy();
+    });
+
+    it('reports a stop of an executing run as a provider termination', async () => {
+      const user = await openRun(runFixture({ status: 'running' }));
+      vi.mocked(api.cancelRun).mockResolvedValue({ accepted: true });
+      await user.click(await screen.findByRole('button', { name: 'Stop run' }));
+      expect(
+        await screen.findByText('Stop requested. The provider process is being terminated.'),
+      ).toBeTruthy();
+    });
+
+    it('hides Stop for an active run the server marks not cancellable', async () => {
+      await openRun(runFixture({ status: 'queued', cancellable: false }));
+      expect(await screen.findByRole('button', { name: /All runs/ })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Stop run' })).toBeNull();
+    });
   });
 
   it('saves a second master profile without saving any authentication token', async () => {

@@ -269,11 +269,14 @@ describe('run launcher', () => {
       expect(stages.every((stage) => stage.status === 'cancelled')).toBe(true);
     });
 
-    it('is idempotent: a repeated cancel is refused and records no second event', async () => {
+    it('is idempotent: a repeated cancel reports the run cancelled and records no second event', async () => {
       const { runId } = queueRun(db, await preview());
       expect((await cancel(runId)).statusCode).toBe(200);
+      const published = vi.spyOn(engine, 'publishRunStatus');
       const again = await cancel(runId);
-      expect(again.statusCode).toBe(409);
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toEqual({ accepted: true, status: 'cancelled' });
+      expect(published).not.toHaveBeenCalled();
       expect(statusOf(runId)).toBe('cancelled');
       expect(cancelledEvents(runId)).toBe(1);
     });
@@ -292,9 +295,11 @@ describe('run launcher', () => {
     it('a run that recovery already claimed and started is never cancelled through the queued path', async () => {
       const { runId } = queueRun(db, await preview());
       const restarted = new RunEngine(db, () => undefined);
-      const start = vi.spyOn(restarted, 'start');
+      // Recovery commits the `preparing` claim before start, so execution is stubbed: it must not outlive the database.
+      const start = vi.spyOn(restarted, 'start').mockImplementation(() => {});
       expect(recoverQueuedRunsAfterRestart(db, restarted)).toEqual([runId]);
       expect(start).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(statusOf(runId)).toBe('preparing');
       // The new guard refuses on status alone, before any engine check, so the claimed run is protected directly.
       expect(cancelOrdinaryQueuedRun(db, restarted, runId)).toEqual({
         cancelled: false,

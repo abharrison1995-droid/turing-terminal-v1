@@ -114,11 +114,11 @@ export function qualifierCopy(qualifier: GoalCompletionStandingClaim['qualifier'
 
 /** A corrected attestation can no longer authorise completion. Names the ways forward; terminal Goals never reopen. */
 const CORRECTED_ATTESTATION_COPY =
-  'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or pause this Goal and then abandon it. Completed and abandoned Goals do not reopen.';
+  'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish). Completed and abandoned Goals do not reopen.';
 
 /** Saved completion records failed verification. Refreshing can clear a transient failure; if it persists, name the ways forward. */
 const HISTORY_INVALID_COPY =
-  'The saved completion records could not be verified, so nothing was recorded. Refresh to check them again. If they still fail, this Goal cannot be completed from here: start a new Goal, or pause this Goal and then abandon it.';
+  'The saved completion records could not be verified, so nothing was recorded. Refresh to check them again. If they still fail, this Goal cannot be completed from here: start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish).';
 
 /** The `completion_already_recorded` blocker with detail `competing_decision`: another attestation's eligible decision. */
 const COMPETING_DECISION_REASON =
