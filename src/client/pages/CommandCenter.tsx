@@ -31,6 +31,8 @@ import type { Page } from './shared/types';
 import { isAiStage } from './shared/stageMeta';
 import { activeStatuses, waitingStatuses, shortTask, humanStatus, rowTime } from './shared/runStatus';
 import { StatusIcon } from './shared/parts';
+import { MascotStatus } from '../ui/mascot';
+import { mascotForPreview } from '../ui/mascot/mascotState';
 import { LaunchBlockers } from './home/LaunchBlockers';
 import { RunPreviewPanel } from './home/RunPreviewPanel';
 import { Safeguards } from './home/Safeguards';
@@ -65,6 +67,7 @@ export function CommandCenter({
   const [enigmaConfirmed, setEnigmaConfirmed] = useState(false);
   const [preview, setPreview] = useState<RunPreview | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewPending, setPreviewPending] = useState(false);
   const [listening, setListening] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
 
@@ -111,10 +114,12 @@ export function CommandCenter({
         : !task.trim()
           ? 'Describe the task to continue.'
           : null;
+  const previewMark = mascotForPreview(previewPending);
   const makePreview = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!task.trim() || !projectId || !workflowId) return;
     setBusy(true);
+    setPreviewPending(true);
     try {
       const response = await api.previewRun({
         task,
@@ -136,6 +141,7 @@ export function CommandCenter({
     } catch (reason) {
       onNotice(reason instanceof Error ? reason.message : 'Could not prepare the run preview.');
     } finally {
+      setPreviewPending(false);
       setBusy(false);
     }
   };
@@ -377,6 +383,11 @@ export function CommandCenter({
               Options
             </button>
             <span className="composer-spacer" />
+            <span className="mascot-slot" aria-hidden={previewMark ? undefined : true}>
+              {previewMark && (
+                <MascotStatus animation={previewMark} size={24} label="Preparing run preview…" />
+              )}
+            </span>
             {task.length >= 8_000 && (
               <span className="char-count">{task.length.toLocaleString()} / 12,000</span>
             )}

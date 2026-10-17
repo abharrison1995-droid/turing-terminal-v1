@@ -198,14 +198,25 @@
   align-items: flex-start;
   gap: var(--s-3);
 }
+/* Fixed 24 px mark slot. The state icon, or the thinking mark while running, sits in it, so the row height is the same
+   in both cases. */
+.thread-state-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
 .thread-state-copy svg.lucide {
   width: 20px;
   height: 20px;
-  margin-top: 1px;
   color: var(--icon);
 }
 .thread-state-copy strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 24px;
   font-size: var(--fs-control);
   line-height: var(--lh-control);
 }

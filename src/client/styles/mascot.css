@@ -1,0 +1,45 @@
+/* Mascot status marks (UI.6). Colour comes from the --tt-mascot-* tokens in the svg fills. Sizes are fixed 24 px and
+   48 px slots. Motion is frame-driven in ui/mascot/playback.ts, so this file declares no animation. */
+.mascot-status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--s-2);
+  vertical-align: middle;
+}
+.mascot-status > svg {
+  display: block;
+  flex: none;
+  overflow: hidden;
+  image-rendering: pixelated;
+}
+.mascot-status > svg[data-size='24'] {
+  width: 24px;
+  height: 24px;
+}
+.mascot-status > svg[data-size='48'] {
+  width: 48px;
+  height: 48px;
+}
+.mascot-status-label {
+  min-width: 0;
+}
+/* Reserved composer slot for the preview mark (CommandCenter). It keeps a 24 px box while empty, so mounting the mark does
+   not change the box size. The label stays on one line and the slot never wraps internally. */
+.mascot-slot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-width: 24px;
+  min-height: 24px;
+  white-space: nowrap;
+}
+/* Phone widths: the label is wider than the room left beside the composer buttons. The slot moves to the end and takes its
+   own full-width line, which is always reserved. The buttons stay on one row, and mounting the mark adds no line. */
+@media (max-width: 680px) {
+  .mascot-slot {
+    order: 1;
+    flex: 0 0 100%;
+    min-height: 24px;
+  }
+}

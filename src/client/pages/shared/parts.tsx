@@ -11,14 +11,18 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
+import { MascotStatus } from '../../ui/mascot';
 
-/** Shown in the main landmark while the first dashboard request is pending. The status region sits inside it. */
+/**
+ * Shown in the main landmark while the first dashboard request is pending. The status region sits inside it.
+ * mascotForLoading(loading, hasSnapshot) is the tested contract for when the loading mark shows. This component is
+ * rendered only in the no-snapshot case (App.tsx), so it does not check hasSnapshot itself.
+ */
 export function Loading() {
   return (
     <main className="page-content">
       <div className="loading-state" role="status" aria-live="polite">
-        <LoaderCircle size={22} className="spin" aria-hidden="true" />
-        <span>Connecting to the local master…</span>
+        <MascotStatus animation="loading" size={48} label="Connecting to the local master…" />
       </div>
     </main>
   );
@@ -91,21 +95,32 @@ export function Meta({ label, value, icon: Icon }: { label: string; value: strin
 
 export function EmptyState({
   icon: Icon,
+  mascot,
   title,
   body,
   action,
 }: {
   icon: LucideIcon;
+  /** Replaces the icon with the idle mark. The title stays the heading, beside the mark. */
+  mascot?: 'idle';
   title: string;
   body: string;
   action?: { label: string; onClick: () => void };
 }) {
   return (
     <div className="empty-state">
-      <span>
-        <Icon size={20} />
-      </span>
-      <h2>{title}</h2>
+      {mascot ? (
+        <h2>
+          <MascotStatus animation={mascot} size={48} label={title} />
+        </h2>
+      ) : (
+        <>
+          <span>
+            <Icon size={20} />
+          </span>
+          <h2>{title}</h2>
+        </>
+      )}
       <p>{body}</p>
       {action && (
         <button type="button" className="secondary-button empty-state-action" onClick={action.onClick}>

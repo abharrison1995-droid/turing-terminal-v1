@@ -144,3 +144,15 @@ Precache (method: `vite build` at HEAD in a scratch export, and in the working t
 Not verified: physical iPhone (not performed); WebKit; notched or landscape safe areas; CI (GitHub Actions unavailable, so no CI run exists for the UI.3 to UI.5 SHAs).
 
 UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
+
+## UI.6: mascot status marks
+
+- Scope `docs/ui/UI6_SCOPE.md`; RED tests `2c8617a`; implementation committed after independent review (APPROVE WITH FIXES, all required fixes applied).
+- Shipped: idle, thinking and loading animations only (18 frames, `frames.generated.ts` 16.8 KB, provenance in `docs/ui/MASCOT_PROVENANCE.json`). Wipes and the phase-transition animation are deferred by owner decision (no truthful trigger).
+- Placements, each with adjacent visible text and `aria-hidden` art: Loading (48 px), Home composer preview pending (24 px), run detail while `run.status === 'running'` (24 px), empty Runs state (idle). Not in Sidebar, startup mark, alerts, dialogs, approvals or Goal UI. No success or failure art. Reduced motion shows the static first frame with no timers.
+- Deviation for owner sign-off: the running mark is in the run detail only, not on every Runs list row (avoids many concurrent timers).
+- Cost: precache +14.26 KiB (2424.71 to 2438.97 KiB). Phone composer is 32 px taller permanently (44 to 76 px) because the status slot is reserved to avoid layout shift; owner may prefer a truncated label.
+- Gate (local, exit 0 each): format:check, lint, typecheck, build, `npm test` 201 files / 3760 tests (one `goalHandoff` timing flake on the first run, passes on rerun and alone).
+- Captures: `docs/ui/evidence/ui6/after/` (33 PNGs incl. frame strips; 24 Playwright tests at 1440, 390, 375; identical hashes across two runs).
+- CI: none run for the UI.3 to UI.6 SHAs (GitHub Actions billing block).
+- NOT PERFORMED: physical iPhone, native Tauri window, screen readers, phone battery, forced-colors. Licence of the supplement mascot art is unconfirmed; owner to confirm before merge.

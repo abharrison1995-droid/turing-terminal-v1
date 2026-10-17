@@ -31,6 +31,8 @@ import { DecisionResultsPanel } from '../phase36';
 import type { Page } from './shared/types';
 import { activeStatuses, shortTask, humanStatus, humanize } from './shared/runStatus';
 import { PageHeading, StatusIcon, EmptyState } from './shared/parts';
+import { MascotStatus } from '../ui/mascot';
+import { mascotForRunStatus } from '../ui/mascot/mascotState';
 import { formatDate, formatDuration, formatMilliseconds } from './shared/format';
 import { RuleListDetails } from './shared/RuleListDetails';
 import { iconForStage } from './shared/stageMeta';
@@ -144,6 +146,7 @@ export function RunsPage({
           ) : snapshot.runs.length === 0 ? (
             <EmptyState
               icon={Activity}
+              mascot="idle"
               title="No runs yet"
               body="Stage output, approvals, findings, and Git changes appear here once a workflow runs."
               action={{ label: 'Start a task', onClick: () => onNavigate('command') }}
@@ -365,6 +368,8 @@ export function RunDetail({
                     detail: 'This run is no longer active.',
                   };
   const StateIcon = threadState.icon;
+  // The thinking mark sits beside the running title ("Running · elapsed") only while the run is actually running.
+  const runningMark = threadState.tone === 'running' ? mascotForRunStatus(run.status) : null;
   return (
     <section className="run-detail-panel">
       <button className="back-link" onClick={onClose}>
@@ -403,9 +408,17 @@ export function RunDetail({
       </div>
       <div className={`thread-state thread-state-${threadState.tone}`}>
         <div className="thread-state-copy">
-          <StateIcon size={18} aria-hidden="true" />
+          <span className="thread-state-mark" aria-hidden="true">
+            {!runningMark && <StateIcon size={18} aria-hidden="true" />}
+          </span>
           <div>
-            <strong>{threadState.title}</strong>
+            <strong>
+              {runningMark ? (
+                <MascotStatus animation={runningMark} size={24} label={threadState.title} />
+              ) : (
+                threadState.title
+              )}
+            </strong>
             <p>{threadState.detail}</p>
           </div>
         </div>

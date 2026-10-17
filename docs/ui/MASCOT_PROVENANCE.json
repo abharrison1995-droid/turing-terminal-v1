@@ -1,0 +1,324 @@
+{
+  "schema": 1,
+  "generator": "scripts/generate-mascot-frames.mjs",
+  "supplement": "Turing-Terminal-UI-Supplement",
+  "supplementStatus": "candidate-awaiting-visual-acceptance",
+  "approval": "D-4 approved skull art (UI0 section 13); owner to confirm licence before merge (UI6 scope section 7)",
+  "manifest": {
+    "path": "mascot/animation-manifest.json",
+    "sha256": "3097ee49db119a7bc015e67426fb3f7382debf3dbeb7da260e221619add9e402"
+  },
+  "dataSha256": "0f0c8f37498165d43f1f17c956b90ba43283d9fd85c25b34acce03ee4e6b30db",
+  "runtime": {
+    "states": ["idle", "thinking", "loading"],
+    "frameMs": { "idle": 300, "thinking": 150, "loading": 150 },
+    "frameCount": 6,
+    "gridSize": [24, 24],
+    "alphabet": ".obsa"
+  },
+  "deferred": {
+    "states": [
+      "phase-transition",
+      "wipe-left-to-right",
+      "wipe-right-to-left",
+      "wipe-top-to-bottom",
+      "wipe-bottom-to-top",
+      "wipe-center-out-horizontal",
+      "wipe-center-out-vertical"
+    ],
+    "reason": "No truthful trigger; risk of reading as completion; extra precache (UI6 scope section 3)."
+  },
+  "sources": {
+    "skullSource": {
+      "path": "mascot/skull-source.json",
+      "sha256": "12474ec17cd8851c3c7feac449079d5a584e917564cbf298263a7c451e33f545"
+    },
+    "rebuildScript": {
+      "path": "tools/rebuild_mascot.py",
+      "sha256": "2167a661444c2ef7164383aaeeab5628cf8f9d20e99713f0ed924a0d8a7ccef5"
+    }
+  },
+  "sourceSvgs": [
+    {
+      "path": "mascot/frames/idle/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/idle/02.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/idle/03.svg",
+      "sha256": "16852e088f9fb7a43d7c5e65989c257817f277326bd1a4d7dec7b771bf21d9fb"
+    },
+    {
+      "path": "mascot/frames/idle/04.svg",
+      "sha256": "b989ee04e2f8318ad6f2f2469f192cbdb24700b7e0fe5932dfb7b02d6105b609"
+    },
+    {
+      "path": "mascot/frames/idle/05.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/idle/06.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/loading/01.svg",
+      "sha256": "2ef7265b5d57cbdf9feb7d4b18e4836e87e441e6ec6257b6ecbc281bb6cb4a45"
+    },
+    {
+      "path": "mascot/frames/loading/02.svg",
+      "sha256": "c1633eadd70db763e1bce360cba774265b04bb364d8af5337310d4400b0b3a69"
+    },
+    {
+      "path": "mascot/frames/loading/03.svg",
+      "sha256": "0a9179e2a057e4dd694c8d7e383fd58d84bb0d0c925e4d8007eb30d076a888ab"
+    },
+    {
+      "path": "mascot/frames/loading/04.svg",
+      "sha256": "9ebadaa5d6093fa16578cc326ae9137c7ef6b0fb107908ce0ccc54fb636fdfa2"
+    },
+    {
+      "path": "mascot/frames/loading/05.svg",
+      "sha256": "0fa8c9c9b9ecf56631f5d7eb8a705e6837724e91889f5c03df25be2caba2c64d"
+    },
+    {
+      "path": "mascot/frames/loading/06.svg",
+      "sha256": "578ee443097174f10d405f8800c0d3a51c8e519f4a8ce43815536cdd0a4ba311"
+    },
+    {
+      "path": "mascot/frames/phase-transition/01.svg",
+      "sha256": "e8d10b887c1e33ca9c155583559b2da41b62777ad395ccaa0e0fb158dfa144df"
+    },
+    {
+      "path": "mascot/frames/phase-transition/02.svg",
+      "sha256": "2ef7265b5d57cbdf9feb7d4b18e4836e87e441e6ec6257b6ecbc281bb6cb4a45"
+    },
+    {
+      "path": "mascot/frames/phase-transition/03.svg",
+      "sha256": "e2fbbfbce6f2859d79caa81817a5540bf99fc95537ec5dbdf7015feea943448f"
+    },
+    {
+      "path": "mascot/frames/phase-transition/04.svg",
+      "sha256": "25cacf8d73e0c934f356beddd6ef1ca02a3c60f3a08a9ffc5b375442e2e7321a"
+    },
+    {
+      "path": "mascot/frames/phase-transition/05.svg",
+      "sha256": "eac39f9acfcc03664e959c9831e1157ef173cb07ba9c350ae55b8132bbf23536"
+    },
+    {
+      "path": "mascot/frames/phase-transition/06.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/thinking/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/thinking/02.svg",
+      "sha256": "bfdb7cdf0856caa262b63c8b787fbcd76bf713ef39c511512b097168cd61cf3c"
+    },
+    {
+      "path": "mascot/frames/thinking/03.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/thinking/04.svg",
+      "sha256": "193546faa879fa1e195e90525ef890802bd8d7361aaa8bb802b9e340fa9ef92c"
+    },
+    {
+      "path": "mascot/frames/thinking/05.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/thinking/06.svg",
+      "sha256": "bfdb7cdf0856caa262b63c8b787fbcd76bf713ef39c511512b097168cd61cf3c"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/02.svg",
+      "sha256": "5320a2aaab064ba29ddc96791a3e70c93be911f63a76991f55d6be4529042f4e"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/03.svg",
+      "sha256": "d3fbab2b40fcbefd6a37ad53f9e4695bc38e41af9885976fcf0e71231bd39010"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/04.svg",
+      "sha256": "89184eac5953af386d2029e64efff65f248ea622dd6208a509ef7b5e414ab0e9"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/05.svg",
+      "sha256": "e962c24a8661ea9c6b01e0084e0dc6c1808667fb7597c17894e4e7b6a47c323c"
+    },
+    {
+      "path": "mascot/frames/wipe-bottom-to-top/06.svg",
+      "sha256": "ffdab1e7af3ada15a0dd86913edeffa82cfe790fb1c2df53cd175046b3b0dff7"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/02.svg",
+      "sha256": "041ca62d55a5983756fc1ff558ec1e139e4da0bdc8ba06d713b9f2e31a2ba1b8"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/03.svg",
+      "sha256": "a44d54b603e221fa400266dc275c5172c8843fa21fdd39f8d2fe7398b9fe89c3"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/04.svg",
+      "sha256": "0e77cb4d0074a4d63e46566c712758a951204cc949c6863e692e4794ba4c5a82"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/05.svg",
+      "sha256": "31231caa23851ffcecbfa3f27ee51182d9299aa4cb8689ce34644b6b5149dbf5"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-horizontal/06.svg",
+      "sha256": "b031886c4e6720808a2252d5a03952723c336b0da8a09fd2469e3e3b2c875551"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/02.svg",
+      "sha256": "880f45bd7b5d475065f6711b5f75f2ce3a4974867e2498b4c89217bbb6997874"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/03.svg",
+      "sha256": "d66347946e7cbf4e6660e46ce3b40044e57d3e6f5aab2af994d3578ad6b5271d"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/04.svg",
+      "sha256": "6c03ed1e870abe6b3a34a70f5b3851052bd8250bde1151fc41897d6ed257a309"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/05.svg",
+      "sha256": "9c0aa646efe56bff34a560a0effafdac0c105d31886b23306339b6483c10c4e3"
+    },
+    {
+      "path": "mascot/frames/wipe-center-out-vertical/06.svg",
+      "sha256": "70d00e0d911c1f6ba3d76bb82fab00fa460f28e9f85b06e5753b4f23a0b7ba2e"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/02.svg",
+      "sha256": "4be49fc96c9093d894f13001256cafd418b98375d9c713643049ccf64d7e00c5"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/03.svg",
+      "sha256": "2356881787b4eecd42de59f07bac2479cd89120c0dc38050c4a7121d8637b036"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/04.svg",
+      "sha256": "f144dae3815e8c375d4c04e7a8cb80674705d6add2af7775afe483b40f984b50"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/05.svg",
+      "sha256": "e0b7989239f4ba7051717aab394db077ee2ac386861d82f29627b2721e3c5d1e"
+    },
+    {
+      "path": "mascot/frames/wipe-left-to-right/06.svg",
+      "sha256": "b031886c4e6720808a2252d5a03952723c336b0da8a09fd2469e3e3b2c875551"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/02.svg",
+      "sha256": "c26a25b5a15120a39f0e4ee0950843d1284bda3ce4977532c8a81ee791b25152"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/03.svg",
+      "sha256": "59597b7ed786e0d07f1d5c8eb4fc516a28466fa130b4d301917cb4707ce3da4d"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/04.svg",
+      "sha256": "a70502da4f708890764fe07596fedf0ccf6b91917a11d110ede0a336ba234b96"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/05.svg",
+      "sha256": "f338d725d79b9d3fd04a0ee696a04f9c90f8fde0c63b9ca348532087dcf4e531"
+    },
+    {
+      "path": "mascot/frames/wipe-right-to-left/06.svg",
+      "sha256": "33ea7c0efcd8538576f47f566a5214e344fa0550b59940792d185cd049734eba"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/01.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/02.svg",
+      "sha256": "ca7748055f691cc56eaac0a1ec30eda26aa3ba5d302dcd5d77598706c5c5d406"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/03.svg",
+      "sha256": "58254ce4b3536e909169a4f198bc0d2380d927a2343eac729a972f2a955ea40d"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/04.svg",
+      "sha256": "d11eccc5051f71b80a4d16a5afefa0b1fcb2f013584ae7f47bc89c5df90fe326"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/05.svg",
+      "sha256": "d6e93eb9c4ec9a053c10279db3fc61c336eec420793206d79cae1a9a1fec6d42"
+    },
+    {
+      "path": "mascot/frames/wipe-top-to-bottom/06.svg",
+      "sha256": "70d00e0d911c1f6ba3d76bb82fab00fa460f28e9f85b06e5753b4f23a0b7ba2e"
+    },
+    {
+      "path": "mascot/skull-base.svg",
+      "sha256": "463175d5e1ed9553094121ecb6ee0ce634f4c0ed4e3cceb2e75d0e067793bdb9"
+    }
+  ],
+  "wipes": {
+    "order": [
+      "wipe-left-to-right",
+      "wipe-right-to-left",
+      "wipe-top-to-bottom",
+      "wipe-bottom-to-top",
+      "wipe-center-out-horizontal",
+      "wipe-center-out-vertical"
+    ],
+    "row4Note": "Known glitch, aesthetic only: wipe row 4 (wipe-bottom-to-top, atlasRow 3 zero-based) frames 3 and 4 look glitchy in preview.png, with a comb-shaped intermediate (REVIEW-FINDINGS-MAP item 5). Visual acceptance is an owner item. Wipes are not shipped at runtime (UI6 scope section 3), so the glitch is not visible in the product.",
+    "wipe-left-to-right": {
+      "atlasRow": 0,
+      "durationMs": 420,
+      "maskPixelCounts": [238, 202, 153, 102, 51, 1]
+    },
+    "wipe-right-to-left": {
+      "atlasRow": 1,
+      "durationMs": 420,
+      "maskPixelCounts": [238, 202, 153, 102, 51, 1]
+    },
+    "wipe-top-to-bottom": { "atlasRow": 2, "durationMs": 420, "maskPixelCounts": [238, 198, 150, 86, 40, 1] },
+    "wipe-bottom-to-top": {
+      "atlasRow": 3,
+      "durationMs": 420,
+      "maskPixelCounts": [238, 210, 168, 104, 56, 1]
+    },
+    "wipe-center-out-horizontal": {
+      "atlasRow": 4,
+      "durationMs": 420,
+      "maskPixelCounts": [238, 170, 136, 72, 44, 1]
+    },
+    "wipe-center-out-vertical": {
+      "atlasRow": 5,
+      "durationMs": 420,
+      "maskPixelCounts": [238, 190, 126, 96, 40, 1]
+    }
+  }
+}
