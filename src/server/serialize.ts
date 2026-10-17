@@ -11,40 +11,50 @@ import type {
 } from '../shared/types.js';
 import type { BillingLane, BillingMode } from '../shared/types.js';
 import { BILLING_MODES, resolveBillingMode } from '../shared/billing.js';
+import { STOPPABLE_RUN_STATUSES } from '../shared/runStatus.js';
 import type { Db } from './db.js';
 
 type Row = Record<string, unknown>;
+
+type CancellationOwner = 'goal-owned' | 'route-probe';
 
 /**
  * The owner that alone may cancel a run, or null for an ordinary run the user may stop. Goal-owned runs (goal_cycle_id)
  * are retired by their Grand Project, and route-probe runs (route_validation_probes) by their reconciler, in every
  * status. It lives here, below runLauncher and app, so the cancel routes and the run projection share one rule.
  */
-export function runCancellationOwner(db: Db, runId: string): 'goal-owned' | 'route-probe' | null {
-  const row = db.prepare('SELECT goal_cycle_id FROM runs WHERE id = ?').get(runId) as
-    { goal_cycle_id: string | null } | undefined;
-  if (row && row.goal_cycle_id !== null) return 'goal-owned';
-  if (db.prepare('SELECT 1 FROM route_validation_probes WHERE run_id = ?').get(runId)) return 'route-probe';
-  return null;
+export function runCancellationOwner(db: Db, runId: string): CancellationOwner | null {
+  return runCancellationOwners(db, [runId]).get(runId) ?? null;
 }
 
-/**
- * Statuses the Stop control acts on, matching the client's active set without `cancelling`: a stop already in flight
- * needs no second control. A queued run is stoppable only when no owner must start it. An executing run stays
- * stoppable whatever its owner, because RunEngine.cancel is the only cancel path for a wedged Goal run.
- */
-const STOPPABLE_RUN_STATUSES = new Set([
-  'queued',
-  'preparing',
-  'running',
-  'waiting_for_approval',
-  'waiting_for_user',
-  'retrying',
-]);
+/** The owners of many runs in one query; a run absent from the map is ordinary. A list is serialized without per-run lookups. */
+function runCancellationOwners(db: Db, runIds: readonly string[]): Map<string, CancellationOwner> {
+  const owners = new Map<string, CancellationOwner>();
+  if (runIds.length === 0) return owners;
+  const rows = db
+    .prepare(
+      `SELECT r.id AS id, r.goal_cycle_id IS NOT NULL AS goal_owned, p.run_id IS NOT NULL AS probe_owned
+       FROM runs r LEFT JOIN route_validation_probes p ON p.run_id = r.id
+       WHERE r.id IN (SELECT value FROM json_each(?))`,
+    )
+    .all(JSON.stringify(runIds)) as Array<{ id: string; goal_owned: number; probe_owned: number }>;
+  for (const row of rows) {
+    if (row.goal_owned) owners.set(row.id, 'goal-owned');
+    else if (row.probe_owned) owners.set(row.id, 'route-probe');
+  }
+  return owners;
+}
 
-function runIsStoppable(db: Db, runId: string, status: string): boolean {
-  if (!STOPPABLE_RUN_STATUSES.has(status)) return false;
-  return status !== 'queued' || runCancellationOwner(db, runId) === null;
+const STOPPABLE_STATUSES: ReadonlySet<string> = new Set(STOPPABLE_RUN_STATUSES);
+
+/**
+ * Whether the Stop control may act on a run. A queued run is stoppable only when no owner must start it; `owner` is
+ * read lazily, so only queued runs ever need it. An executing run stays stoppable whatever its owner, because
+ * RunEngine.cancel is the only cancel path for a wedged Goal run.
+ */
+function runIsStoppable(status: string, owner: () => CancellationOwner | null): boolean {
+  if (!STOPPABLE_STATUSES.has(status)) return false;
+  return status !== 'queued' || owner() === null;
 }
 
 export function localMachine(db: Db): Row {
@@ -212,7 +222,20 @@ export function toStage(row: Row, attempts: StageAttempt[] = []): RunStage {
   };
 }
 
-export function toRun(db: Db, row: Row): RunSummary {
+/**
+ * Serializes a list of runs. Cancellation owners for the queued runs are fetched in one query, not one per run.
+ */
+export function toRuns(db: Db, rows: readonly Row[]): RunSummary[] {
+  const queuedIds = rows.filter((row) => row.status === 'queued').map((row) => String(row.id));
+  const owners = runCancellationOwners(db, queuedIds);
+  return rows.map((row) => toRun(db, row, owners));
+}
+
+/**
+ * Serializes one run. `owners` is the precomputed result for a list (see toRuns); without it the owner is looked up for
+ * this run alone, and only when it is queued.
+ */
+export function toRun(db: Db, row: Row, owners?: ReadonlyMap<string, CancellationOwner>): RunSummary {
   const stages = db.prepare('SELECT * FROM stages WHERE run_id = ? ORDER BY sequence').all(row.id) as Row[];
   const snapshot = parseJson<Record<string, unknown>>(row.workflow_snapshot_json, {});
   const maxDurationMinutes = Number(snapshot.maxDurationMinutes ?? 120);
@@ -259,7 +282,9 @@ export function toRun(db: Db, row: Row): RunSummary {
     }),
     elapsedMs,
     remainingMs: ['completed', 'failed', 'cancelled'].includes(String(row.status)) ? null : remainingMs,
-    cancellable: runIsStoppable(db, String(row.id), String(row.status)),
+    cancellable: runIsStoppable(String(row.status), () =>
+      owners ? (owners.get(String(row.id)) ?? null) : runCancellationOwner(db, String(row.id)),
+    ),
   };
 }
 

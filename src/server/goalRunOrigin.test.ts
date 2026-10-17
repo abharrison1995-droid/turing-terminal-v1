@@ -17,8 +17,12 @@ import {
   type RunPreview,
 } from './runLauncher.js';
 import { REAL_GIT_TEST_TIMEOUT_MS } from './goals/repoKit.js';
+import { ACTIVE_RUN_STATUSES, STOPPABLE_RUN_STATUSES } from '../shared/runStatus.js';
+import type { RunStatus } from '../shared/types.js';
 
 const NOW = '2026-01-01T00:00:00.000Z';
+
+type RunFlag = { id: string; status: string; cancellable: boolean };
 
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' }).trim();
@@ -472,6 +476,61 @@ describe('Goal-origin run launch', () => {
         };
       expect(await runOf(goalRunId)).toMatchObject({ status: 'queued', cancellable: false });
       expect(await runOf(ordinaryRunId)).toMatchObject({ status: 'queued', cancellable: true });
+    });
+
+    it('serializes a mixed-owner list with the same cancellable values, from one owner lookup per list', async () => {
+      const { runId: goalRunId } = queueRun(db, await goalPreview());
+      const ordinary = await buildPreview(db, input(plainWorkflowId));
+      const { runId: ordinaryRunId } = queueRun(db, ordinary!);
+      const { runId: probeRunId } = queueRun(db, ordinary!);
+      db.prepare(
+        `INSERT INTO route_validation_probes (id, run_id, identity_hash, identity_json, freshness_class, profiles_json,
+           fixture_commit, status, created_at) VALUES ('probe-1', ?, ?, '{}', 'opportunity', '["broker-read"]', ?, 'pending', ?)`,
+      ).run(probeRunId, 'a'.repeat(64), 'b'.repeat(40), NOW);
+      // A started ordinary run is stoppable and needs no owner lookup at all.
+      const { runId: startedRunId } = queueRun(db, ordinary!);
+      db.prepare("UPDATE runs SET status = 'running' WHERE id = ?").run(startedRunId);
+      const expected = new Map([
+        [goalRunId, false],
+        [ordinaryRunId, true],
+        [probeRunId, false],
+        [startedRunId, true],
+      ]);
+
+      const prepare = vi.spyOn(db, 'prepare');
+      const lists = [
+        ((await app.inject({ method: 'GET', url: '/api/runs' })).json() as { runs: RunFlag[] }).runs,
+        ((await app.inject({ method: 'GET', url: '/api/dashboard' })).json() as { runs: RunFlag[] }).runs,
+      ];
+      const ownerLookups = prepare.mock.calls.filter(([sql]) =>
+        String(sql).includes('route_validation_probes'),
+      ).length;
+      prepare.mockRestore();
+
+      for (const runs of lists)
+        expect(Object.fromEntries(runs.map((run) => [run.id, run.cancellable]))).toEqual(
+          Object.fromEntries(expected),
+        );
+      // One batched lookup for each of the two list responses, however many runs they hold.
+      expect(ownerLookups).toBe(2);
+      // The single-run route agrees with the list.
+      for (const [runId, cancellable] of expected) {
+        const single = (await app.inject({ method: 'GET', url: `/api/runs/${runId}` })).json() as {
+          run: RunFlag;
+        };
+        expect(single.run.cancellable).toBe(cancellable);
+      }
+    });
+
+    it('marks exactly the shared stoppable statuses cancellable for an ordinary run', async () => {
+      const { runId } = queueRun(db, (await buildPreview(db, input(plainWorkflowId)))!);
+      const statuses: RunStatus[] = [...ACTIVE_RUN_STATUSES, 'paused', 'paused_limit_reached'];
+      statuses.push('cancelled', 'failed', 'completed');
+      for (const status of statuses) {
+        db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(status, runId);
+        const run = (await app.inject({ method: 'GET', url: `/api/runs/${runId}` })).json().run as RunFlag;
+        expect([status, run.cancellable]).toEqual([status, STOPPABLE_RUN_STATUSES.includes(status)]);
+      }
     });
 
     it('keeps an executing Goal-owned run cancellable, the only stop path for a wedged Goal run', async () => {

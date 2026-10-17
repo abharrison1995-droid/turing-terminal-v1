@@ -43,6 +43,7 @@ import {
   toModelPreset,
   toProject,
   toRun,
+  toRuns,
   toWorkflow,
 } from './serialize.js';
 import { scanProject } from './projectScanner.js';
@@ -935,7 +936,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
       projects,
       workflows,
       providers,
-      runs: runRows.map((row) => toRun(db, row)),
+      runs: toRuns(db, runRows),
       approvals,
       usage: {
         events: usage.events,
@@ -1932,7 +1933,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
         `SELECT r.*, p.name AS project_name, w.name AS workflow_name FROM runs r JOIN projects p ON p.id = r.project_id JOIN workflows w ON w.id = r.workflow_id ${where} ORDER BY r.created_at DESC LIMIT 100`,
       )
       .all(...values) as Array<Record<string, unknown>>;
-    return { runs: rows.map((row) => toRun(db, row)) };
+    return { runs: toRuns(db, rows) };
   });
 
   app.get('/api/runs/:id', async (request, reply) => {

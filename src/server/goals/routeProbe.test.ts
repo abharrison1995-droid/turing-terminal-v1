@@ -636,6 +636,36 @@ describe('probe lifecycle and the validation record writer', () => {
     });
   });
 
+  it('lets a user stop an executing probe run through RunEngine: only a queued probe is refused, and the reconciler invents nothing', async () => {
+    h = await probeHarness();
+    // Like the real adapter, the provider call ends with an error when the stage is aborted.
+    overrides['orchestrator-json'] = (request) =>
+      new Promise((_, reject) =>
+        request.signal.addEventListener('abort', () => reject(new Error('Stage was cancelled.')), {
+          once: true,
+        }),
+      );
+    const response = await h.post(probeBody(['orchestrator']));
+    const { probeId, runId } = response.json as { probeId: string; runId: string };
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    const runOf = async () =>
+      (await h.app.inject({ method: 'GET', url: `/api/runs/${runId}` })).json().run as {
+        status: string;
+        cancellable: boolean;
+      };
+    expect(await runOf()).toMatchObject({ status: 'running', cancellable: true });
+
+    const cancel = await h.app.inject({ method: 'POST', url: `/api/runs/${runId}/cancel` });
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toEqual({ accepted: true });
+    await h.waitRun(runId, 'cancelled');
+    expect(await runOf()).toMatchObject({ status: 'cancelled', cancellable: false });
+
+    const observed = await reconcileRouteProbe(h.db, probeId, h.startRun);
+    expect(observed).toMatchObject({ state: 'failed', code: 'run_cancelled' });
+    expect(records()).toHaveLength(0);
+  });
+
   it('starts a queued probe exactly once after a restart, and a second pass does not start it again', async () => {
     h = await probeHarness();
     const starts: string[] = [];

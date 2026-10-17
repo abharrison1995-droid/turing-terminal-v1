@@ -52,6 +52,7 @@ import type { LucideIcon } from 'lucide-react';
 import QRCode from 'qrcode';
 import { notificationsForSnapshot } from './notificationEvents.js';
 import { APP_VERSION } from '../shared/version';
+import { ACTIVE_RUN_STATUSES } from '../shared/runStatus';
 import type {
   ConnectionProfile,
   DashboardSnapshot,
@@ -125,15 +126,7 @@ const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-const activeStatuses = new Set([
-  'queued',
-  'preparing',
-  'running',
-  'waiting_for_approval',
-  'waiting_for_user',
-  'retrying',
-  'cancelling',
-]);
+const activeStatuses = new Set<string>(ACTIVE_RUN_STATUSES);
 const waitingStatuses = new Set(['waiting_for_approval', 'waiting_for_user']);
 const quotaProviderOptions = [
   { id: 'anthropic-subscription', name: 'Claude subscription' },
