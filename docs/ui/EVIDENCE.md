@@ -170,3 +170,7 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 - `.github/workflows/ci.yml` was changed in UI.1b to also trigger on pushes to `ui/**` (no other CI change; the 30-minute timeout is unchanged).
 - `src/client/goals/a11yTokens.test.ts` was migrated from light-theme to dark-token assertions in UI.1b (owner-approved theme); contrast checks were broadened, with one declared exemption (pressed selected row for `--accent`).
 - Status: implementation complete with physical acceptance pending. V1 is not declared release-ready; V1 blockers are unaffected by this programme.
+
+## CI record: UI.3 to UI.8 stack
+
+- Run 39046711892 on `c72f582129a9460bde62a614ddfedf645a332023`: success (format, lint, typecheck, test, build, audit all green), 2026-10-17 15:49 to 16:11 UTC (about 22 minutes of the 30-minute budget). This covers UI.3 to UI.8 together; there is no per-stage CI for those. The earlier billing block is resolved.
