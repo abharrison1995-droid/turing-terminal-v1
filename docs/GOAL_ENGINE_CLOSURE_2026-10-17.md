@@ -120,13 +120,12 @@ Withdrawn, disputed and superseded authority is not treated as eligible. Fail-cl
 
 Coverage: `completionAuthorityPolicy.test.ts` has 49 test cases that reference classes 1–6, and they passed in the full suite run (section 2).
 
-## 8. X1 definition (proposal for owner acceptance)
+## 8. X1 (proposal, awaiting owner acceptance)
 
-- **Purpose.** State exactly what the desktop-versus-mobile claim covers. Today it says the preparation route "does not distinguish a desktop UI from a paired mobile client". That sentence is accurate only for the unguarded preparation route. Its wording elsewhere in the readiness doc (line 205, "a paired mobile client can call the same API") is broader.
-- **Location.** `docs/V1_READINESS.md` line 167 (preparation route), the matrix row near line 196, and `docs/GOAL_EXTERNAL_INTEGRATION_ATTESTATION_DESIGN.md` near line 293.
-- **Source.** `scratchpad/gh0_plan.md` line 137. Enforcement: the remote predicate `isRemoteRequest` in `src/server/app.ts` (around line 2306) and the guard `requireDesktopCaller` in `src/server/goals/goalRoutes.ts`.
-- **Proposed default wording (requires owner acceptance):**
-  > Paired remote devices cannot perform user-only Goal completion or correction actions; the server refuses them with `403 desktop_required`. A process running as the same user on the desktop can reach the local API and is not distinguished from the desktop UI. This residual is accepted under S1b decision O1 for V1. Other routes, including the preparation route, follow the existing authentication model.
+The full locations, the conflicting statements and the proposed wording are in [GOAL_X1_AUTH_WORDING_PROPOSAL.md](GOAL_X1_AUTH_WORDING_PROPOSAL.md). Summary:
+
+- The owner must decide whether S1b (same-user local process) is accepted. Four records say O1 was approved for V1 on 2026-10-13, conditionally. Four others (`docs/SECURITY.md:49` and `docs/V1_READINESS.md:167`, `:348`, `:353`) still say it is pending. These must be reconciled.
+- The conditional part of O1 is that live Tailscale verification is not waived. The `desktop_required` check is done. Identity-header handling is still pending.
 
 ## 9. Remaining gates before release
 
