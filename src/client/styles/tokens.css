@@ -107,11 +107,11 @@
   --chart-3: #e8924f;
 
   /* Mascot (token layer only; the component arrives in UI.6).
-     Values equal docs/ui supplement section 13.2. */
-  --tt-mascot-outline: rgb(20 20 24);
-  --tt-mascot-body: rgb(188 188 192);
-  --tt-mascot-shade: rgb(164 164 170);
-  --tt-mascot-accent: rgb(188 48 60);
+     Values equal docs/ui supplement section 13.2 (hex form, so the standalone icon can use them). */
+  --tt-mascot-outline: #141418;
+  --tt-mascot-body: #bcbcc0;
+  --tt-mascot-shade: #a4a4aa;
+  --tt-mascot-accent: #bc303c;
 
   /* Spacing: 4px / 8px rhythm */
   --s-1: 4px;
