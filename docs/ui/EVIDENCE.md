@@ -162,3 +162,11 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 - `e2e/ui7.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
 - Captures: `docs/ui/evidence/ui7/after/` (34 PNGs, 6.6 MB; full six-viewport set was 14 MB so desktop 1440 and 390 cover every route and the other viewports cover Home, run detail and the Goal cockpit).
 - NOT PERFORMED: axe contrast scan (no dependency), drawer scrim close, physical iPhone, native Tauri, screen readers, forced-colors, live data, CI.
+
+## UI.8: final review notes
+
+- Final independent review of `67af34f..b7b0bec`: APPROVE, no blocking findings.
+- Checksum locations: `SHA256SUMS` is at the stage root for ui1b, ui1c and ui2, and inside `after/` for ui3 to ui7.
+- `.github/workflows/ci.yml` was changed in UI.1b to also trigger on pushes to `ui/**` (no other CI change; the 30-minute timeout is unchanged).
+- `src/client/goals/a11yTokens.test.ts` was migrated from light-theme to dark-token assertions in UI.1b (owner-approved theme); contrast checks were broadened, with one declared exemption (pressed selected row for `--accent`).
+- Status: implementation complete with physical acceptance pending. V1 is not declared release-ready; V1 blockers are unaffected by this programme.
