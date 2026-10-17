@@ -156,3 +156,9 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 - Captures: `docs/ui/evidence/ui6/after/` (33 PNGs incl. frame strips; 24 Playwright tests at 1440, 390, 375; identical hashes across two runs).
 - CI: none run for the UI.3 to UI.6 SHAs (GitHub Actions billing block).
 - NOT PERFORMED: physical iPhone, native Tauri window, screen readers, phone battery, forced-colors. Licence of the supplement mascot art is unconfirmed; owner to confirm before merge.
+
+## UI.7: qualification
+
+- `e2e/ui7.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
+- Captures: `docs/ui/evidence/ui7/after/` (34 PNGs, 6.6 MB; full six-viewport set was 14 MB so desktop 1440 and 390 cover every route and the other viewports cover Home, run detail and the Goal cockpit).
+- NOT PERFORMED: axe contrast scan (no dependency), drawer scrim close, physical iPhone, native Tauri, screen readers, forced-colors, live data, CI.
