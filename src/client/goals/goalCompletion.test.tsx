@@ -387,7 +387,11 @@ describe('desktop completion review (read-only)', () => {
     await openHandoffTab(user);
     const section = await completionSection();
     const blockers = await section.findByRole('list', { name: 'Blockers' });
-    expect(within(blockers).getByText('The attestation was corrected, so it cannot be used.')).toBeTruthy();
+    expect(
+      within(blockers).getByText(
+        'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or pause this Goal and then abandon it. Completed and abandoned Goals do not reopen.',
+      ),
+    ).toBeTruthy();
     expect(section.queryByText(/attestation_disputed/)).toBeNull();
   });
 
@@ -1234,7 +1238,7 @@ describe('completion relation to other and corrected decisions (D.4R Slice 3)', 
     await openHandoffTab(user);
     const section = await completionSection();
     const blockers = await section.findByRole('list', { name: 'Blockers' });
-    expect(blockers.textContent).toMatch(/could not be verified, so no decision can be recorded here/);
+    expect(blockers.textContent).toMatch(/could not be verified, so nothing was recorded/);
     expect(section.queryByText(/completion_history_invalid|attestation_not_found/)).toBeNull();
     expect(section.queryByRole('checkbox')).toBeNull();
   });
