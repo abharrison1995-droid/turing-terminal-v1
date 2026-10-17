@@ -1,0 +1,939 @@
+/* Grand Projects (Stage 7B.1): read-only Goal list and cockpit. Uses the shared tokens only. */
+.goals-page {
+  display: grid;
+  gap: var(--s-4);
+  align-content: start;
+}
+.goal-list,
+.goal-plain-list,
+.goal-milestones,
+.goal-cycles,
+.goal-reviews,
+.goal-findings,
+.goal-evidence,
+.goal-version-list {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.goal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1.1fr);
+  gap: var(--s-4);
+  align-items: center;
+  width: 100%;
+  padding: var(--s-3) var(--s-4);
+  color: var(--ink);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.goal-row:hover {
+  background: var(--surface-2);
+}
+.goal-row:focus-visible,
+.goal-tab:focus-visible,
+.goal-version:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.goal-row-attention {
+  background: var(--surface-2);
+}
+.goal-row-main,
+.goal-row-state,
+.goal-row-next,
+.goal-row-side {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-row-meta {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-meta);
+}
+.goal-row-side {
+  align-content: center;
+}
+.goal-eyebrow {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.goal-needs-you {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0 var(--s-2);
+  color: var(--amber);
+  background: var(--amber-wash);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  overflow-wrap: anywhere;
+}
+.goal-pill-reason {
+  font-weight: var(--fw-regular);
+}
+.goal-tone-active {
+  color: var(--info);
+  background: var(--info-wash);
+}
+.goal-tone-wait,
+.goal-tone-attention {
+  color: var(--amber);
+  background: var(--amber-wash);
+}
+.goal-tone-danger {
+  color: var(--red);
+  background: var(--red-wash);
+}
+.goal-tone-done {
+  color: var(--green);
+  background: var(--green-wash);
+}
+.goal-tone-neutral {
+  color: var(--ink-2);
+  background: var(--surface-3);
+}
+
+.goal-state,
+.goal-empty {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  margin: 0;
+  color: var(--ink-3);
+}
+.goal-state {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.goal-note {
+  margin: 0 0 var(--s-2);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+
+.goal-cockpit {
+  display: grid;
+  gap: var(--s-4);
+}
+.goal-cockpit-top,
+.goal-cockpit-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  align-items: center;
+  justify-content: space-between;
+}
+.goal-cockpit-head h2 {
+  margin: 0;
+}
+.goal-cockpit-head > div {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-cockpit-head h2 {
+  overflow-wrap: anywhere;
+}
+.goal-cockpit-head > .goal-tone {
+  flex: 0 1 auto;
+}
+.goal-cockpit-attention {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: baseline;
+  padding: var(--s-3) var(--s-4);
+  color: var(--amber);
+  background: var(--amber-wash);
+  border-radius: var(--r-md);
+  overflow-wrap: anywhere;
+}
+
+.goal-mobile-cockpit {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-mobile-top > button {
+  min-height: var(--h-touch);
+}
+.goal-mobile-heading {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.goal-mobile-heading h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+}
+.goal-mobile-heading p {
+  margin: var(--s-1) 0 0;
+  color: var(--ink-3);
+}
+.goal-mobile-title {
+  min-width: 0;
+}
+.goal-mobile-needs {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  color: var(--ink);
+  background: var(--amber-wash);
+  border-radius: var(--r-md);
+  overflow-wrap: anywhere;
+}
+.goal-mobile-desktop-note {
+  margin: 0;
+  padding: var(--s-3);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+.goal-mobile-progress dl {
+  display: grid;
+  gap: var(--s-3);
+  margin: 0;
+}
+.goal-mobile-progress dl > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.goal-mobile-progress dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.goal-mobile-progress dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.goal-mobile-integration {
+  display: grid;
+  gap: var(--s-1);
+}
+.goal-mobile-integration code {
+  overflow-wrap: anywhere;
+}
+.goal-mobile-standing {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-mobile-standing > p {
+  margin: 0;
+}
+.goal-mobile-standing-note {
+  color: var(--ink-2);
+}
+.goal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: var(--s-1);
+  border-bottom: 1px solid var(--hairline);
+}
+.goal-tab {
+  min-width: 0;
+  padding: var(--s-2) var(--s-3);
+  color: var(--ink-3);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.goal-tab-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent-fill);
+}
+.goal-overview,
+.goal-definitions,
+.goal-definition {
+  display: grid;
+  gap: var(--s-4);
+  align-content: start;
+}
+.goal-next {
+  display: flex;
+  gap: var(--s-3);
+  align-items: flex-start;
+  padding: var(--s-4);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.goal-next > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-next p {
+  margin: 2px 0 0;
+}
+.goal-next-failclosed {
+  border: 1px solid var(--red-line);
+}
+.goal-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s-3);
+  margin: 0;
+}
+.goal-fact dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.goal-fact dd {
+  margin: 0;
+}
+.goal-blockers li,
+.goal-evidence-stale .goal-stale-reason {
+  color: var(--amber);
+}
+.goal-evidence-row {
+  display: grid;
+  gap: 2px;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+}
+.goal-evidence-current {
+  background: var(--green-wash);
+}
+.goal-evidence-stale {
+  background: var(--amber-wash);
+  border-left: 3px dashed var(--amber);
+}
+.goal-fresh {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+}
+.goal-fresh-current {
+  color: var(--green);
+}
+.goal-fresh-stale {
+  color: var(--amber);
+  text-decoration: underline wavy;
+}
+.goal-version {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.goal-version-active {
+  background: var(--selected);
+}
+.goal-debug pre {
+  max-width: 100%;
+  overflow: auto;
+  max-height: 240px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+}
+.goal-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.goal-table th,
+.goal-table td {
+  padding: var(--s-1) var(--s-2);
+  text-align: left;
+  border-bottom: 1px solid var(--hairline);
+}
+@media (max-width: 1024px) {
+  .goal-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.goals-page :is(p, li, dd, strong, code, .goal-row-meta, .approval-reason) {
+  overflow-wrap: anywhere;
+}
+.goal-tone {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .goals-page-compact {
+    padding-inline: var(--s-3);
+  }
+  .goals-page-compact .page-heading {
+    gap: var(--s-2);
+  }
+  .goal-row-mobile {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-2);
+    padding: var(--s-3);
+    border-color: var(--hairline);
+    text-wrap: pretty;
+  }
+  .goal-row-mobile .goal-row-main,
+  .goal-row-mobile .goal-row-next,
+  .goal-row-mobile .goal-row-side {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .goal-row-mobile .goal-row-state {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--s-2);
+  }
+  .goal-row-mobile .status-pill,
+  .goal-mobile-heading > .status-pill {
+    max-width: 100%;
+    white-space: normal;
+    flex-wrap: wrap;
+  }
+  .goal-mobile-cockpit .goal-cockpit-top {
+    align-items: stretch;
+  }
+  .goal-mobile-cockpit .goal-control-buttons > button,
+  .goal-mobile-cockpit .approval-actions > button {
+    min-width: var(--h-touch);
+    min-height: var(--h-touch);
+  }
+  .goal-mobile-cockpit .goal-control-buttons {
+    gap: var(--s-2);
+  }
+  .goal-mobile-cockpit .goal-next {
+    padding: var(--s-3);
+  }
+  .goal-mobile-cockpit .goal-next > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .goal-mobile-cockpit .goal-cockpit-head,
+  .goal-mobile-cockpit .goal-facts {
+    min-width: 0;
+  }
+  .goal-mobile-cockpit .approval-item {
+    min-width: 0;
+  }
+  .goal-mobile-cockpit .approval-copy,
+  .goal-mobile-cockpit .approval-actions {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.goals-page .surface-panel {
+  display: grid;
+  gap: var(--s-2);
+  align-content: start;
+  padding: var(--s-4);
+}
+.goals-page .surface-panel h2,
+.goals-page .surface-panel h3 {
+  margin: 0;
+}
+.goal-milestones li {
+  display: grid;
+  gap: 2px;
+}
+.goal-cockpit-head h2 {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+}
+
+/* Stage 7B.2A: Goal controls, unified approvals, finding decisions. */
+.goal-controls {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.goal-control-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.goal-confirm {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--amber-wash);
+  border: 1px solid var(--amber);
+  border-radius: var(--r-sm);
+}
+.goal-confirm h2,
+.goal-confirm h3,
+.goal-confirm h4,
+.goal-confirm h5,
+.goal-confirm h6 {
+  margin: 0;
+  font-size: var(--fs-section);
+  line-height: var(--lh-section);
+  overflow-wrap: anywhere;
+}
+.goal-confirm label {
+  display: grid;
+  gap: var(--s-1);
+}
+.goal-danger {
+  color: var(--red);
+  border-color: var(--red);
+}
+.goal-source {
+  padding: 0 var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.goal-source-goal {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+.goal-source-run {
+  color: var(--ink-3);
+}
+.approval-expected {
+  border-color: var(--amber);
+  background: var(--amber-wash);
+}
+.goal-controls button,
+.goal-confirm button {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.goal-completion button {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.goal-controls[aria-busy='true'],
+.goal-workbench[aria-busy='true'],
+.goal-new[aria-busy='true'] {
+  cursor: progress;
+}
+
+/* Stage 7C.2B.4: immutable manual-integration review surface. */
+.goal-handoff,
+.goal-handoff-projection {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-handoff .surface-panel {
+  min-width: 0;
+  max-width: 76ch;
+}
+.goal-handoff-intro > p,
+.goal-handoff-status > p,
+.goal-handoff .surface-panel > p {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-actions,
+.goal-handoff-heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.goal-handoff-heading-row {
+  justify-content: space-between;
+}
+.goal-handoff-heading-row h3 {
+  margin: 0;
+}
+.goal-handoff-identities {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+}
+.goal-handoff-identity {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) minmax(0, 1.6fr);
+  gap: var(--s-2) var(--s-4);
+  align-items: baseline;
+  min-width: 0;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.goal-handoff-identity dt,
+.goal-fact dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.goal-handoff-identity dd,
+.goal-fact dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-identity code,
+.goal-fact code,
+.goal-handoff-paths code,
+.goal-handoff-history code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.goal-handoff-paths {
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--s-2);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+}
+.goal-handoff-paths li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.goal-handoff-code {
+  max-width: 100%;
+  max-height: 28rem;
+  margin: 0;
+  padding: var(--s-3);
+  overflow: auto;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: var(--fs-meta);
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+}
+.goal-handoff-diff {
+  max-height: 36rem;
+  overflow-x: auto;
+}
+.goal-diff-addition {
+  color: #14532d;
+  background: #eaf5ec;
+}
+.goal-diff-removal {
+  color: #7f1d1d;
+  background: #f9eaea;
+}
+.goal-diff-context {
+  color: var(--ink);
+}
+.goal-handoff-warning,
+.goal-handoff-reason {
+  color: var(--amber);
+  font-weight: var(--fw-semibold);
+}
+.goal-handoff-status {
+  border-color: var(--hairline);
+}
+.goal-handoff-current h3 {
+  color: var(--info);
+}
+.goal-handoff-stale h3,
+.goal-handoff-unavailable h3,
+.goal-handoff-invalid h3 {
+  color: var(--amber);
+}
+.goal-handoff-history > li {
+  min-width: 0;
+}
+.goal-handoff-history .goal-version {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+}
+.goal-handoff-evidence {
+  max-height: 20rem;
+  overflow: auto;
+}
+.goal-handoff-evidence li {
+  overflow-wrap: anywhere;
+}
+.goal-handoff-fallback {
+  display: grid;
+  gap: var(--s-2);
+  max-width: 72ch;
+}
+.goal-handoff-fallback textarea {
+  min-height: 5rem;
+  padding: var(--s-2);
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  overflow-wrap: anywhere;
+}
+.goal-external-integration,
+.goal-external-projection {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-external-integration > p,
+.goal-external-projection > p,
+.goal-external-recovery > p {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-external-integration h3,
+.goal-external-integration h4,
+.goal-external-projection h4 {
+  margin: 0;
+}
+.goal-external-history {
+  display: grid;
+  gap: var(--s-1);
+  max-width: 76ch;
+}
+.goal-external-history .goal-version {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--s-2);
+  width: 100%;
+  text-align: left;
+}
+.goal-external-recovery {
+  display: grid;
+  gap: var(--s-2);
+  max-width: 72ch;
+  padding: var(--s-3);
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.goal-external-recovery code,
+.goal-external-state {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.goal-external-state {
+  font-weight: var(--fw-semibold);
+}
+.goal-external-current {
+  color: var(--info);
+}
+/* Completion review (desktop, Handoff tab). Neutral text for qualified states; amber for contested; red for invalid. */
+.goal-completion {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+  max-width: 80ch;
+}
+/* An empty status region is taken out of the grid, so it adds no row gap. It stays in the accessibility tree and is
+   not hidden with display: none, so a message written into it is still announced. */
+.goal-completion-status:empty,
+.goal-correction-status:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.goal-completion > p,
+.goal-completion-state,
+.goal-completion-qualifier,
+.goal-completion-preservation,
+.goal-completion-limitation {
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-completion h4 {
+  margin: 0;
+}
+.goal-completion-standing {
+  display: grid;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.goal-completion-state {
+  font-weight: var(--fw-semibold);
+}
+.goal-completion-contested {
+  color: var(--amber);
+}
+.goal-completion-invalid {
+  color: var(--red);
+}
+.goal-completion-legacy {
+  color: var(--ink);
+}
+.goal-completion-limitation {
+  color: var(--ink-2);
+}
+.goal-completion-action,
+.goal-completion-refusal {
+  display: grid;
+  gap: var(--s-2);
+  justify-items: start;
+  min-width: 0;
+}
+.goal-completion-action select,
+.goal-completion-action textarea {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+.goal-completion-ack {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-2);
+  max-width: 72ch;
+  overflow-wrap: anywhere;
+}
+.goal-external-historical,
+.goal-external-stale,
+.goal-external-not_integrated,
+.goal-external-unavailable,
+.goal-external-invalid {
+  color: var(--amber);
+}
+@media (max-width: 760px) {
+  .goal-handoff-identity {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1);
+  }
+  .goal-handoff-history .goal-version {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .goal-external-history .goal-version {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Stage 7B.2B: definition authority (create, edit, approve, reject, revise). */
+.goal-new,
+.goal-workbench {
+  display: grid;
+  gap: var(--s-3);
+}
+.goal-json-editor {
+  width: 100%;
+  min-height: 22rem;
+  padding: var(--s-3);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: var(--fs-meta);
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+}
+.goal-validation {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.goal-validation-ok {
+  border-color: var(--green);
+}
+.goal-validation-bad {
+  border-color: var(--red);
+}
+.goal-issues li {
+  overflow-wrap: anywhere;
+}
+.goal-diff {
+  width: 100%;
+  max-width: 100%;
+  max-height: 24rem;
+  margin: 0;
+  padding: var(--s-2);
+  overflow: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--fs-meta);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-sm);
+}
+.goal-diff span {
+  display: block;
+  white-space: pre;
+}
+.goal-diff-added {
+  color: var(--green);
+}
+.goal-diff-removed {
+  color: var(--red);
+}
+.goal-workbench-head h3 {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: center;
+}
+
+/* Stage 7B.2B.1: shell-level leave confirmation for unsaved Goal definition work. */
+.nav-guard-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: calc(var(--s-4) + env(safe-area-inset-top)) var(--s-4)
+    calc(var(--s-4) + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  background: var(--scrim);
+}
+.nav-guard {
+  width: min(32rem, 100%);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+}
+
+@media (max-width: 680px) {
+  .goal-row,
+  .goal-tab,
+  .goal-version,
+  .goal-control-buttons > button,
+  .approval-actions > button {
+    min-height: var(--h-touch);
+  }
+  .goal-row {
+    width: 100%;
+  }
+  .goal-cockpit-head {
+    align-items: flex-start;
+  }
+  .goal-cockpit-head > .goal-tone {
+    flex-basis: auto;
+  }
+  .goal-confirm {
+    max-width: 100%;
+  }
+  .goal-completion-action button,
+  .goal-completion-refusal button,
+  .goal-completion > button,
+  .goal-completion-ack {
+    min-height: var(--h-touch);
+  }
+}

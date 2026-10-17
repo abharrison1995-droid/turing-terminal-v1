@@ -31,3 +31,21 @@ Git operations require an isolated worktree created from a clean starting reposi
 ## Recovery
 
 Run state and events persist in SQLite, including first-class Git operation and approval records. Closing the browser does not own or terminate the run; the local service continues it. If the service restarts while a run is active, the engine pauses that run; inspect its Git working tree before resuming or discarding work. A pending human approval is denied/reset for explicit review. Git changes are committed, pushed, or merged only when the workflow contains those stages; force-push is not implemented.
+
+## Goal authority routes (GH.1), 2026-10-13
+
+GH.1 (S1a) makes the server refuse paired remote devices on five user-only Goal authority routes. All five are `POST`:
+
+- `/api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections`
+- `/api/goals/:goalId/handoffs/:handoffId/external-integration/attest`
+- `/api/goals/:goalId/completion-decision`
+- `/api/goals/:goalId/completion`
+- `/api/goals/:goalId/attestation-corrections/:approvalId/decision`
+
+A refused request receives `403` with `{ "error": "Goal completion and correction can be changed on the desktop only.", "code": "desktop_required" }`. The check runs first in each handler, before the Goal lookup and body validation. The signal is the existing remote predicate in `src/server/app.ts`, supplied to the Goal routes as `requireDesktopCaller`. A request is remote when it carries a Tailscale identity header, or when its Origin or Referer, or its Host, is not a loopback name, or when Host is missing. A request with no identity header and a loopback Host and Origin is local, whatever the client claims. User-Agent, viewport, `x-device-type`, `sec-ch-ua-mobile` and `x-forwarded-*` headers are not read for this decision. A paired device without a valid device cookie still receives the existing `401`. Local callers keep their current behaviour. The other Goal routes, including handoff preparation, goal-approval decisions, and pause, resume, start and abandon, are unchanged.
+
+Not claimed:
+
+- A same-user local process on the desktop machine is not distinguished from the desktop UI (S1b, owner decision pending). See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
+- Live Tailscale Serve header behaviour, including whether `Tailscale-User-Login` can be stripped or injected and how Host is rewritten, is not verified by automated tests and remains pending physical acceptance.
+- No physical-device, live-provider or accessibility result is established by this change.

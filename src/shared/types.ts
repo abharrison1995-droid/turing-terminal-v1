@@ -1,3 +1,5 @@
+import type { GoalDashboardApprovals, GoalDashboardSummary } from './goalApi.js';
+
 export type PermissionMode = 'supervised' | 'normal' | 'yolo' | 'enigma';
 export type ExecutionProfile = 'economy' | 'balanced' | 'maximum';
 export type RunStatus =
@@ -383,6 +385,8 @@ export interface WorkflowStage {
   skipStageIds?: string[];
   notificationMessage?: string;
   commitMessage?: string;
+  /** gitCommit only: a clean worktree completes the stage without creating a commit instead of failing. */
+  allowNoChanges?: boolean;
   pushRemote?: string;
   pushBranch?: string;
   rollbackTarget?: 'runStart' | 'latestCheckpoint';
@@ -420,6 +424,12 @@ export interface WorkflowDefinition {
   stageDefaults?: Partial<Record<StageKind, ModelConfiguration>>;
   globalInstructions?: string;
   contextPolicy: ContextPolicy;
+  /**
+   * Trusted Goal milestone scope, minted only by Turing's Goal executor after a run plan is verified. It is an
+   * independent conjunctive constraint: a path must be allowed by the context policy AND by this scope. No API schema
+   * accepts it and a run plan carrying it is refused.
+   */
+  goalScope?: { includeGlobs: string[]; excludeGlobs: string[] };
   stages: WorkflowStage[];
   version: number;
   isDefault: boolean;
@@ -645,6 +655,9 @@ export interface DashboardSnapshot {
   providers: ProviderStatus[];
   runs: RunSummary[];
   approvals: Approval[];
+  /** Additive Goal fields the server already returns (Stage 7A); absent from older masters. */
+  goals?: GoalDashboardSummary;
+  goalApprovals?: GoalDashboardApprovals;
   usage: {
     events: number;
     localMinutesToday: number;

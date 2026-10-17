@@ -7,6 +7,7 @@ import { DEFAULT_WORKFLOWS } from '../shared/workflows.js';
 import type { WorkflowDefinition, WorkflowStage } from '../shared/types.js';
 import { openDatabase, type Db } from './db.js';
 import { parsePromptRefinement, RunEngine } from './runEngine.js';
+import { REAL_GIT_TEST_TIMEOUT_MS } from './goals/repoKit.js';
 
 describe('prompt refinement parsing', () => {
   it('accepts JSON fences and redacts prompt content', () => {
@@ -151,246 +152,274 @@ async function approveGitStage(
 }
 
 describe('isolated run working copies', () => {
-  it('preserves the registered subfolder and reuses its worktree on resume', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'turing-worktree-'));
-    folders.push(root);
-    const repository = join(root, 'repository');
-    const projectPath = join(repository, 'apps', 'service');
-    mkdirSync(projectPath, { recursive: true });
-    execFileSync('git', ['init', '-q', repository]);
-    execFileSync('git', ['-C', repository, 'config', 'user.email', 'turing-test@example.invalid']);
-    execFileSync('git', ['-C', repository, 'config', 'user.name', 'Turing Test']);
-    writeFileSync(join(projectPath, 'index.ts'), 'export const start = true;\n');
-    execFileSync('git', ['-C', repository, 'add', '.']);
-    execFileSync('git', ['-C', repository, 'commit', '-qm', 'initial']);
+  it(
+    'preserves the registered subfolder and reuses its worktree on resume',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'turing-worktree-'));
+      folders.push(root);
+      const repository = join(root, 'repository');
+      const projectPath = join(repository, 'apps', 'service');
+      mkdirSync(projectPath, { recursive: true });
+      execFileSync('git', ['init', '-q', repository]);
+      execFileSync('git', ['-C', repository, 'config', 'user.email', 'turing-test@example.invalid']);
+      execFileSync('git', ['-C', repository, 'config', 'user.name', 'Turing Test']);
+      writeFileSync(join(projectPath, 'index.ts'), 'export const start = true;\n');
+      execFileSync('git', ['-C', repository, 'add', '.']);
+      execFileSync('git', ['-C', repository, 'commit', '-qm', 'initial']);
 
-    database = openDatabase(join(root, 'state'));
-    const machineId = (
-      database.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string }
-    ).value;
-    const now = new Date().toISOString();
-    database
-      .prepare(
-        `INSERT INTO projects (id, machine_id, name, path, git_root, branch, dirty, created_at)
-      VALUES ('project', ?, 'Service', ?, ?, 'main', 0, ?)`,
-      )
-      .run(machineId, projectPath, repository, now);
-    database
-      .prepare(
-        `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at)
-      VALUES ('run', ?, 'project', 'quick-fix', '{}', 'implement', 'balanced', 'normal', 'queued', ?)`,
-      )
-      .run(machineId, now);
-
-    const previousDataDir = process.env.TT_DATA_DIR;
-    process.env.TT_DATA_DIR = join(root, 'engine-data');
-    try {
-      const engine = new RunEngine(database, () => undefined);
-      const prepare = (
-        engine as unknown as {
-          prepareWorkingCopy: (
-            runId: string,
-            workflow: (typeof DEFAULT_WORKFLOWS)[number],
-            projectPath: string,
-          ) => Promise<{ path: string; worktreePath: string | null; branch: string | null }>;
+      database = openDatabase(join(root, 'state'));
+      const machineId = (
+        database.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as {
+          value: string;
         }
-      ).prepareWorkingCopy.bind(engine);
-      const workflow = DEFAULT_WORKFLOWS.find((item) => item.id === 'quick-fix')!;
-      const first = await prepare('run', workflow, projectPath);
-      expect(first.worktreePath).toBe(join(root, 'engine-data', 'worktrees', 'run'));
-      expect(first.path).toBe(join(first.worktreePath!, 'apps', 'service'));
-      expect(first.branch).toBe('turing/run');
+      ).value;
+      const now = new Date().toISOString();
+      database
+        .prepare(
+          `INSERT INTO projects (id, machine_id, name, path, git_root, branch, dirty, created_at)
+      VALUES ('project', ?, 'Service', ?, ?, 'main', 0, ?)`,
+        )
+        .run(machineId, projectPath, repository, now);
+      database
+        .prepare(
+          `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status, created_at)
+      VALUES ('run', ?, 'project', 'quick-fix', '{}', 'implement', 'balanced', 'normal', 'queued', ?)`,
+        )
+        .run(machineId, now);
 
-      const agentChange = join(first.path, 'agent-change.ts');
-      writeFileSync(agentChange, 'export const changed = true;\n');
-      const resumed = await prepare('run', workflow, projectPath);
-      expect(resumed.worktreePath).toBe(first.worktreePath);
-      expect(resumed.path).toBe(first.path);
-      expect(resumed.branch).toBe(first.branch);
-      expect(existsSync(agentChange)).toBe(true);
-    } finally {
-      if (previousDataDir === undefined) delete process.env.TT_DATA_DIR;
-      else process.env.TT_DATA_DIR = previousDataDir;
-    }
-  });
+      const previousDataDir = process.env.TT_DATA_DIR;
+      process.env.TT_DATA_DIR = join(root, 'engine-data');
+      try {
+        const engine = new RunEngine(database, () => undefined);
+        const prepare = (
+          engine as unknown as {
+            prepareWorkingCopy: (
+              runId: string,
+              workflow: (typeof DEFAULT_WORKFLOWS)[number],
+              projectPath: string,
+            ) => Promise<{ path: string; worktreePath: string | null; branch: string | null }>;
+          }
+        ).prepareWorkingCopy.bind(engine);
+        const workflow = DEFAULT_WORKFLOWS.find((item) => item.id === 'quick-fix')!;
+        const first = await prepare('run', workflow, projectPath);
+        expect(first.worktreePath).toBe(join(root, 'engine-data', 'worktrees', 'run'));
+        expect(first.path).toBe(join(first.worktreePath!, 'apps', 'service'));
+        expect(first.branch).toBe('turing/run');
+
+        const agentChange = join(first.path, 'agent-change.ts');
+        writeFileSync(agentChange, 'export const changed = true;\n');
+        const resumed = await prepare('run', workflow, projectPath);
+        expect(resumed.worktreePath).toBe(first.worktreePath);
+        expect(resumed.path).toBe(first.path);
+        expect(resumed.branch).toBe(first.branch);
+        expect(existsSync(agentChange)).toBe(true);
+      } finally {
+        if (previousDataDir === undefined) delete process.env.TT_DATA_DIR;
+        else process.env.TT_DATA_DIR = previousDataDir;
+      }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('first-class Git workflow stages', () => {
-  it('records a checkpoint, commits on the run branch, and restores only that project subtree', async () => {
-    const fixture = await createGitStageFixture('yolo');
-    const worktree = fixture.workingCopy.worktreePath!;
-    const project = fixture.workingCopy.path;
-    const preCommitHook = join(fixture.sourceRoot, '.git', 'hooks', 'pre-commit');
-    writeFileSync(preCommitHook, '#!/bin/sh\nexit 99\n');
-    chmodSync(preCommitHook, 0o755);
-    writeFileSync(join(project, 'app.txt'), 'checkpoint\n');
-    writeFileSync(join(project, 'checkpoint-only.txt'), 'keep at checkpoint\n');
+  it(
+    'records a checkpoint, commits on the run branch, and restores only that project subtree',
+    async () => {
+      const fixture = await createGitStageFixture('yolo');
+      const worktree = fixture.workingCopy.worktreePath!;
+      const project = fixture.workingCopy.path;
+      const preCommitHook = join(fixture.sourceRoot, '.git', 'hooks', 'pre-commit');
+      writeFileSync(preCommitHook, '#!/bin/sh\nexit 99\n');
+      chmodSync(preCommitHook, 0o755);
+      writeFileSync(join(project, 'app.txt'), 'checkpoint\n');
+      writeFileSync(join(project, 'checkpoint-only.txt'), 'keep at checkpoint\n');
 
-    const checkpoint = await invokeGitStage(fixture, {
-      id: 'checkpoint',
-      label: 'Checkpoint',
-      kind: 'gitCheckpoint',
-    });
-    expect(checkpoint.treeHash).toMatch(/^[a-f0-9]{40,64}$/);
-    expect(checkpoint.committed).toBe(false);
-    expect(execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
-      fixture.startingCommit,
-    );
+      const checkpoint = await invokeGitStage(fixture, {
+        id: 'checkpoint',
+        label: 'Checkpoint',
+        kind: 'gitCheckpoint',
+      });
+      expect(checkpoint.treeHash).toMatch(/^[a-f0-9]{40,64}$/);
+      expect(checkpoint.committed).toBe(false);
+      expect(execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
+        fixture.startingCommit,
+      );
 
-    writeFileSync(join(project, 'app.txt'), 'later change\n');
-    writeFileSync(join(project, 'later-only.txt'), 'remove after restore\n');
-    const commit = await invokeGitStage(fixture, {
-      id: 'commit',
-      label: 'Commit',
-      kind: 'gitCommit',
-      commitMessage: 'Turing fixture change',
-    });
-    expect(commit.commit).not.toBe(fixture.startingCommit);
+      writeFileSync(join(project, 'app.txt'), 'later change\n');
+      writeFileSync(join(project, 'later-only.txt'), 'remove after restore\n');
+      const commit = await invokeGitStage(fixture, {
+        id: 'commit',
+        label: 'Commit',
+        kind: 'gitCommit',
+        commitMessage: 'Turing fixture change',
+      });
+      expect(commit.commit).not.toBe(fixture.startingCommit);
 
-    const rollbackExecution = approveGitStage(fixture, {
-      id: 'rollback',
-      label: 'Rollback',
-      kind: 'gitRollback',
-      rollbackTarget: 'latestCheckpoint',
-    });
-    expect(await vi.waitFor(() => readFileSync(join(project, 'app.txt'), 'utf8'))).toBe('later change\n');
-    const rollback = await rollbackExecution;
-    expect(rollback.target).toBe('latestCheckpoint');
-    expect(readFileSync(join(project, 'app.txt'), 'utf8')).toBe('checkpoint\n');
-    expect(readFileSync(join(project, 'checkpoint-only.txt'), 'utf8')).toBe('keep at checkpoint\n');
-    expect(existsSync(join(project, 'later-only.txt'))).toBe(false);
-    expect(execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
-      fixture.startingCommit,
-    );
-    expect(
-      fixture.database.prepare('SELECT operation, status FROM git_operations ORDER BY created_at').all(),
-    ).toEqual([
-      { operation: 'gitCheckpoint', status: 'completed' },
-      { operation: 'gitCommit', status: 'completed' },
-      { operation: 'gitRollback', status: 'completed' },
-    ]);
-  });
+      const rollbackExecution = approveGitStage(fixture, {
+        id: 'rollback',
+        label: 'Rollback',
+        kind: 'gitRollback',
+        rollbackTarget: 'latestCheckpoint',
+      });
+      expect(await vi.waitFor(() => readFileSync(join(project, 'app.txt'), 'utf8'))).toBe('later change\n');
+      const rollback = await rollbackExecution;
+      expect(rollback.target).toBe('latestCheckpoint');
+      expect(readFileSync(join(project, 'app.txt'), 'utf8')).toBe('checkpoint\n');
+      expect(readFileSync(join(project, 'checkpoint-only.txt'), 'utf8')).toBe('keep at checkpoint\n');
+      expect(existsSync(join(project, 'later-only.txt'))).toBe(false);
+      expect(execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(
+        fixture.startingCommit,
+      );
+      expect(
+        fixture.database.prepare('SELECT operation, status FROM git_operations ORDER BY created_at').all(),
+      ).toEqual([
+        { operation: 'gitCheckpoint', status: 'completed' },
+        { operation: 'gitCommit', status: 'completed' },
+        { operation: 'gitRollback', status: 'completed' },
+      ]);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('requires approval for merge in ENIGMA and shows the diff before fast-forwarding', async () => {
-    const fixture = await createGitStageFixture('enigma');
-    const project = fixture.workingCopy.path;
-    const worktree = fixture.workingCopy.worktreePath!;
-    const postMergeHook = join(fixture.sourceRoot, '.git', 'hooks', 'post-merge');
-    writeFileSync(postMergeHook, '#!/bin/sh\nexit 99\n');
-    chmodSync(postMergeHook, 0o755);
-    writeFileSync(join(project, 'app.txt'), 'reviewed change\n');
-    await invokeGitStage(fixture, { id: 'commit', label: 'Commit', kind: 'gitCommit' });
-    const runHead = execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], {
-      encoding: 'utf8',
-    }).trim();
+  it(
+    'requires approval for merge in ENIGMA and shows the diff before fast-forwarding',
+    async () => {
+      const fixture = await createGitStageFixture('enigma');
+      const project = fixture.workingCopy.path;
+      const worktree = fixture.workingCopy.worktreePath!;
+      const postMergeHook = join(fixture.sourceRoot, '.git', 'hooks', 'post-merge');
+      writeFileSync(postMergeHook, '#!/bin/sh\nexit 99\n');
+      chmodSync(postMergeHook, 0o755);
+      writeFileSync(join(project, 'app.txt'), 'reviewed change\n');
+      await invokeGitStage(fixture, { id: 'commit', label: 'Commit', kind: 'gitCommit' });
+      const runHead = execFileSync('git', ['-C', worktree, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
 
-    const execution = invokeGitStage(fixture, { id: 'merge', label: 'Merge', kind: 'gitMerge' });
-    await vi.waitFor(() => {
-      const row = fixture.database
-        .prepare("SELECT status FROM git_operations WHERE operation = 'gitMerge'")
-        .get() as { status: string } | undefined;
-      expect(row?.status).toBe('waiting_for_approval');
-    });
-    expect(
-      execFileSync('git', ['-C', fixture.sourceRoot, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
-    ).toBe(fixture.startingCommit);
-    const approval = fixture.database
-      .prepare("SELECT id, reason FROM approvals WHERE operation = 'Merge Turing run branch'")
-      .get() as { id: string; reason: string };
-    expect(approval.reason).toContain('reviewed change');
-    expect(fixture.engine.decideApproval(approval.id, true)).toBe(true);
-    const merged = await execution;
-    expect(merged.commit).toBe(runHead);
-    expect(
-      execFileSync('git', ['-C', fixture.sourceRoot, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
-    ).toBe(runHead);
-    expect(
-      fixture.database
-        .prepare("SELECT approval_required, status, target FROM git_operations WHERE operation = 'gitMerge'")
-        .get(),
-    ).toMatchObject({ approval_required: 1, status: 'completed', target: 'main' });
-  });
+      const execution = invokeGitStage(fixture, { id: 'merge', label: 'Merge', kind: 'gitMerge' });
+      await vi.waitFor(() => {
+        const row = fixture.database
+          .prepare("SELECT status FROM git_operations WHERE operation = 'gitMerge'")
+          .get() as { status: string } | undefined;
+        expect(row?.status).toBe('waiting_for_approval');
+      });
+      expect(
+        execFileSync('git', ['-C', fixture.sourceRoot, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
+      ).toBe(fixture.startingCommit);
+      const approval = fixture.database
+        .prepare("SELECT id, reason FROM approvals WHERE operation = 'Merge Turing run branch'")
+        .get() as { id: string; reason: string };
+      expect(approval.reason).toContain('reviewed change');
+      expect(fixture.engine.decideApproval(approval.id, true)).toBe(true);
+      const merged = await execution;
+      expect(merged.commit).toBe(runHead);
+      expect(
+        execFileSync('git', ['-C', fixture.sourceRoot, 'rev-parse', 'main'], { encoding: 'utf8' }).trim(),
+      ).toBe(runHead);
+      expect(
+        fixture.database
+          .prepare(
+            "SELECT approval_required, status, target FROM git_operations WHERE operation = 'gitMerge'",
+          )
+          .get(),
+      ).toMatchObject({ approval_required: 1, status: 'completed', target: 'main' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('pushes only after the permission policy approval and never uses force', async () => {
-    const fixture = await createGitStageFixture('normal');
-    const remote = join(fixture.root, 'remote.git');
-    execFileSync('git', ['init', '--bare', '-q', remote]);
-    execFileSync('git', ['-C', fixture.sourceRoot, 'remote', 'add', 'origin', remote]);
-    const prePushHook = join(fixture.sourceRoot, '.git', 'hooks', 'pre-push');
-    writeFileSync(prePushHook, '#!/bin/sh\nexit 99\n');
-    chmodSync(prePushHook, 0o755);
-    writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'push me\n');
+  it(
+    'pushes only after the permission policy approval and never uses force',
+    async () => {
+      const fixture = await createGitStageFixture('normal');
+      const remote = join(fixture.root, 'remote.git');
+      execFileSync('git', ['init', '--bare', '-q', remote]);
+      execFileSync('git', ['-C', fixture.sourceRoot, 'remote', 'add', 'origin', remote]);
+      const prePushHook = join(fixture.sourceRoot, '.git', 'hooks', 'pre-push');
+      writeFileSync(prePushHook, '#!/bin/sh\nexit 99\n');
+      chmodSync(prePushHook, 0o755);
+      writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'push me\n');
 
-    const commitExecution = invokeGitStage(fixture, { id: 'commit', label: 'Commit', kind: 'gitCommit' });
-    await vi.waitFor(() => {
-      const row = fixture.database
-        .prepare("SELECT status FROM git_operations WHERE operation = 'gitCommit'")
-        .get() as { status: string } | undefined;
-      expect(row?.status).toBe('waiting_for_approval');
-    });
-    const commitApproval = fixture.database
-      .prepare("SELECT id FROM approvals WHERE operation = 'Create Git commit'")
-      .get() as { id: string };
-    expect(fixture.engine.decideApproval(commitApproval.id, true)).toBe(true);
-    await commitExecution;
+      const commitExecution = invokeGitStage(fixture, { id: 'commit', label: 'Commit', kind: 'gitCommit' });
+      await vi.waitFor(() => {
+        const row = fixture.database
+          .prepare("SELECT status FROM git_operations WHERE operation = 'gitCommit'")
+          .get() as { status: string } | undefined;
+        expect(row?.status).toBe('waiting_for_approval');
+      });
+      const commitApproval = fixture.database
+        .prepare("SELECT id FROM approvals WHERE operation = 'Create Git commit'")
+        .get() as { id: string };
+      expect(fixture.engine.decideApproval(commitApproval.id, true)).toBe(true);
+      await commitExecution;
 
-    const pushExecution = invokeGitStage(fixture, { id: 'push', label: 'Push', kind: 'gitPush' });
-    await vi.waitFor(() => {
-      const row = fixture.database
-        .prepare("SELECT status FROM git_operations WHERE operation = 'gitPush'")
-        .get() as { status: string } | undefined;
-      expect(row?.status).toBe('waiting_for_approval');
-    });
-    expect(
-      execFileSync(
-        'git',
-        ['--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/turing/git-run'],
-        {
+      const pushExecution = invokeGitStage(fixture, { id: 'push', label: 'Push', kind: 'gitPush' });
+      await vi.waitFor(() => {
+        const row = fixture.database
+          .prepare("SELECT status FROM git_operations WHERE operation = 'gitPush'")
+          .get() as { status: string } | undefined;
+        expect(row?.status).toBe('waiting_for_approval');
+      });
+      expect(
+        execFileSync(
+          'git',
+          ['--git-dir', remote, 'for-each-ref', '--format=%(refname)', 'refs/heads/turing/git-run'],
+          {
+            encoding: 'utf8',
+          },
+        ).trim(),
+      ).toBe('');
+      const pushApproval = fixture.database
+        .prepare("SELECT id FROM approvals WHERE operation = 'Push Git branch'")
+        .get() as { id: string };
+      expect(fixture.engine.decideApproval(pushApproval.id, true)).toBe(true);
+      const pushed = await pushExecution;
+      expect(pushed.remote).toBe('origin');
+      expect(
+        execFileSync('git', ['--git-dir', remote, 'rev-parse', 'refs/heads/turing/git-run'], {
           encoding: 'utf8',
-        },
-      ).trim(),
-    ).toBe('');
-    const pushApproval = fixture.database
-      .prepare("SELECT id FROM approvals WHERE operation = 'Push Git branch'")
-      .get() as { id: string };
-    expect(fixture.engine.decideApproval(pushApproval.id, true)).toBe(true);
-    const pushed = await pushExecution;
-    expect(pushed.remote).toBe('origin');
-    expect(
-      execFileSync('git', ['--git-dir', remote, 'rev-parse', 'refs/heads/turing/git-run'], {
-        encoding: 'utf8',
-      }).trim(),
-    ).toBe(pushed.commit);
-  });
+        }).trim(),
+      ).toBe(pushed.commit);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('blocks commits when the run has changes outside the registered subfolder', async () => {
-    const fixture = await createGitStageFixture('yolo');
-    writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'inside\n');
-    writeFileSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'), 'outside\n');
-    await expect(
-      invokeGitStage(fixture, { id: 'outside', label: 'Commit outside', kind: 'gitCommit' }),
-    ).rejects.toThrow('out-of-project path');
-    expect(existsSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'))).toBe(true);
-  });
+  it(
+    'blocks commits when the run has changes outside the registered subfolder',
+    async () => {
+      const fixture = await createGitStageFixture('yolo');
+      writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'inside\n');
+      writeFileSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'), 'outside\n');
+      await expect(
+        invokeGitStage(fixture, { id: 'outside', label: 'Commit outside', kind: 'gitCommit' }),
+      ).rejects.toThrow('out-of-project path');
+      expect(existsSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'))).toBe(true);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
-  it('blocks secret-looking content and keeps it out of Git operation history', async () => {
-    const fixture = await createGitStageFixture('enigma');
-    const secret = 'hidden-credential-material-123456';
-    writeFileSync(join(fixture.workingCopy.path, 'settings.txt'), `api_key=${secret}\n`);
-    await expect(
-      invokeGitStage(fixture, { id: 'commit-secret', label: 'Commit secret', kind: 'gitCommit' }),
-    ).rejects.toThrow('known credential pattern');
-    const audit = fixture.database
-      .prepare("SELECT status, result_json FROM git_operations WHERE operation = 'gitCommit'")
-      .get() as { status: string; result_json: string };
-    expect(audit.status).toBe('failed');
-    expect(audit.result_json).not.toContain(secret);
-    expect(
-      execFileSync('git', ['-C', fixture.workingCopy.worktreePath!, 'diff', '--cached', '--name-only'], {
-        encoding: 'utf8',
-      }).trim(),
-    ).toBe('');
-  });
+  it(
+    'blocks secret-looking content and keeps it out of Git operation history',
+    async () => {
+      const fixture = await createGitStageFixture('enigma');
+      const secret = 'hidden-credential-material-123456';
+      writeFileSync(join(fixture.workingCopy.path, 'settings.txt'), `api_key=${secret}\n`);
+      await expect(
+        invokeGitStage(fixture, { id: 'commit-secret', label: 'Commit secret', kind: 'gitCommit' }),
+      ).rejects.toThrow('known credential pattern');
+      const audit = fixture.database
+        .prepare("SELECT status, result_json FROM git_operations WHERE operation = 'gitCommit'")
+        .get() as { status: string; result_json: string };
+      expect(audit.status).toBe('failed');
+      expect(audit.result_json).not.toContain(secret);
+      expect(
+        execFileSync('git', ['-C', fixture.workingCopy.worktreePath!, 'diff', '--cached', '--name-only'], {
+          encoding: 'utf8',
+        }).trim(),
+      ).toBe('');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('brokered workflow commands', () => {
@@ -472,33 +501,37 @@ describe('brokered workflow commands', () => {
     ).toMatchObject({ status: 'completed', approval_required: 1, approval_id: approval.id, exit_code: 0 });
   });
 
-  it('cancels a run paused for prompt refinement without an active controller', async () => {
-    const fixture = await createGitStageFixture();
-    fixture.database.prepare("UPDATE runs SET status = 'waiting_for_user' WHERE id = 'git-run'").run();
-    fixture.database
-      .prepare(
-        `INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status, logs)
+  it(
+    'cancels a run paused for prompt refinement without an active controller',
+    async () => {
+      const fixture = await createGitStageFixture();
+      fixture.database.prepare("UPDATE runs SET status = 'waiting_for_user' WHERE id = 'git-run'").run();
+      fixture.database
+        .prepare(
+          `INSERT INTO stages (id, run_id, stage_key, kind, title, sequence, status, logs)
          VALUES ('refinement-stage', 'git-run', 'refine', 'promptRefinement', 'Refine task', 0, 'waiting_for_user', '')`,
-      )
-      .run();
-    new RunEngine(fixture.database, () => undefined).reconcileInterruptedRuns();
-    expect(fixture.database.prepare("SELECT status FROM runs WHERE id = 'git-run'").get()).toMatchObject({
-      status: 'waiting_for_user',
-    });
+        )
+        .run();
+      new RunEngine(fixture.database, () => undefined).reconcileInterruptedRuns();
+      expect(fixture.database.prepare("SELECT status FROM runs WHERE id = 'git-run'").get()).toMatchObject({
+        status: 'waiting_for_user',
+      });
 
-    expect(fixture.engine.cancel('git-run')).toBe(true);
-    expect(fixture.database.prepare("SELECT status FROM runs WHERE id = 'git-run'").get()).toMatchObject({
-      status: 'cancelled',
-    });
-    expect(
-      fixture.database.prepare("SELECT status FROM stages WHERE id = 'refinement-stage'").get(),
-    ).toMatchObject({
-      status: 'cancelled',
-    });
-    expect(
-      fixture.database.prepare("SELECT type FROM run_events WHERE run_id = 'git-run'").get(),
-    ).toMatchObject({ type: 'run_cancelled' });
-  });
+      expect(fixture.engine.cancel('git-run')).toBe(true);
+      expect(fixture.database.prepare("SELECT status FROM runs WHERE id = 'git-run'").get()).toMatchObject({
+        status: 'cancelled',
+      });
+      expect(
+        fixture.database.prepare("SELECT status FROM stages WHERE id = 'refinement-stage'").get(),
+      ).toMatchObject({
+        status: 'cancelled',
+      });
+      expect(
+        fixture.database.prepare("SELECT type FROM run_events WHERE run_id = 'git-run'").get(),
+      ).toMatchObject({ type: 'run_cancelled' });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it('runs a forward conditional branch and skips downstream shell work after a failed build', async () => {
     const root = mkdtempSync(join(tmpdir(), 'turing-condition-run-'));
@@ -583,6 +616,23 @@ describe('brokered workflow commands', () => {
         .prepare("SELECT status FROM stages WHERE run_id = 'failed-build' AND stage_key = 'build'")
         .get(),
     ).toMatchObject({ status: 'failed' });
+    // Ordinary (non-Goal) run: the failed stage stays failed, now carrying the command and the failure kind, but no
+    // repository subject is captured because the run has no Goal base commit.
+    const failedOutput = JSON.parse(
+      (
+        database
+          .prepare("SELECT output_json FROM stages WHERE run_id = 'failed-build' AND stage_key = 'build'")
+          .get() as { output_json: string }
+      ).output_json,
+    ) as Record<string, unknown>;
+    expect(failedOutput).toMatchObject({
+      command: ['npm', 'run', 'build'],
+      failureKind: 'command_exit',
+      exitCode: 1,
+    });
+    expect(failedOutput.error).toEqual(expect.any(String));
+    expect(failedOutput).not.toHaveProperty('subjectTree');
+    expect(failedOutput).not.toHaveProperty('subjectCommit');
     expect(
       database
         .prepare("SELECT status FROM stages WHERE run_id = 'failed-build' AND stage_key = 'marker'")
@@ -593,5 +643,93 @@ describe('brokered workflow commands', () => {
         .prepare("SELECT status FROM stages WHERE run_id = 'failed-build' AND stage_key = 'branch'")
         .get(),
     ).toMatchObject({ status: 'passed' });
+  });
+  describe('allowNoChanges', () => {
+    const head = (fixture: Awaited<ReturnType<typeof createGitStageFixture>>) =>
+      execFileSync('git', ['-C', fixture.workingCopy.worktreePath!, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+      }).trim();
+
+    it(
+      'keeps the ordinary behaviour: a clean worktree fails the commit stage by default and when false',
+      async () => {
+        const fixture = await createGitStageFixture('yolo');
+        await expect(
+          invokeGitStage(fixture, { id: 'c1', label: 'Commit', kind: 'gitCommit' }),
+        ).rejects.toThrow('There are no changes');
+        await expect(
+          invokeGitStage(fixture, { id: 'c2', label: 'Commit', kind: 'gitCommit', allowNoChanges: false }),
+        ).rejects.toThrow('There are no changes');
+        expect(head(fixture)).toBe(fixture.startingCommit);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'completes deterministically without an empty commit when explicitly allowed',
+      async () => {
+        const fixture = await createGitStageFixture('yolo');
+        const result = await invokeGitStage(fixture, {
+          id: 'c3',
+          label: 'Commit',
+          kind: 'gitCommit',
+          allowNoChanges: true,
+        });
+        expect(result).toMatchObject({ noChanges: true, commit: fixture.startingCommit, files: [] });
+        expect(head(fixture)).toBe(fixture.startingCommit);
+        expect(fixture.database.prepare('SELECT status, after_commit FROM git_operations').all()).toEqual([
+          { status: 'completed', after_commit: fixture.startingCommit },
+        ]);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'still commits real changes and keeps the secret, scope and index checks when allowed',
+      async () => {
+        const fixture = await createGitStageFixture('yolo');
+        writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'changed\n');
+        const committed = await invokeGitStage(fixture, {
+          id: 'c4',
+          label: 'Commit',
+          kind: 'gitCommit',
+          allowNoChanges: true,
+        });
+        expect(committed.commit).not.toBe(fixture.startingCommit);
+        expect(committed.noChanges).toBeUndefined();
+
+        writeFileSync(
+          join(fixture.workingCopy.path, 'settings.txt'),
+          'api_key=hidden-credential-material-123456\n',
+        );
+        await expect(
+          invokeGitStage(fixture, { id: 'c5', label: 'Commit', kind: 'gitCommit', allowNoChanges: true }),
+        ).rejects.toThrow('known credential pattern');
+        rmSync(join(fixture.workingCopy.path, 'settings.txt'));
+        writeFileSync(join(fixture.workingCopy.worktreePath!, 'outside.txt'), 'outside\n');
+        writeFileSync(join(fixture.workingCopy.path, 'app.txt'), 'again\n');
+        await expect(
+          invokeGitStage(fixture, { id: 'c6', label: 'Commit', kind: 'gitCommit', allowNoChanges: true }),
+        ).rejects.toThrow('out-of-project path');
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it('is rejected on any other stage kind by workflow validation', async () => {
+      const { validateWorkflow } = await import('./workflowValidation.js');
+      const base = { maxParallelAgents: 1, maxRemediationRounds: 0, isolatedWorktree: true };
+      expect(
+        validateWorkflow({
+          ...base,
+          stages: [{ id: 'b', label: 'Build', kind: 'build', allowNoChanges: true }],
+        }),
+      ).toEqual([expect.stringContaining('only as a Git commit stage')]);
+      expect(
+        validateWorkflow({
+          ...base,
+          stages: [{ id: 'c', label: 'C', kind: 'gitCommit', allowNoChanges: true }],
+        }),
+      ).toEqual([]);
+    });
   });
 });

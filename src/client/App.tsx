@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -37,6 +37,7 @@ import {
   Send,
   Settings,
   SlidersHorizontal,
+  Target,
   Shield,
   Smartphone,
   Sparkles,
@@ -52,7 +53,6 @@ import QRCode from 'qrcode';
 import { notificationsForSnapshot } from './notificationEvents.js';
 import { APP_VERSION } from '../shared/version';
 import type {
-  Approval,
   ConnectionProfile,
   DashboardSnapshot,
   ExecutionOperation,
@@ -73,6 +73,10 @@ import type {
   WorkflowStage,
 } from '../shared/types';
 import { api } from './api';
+import { approvalSignature, pendingApprovalCounts } from './goals/dashboard';
+import { GoalsPage } from './goals/GoalsPage';
+import { cleanGoalNavigationUrl, parseGoalNavigationRequest } from './goals/deepLink';
+import { UnifiedApprovals } from './goals/UnifiedApprovals';
 import {
   billingLaneLabel,
   billingLanesForBackend,
@@ -109,11 +113,12 @@ import {
   type MachineProfile,
 } from './machineProfiles';
 
-type Page = 'command' | 'workflows' | 'projects' | 'runs' | 'usage' | 'machines' | 'settings';
+type Page = 'command' | 'workflows' | 'projects' | 'goals' | 'runs' | 'usage' | 'machines' | 'settings';
 
 const navItems: Array<{ id: Page; label: string; icon: LucideIcon }> = [
   { id: 'workflows', label: 'Workflows', icon: WorkflowIcon },
   { id: 'projects', label: 'Projects', icon: FileCode2 },
+  { id: 'goals', label: 'Grand Projects', icon: Target },
   { id: 'runs', label: 'Runs & history', icon: Activity },
   { id: 'usage', label: 'Usage', icon: Radio },
   { id: 'machines', label: 'Machines', icon: Monitor },
@@ -161,9 +166,11 @@ const stageLabels: Record<StageKind, string> = {
 };
 
 function App() {
+  const [goalNavigation] = useState(() => parseGoalNavigationRequest(window.location.href));
+  const [initialGoalId, setInitialGoalId] = useState(goalNavigation?.goalId ?? null);
   const [snapshot, setSnapshot] = useState<DashboardSnapshot | null>(null);
   const [machineProfiles, setMachineProfiles] = useState<MachineProfile[]>(readBrowserMachineProfiles);
-  const [page, setPage] = useState<Page>('command');
+  const [page, setPage] = useState<Page>(goalNavigation ? 'goals' : 'command');
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -213,6 +220,11 @@ function App() {
     const timer = window.setInterval(() => void refresh(true), 6_000);
     return () => window.clearInterval(timer);
   }, [refresh]);
+
+  useEffect(() => {
+    if (!goalNavigation) return;
+    window.history.replaceState(window.history.state, '', cleanGoalNavigationUrl(window.location.href));
+  }, [goalNavigation]);
 
   useEffect(() => {
     const events = notificationsForSnapshot(priorSnapshot.current, snapshot);
@@ -265,6 +277,47 @@ function App() {
     setPage(next);
     setMobileMenuOpen(false);
   };
+  // Unsaved Goal definition work (a boolean reported by the Goals page; the text never leaves it).
+  const [goalsUnsaved, setGoalsUnsaved] = useState(false);
+  const [queuedNav, setQueuedNav] = useState<{ next: Page; then?: () => void } | null>(null);
+  const navGuardId = useId();
+  const navGuard = useRef<HTMLDivElement>(null);
+  const navGuardTrigger = useRef<HTMLElement | null>(null);
+  const navGuardCancelled = useRef(false);
+  const focusNextPageHeading = useRef(false);
+  useLayoutEffect(() => {
+    if (!queuedNav) return;
+    navGuardCancelled.current = false;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && !navGuard.current?.contains(active)) {
+      navGuardTrigger.current = active;
+    }
+    navGuard.current?.querySelector<HTMLElement>('[data-confirm-safe]')?.focus();
+    return () => {
+      if (navGuardCancelled.current && navGuardTrigger.current?.isConnected) navGuardTrigger.current.focus();
+    };
+  }, [queuedNav]);
+  useLayoutEffect(() => {
+    if (!focusNextPageHeading.current) return;
+    const heading = document.querySelector<HTMLElement>('.app-main h1');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus();
+    }
+    focusNextPageHeading.current = false;
+  }, [page]);
+  /**
+   * Every shell navigation that can leave Goals goes through here. Destination side effects (`then`) run only once the
+   * navigation is actually accepted, so cancelling leaves the app exactly where it was.
+   */
+  const navigate = (next: Page, then?: () => void) => {
+    if (page === 'goals' && next !== 'goals' && goalsUnsaved) {
+      setQueuedNav({ next, ...(then ? { then } : {}) });
+      return;
+    }
+    then?.();
+    changePage(next);
+  };
   const restartDesktopMaster = async () => {
     try {
       const runtime = await desktop.restartMaster();
@@ -277,10 +330,11 @@ function App() {
   };
   const pageLabel =
     page === 'command' ? 'New task' : (navItems.find((item) => item.id === page)?.label ?? '');
+  const approvalCounts = pendingApprovalCounts(snapshot);
   const activeRuns = snapshot?.runs.filter((run) => activeStatuses.has(run.status)) ?? [];
   const selectedRun = snapshot?.runs.find((run) => run.id === selectedRunId) ?? null;
   const titleQuiet =
-    ['workflows', 'projects', 'usage', 'machines', 'settings'].includes(page) ||
+    ['workflows', 'projects', 'goals', 'usage', 'machines', 'settings'].includes(page) ||
     (page === 'runs' && !selectedRun);
   const railTasks = (snapshot?.runs ?? [])
     .slice()
@@ -295,13 +349,80 @@ function App() {
 
   return (
     <div className="app-shell">
+      {queuedNav && (
+        <div className="nav-guard-backdrop">
+          <div
+            ref={navGuard}
+            className="goal-confirm nav-guard"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby={`${navGuardId}-title`}
+            aria-describedby={`${navGuardId}-description`}
+            tabIndex={-1}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                navGuardCancelled.current = true;
+                setQueuedNav(null);
+                return;
+              }
+              if (event.key !== 'Tab') return;
+              const focusable = navGuard.current?.querySelectorAll<HTMLElement>('button:not(:disabled)');
+              if (!focusable?.length) return;
+              const first = focusable[0]!;
+              const last = focusable[focusable.length - 1]!;
+              const focusIsInside = navGuard.current?.contains(document.activeElement) ?? false;
+              if (!focusIsInside) {
+                event.preventDefault();
+                (event.shiftKey ? last : first).focus();
+              } else if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+              } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+              }
+            }}
+          >
+            <h2 id={`${navGuardId}-title`}>Discard unsaved Grand Project changes?</h2>
+            <p id={`${navGuardId}-description`}>
+              You have definition text that has not been saved. Leaving Grand Projects will discard those
+              local changes.
+            </p>
+            <div className="goal-control-buttons">
+              <button
+                type="button"
+                className="secondary-button"
+                data-confirm-safe
+                onClick={() => {
+                  navGuardCancelled.current = true;
+                  setQueuedNav(null);
+                }}
+              >
+                Keep editing
+              </button>
+              <button
+                type="button"
+                className="secondary-button goal-danger"
+                onClick={() => {
+                  const { next, then } = queuedNav;
+                  setQueuedNav(null);
+                  setGoalsUnsaved(false);
+                  focusNextPageHeading.current = true;
+                  then?.();
+                  changePage(next);
+                }}
+              >
+                Discard and leave
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <aside className={`sidebar ${mobileMenuOpen ? 'sidebar-open' : ''}`} aria-label="Primary navigation">
         <button
           className="brand-lockup"
-          onClick={() => {
-            setSelectedRunId(null);
-            changePage('command');
-          }}
+          onClick={() => navigate('command', () => setSelectedRunId(null))}
           aria-label="Turing Terminal home"
         >
           <span className="brand-mark">
@@ -309,13 +430,7 @@ function App() {
           </span>
           <span className="brand-name">Turing Terminal</span>
         </button>
-        <button
-          className="new-task-button"
-          onClick={() => {
-            setSelectedRunId(null);
-            changePage('command');
-          }}
-        >
+        <button className="new-task-button" onClick={() => navigate('command', () => setSelectedRunId(null))}>
           <Plus size={16} /> New task
         </button>
         <p className="nav-label">Recent</p>
@@ -327,10 +442,7 @@ function App() {
               <button
                 key={run.id}
                 className={`task-link ${page === 'runs' && selectedRunId === run.id ? 'task-link-active' : ''}`}
-                onClick={() => {
-                  setSelectedRunId(run.id);
-                  changePage('runs');
-                }}
+                onClick={() => navigate('runs', () => setSelectedRunId(run.id))}
                 aria-current={page === 'runs' && selectedRunId === run.id ? 'page' : undefined}
               >
                 <span className={`run-status-glyph run-glyph-${run.status}`}>
@@ -351,10 +463,7 @@ function App() {
             <button
               key={id}
               className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-              onClick={() => {
-                if (id === 'runs') setSelectedRunId(null);
-                changePage(id);
-              }}
+              onClick={() => navigate(id, id === 'runs' ? () => setSelectedRunId(null) : undefined)}
               aria-current={page === id ? 'page' : undefined}
             >
               <Icon size={16} /> <span>{label}</span>
@@ -365,6 +474,12 @@ function App() {
                 <span
                   className="nav-alert-dot"
                   aria-label={`${snapshot.approvals.length} approvals pending`}
+                />
+              )}
+              {id === 'goals' && approvalCounts.goal > 0 && (
+                <span
+                  className="nav-alert-dot"
+                  aria-label={`${approvalCounts.goal} Goal approvals pending`}
                 />
               )}
             </button>
@@ -401,14 +516,12 @@ function App() {
             <button
               className="icon-button notification-button"
               aria-label={
-                snapshot?.approvals.length
-                  ? `${snapshot.approvals.length} pending approvals`
-                  : 'Notifications'
+                approvalCounts.total ? `${approvalCounts.total} pending approvals` : 'Notifications'
               }
-              onClick={() => changePage('runs')}
+              onClick={() => navigate('runs')}
             >
               <Bell size={17} />
-              {(snapshot?.approvals.length ?? 0) > 0 && <i />}
+              {approvalCounts.total > 0 && <i />}
             </button>
           </div>
         </header>
@@ -468,6 +581,16 @@ function App() {
                 projects={snapshot.projects}
                 onChanged={() => void refresh(true)}
                 onNotice={setNotice}
+              />
+            )}
+            {page === 'goals' && (
+              <GoalsPage
+                projects={snapshot?.projects ?? []}
+                initialGoalId={initialGoalId}
+                onInitialGoalConsumed={() => setInitialGoalId(null)}
+                onOpenProjects={() => navigate('projects')}
+                onUnsavedChange={setGoalsUnsaved}
+                navigationGuardActive={queuedNav !== null}
               />
             )}
             {page === 'runs' && snapshot && (
@@ -687,6 +810,7 @@ function PageHeading({
 
 function CommandCenter({
   snapshot,
+  onRefresh,
   onNavigate,
   onStart,
   onNotice,
@@ -912,8 +1036,12 @@ function CommandCenter({
   return (
     <main className="page-content command-page">
       <div className={`home-column ${snapshot.runs.length > 0 ? 'home-has-activity' : ''}`}>
-        {snapshot.approvals.length > 0 && (
-          <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />
+        {pendingApprovalCounts(snapshot).total > 0 && (
+          <UnifiedApprovals
+            heading="Approval required"
+            refresh={approvalSignature(snapshot)}
+            onDecided={onRefresh}
+          />
         )}
         {(runningRuns.length > 0 || waitingRuns.length > 0 || recentFailed.length > 0) && (
           <div className="glance" role="group" aria-label="Runs at a glance">
@@ -1449,74 +1577,6 @@ function RunPreviewPanel({ preview }: { preview: RunPreview }) {
       </p>
     </section>
   );
-}
-
-function ApprovalInbox({
-  approvals,
-  onNotice,
-}: {
-  approvals: Approval[];
-  onNotice: (message: string) => void;
-}) {
-  return (
-    <section className="approval-inbox" aria-label="Approvals requiring attention">
-      <div className="approval-inbox-head">
-        <div>
-          <span className="approval-icon">
-            <LockKeyhole size={17} />
-          </span>
-          <div>
-            <h2>Approval required</h2>
-            <p>
-              {approvals.length} workflow {approvals.length === 1 ? 'action needs' : 'actions need'} your
-              decision before continuing.
-            </p>
-          </div>
-        </div>
-      </div>
-      <div className="approval-items">
-        {approvals.slice(0, 2).map((approval) => (
-          <div className="approval-item" key={approval.id}>
-            <div className="approval-copy">
-              <strong>{approval.operation}</strong>
-              <p className="approval-reason">
-                {approval.reason
-                  .split(/(`[^`]+`)/)
-                  .map((part, index) =>
-                    part.startsWith('`') && part.endsWith('`') ? (
-                      <code key={index}>{part.slice(1, -1)}</code>
-                    ) : (
-                      part
-                    ),
-                  )}
-              </p>
-              <small>Risk: {capitalize(approval.risk)}</small>
-            </div>
-            <div className="approval-actions">
-              <button className="secondary-button" onClick={() => void decide(approval.id, false)}>
-                Deny
-              </button>
-              <button
-                className="primary-button compact-button"
-                onClick={() => void decide(approval.id, true)}
-              >
-                <Check size={14} />
-                Approve once
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-  async function decide(id: string, approved: boolean) {
-    try {
-      await api.decideApproval(id, approved);
-      onNotice(approved ? 'Approval recorded.' : 'Approval denied.');
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : 'Could not save that decision.');
-    }
-  }
 }
 
 function ProviderHealth({ providers, onNavigate }: { providers: ProviderStatus[]; onNavigate: () => void }) {
@@ -3990,7 +4050,13 @@ function RunsPage({
           }
         />
       )}
-      {snapshot.approvals.length > 0 && <ApprovalInbox approvals={snapshot.approvals} onNotice={onNotice} />}
+      {pendingApprovalCounts(snapshot).total > 0 && (
+        <UnifiedApprovals
+          heading="Approval required"
+          refresh={approvalSignature(snapshot)}
+          onDecided={onRefresh}
+        />
+      )}
       <div
         className={`runs-layout ${selectedRun ? 'runs-detail-open' : ''} ${
           snapshot.runs.length === 0 ? 'runs-layout-empty' : ''
@@ -4166,9 +4232,13 @@ function RunDetail({
   const stop = () =>
     void api
       .cancelRun(run.id)
-      .then(() => {
+      .then((result) => {
         onRefresh();
-        onNotice('Stop requested. The provider process is being terminated.');
+        onNotice(
+          result.status === 'cancelled'
+            ? 'Queued run cancelled. It will not start.'
+            : 'Stop requested. The provider process is being terminated.',
+        );
       })
       .catch((error) => onNotice(error.message));
   const findings = details?.findings ?? [];

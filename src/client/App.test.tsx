@@ -9,7 +9,8 @@ const dashboard = vi.fn<() => Promise<DashboardSnapshot>>();
 const claimPairing = vi.fn();
 const completePairing = vi.fn();
 const claimPairingRequest = vi.fn();
-vi.mock('./api', () => ({
+vi.mock('./api', async (importActual) => ({
+  ...(await importActual<typeof import('./api')>()),
   api: {
     dashboard: () => dashboard(),
     providers: vi.fn(),
@@ -83,6 +84,78 @@ describe('Turing Terminal shell', () => {
     await user.click(screen.getByRole('button', { name: 'Projects' }));
     expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Add project/ })).toBeTruthy();
+  });
+
+  it('opens the Grand Projects area from navigation without disturbing other pages', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ goals: [], total: 0, limit: 50 }), { status: 200 })),
+    );
+    render(<App />);
+    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await user.click(
+      within(screen.getByRole('complementary', { name: 'Primary navigation' })).getByRole('button', {
+        name: 'Grand Projects',
+      }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Grand Projects' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
+  });
+
+  it('counts Goal approvals in the bell and nav once, and lists them with their source', async () => {
+    const base = await dashboard();
+    dashboard.mockResolvedValue({
+      ...base,
+      approvals: [],
+      goals: { active: 1, needsUser: 1, total: 1 },
+      goalApprovals: { pending: 2, approvals: [] },
+    } as unknown as DashboardSnapshot);
+    const urls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        return new Response(
+          JSON.stringify({
+            approvals: [
+              {
+                source: 'goal',
+                id: 'ga-1',
+                goalId: 'g1',
+                title: 'each_cycle',
+                gate: 'each_cycle',
+                reason: 'Next cycle',
+                risk: 'medium',
+                status: 'pending',
+                createdAt: '2026-01-01T00:00:00.000Z',
+              },
+              {
+                source: 'goal',
+                id: 'ga-2',
+                goalId: 'g1',
+                title: 'final_acceptance',
+                gate: 'final_acceptance',
+                reason: 'Accept',
+                risk: 'high',
+                status: 'pending',
+                createdAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+            total: 2,
+            limit: 20,
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    render(<App />);
+    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    expect(await screen.findByLabelText('2 pending approvals')).toBeTruthy();
+    expect(screen.getAllByLabelText('2 Goal approvals pending')).toHaveLength(1);
+    expect(await screen.findAllByText('Goal gate')).toHaveLength(2);
+    expect(urls.some((url) => url.includes('/api/approvals/unified'))).toBe(true);
   });
 
   it('shows a pairing gate instead of workspace data until the phone is approved', async () => {

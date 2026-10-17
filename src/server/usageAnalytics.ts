@@ -28,6 +28,8 @@ export interface UsageFilter {
   workloadType?: string;
   reasoning?: string;
   runId?: string;
+  /** Goal filter: usage of the Goal's child runs, resolved through usage_events → runs → goal_cycles → goal. */
+  goalId?: string;
 }
 
 export interface MetricTotal {
@@ -174,6 +176,10 @@ export function loadUsageEvents(db: Db, filter: UsageFilter): UsageEvent[] {
       conditions.push(`${column} = ?`);
       values.push(value);
     }
+  if (filter.goalId) {
+    conditions.push('u.run_id IN (SELECT run_id FROM goal_runs WHERE goal_id = ?)');
+    values.push(filter.goalId);
+  }
   if (filter.reasoning) {
     conditions.push('COALESCE(u.reasoning, u.variant_id) = ?');
     values.push(filter.reasoning);
@@ -323,6 +329,10 @@ export function decisionAnalytics(db: Db, filter: UsageFilter): DecisionAnalytic
   if (filter.modelId) {
     conditions.push('d.configured_model_id = ?');
     values.push(filter.modelId);
+  }
+  if (filter.goalId) {
+    conditions.push('d.run_id IN (SELECT run_id FROM goal_runs WHERE goal_id = ?)');
+    values.push(filter.goalId);
   }
   if (filter.projectId) {
     conditions.push('r.project_id = ?');

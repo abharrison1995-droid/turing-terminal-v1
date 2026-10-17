@@ -120,6 +120,8 @@ export function validateWorkflow(
       errors.push(`Git push stage “${stage.label}” has an invalid destination branch.`);
     if (stage.kind === 'gitCommit' && stage.commitMessage && stage.commitMessage.length > 120)
       errors.push(`Git commit stage “${stage.label}” commit message must be at most 120 characters.`);
+    if (stage.allowNoChanges !== undefined && stage.kind !== 'gitCommit')
+      errors.push(`Stage “${stage.label}” can allow no changes only as a Git commit stage.`);
     if (stage.kind === 'gitRollback' && stage.rollbackTarget === 'latestCheckpoint') {
       const hasCheckpoint = workflow.stages
         .slice(0, index)

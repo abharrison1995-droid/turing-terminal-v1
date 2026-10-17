@@ -16,5 +16,18 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src/server", "src/shared"],
-  "exclude": ["src/**/*.test.ts", "src/server/testUtils.ts"]
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/server/testUtils.ts",
+    "src/server/goals/testKit.ts",
+    "src/server/goals/repoKit.ts",
+    "src/server/goals/goalV2TestKit.ts",
+    "src/server/goals/fakeExecutor.ts",
+    "src/server/goals/supervisorKit.ts",
+    "src/server/goals/remediationKit.ts",
+    "src/server/goals/testPlanProvider.ts",
+    "src/server/goals/turingRunKit.ts",
+    "src/server/goals/routingKit.ts",
+    "src/server/goals/routePlanReviewKit.ts"
+  ]
 }

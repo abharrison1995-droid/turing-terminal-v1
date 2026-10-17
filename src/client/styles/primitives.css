@@ -423,7 +423,7 @@ input[type='radio'] {
 }
 .status-running {
   color: var(--info);
-  background: #e0ebf7;
+  background: var(--info-wash);
 }
 .status-running::before {
   width: 6px;

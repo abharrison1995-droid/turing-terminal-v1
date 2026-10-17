@@ -1,5 +1,6 @@
 import { execFile as callbackExecFile } from 'node:child_process';
-import { lstatSync, readFileSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, normalize, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { redactSecrets } from './security.js';
@@ -77,4 +78,43 @@ export async function readGitDiff(cwd: string, limit = 180_000, baseCommit?: str
     }
   }
   return redactSecrets(diff).slice(0, limit);
+}
+
+export interface SubjectState {
+  /** HEAD of the worktree the verification ran in. */
+  subjectCommit: string;
+  /** Tree a scoped commit of the verified state would produce. */
+  subjectTree: string;
+  /** Project folder inside the repository ('' when the project is the repository root). */
+  subjectScope: string;
+}
+
+/**
+ * Computes the tree object for the state about to be verified: HEAD with the project scope replaced by the working
+ * state (modified, deleted and new non-ignored files). Uses a temporary index so the real index is never touched,
+ * and leaves files outside the project scope exactly as HEAD has them, matching what a scoped Git commit stage
+ * would commit.
+ */
+export async function captureSubjectState(cwd: string): Promise<SubjectState> {
+  const run = async (args: string[], env: NodeJS.ProcessEnv = {}) =>
+    (
+      await execFile('git', args, {
+        cwd,
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 2_000_000,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', ...env },
+      })
+    ).stdout.trim();
+  const subjectCommit = await run(['rev-parse', 'HEAD']);
+  const subjectScope = (await run(['rev-parse', '--show-prefix'])).replace(/\/+$/, '');
+  const directory = mkdtempSync(join(tmpdir(), 'turing-subject-'));
+  try {
+    const env = { GIT_INDEX_FILE: join(directory, 'index') };
+    await run(['read-tree', subjectCommit], env);
+    await run(['add', '-A', '--', subjectScope ? `:(top,literal)${subjectScope}` : ':/'], env);
+    return { subjectCommit, subjectTree: await run(['write-tree'], env), subjectScope };
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 }

@@ -2,40 +2,20 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { hostname, platform } from 'node:os';
 import { relative, resolve, join } from 'node:path';
-import { execFile as callbackExecFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { z } from 'zod';
-import type {
-  BillingLane,
-  DecisionGateConfig,
-  StageKind,
-  WorkflowDefinition,
-  WorkflowStage,
-} from '../shared/types.js';
+import type { BillingLane, DecisionGateConfig, StageKind, WorkflowDefinition } from '../shared/types.js';
 import {
   ALL_BILLING_LANES,
   BILLING_MODES,
   billingLaneLabel,
-  evaluateBillingLane,
-  inferBillingLane,
-  isMeteredLane,
-  isSubscriptionLane,
-  PROVIDER_FALLBACK_UNVERIFIABLE,
-  providerSideFallbackStatus,
   resolveBillingMode,
   routeMatchesBillingLane,
-  SUBSCRIPTION_LANES,
 } from '../shared/billing.js';
-import {
-  classifyModelIdentity,
-  reasoningControlFor,
-  validateModelSettings,
-} from '../shared/modelSettings.js';
 import { decisionEngineInfo, validateDecisionGate } from '../shared/decisions.js';
 import { isValidTimeZone, resolveRange, systemTimeZone, type RangePreset } from '../shared/timezone.js';
 import { allProviders, openRouterTelemetry } from './modelCatalog.js';
+import { isReservedGoalWorkflowId } from '../shared/goalWorkflows.js';
 import { SecretStore, secretRef } from './secretStore.js';
 import { budgetStatus, getBudgetSettings, saveBudgetSettings } from './meteredBudget.js';
 import {
@@ -53,7 +33,7 @@ import {
 } from './decisionEngines.js';
 import { createMeteringHooks } from './metering.js';
 import { routeDecision } from '../shared/decisions.js';
-import { applyExecutionProfile, validateWorkflow } from './workflowValidation.js';
+import { validateWorkflow } from './workflowValidation.js';
 import type { Db } from './db.js';
 import {
   getRunRow,
@@ -67,9 +47,28 @@ import {
 } from './serialize.js';
 import { scanProject } from './projectScanner.js';
 import { RunEngine } from './runEngine.js';
+import { buildPreview, cancelOrdinaryQueuedRun, createRun, startQueuedRun } from './runLauncher.js';
+import {
+  AUTHORING_LIMITS,
+  GoalAuthoringError,
+  getAuthoringStatus,
+  retryGoalAuthoring,
+  startGoalAuthoring,
+} from './goals/authoring.js';
+import { TuringExecutorError } from './goals/turingExecutor.js';
+import { registerGoalRoutes } from './goals/goalRoutes.js';
+import { dashboardGoals } from './goals/readModel.js';
+import type { GoalSupervisor } from './goals/supervisor.js';
+import {
+  createRouteProbe,
+  getRouteProbeStatus,
+  RouteProbeError,
+  routeProbeRequestSchema,
+} from './goals/routeProbe.js';
+import { PROBE_FIXTURE } from '../shared/routeProbe.js';
 import { readGitDiff } from './git.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
-import { listRules, resolveEffectiveRules } from './rules.js';
+import { listRules } from './rules.js';
 import { redactSecrets } from './security.js';
 import { calculateQuotaForecast, type QuotaUnit, type QuotaUsageSample } from './quotaForecast.js';
 import { estimateApiEquivalent } from './pricing.js';
@@ -77,7 +76,6 @@ import { probeTailscale } from './tailscaleReadiness.js';
 import { getWebPushConfiguration, isAllowedPushEndpoint } from './webPush.js';
 import { APP_VERSION } from '../shared/version.js';
 
-const execFile = promisify(callbackExecFile);
 const PAIRING_REQUEST_TTL_MS = 5 * 60 * 1_000;
 const DEVICE_SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1_000;
 const PROFILES = ['economy', 'balanced', 'maximum'] as const;
@@ -176,17 +174,6 @@ const meteredBudgetSchema = z.object({
   perRunUsd: z.number().finite().min(0).max(1_000).nullable().default(null),
   unknownCostPolicy: z.enum(['block', 'ask', 'allow-with-warning']).default('block'),
 });
-const AI_KINDS = new Set<WorkflowStage['kind']>([
-  'planner',
-  'promptRefinement',
-  'implementer',
-  'reviewer',
-  'parallelReview',
-  'consolidate',
-  'orchestrator',
-  'remediation',
-  'finalGate',
-]);
 const stageSchema = z.object({
   id: z.string().trim().min(1).max(80),
   label: z.string().trim().min(1).max(120),
@@ -289,6 +276,7 @@ const stageSchema = z.object({
   skipStageIds: z.array(z.string().min(1).max(80)).max(50).optional(),
   notificationMessage: z.string().max(1_000).optional(),
   commitMessage: z.string().trim().min(1).max(120).optional(),
+  allowNoChanges: z.boolean().optional(),
   pushRemote: z.string().trim().min(1).max(61).optional(),
   pushBranch: z.string().trim().min(1).max(100).optional(),
   rollbackTarget: z.enum(['runStart', 'latestCheckpoint']).optional(),
@@ -438,9 +426,11 @@ const pushSubscriptionSchema = z.object({
 export interface AppOptions {
   database: Db;
   engine: RunEngine;
+  /** Stage 7A: serves the Goal start/resume endpoints. Without it they answer 503. */
+  goalSupervisor?: GoalSupervisor;
 }
 
-export function createApp({ database: db, engine }: AppOptions): FastifyInstance {
+export function createApp({ database: db, engine, goalSupervisor }: AppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
       level: process.env.TT_LOG_LEVEL ?? 'info',
@@ -470,7 +460,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     if (origin !== 'tauri://localhost' && origin !== 'http://tauri.localhost') return;
     reply.header('access-control-allow-origin', origin);
     reply.header('access-control-allow-methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    reply.header('access-control-allow-headers', 'content-type');
+    reply.header('access-control-allow-headers', 'content-type, if-match');
     reply.header('vary', 'Origin');
     if (request.method === 'OPTIONS') return reply.code(204).send();
   });
@@ -905,9 +895,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       lastSeenAt: now,
     };
     const projects = (
-      db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all() as Array<
-        Record<string, unknown>
-      >
+      db
+        .prepare('SELECT * FROM projects WHERE id <> ? ORDER BY name COLLATE NOCASE')
+        .all(PROBE_FIXTURE.projectId) as Array<Record<string, unknown>>
     ).map(toProject);
     const workflows = (
       db.prepare('SELECT * FROM workflows ORDER BY is_default DESC, name COLLATE NOCASE').all() as Array<
@@ -954,6 +944,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         outputTokens: usage.output_tokens ?? null,
         provenance: 'Locally observed process events; provider quota unavailable unless explicitly reported.',
       },
+      ...dashboardGoals(db),
     };
   });
 
@@ -1232,9 +1223,9 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
   });
   app.get('/api/projects', async () => ({
     projects: (
-      db.prepare('SELECT * FROM projects ORDER BY name COLLATE NOCASE').all() as Array<
-        Record<string, unknown>
-      >
+      db
+        .prepare('SELECT * FROM projects WHERE id <> ? ORDER BY name COLLATE NOCASE')
+        .all(PROBE_FIXTURE.projectId) as Array<Record<string, unknown>>
     ).map(toProject),
   }));
   app.post('/api/projects', async (request, reply) => {
@@ -1603,6 +1594,10 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const existing = db.prepare('SELECT * FROM workflows WHERE id = ?').get(id) as
       Record<string, unknown> | undefined;
     if (!existing) return reply.code(404).send({ error: 'Workflow was not found.' });
+    if (isReservedGoalWorkflowId(id))
+      return reply
+        .code(403)
+        .send({ error: 'This workflow is reserved for the Goal Engine. Duplicate it to customise.' });
     const parsed = workflowSchema.safeParse(request.body);
     if (!parsed.success)
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid workflow.' });
@@ -1667,7 +1662,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
     const parsed = runInputSchema.safeParse(request.body);
     if (!parsed.success)
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid run request.' });
-    const result = await makePreview(db, parsed.data);
+    const result = await buildPreview(db, parsed.data);
     if (!result) return reply.code(404).send({ error: 'Select a registered project and saved workflow.' });
     return { preview: result };
   });
@@ -1678,7 +1673,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid run request.' });
     if (parsed.data.permissionMode === 'enigma' && !parsed.data.enigmaConfirmed)
       return reply.code(400).send({ error: 'Enigma requires deliberate activation for this run.' });
-    const preview = await makePreview(db, parsed.data);
+    const preview = await buildPreview(db, parsed.data);
     if (!preview) return reply.code(404).send({ error: 'Select a registered project and saved workflow.' });
     if (preview.branchStrategy === 'worktree' && preview.project.dirty !== false)
       return reply.code(409).send({
@@ -1694,8 +1689,117 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
           'Configure every active AI stage with a detected provider and an explicit model before starting.',
         ].join(' '),
       });
-    const run = createQueuedRun(db, engine, preview);
+    const run = createRun(db, engine, preview);
     return reply.code(202).send({ run });
+  });
+
+  // Stage 4B.2: the only Goal endpoint. It persists a draft Goal, an authoring cycle and one queued run, then answers
+  // 202 at once; the user-pinned route is exact (no pool, fallback or substitution) and the output is consumed later.
+  const authoringBody = {
+    title: z.string().trim().min(1).max(AUTHORING_LIMITS.titleChars),
+    prompt: z.string().trim().min(1).max(AUTHORING_LIMITS.promptChars),
+    route: modelConfigurationSchema.strict(),
+  };
+  const authoringSchema = z.strictObject({ projectId: z.string().min(1).max(100), ...authoringBody });
+  const authoringRetrySchema = z.strictObject({
+    prompt: authoringBody.prompt,
+    route: authoringBody.route,
+  });
+  const authoringFailure = (
+    error: unknown,
+    reply: { code(status: number): { send(body: unknown): unknown } },
+  ) => {
+    if (error instanceof GoalAuthoringError) {
+      const status =
+        error.code === 'project_not_found' || error.code === 'goal_not_found'
+          ? 404
+          : error.code === 'route_invalid' ||
+              error.code === 'prompt_invalid' ||
+              error.code === 'workflow_invalid'
+            ? 400
+            : 409;
+      return reply.code(status).send({ error: error.message, code: error.code });
+    }
+    if (error instanceof TuringExecutorError)
+      return reply.code(409).send({ error: error.message, code: error.code });
+    throw error;
+  };
+
+  app.post('/api/goals/authoring', async (request, reply) => {
+    const parsed = authoringSchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid authoring request.' });
+    try {
+      const started = await startGoalAuthoring(db, parsed.data, (runId) => startQueuedRun(db, engine, runId));
+      return reply.code(202).send(started);
+    } catch (error) {
+      return authoringFailure(error, reply);
+    }
+  });
+
+  app.post('/api/goals/:goalId/authoring/retry', async (request, reply) => {
+    const parsed = authoringRetrySchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply.code(400).send({ error: parsed.error.issues[0]?.message ?? 'Invalid authoring request.' });
+    try {
+      const started = await retryGoalAuthoring(
+        db,
+        { goalId: (request.params as { goalId: string }).goalId, ...parsed.data },
+        (runId) => startQueuedRun(db, engine, runId),
+      );
+      return reply.code(202).send(started);
+    } catch (error) {
+      return authoringFailure(error, reply);
+    }
+  });
+
+  app.get('/api/goals/:goalId/authoring', async (request, reply) => {
+    const status = getAuthoringStatus(db, (request.params as { goalId: string }).goalId);
+    if (!status) return reply.code(404).send({ error: 'The Goal has no authoring attempt.' });
+    return { authoring: status };
+  });
+
+  // Stage 7A: the Goal read models, explicit user controls and unified approvals (thin adapters over the services).
+  // GH.1 (S1a): paired remote devices (Tailscale identity) are refused on the user-only completion and correction routes.
+  // This is the same predicate the global hook uses; it does not distinguish the desktop UI from a same-user local process.
+  registerGoalRoutes(app, {
+    db,
+    supervisor: goalSupervisor,
+    usageFilterFromQuery,
+    requireDesktopCaller: (request) =>
+      !isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])),
+  });
+
+  // Stage 5B.1: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
+  // the route identity itself and answers as soon as the run is queued. There is no revalidation endpoint: a probe only
+  // ever exists because a user posted this request.
+  app.post('/api/route-validations', async (request, reply) => {
+    const parsed = routeProbeRequestSchema.safeParse(request.body);
+    if (!parsed.success)
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? 'Invalid route validation request.' });
+    try {
+      const started = await createRouteProbe(db, parsed.data, (runId) => startQueuedRun(db, engine, runId));
+      return reply.code(202).send(started);
+    } catch (error) {
+      if (error instanceof RouteProbeError) {
+        const status =
+          error.code === 'route_incomplete' || error.code === 'identity_unresolved'
+            ? 400
+            : error.code === 'fixture_unavailable' || error.code === 'workflow_invalid'
+              ? 503
+              : 409;
+        return reply.code(status).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
+  });
+
+  app.get('/api/route-validations/:probeId', async (request, reply) => {
+    const status = getRouteProbeStatus(db, (request.params as { probeId: string }).probeId);
+    if (!status) return reply.code(404).send({ error: 'The route validation probe was not found.' });
+    return { probe: status };
   });
 
   app.post('/api/runs/:id/replay', async (request, reply) => {
@@ -1711,7 +1815,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
         .code(400)
         .send({ error: 'ENIGMA replay requires deliberate confirmation for this new run.' });
     const historicalWorkflow = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(
+    const preview = await buildPreview(
       db,
       {
         task: String(source.prompt),
@@ -1737,7 +1841,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       return reply
         .code(409)
         .send({ error: 'The project must be clean before an isolated replay can start.' });
-    const replay = createQueuedRun(db, engine, preview, {
+    const replay = createRun(db, engine, preview, {
       rulesSnapshot: safeJson(source.rules_snapshot_json, []),
       eventType: 'run_replayed',
       eventDetails: { sourceRunId: id, configurationLocked: preview.lockProviders },
@@ -1751,7 +1855,7 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
       Record<string, unknown> | undefined;
     if (!source) return reply.code(404).send({ error: 'Run was not found.' });
     const snapshot = JSON.parse(String(source.workflow_snapshot_json)) as WorkflowDefinition;
-    const preview = await makePreview(
+    const preview = await buildPreview(
       db,
       {
         task: String(source.prompt),
@@ -1899,6 +2003,14 @@ export function createApp({ database: db, engine }: AppOptions): FastifyInstance
   app.post('/api/runs/:id/cancel', async (request, reply) => {
     const id = (request.params as { id: string }).id;
     if (!getRunRow(db, id)) return reply.code(404).send({ error: 'Run was not found.' });
+    const queued = cancelOrdinaryQueuedRun(db, engine, id);
+    if (queued.cancelled) return { accepted: true, status: 'cancelled' };
+    if (queued.reason === 'goal-owned')
+      return reply
+        .code(409)
+        .send({ error: 'This run belongs to a Grand Project. Cancel it from the Grand Project.' });
+    if (queued.reason === 'route-probe')
+      return reply.code(409).send({ error: 'This run is a route validation probe. Its reconciler owns it.' });
     if (!engine.cancel(id)) return reply.code(409).send({ error: 'This run is not active.' });
     return { accepted: true };
   });
@@ -2241,643 +2353,6 @@ function readCookie(cookieHeader: string | undefined, name: string): string | nu
   return null;
 }
 
-function createQueuedRun(
-  db: Db,
-  engine: RunEngine,
-  preview: NonNullable<Awaited<ReturnType<typeof makePreview>>>,
-  options: { rulesSnapshot?: unknown; eventType?: string; eventDetails?: Record<string, unknown> } = {},
-) {
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  const workflowSnapshot = preview.workflow;
-  const create = db.transaction(() => {
-    db.prepare(
-      `INSERT INTO runs (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile,
-       permission_mode, refinement_requested, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
-    ).run(
-      id,
-      preview.machine.id,
-      preview.project.id,
-      preview.workflow.id,
-      JSON.stringify(workflowSnapshot),
-      preview.task,
-      preview.profile,
-      preview.permissionMode,
-      Number(preview.refinePrompt),
-      now,
-    );
-    db.prepare('UPDATE runs SET rules_snapshot_json = ? WHERE id = ?').run(
-      JSON.stringify(options.rulesSnapshot ?? preview.effectiveRules),
-      id,
-    );
-    const insert = db.prepare(`INSERT INTO stages
-      (id, run_id, stage_key, kind, title, sequence, backend_id, provider_id, model_id, connection_profile_id, billing_lane, variant_id, model_snapshot_json, status, input_json, logs)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')`);
-    workflowSnapshot.stages.forEach((stage, sequence) =>
-      insert.run(
-        randomUUID(),
-        id,
-        stage.id,
-        stage.kind,
-        stage.label,
-        sequence,
-        stage.backendId ?? null,
-        stage.providerId ?? null,
-        stage.modelId ?? null,
-        stage.connectionProfileId ?? null,
-        stage.billingLane ?? null,
-        stage.variantId ?? null,
-        stage.modelSnapshot ? JSON.stringify(stage.modelSnapshot) : null,
-        stage.enabled === false || (stage.kind === 'promptRefinement' && !preview.refinePrompt)
-          ? 'skipped'
-          : 'pending',
-        JSON.stringify({
-          role: stage.role ?? null,
-          reasoning: stage.reasoning ?? null,
-          variantId: stage.variantId ?? null,
-          nativeSettings: stage.nativeSettings ?? {},
-          billingLane: stage.billingLane ?? null,
-          connectionProfileId: stage.connectionProfileId ?? null,
-        }),
-      ),
-    );
-    db.prepare(
-      'INSERT INTO run_events (id, run_id, type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(
-      randomUUID(),
-      id,
-      options.eventType ?? 'run_queued',
-      JSON.stringify({
-        projectId: preview.project.id,
-        workflowId: preview.workflow.id,
-        machineId: preview.machine.id,
-        refinePrompt: preview.refinePrompt,
-        subscriptionOnly: preview.subscriptionOnly,
-        billingMode: preview.billingMode,
-        meteredCapUsd: preview.routingSummary.runMeteredCapUsd,
-        lockProviders: preview.lockProviders,
-        ...options.eventDetails,
-      }),
-      now,
-    );
-  });
-  create();
-  engine.start(id);
-  return toRun(db, getRunRow(db, id)!);
-}
-
-async function makePreview(
-  db: Db,
-  input: z.infer<typeof runInputSchema>,
-  workflowOverride?: WorkflowDefinition,
-) {
-  let projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as
-    Record<string, unknown> | undefined;
-  const workflowRow = db.prepare('SELECT * FROM workflows WHERE id = ?').get(input.workflowId) as
-    Record<string, unknown> | undefined;
-  if (!projectRow || !workflowRow) return null;
-  if (typeof projectRow.git_root === 'string') {
-    try {
-      const status = await execFile('git', ['status', '--porcelain'], {
-        cwd: String(projectRow.path),
-        windowsHide: true,
-        timeout: 5_000,
-        maxBuffer: 250_000,
-      });
-      const branch = await execFile('git', ['branch', '--show-current'], {
-        cwd: String(projectRow.path),
-        windowsHide: true,
-        timeout: 5_000,
-        maxBuffer: 250_000,
-      });
-      db.prepare('UPDATE projects SET dirty = ?, branch = ? WHERE id = ?').run(
-        Number(status.stdout.trim().length > 0),
-        branch.stdout.trim() || null,
-        projectRow.id,
-      );
-    } catch {
-      db.prepare('UPDATE projects SET dirty = NULL WHERE id = ?').run(projectRow.id);
-    }
-    projectRow = db.prepare('SELECT * FROM projects WHERE id = ?').get(input.projectId) as Record<
-      string,
-      unknown
-    >;
-  }
-  const project = toProject(projectRow);
-  const source = workflowOverride ?? toWorkflow(workflowRow);
-  const profile = input.profile ?? source.executionProfile;
-  const permissionMode = input.permissionMode ?? source.permissionMode;
-  const refinePrompt = input.refinePrompt ?? source.promptRefinementDefault;
-  const billingMode = resolveBillingMode(source, {
-    billingMode: input.billingMode,
-    subscriptionOnly: input.subscriptionOnly,
-  });
-  const workflow: WorkflowDefinition = {
-    ...source,
-    executionProfile: profile,
-    permissionMode,
-    billingMode,
-    subscriptionOnly: billingMode !== 'custom',
-    meteredBudget: source.meteredBudget ?? { perRunUsd: null, unknownCostPolicy: 'block' },
-    externalDecisionDataPolicy: source.externalDecisionDataPolicy ?? 'ask-first',
-    lockProviders: input.lockProviders ?? source.lockProviders,
-    stages: applyExecutionProfile(
-      source.stages.map((stage) => inheritStageConfiguration(source, stage)),
-      profile,
-      source.maxParallelAgents,
-    ),
-  };
-  const effectiveRules = resolveEffectiveRules(db, project.id);
-  const providers = await allProviders(db);
-  const connections = (
-    db.prepare('SELECT * FROM connection_profiles').all() as Array<Record<string, unknown>>
-  ).map(toConnectionProfile);
-  const connectionById = new Map(connections.map((connection) => [connection.id, connection]));
-  const secrets = SecretStore.forDatabase(db);
-  const budgetSettings = getBudgetSettings(db);
-  const profileMismatch = new Set<string>();
-  workflow.stages = workflow.stages.map((stage) => {
-    if (!AI_KINDS.has(stage.kind)) return stage;
-    const connection = stage.connectionProfileId ? connectionById.get(stage.connectionProfileId) : undefined;
-    if (stage.connectionProfileId && !connection) profileMismatch.add(stage.id);
-    if (!connection)
-      return {
-        ...stage,
-        billingLane: stage.billingLane ?? inferBillingLane(stage.backendId, stage.providerId),
-      };
-    return {
-      ...stage,
-      backendId: connection.backendId,
-      providerId: connection.providerId,
-      billingLane: connection.billingLane,
-    };
-  });
-  const activeStages = workflow.stages.filter(
-    (stage) => stage.enabled !== false && (stage.kind !== 'promptRefinement' || refinePrompt),
-  );
-  const routeStatus = (route: {
-    stageId: string;
-    backendId?: string;
-    providerId?: string;
-    modelId?: string;
-    billingLane?: BillingLane;
-    variantId?: string;
-    reasoning?: string;
-    nativeSettings?: WorkflowStage['nativeSettings'];
-    connectionProfileId?: string;
-    workload: 'generative' | 'decision';
-    family?: 'generative' | 'decision';
-  }) => {
-    const provider = providers.find((candidate) => candidate.id === route.backendId);
-    const selectedModel = provider?.models.find((model) => model.id === route.modelId);
-    const modelCatalogAvailable = Boolean(
-      provider?.capabilities.modelDiscovery && provider.models.length && provider.catalogSource !== 'cache',
-    );
-    const modelExists = modelCatalogAvailable
-      ? Boolean(selectedModel)
-      : Boolean(route.modelId?.trim()) && (route.backendId !== 'openrouter' || Boolean(selectedModel));
-    const billingLane = route.billingLane ?? inferBillingLane(route.backendId, route.providerId);
-    const billingLaneMatchesRoute = routeMatchesBillingLane(route.backendId, route.providerId, billingLane);
-    const catalogStatus = selectedModel
-      ? selectedModel.status === 'deprecated'
-        ? ('deprecated' as const)
-        : selectedModel.status === 'last-known' || provider?.catalogSource === 'cache'
-          ? ('last-known' as const)
-          : ('current' as const)
-      : modelCatalogAvailable
-        ? ('unavailable' as const)
-        : ('last-known' as const);
-    const connection = route.connectionProfileId ? connectionById.get(route.connectionProfileId) : undefined;
-    const openRouterReady =
-      route.backendId !== 'openrouter' ||
-      Boolean(
-        connection &&
-        connection.backendId === 'openrouter' &&
-        secrets.has(secretRef(connection.id, 'inference')),
-      );
-    const subscriptionReady =
-      provider?.id === 'claude-code'
-        ? provider.subscriptionAuthenticated === true
-        : provider?.id === 'codex-cli'
-          ? provider.subscriptionAuthenticated === true && selectedModel?.subscriptionBacked === true
-          : provider?.id === 'opencode'
-            ? selectedModel
-              ? isSubscriptionLane(billingLane)
-                ? selectedModel.subscriptionBacked === true
-                : selectedModel.subscriptionBacked === false
-              : false
-            : provider?.id === 'cline'
-              ? ['openai-codex', 'cline-pass'].includes(route.providerId ?? '') ||
-                ['cline-usage-billing', 'openai-api', 'anthropic-api'].includes(billingLane)
-              : provider?.id === 'openrouter'
-                ? openRouterReady &&
-                  (!route.family || !selectedModel?.family || selectedModel.family === route.family)
-                : false;
-    const billing = evaluateBillingLane({
-      mode: billingMode,
-      lane: billingLane,
-      workload: route.workload,
-      customAllowedLanes: workflow.customAllowedLanes,
-    });
-    const settingErrors = validateModelSettings({
-      backendId: route.backendId,
-      model: selectedModel,
-      catalogAvailable: modelCatalogAvailable,
-      reasoning: route.reasoning,
-      variantId: route.variantId,
-      nativeSettings: route.nativeSettings,
-    });
-    const ready = Boolean(
-      provider?.detected &&
-      provider.capabilities.toolMediation &&
-      subscriptionReady &&
-      billingLaneMatchesRoute &&
-      route.providerId?.trim() &&
-      route.modelId?.trim() &&
-      modelExists &&
-      billing.allowed &&
-      !profileMismatch.has(route.stageId) &&
-      !settingErrors.length,
-    );
-    return {
-      provider,
-      selectedModel,
-      billingLane,
-      catalogStatus,
-      connection,
-      billing,
-      settingErrors,
-      ready,
-      openRouterReady,
-    };
-  };
-  const warnings: string[] = [];
-  const providerAssignments: RunPreviewAssignment[] = [];
-  for (const stage of activeStages) {
-    if (AI_KINDS.has(stage.kind)) {
-      const status = routeStatus({
-        ...stage,
-        stageId: stage.id,
-        workload: 'generative',
-        family: 'generative',
-      });
-      const modelSnapshot = {
-        providerId: stage.providerId ?? '',
-        modelId: stage.modelId ?? '',
-        displayName: stage.modelDisplayName ?? status.selectedModel?.name ?? stage.modelId ?? '',
-        connectionProfileName: status.connection?.name ?? stage.modelSnapshot?.connectionProfileName ?? null,
-        billingLane: status.billingLane,
-        ...(stage.variantId ? { variantId: stage.variantId } : {}),
-        capabilities: {
-          ...(status.selectedModel?.capabilities ?? {}),
-          ...(status.selectedModel?.reasoningLevels
-            ? { reasoningLevels: status.selectedModel.reasoningLevels }
-            : {}),
-          ...(status.selectedModel?.variantIds ? { variants: status.selectedModel.variantIds } : {}),
-          ...(status.selectedModel?.pricing ? { pricing: status.selectedModel.pricing } : {}),
-          supportsTools:
-            status.selectedModel?.supportsTools ?? status.selectedModel?.capabilities?.tools ?? null,
-        },
-        discoveredAt: status.selectedModel
-          ? (status.selectedModel.discoveredAt ?? status.provider?.checkedAt ?? null)
-          : (stage.modelSnapshot?.discoveredAt ?? null),
-        adapterVersion: status.provider?.version ?? stage.modelSnapshot?.adapterVersion ?? null,
-        status: status.catalogStatus,
-        identity: classifyModelIdentity(stage.backendId, stage.modelId),
-        reasoningControl: reasoningControlFor(stage.backendId, status.selectedModel),
-      };
-      stage.modelSnapshot = modelSnapshot;
-      if (stage.backendId === 'openrouter' && !status.openRouterReady)
-        warnings.push(`${stage.label}: select an OpenRouter connection with a stored inference key.`);
-      for (const error of status.settingErrors) warnings.push(`${stage.label}: ${error}`);
-      if (!status.billing.allowed && status.billing.reason)
-        warnings.push(`${stage.label}: ${status.billing.reason}`);
-      providerAssignments.push({
-        stage: stage.label,
-        stageId: stage.id,
-        kind: stage.kind,
-        role: stage.role ?? null,
-        workload: 'generative',
-        identity: modelSnapshot.identity,
-        billingAllowed: status.billing.allowed,
-        billingReason: status.billing.reason,
-        backendId: stage.backendId ?? null,
-        providerId: stage.providerId ?? null,
-        modelId: stage.modelId ?? null,
-        modelDisplayName: modelSnapshot.displayName,
-        variantId: stage.variantId ?? null,
-        connectionProfileName: status.connection?.name ?? null,
-        billingLane: status.billingLane,
-        reasoning: stage.reasoning ?? null,
-        nativeSettings: stage.nativeSettings ?? {},
-        catalogStatus: status.catalogStatus,
-        context: estimateStageContext(input.task, stage, effectiveRules, workflow.contextPolicy),
-        ready: status.ready,
-      });
-      continue;
-    }
-    if (stage.kind !== 'decisionGate') continue;
-    const config = stage.decision;
-    const engine = config?.engine ?? 'deterministic-rules';
-    const info = decisionEngineInfo(engine);
-    const laterIds = workflow.stages.slice(workflow.stages.indexOf(stage) + 1).map((item) => item.id);
-    const configErrors = validateDecisionGate(config, stage.label, laterIds);
-    const routes = config ? [config, ...(config.escalation ? [config.escalation] : [])] : [];
-    let ready = configErrors.length === 0;
-    let billingLane: BillingLane | undefined;
-    let backendId: string | null = 'turing-local';
-    let providerId: string | null = null;
-    let modelId: string | null = null;
-    let billingAllowed = true;
-    let billingReason: string | null = null;
-    for (const [index, route] of routes.entries()) {
-      if (route.engine === 'deterministic-rules') continue;
-      const judge = route.engine === 'subscription-llm-judge' ? route.judge : undefined;
-      const routeInput = judge
-        ? { ...judge, billingLane: judge.billingLane ?? inferBillingLane(judge.backendId, judge.providerId) }
-        : {
-            backendId: 'openrouter',
-            providerId: 'openrouter',
-            billingLane: 'openrouter-metered' as const,
-            modelId: route.modelId,
-            connectionProfileId: route.connectionProfileId,
-          };
-      const status = routeStatus({
-        ...routeInput,
-        stageId: stage.id,
-        workload: 'decision',
-        family: route.engine === 'jev-openrouter' ? 'decision' : 'generative',
-      });
-      if (index === 0) {
-        billingLane = status.billingLane;
-        backendId = routeInput.backendId ?? null;
-        providerId = routeInput.providerId ?? null;
-        modelId = routeInput.modelId ?? null;
-        billingAllowed = status.billing.allowed;
-        billingReason = status.billing.reason;
-      }
-      if (!status.ready) {
-        ready = false;
-        warnings.push(
-          `${stage.label}: ${index === 0 ? 'Decision Engine' : 'escalation engine'} route is not ready${status.billing.reason ? ` — ${status.billing.reason}` : route.engine !== 'subscription-llm-judge' && !status.openRouterReady ? ' — select an OpenRouter connection with a stored inference key' : ''}.`,
-        );
-      }
-      if (
-        isMeteredLane(status.billingLane) &&
-        billingMode === 'subscriptions-plus-decision-budget' &&
-        workflow.meteredBudget.perRunUsd === null
-      ) {
-        ready = false;
-        warnings.push(
-          `${stage.label}: set a per-run metered cap; Subscriptions + Decision Budget requires one.`,
-        );
-      }
-    }
-    const external = routes.some((route) => decisionEngineInfo(route.engine).external);
-    if (external && workflow.externalDecisionDataPolicy === 'block') {
-      ready = false;
-      warnings.push(`${stage.label}: external decision data is blocked for this workflow.`);
-    }
-    for (const error of configErrors) warnings.push(error);
-    const maxStateChars = config?.maxStateChars ?? 24_000;
-    providerAssignments.push({
-      stage: stage.label,
-      stageId: stage.id,
-      kind: stage.kind,
-      role: 'decision-gate',
-      workload: engine === 'deterministic-rules' ? 'deterministic' : 'decision',
-      identity: classifyModelIdentity(backendId ?? undefined, modelId ?? undefined),
-      billingAllowed,
-      billingReason,
-      decision: config
-        ? {
-            engine,
-            questionType: config.questionType,
-            question: config.question,
-            routingField: config.routing.field,
-            inputs: config.inputs,
-            external,
-            externalDataPolicy: workflow.externalDecisionDataPolicy,
-            configHash: decisionConfigHash(config),
-            escalation: config.escalation?.engine ?? null,
-          }
-        : undefined,
-      backendId,
-      providerId,
-      modelId,
-      modelDisplayName: modelId ?? info.label,
-      variantId: null,
-      connectionProfileName: config?.connectionProfileId
-        ? (connectionById.get(config.connectionProfileId)?.name ?? null)
-        : null,
-      billingLane,
-      reasoning: null,
-      nativeSettings: {},
-      catalogStatus: undefined,
-      context: {
-        label: `Decision state: ${(config?.inputs ?? []).join(', ') || 'structured rule only'}`,
-        estimatedInputTokens: engine === 'deterministic-rules' ? 0 : Math.ceil(maxStateChars / 4),
-        maxEstimatedTokens: Math.ceil(maxStateChars / 4),
-        maxFiles: 0,
-        maxFileBytes: 0,
-        onLimitExceeded: 'compact',
-        estimateOnly: true,
-      },
-      ready,
-    });
-  }
-  const hasPromptRefinementStage = workflow.stages.some(
-    (stage) => stage.kind === 'promptRefinement' && stage.enabled !== false,
-  );
-  if (refinePrompt && !hasPromptRefinementStage)
-    warnings.push('Prompt refinement is enabled, but this workflow has no enabled prompt refinement stage.');
-  if (!input.task.trim()) warnings.push('Enter a task description.');
-  if (project.dirty && workflow.isolatedWorktree)
-    warnings.push('Project has uncommitted changes; commit or stash before isolated execution.');
-  if (project.gitRoot && project.dirty === null && workflow.isolatedWorktree)
-    warnings.push(
-      'Git status could not be verified; isolated execution is blocked until the project refresh succeeds.',
-    );
-  if (!project.gitRoot && workflow.isolatedWorktree)
-    warnings.push('This folder is not a Git repository; execution will use the project folder directly.');
-  if (providerAssignments.some((assignment) => assignment.backendId && !assignment.ready))
-    warnings.push(
-      'One or more execution backends are missing, have no explicit provider/model, or no longer report the configured model.',
-    );
-  for (const assignment of providerAssignments) {
-    if (
-      assignment.workload === 'generative' &&
-      assignment.backendId &&
-      assignment.providerId &&
-      !routeMatchesBillingLane(
-        assignment.backendId,
-        assignment.providerId,
-        assignment.billingLane ?? 'unknown',
-      )
-    )
-      warnings.push(
-        `${assignment.stage}: provider ${assignment.providerId} does not match the configured ${billingLaneLabel(assignment.billingLane ?? 'unknown')} billing lane.`,
-      );
-    if (profileMismatch.has(assignment.stageId ?? ''))
-      warnings.push(
-        `Connection profile for “${assignment.stage}” no longer exists. Select a local profile or remove the saved reference.`,
-      );
-    if (
-      assignment.billingLane &&
-      isSubscriptionLane(assignment.billingLane) &&
-      !warnings.includes(PROVIDER_FALLBACK_UNVERIFIABLE)
-    )
-      warnings.push(PROVIDER_FALLBACK_UNVERIFIABLE);
-    if (assignment.identity === 'floating')
-      warnings.push(
-        `${assignment.stage}: ${assignment.modelId} is a floating/routed model alias; history records the resolved model where telemetry reports it, so reruns may not be identical.`,
-      );
-    if (assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-      warnings.push(
-        `${assignment.stage} context estimate exceeds its configured budget; ${assignment.context.onLimitExceeded} policy applies before provider execution.`,
-      );
-  }
-  const billingGroups = new Map<string, string[]>();
-  for (const assignment of providerAssignments) {
-    if (assignment.workload === 'deterministic') continue;
-    const lane = assignment.billingLane ?? 'unknown';
-    billingGroups.set(lane, [...(billingGroups.get(lane) ?? []), assignment.stage]);
-  }
-  const usedLanes = [...billingGroups.entries()].map(([lane, stages]) => ({
-    billingLane: lane as BillingLane,
-    stages,
-  }));
-  const billingSummary = [
-    ...usedLanes,
-    ...ALL_BILLING_LANES.filter((lane) => lane !== 'unknown' && !billingGroups.has(lane)).map(
-      (billingLane) => ({ billingLane, stages: [] as string[] }),
-    ),
-  ];
-  const meteredAssignments = providerAssignments.filter(
-    (assignment) => assignment.billingLane && isMeteredLane(assignment.billingLane),
-  );
-  const routingSummary = {
-    subscriptions: SUBSCRIPTION_LANES.map((lane) => ({
-      billingLane: lane,
-      label: billingLaneLabel(lane),
-      stages: providerAssignments
-        .filter((assignment) => assignment.billingLane === lane)
-        .map((assignment) => assignment.stage),
-    })),
-    metered: [...new Set(meteredAssignments.map((assignment) => assignment.billingLane!))].map((lane) => ({
-      billingLane: lane,
-      label: billingLaneLabel(lane),
-      generativeStages: meteredAssignments
-        .filter((item) => item.billingLane === lane && item.workload === 'generative')
-        .map((item) => item.stage),
-      decisionStages: meteredAssignments
-        .filter((item) => item.billingLane === lane && item.workload === 'decision')
-        .map((item) => item.stage),
-    })),
-    meteredNone: meteredAssignments.length === 0,
-    runMeteredCapUsd: workflow.meteredBudget.perRunUsd,
-    dailyBudgetUsd: budgetSettings.dailyUsd,
-    monthlyBudgetUsd: budgetSettings.monthlyUsd,
-    unknownCostPolicy: workflow.meteredBudget.unknownCostPolicy,
-    // Turing has no automatic API/PAYG fallback path. Metered lanes appear only when explicitly configured.
-    paygFallback: 'none' as const,
-    externalDecisionDataPolicy: workflow.externalDecisionDataPolicy,
-  };
-  const providerFallbackStatus = usedLanes.flatMap((item) => {
-    const status = providerSideFallbackStatus(item.billingLane);
-    if (!status) return [];
-    const backend =
-      providerAssignments.find((assignment) => assignment.billingLane === item.billingLane)?.backendId ??
-      'unknown';
-    return [{ backendId: backend, billingLane: item.billingLane, ...status }];
-  });
-  const contextWarnings = providerAssignments
-    .filter((assignment) => assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens)
-    .map(
-      (assignment) =>
-        `${assignment.stage}: estimated initial context ~${assignment.context.estimatedInputTokens.toLocaleString()} tokens exceeds the configured limit.`,
-    );
-  const machineRow = localMachine(db);
-  const machine = {
-    id: String(machineRow.id),
-    name: String(machineRow.name),
-    hostname: hostname(),
-    os: platform(),
-    status: 'online' as const,
-    lastSeenAt: new Date().toISOString(),
-  };
-  const hasRunnableStage = workflow.stages.some((stage) => stage.enabled !== false);
-  const contextBudgetBlocked = providerAssignments.some(
-    (assignment) =>
-      assignment.context.estimatedInputTokens > assignment.context.maxEstimatedTokens &&
-      assignment.context.onLimitExceeded !== 'compact',
-  );
-  return {
-    project,
-    workflow,
-    machine,
-    task: input.task,
-    profile,
-    permissionMode,
-    refinePrompt,
-    subscriptionOnly: workflow.subscriptionOnly,
-    billingMode,
-    lockProviders: workflow.lockProviders,
-    effectiveRules,
-    branchStrategy:
-      workflow.isolatedWorktree && project.gitRoot ? ('worktree' as const) : ('current-branch' as const),
-    expectedAiStages: providerAssignments.filter(
-      (assignment) => assignment.ready && assignment.workload === 'generative',
-    ).length,
-    canStart:
-      Boolean(input.task.trim()) &&
-      hasRunnableStage &&
-      (!refinePrompt || hasPromptRefinementStage) &&
-      providerAssignments.every((assignment) => assignment.ready) &&
-      !contextBudgetBlocked &&
-      !(workflow.isolatedWorktree && project.gitRoot && project.dirty !== false),
-    warnings,
-    providerAssignments,
-    billingSummary,
-    routingSummary,
-    providerFallbackStatus,
-    contextWarnings,
-  };
-}
-
-type RunPreviewAssignment = import('../shared/types.js').RunPreview['providerAssignments'][number];
-
-function inheritStageConfiguration(workflow: WorkflowDefinition, stage: WorkflowStage): WorkflowStage {
-  if (!AI_KINDS.has(stage.kind)) return { ...stage };
-  const defaults = {
-    ...(workflow.defaultModelConfiguration ?? {}),
-    ...(workflow.stageDefaults?.[stage.kind] ?? {}),
-  };
-  const inherited = {
-    ...defaults,
-    ...stage,
-  };
-  const nodeChangedConnection = Boolean(
-    (stage.backendId && defaults.backendId && stage.backendId !== defaults.backendId) ||
-    (stage.providerId && defaults.providerId && stage.providerId !== defaults.providerId) ||
-    (stage.billingLane && defaults.billingLane && stage.billingLane !== defaults.billingLane),
-  );
-  return {
-    ...stage,
-    backendId: inherited.backendId,
-    connectionProfileId:
-      stage.connectionProfileId ?? (nodeChangedConnection ? undefined : defaults.connectionProfileId),
-    providerId: inherited.providerId,
-    billingLane: inherited.billingLane,
-    modelId: inherited.modelId,
-    modelDisplayName: inherited.modelDisplayName,
-    variantId: inherited.variantId,
-    reasoning: inherited.reasoning,
-    nativeSettings: inherited.nativeSettings,
-  };
-}
-
 function normalizeWorkflowBilling<
   T extends { billingMode?: import('../shared/types.js').BillingMode; subscriptionOnly: boolean },
 >(value: T): T {
@@ -2917,6 +2392,9 @@ function usageFilterFromQuery(
     range = { from: quota.effective_at, to: quota.reset_at };
   } else range = resolveRange({ preset, timeZone, fromDay: query.from, toDay: query.to });
   const pick = (key: string) => (query[key] && query[key]!.length <= 200 ? query[key] : undefined);
+  // A Goal filter that cannot be honoured must never widen to all usage.
+  if (query.goalId !== undefined && (!query.goalId || query.goalId.length > 200))
+    return { error: 'The Goal filter must be a Goal id of at most 200 characters.' };
   return {
     ...range,
     timeZone,
@@ -2931,56 +2409,7 @@ function usageFilterFromQuery(
     workloadType: pick('workloadType'),
     reasoning: pick('reasoning'),
     runId: pick('runId'),
-  };
-}
-
-function estimateStageContext(
-  task: string,
-  stage: WorkflowStage,
-  rules: import('../shared/types.js').TuringRule[],
-  workflowPolicy: WorkflowDefinition['contextPolicy'],
-) {
-  const policy = { ...workflowPolicy, ...(stage.contextPolicy ?? {}) };
-  const reviewKinds = ['reviewer', 'parallelReview', 'finalGate', 'consolidate'];
-  const includeCurrentDiff =
-    stage.contextPolicy?.includeCurrentDiff ??
-    (reviewKinds.includes(stage.kind) && workflowPolicy.includeCurrentDiff);
-  const includePreviousTranscript =
-    stage.contextPolicy?.includePreviousTranscript ?? workflowPolicy.includePreviousTranscript;
-  const applicableRules = rules.filter(
-    (rule) => !rule.appliesTo.length || rule.appliesTo.includes(stage.kind),
-  );
-  const instructions = stage.customInstructions?.length ?? 0;
-  const ruleChars = applicableRules.reduce(
-    (total, rule) => total + rule.content.length + rule.name.length + 80,
-    0,
-  );
-  const transcriptAllowance = includePreviousTranscript ? 16_000 : 0;
-  const estimatedInputTokens = Math.ceil(
-    (task.length +
-      instructions +
-      ruleChars +
-      (includeCurrentDiff ? 2_000 : 0) +
-      transcriptAllowance +
-      1_600) /
-      4,
-  );
-  const label =
-    policy.strategy === 'changed-files'
-      ? 'Changed Files + Selected Artifacts'
-      : policy.strategy === 'artifacts-only'
-        ? 'Structured Artifacts + Explicit Files'
-        : policy.strategy === 'full-project'
-          ? 'Broad Project Context'
-          : 'Focused Context';
-  return {
-    label,
-    estimatedInputTokens,
-    maxEstimatedTokens: policy.maxEstimatedTokens,
-    maxFiles: policy.maxFiles,
-    maxFileBytes: policy.maxFileBytes,
-    onLimitExceeded: policy.onLimitExceeded,
-    estimateOnly: true as const,
+    goalId: pick('goalId'),
   };
 }
 

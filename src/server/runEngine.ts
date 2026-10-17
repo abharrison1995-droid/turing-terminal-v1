@@ -1,4 +1,5 @@
 import { execFile as callbackExecFile, spawn, type ChildProcessByStdio } from 'node:child_process';
+import { MODEL_BACKED_STAGE_KINDS } from '../shared/workflowKinds.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import {
   constants as fsConstants,
@@ -44,7 +45,7 @@ import { evaluateDecisionGate, saveDecisionResult, type DecisionContext } from '
 import type { Db } from './db.js';
 import { getRunRow } from './serialize.js';
 import { executeProvider, type ProviderRunResult } from './providers.js';
-import { readGitDiff } from './git.js';
+import { captureSubjectState, readGitDiff, type SubjectState } from './git.js';
 import { redactSecrets, safeChildEnvironment } from './security.js';
 import { isSafeProjectCommand } from './commandPolicy.js';
 import { rulesForStage } from './rules.js';
@@ -65,19 +66,10 @@ import {
   summarizeBrokerAction,
   type BrokerPolicyResult,
 } from './executionBroker.js';
+import { estimateTokens } from './tokenEstimate.js';
 
 const execFile = promisify(callbackExecFile);
-const AI_KINDS = new Set<WorkflowStage['kind']>([
-  'planner',
-  'promptRefinement',
-  'implementer',
-  'reviewer',
-  'parallelReview',
-  'consolidate',
-  'orchestrator',
-  'remediation',
-  'finalGate',
-]);
+const AI_KINDS = MODEL_BACKED_STAGE_KINDS;
 const MAX_CAPTURED_LOG_CHARS = 500_000;
 const READ_ONLY_ROLES = new Set([
   'planner',
@@ -123,6 +115,7 @@ interface ProviderToolSession {
   billingLane: import('../shared/types.js').BillingLane | null;
   variantId: string | null;
   contextPolicy: ContextPolicy;
+  goalScope?: { includeGlobs: string[]; excludeGlobs: string[] };
   changedFiles: Set<string>;
   contextFiles: Set<string>;
   contextCache: Map<string, string>;
@@ -143,11 +136,20 @@ export class RunEngine {
     private readonly emit: (type: string, payload: Record<string, unknown>) => void,
   ) {}
 
+  /** Publishes a run status change for a run this engine did not drive, such as a queued run cancelled before it started. */
+  publishRunStatus(runId: string, status: string): void {
+    this.emit('run_updated', { runId, status });
+  }
+
   start(runId: string, resume = false): void {
     if (this.active.has(runId)) return;
     const controller = new AbortController();
     this.active.set(runId, controller);
     void this.execute(runId, controller, resume).finally(() => this.active.delete(runId));
+  }
+
+  isActive(runId: string): boolean {
+    return this.active.has(runId);
   }
 
   cancel(runId: string): boolean {
@@ -390,6 +392,8 @@ export class RunEngine {
               stageController.abort();
             }, stageTimeoutMinutes * 60_000)
           : undefined;
+        // Exact command and subject of a deterministic command stage, kept so a failure is still repository-bound.
+        let commandContext: Record<string, unknown> | undefined;
         try {
           let output: Record<string, unknown>;
           if (stage.kind === 'conditionalBranch') {
@@ -408,21 +412,24 @@ export class RunEngine {
             };
           } else if (stage.kind === 'shellCommand') {
             if (!stage.command) throw new Error('Shell command stage has no configured command.');
-            output = await this.executeCommand(
-              runId,
-              stageId,
-              stage,
-              stage.command,
-              working.path,
-              stageSignal,
-            );
+            const subject = await this.captureSubject(row, working.path);
+            commandContext = { command: stage.command, ...subject };
+            output = {
+              ...(await this.executeCommand(runId, stageId, stage, stage.command, working.path, stageSignal)),
+              ...subject,
+            };
           } else if (stage.kind === 'build' || stage.kind === 'test') {
             const command =
               stage.kind === 'build'
                 ? parseJson<string[] | null>(project.build_command_json, null)
                 : parseJson<string[] | null>(project.test_command_json, null);
+            const subject = command ? await this.captureSubject(row, working.path) : {};
+            if (command) commandContext = { command, ...subject };
             output = command
-              ? await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)
+              ? {
+                  ...(await this.executeCommand(runId, stageId, stage, command, working.path, stageSignal)),
+                  ...subject,
+                }
               : {
                   skipped: true,
                   reason: `No ${stage.kind} command was detected. Configure a project command to run this stage.`,
@@ -643,7 +650,20 @@ export class RunEngine {
           this.setStage(
             stageId,
             controller.signal.aborted && !stageTimedOut ? 'cancelled' : 'failed',
-            { error: message },
+            {
+              error: message,
+              ...(commandContext
+                ? {
+                    ...commandContext,
+                    // Only a real non-zero exit is a semantic failure; timeouts, cancellation and runner errors are not.
+                    failureKind:
+                      error instanceof CommandExitError && !stageTimedOut && !controller.signal.aborted
+                        ? 'command_exit'
+                        : 'infrastructure',
+                    ...(error instanceof CommandExitError ? { exitCode: error.exitCode } : {}),
+                  }
+                : {}),
+            },
             startedAt,
             message,
           );
@@ -716,6 +736,22 @@ export class RunEngine {
     }
   }
 
+  /**
+   * Repository state a deterministic stage is about to verify. Captured only for runs that carry a trusted base
+   * commit, so ordinary run rows are unchanged. A capture failure never fails the stage.
+   */
+  private async captureSubject(
+    row: Record<string, unknown>,
+    workingPath: string,
+  ): Promise<Partial<SubjectState>> {
+    if (!row.goal_base_commit) return {};
+    try {
+      return await captureSubjectState(workingPath);
+    } catch {
+      return {};
+    }
+  }
+
   private async prepareWorkingCopy(
     runId: string,
     workflow: WorkflowDefinition,
@@ -723,10 +759,15 @@ export class RunEngine {
   ): Promise<{ path: string; worktreePath: string | null; branch: string | null }> {
     const project = this.db
       .prepare(
-        `SELECT p.git_root, r.worktree_path, r.branch FROM projects p
+        `SELECT p.git_root, r.worktree_path, r.branch, r.goal_base_commit FROM projects p
          JOIN runs r ON r.project_id = p.id WHERE r.id = ?`,
       )
-      .get(runId) as { git_root: string | null; worktree_path: string | null; branch: string | null };
+      .get(runId) as {
+      git_root: string | null;
+      worktree_path: string | null;
+      branch: string | null;
+      goal_base_commit: string | null;
+    };
     if (!project.git_root || !workflow.isolatedWorktree)
       return { path: projectPath, worktreePath: null, branch: null };
     const gitRoot = project.git_root;
@@ -752,13 +793,18 @@ export class RunEngine {
         branch: project.branch,
       };
     }
-    const status = await git(['status', '--porcelain'], gitRoot);
-    if (status.trim())
-      throw new Error(
-        'This workflow uses an isolated Git worktree, but the project has uncommitted changes. Commit or stash them, or turn off worktree isolation for this workflow.',
-      );
-    const startingCommit = await git(['rev-parse', 'HEAD'], gitRoot);
-    const baseBranch = (await git(['branch', '--show-current'], gitRoot)) || null;
+    // A trusted base commit (set only by server code at queue time) is the exact worktree start point. The
+    // source checkout is not involved, so it may be dirty and no base branch is recorded.
+    const trustedBase = project.goal_base_commit;
+    if (!trustedBase) {
+      const status = await git(['status', '--porcelain'], gitRoot);
+      if (status.trim())
+        throw new Error(
+          'This workflow uses an isolated Git worktree, but the project has uncommitted changes. Commit or stash them, or turn off worktree isolation for this workflow.',
+        );
+    }
+    const startingCommit = trustedBase ?? (await git(['rev-parse', 'HEAD'], gitRoot));
+    const baseBranch = trustedBase ? null : (await git(['branch', '--show-current'], gitRoot)) || null;
     const branch = `turing/${runId.slice(0, 8)}`;
     const dataDir = resolve(
       process.env.TT_DATA_DIR ?? join(process.env.HOME ?? process.env.USERPROFILE ?? '.', '.turing-terminal'),
@@ -917,6 +963,7 @@ export class RunEngine {
         billingLane,
         variantId: stage.variantId ?? null,
         contextPolicy,
+        ...(workflow.goalScope ? { goalScope: workflow.goalScope } : {}),
         changedFiles,
         contextFiles: new Set<string>(),
         contextCache: new Map<string, string>(),
@@ -2246,7 +2293,10 @@ export class RunEngine {
   ): Promise<Record<string, unknown>> {
     const scope = gitScope(context);
     const changedPaths = await this.assertGitScope(context);
-    if (!changedPaths.length) throw new Error('There are no changes in the registered project to commit.');
+    if (!changedPaths.length) {
+      if (stage.allowNoChanges) return await this.noChangesCommit(context);
+      throw new Error('There are no changes in the registered project to commit.');
+    }
     const stagedBefore = splitGitPaths(
       await git(['diff', '--cached', '--name-only', '-z', '--', scope], context.worktreeRoot, { raw: true }),
     );
@@ -2294,7 +2344,10 @@ export class RunEngine {
       );
       if (hasSuspectedSecret(stagedDiff))
         throw new Error('Git commit refused file content matching a known credential pattern.');
-      if (!indexed.length) throw new Error('No project changes were staged for this commit.');
+      if (!indexed.length) {
+        if (stage.allowNoChanges) return await this.noChangesCommit(context);
+        throw new Error('No project changes were staged for this commit.');
+      }
       await git(['diff', '--cached', '--check'], context.worktreeRoot);
       await gitWithHooksDisabled(
         ['-c', 'commit.gpgsign=false', 'commit', '-m', message],
@@ -2309,6 +2362,12 @@ export class RunEngine {
     } finally {
       await git(['reset', 'HEAD', '--', scope], context.worktreeRoot).catch(() => undefined);
     }
+  }
+
+  /** `allowNoChanges` outcome: nothing to commit, so no commit (and never an empty one) is created. */
+  private async noChangesCommit(context: GitRunContext): Promise<Record<string, unknown>> {
+    const commit = await git(['rev-parse', 'HEAD'], context.worktreeRoot);
+    return { branch: context.branch, commit, files: [], noChanges: true, approvalId: null };
   }
 
   private async pushGitBranch(
@@ -3234,6 +3293,17 @@ async function gitDiff(cwd: string, baseCommit?: string | null): Promise<string>
   }
 }
 
+/** A project command that ran and exited non-zero (or by signal): distinct from cancellation and runner errors. */
+class CommandExitError extends Error {
+  constructor(
+    message: string,
+    readonly exitCode: number | null,
+  ) {
+    super(message);
+    this.name = 'CommandExitError';
+  }
+}
+
 async function runLocalCommand(
   command: string,
   args: string[],
@@ -3279,8 +3349,9 @@ async function runLocalCommand(
       if (signal.aborted) return rejectPromise(new Error('Stage cancelled by the user.'));
       if (code !== 0)
         return rejectPromise(
-          new Error(
+          new CommandExitError(
             `${command} run ${args.at(-1)} exited with ${killedBy ? `signal ${killedBy}` : `code ${code}`}. ${output.slice(-1_200)}`,
+            killedBy ? null : code,
           ),
         );
       resolvePromise({ exitCode: code ?? 0, output });
@@ -3455,10 +3526,6 @@ function defaultContextPolicy(): ContextPolicy {
   };
 }
 
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 function compactOptionalContextBlock(block: string): string {
   const caps: Array<[string, number]> = [
     ['Prior structured stage artifact', 12_000],
@@ -3497,6 +3564,15 @@ function matchesAnyGlob(path: string, globs: string[]): boolean {
 }
 
 function contextPathAllowed(session: ProviderToolSession, path: string): boolean {
+  // A Goal milestone scope is a second, independent constraint: both it and the context policy must allow the path.
+  // An empty Goal include list denies everything rather than meaning "no restriction".
+  const scope = session.goalScope;
+  if (
+    scope &&
+    (scope.excludeGlobs.some((glob) => matchesAnyGlob(path, [glob])) ||
+      !matchesAnyGlob(path, scope.includeGlobs))
+  )
+    return false;
   const policy = session.contextPolicy;
   if (policy.excludeGlobs.some((glob) => matchesAnyGlob(path, [glob]))) return false;
   const included = !policy.includeGlobs.length || matchesAnyGlob(path, policy.includeGlobs);

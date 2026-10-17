@@ -19,7 +19,50 @@ import type {
 } from '../shared/types';
 import { masterApiUrl } from './desktop';
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * A failed API response. `message` is unchanged (`error` from the body, else the status), so existing callers that read
+ * only `error.message` behave exactly as before. Goal controls additionally read the structured refusal.
+ */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly detail?: unknown,
+    readonly approvalId?: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/**
+ * A successful response whose body could not be read as JSON. For a write the server may already have committed it, so
+ * the caller must treat the outcome as unknown and read the saved state, never assume failure.
+ */
+export class UnreadableResponseError extends Error {
+  constructor(readonly status: number | null) {
+    super('The response could not be read.');
+    this.name = 'UnreadableResponseError';
+  }
+}
+
+interface ErrorBody {
+  error?: string;
+  code?: string;
+  detail?: unknown;
+  approvalId?: string;
+}
+
+/**
+ * `requireBody` is opt-in. Without it a 2xx whose body cannot be parsed yields `{}`, exactly as before. Writes that the
+ * client cannot confirm from the response pass `requireBody` and get an `UnreadableResponseError` instead.
+ */
+export async function call<T>(
+  path: string,
+  init?: RequestInit,
+  options: { requireBody?: boolean } = {},
+): Promise<T> {
   const response = await fetch(masterApiUrl(path), {
     ...init,
     headers: {
@@ -27,9 +70,22 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  const body = (await response.json().catch(() => ({}))) as { error?: string };
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status}).`);
-  return body as T;
+  const parsed = await response.json().then(
+    (value: unknown) => ({ value }),
+    () => null,
+  );
+  if (response.ok && parsed === null && options.requireBody)
+    throw new UnreadableResponseError(response.status);
+  const body = (parsed?.value ?? {}) as ErrorBody;
+  if (!response.ok)
+    throw new ApiError(
+      body.error ?? `Request failed (${response.status}).`,
+      response.status,
+      typeof body.code === 'string' ? body.code : undefined,
+      body.detail,
+      typeof body.approvalId === 'string' ? body.approvalId : undefined,
+    );
+  return (parsed === null ? {} : parsed.value) as T;
 }
 
 function json(method: string, body?: unknown): RequestInit {
@@ -198,7 +254,8 @@ export const api = {
     call<{ operations: ExecutionOperation[] }>(`/api/runs/${id}/execution-operations`),
   diff: (id: string) =>
     call<{ diff: string; truncated: boolean; cwd: string; message?: string }>(`/api/runs/${id}/diff`),
-  cancelRun: (id: string) => call<{ accepted: boolean }>(`/api/runs/${id}/cancel`, json('POST')),
+  cancelRun: (id: string) =>
+    call<{ accepted: boolean; status?: 'cancelled' }>(`/api/runs/${id}/cancel`, json('POST')),
   resumeRun: (id: string) => call<{ accepted: boolean }>(`/api/runs/${id}/resume`, json('POST')),
   confirmPromptRefinement: (id: string, specification: string, clarification: string) =>
     call<{ accepted: boolean }>(

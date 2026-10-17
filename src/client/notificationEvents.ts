@@ -1,6 +1,7 @@
 import type { DashboardSnapshot } from '../shared/types.js';
 
-type SnapshotSummary = Pick<DashboardSnapshot, 'runs' | 'approvals' | 'providers'>;
+type SnapshotSummary = Pick<DashboardSnapshot, 'runs' | 'approvals' | 'providers'> &
+  Pick<DashboardSnapshot, 'goals' | 'goalApprovals'>;
 
 export interface BrowserNotificationEvent {
   key: string;
@@ -66,6 +67,37 @@ export function notificationsForSnapshot(
       key: `provider:${provider.id}:disconnected`,
       title: 'Provider connection needs attention',
       body: 'Open Turing Terminal settings to check provider sign-in.',
+    });
+  }
+
+  const previousGoalApprovals = new Set(
+    previous.goalApprovals?.approvals.map((approval) => approval.id) ?? [],
+  );
+  const newGoalApprovals = new Set<string>();
+  for (const approval of current.goalApprovals?.approvals ?? []) {
+    if (previousGoalApprovals.has(approval.id)) continue;
+    newGoalApprovals.add(approval.goalId ?? '');
+    events.push({
+      key: `goal-approval:${approval.id}`,
+      title: 'Grand Project needs approval',
+      body: 'Open Turing Terminal to review the Goal gate.',
+    });
+  }
+
+  const previousGoals = new Map((previous.goals?.cards ?? []).map((goal) => [goal.id, goal]));
+  for (const goal of current.goals?.cards ?? []) {
+    const oldGoal = previousGoals.get(goal.id);
+    if (
+      goal.status !== 'needs_user' ||
+      oldGoal?.status === 'needs_user' ||
+      newGoalApprovals.has(goal.id) ||
+      (goal.reasonCode === 'gate_pending' && goal.pendingApprovalCount > 0)
+    )
+      continue;
+    events.push({
+      key: `goal:${goal.id}:needs-user:${goal.reasonCode ?? 'unknown'}:${goal.updatedAt}`,
+      title: 'Grand Project needs you',
+      body: 'Open Turing Terminal to review the Goal state.',
     });
   }
   return events;
