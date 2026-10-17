@@ -329,6 +329,39 @@ export function cancelQueuedRun(db: Db, runId: string, reason: string): CancelQu
   })();
 }
 
+export type CancelOrdinaryQueuedRunResult =
+  | { cancelled: true }
+  | {
+      cancelled: false;
+      reason: 'not-found' | 'not-queued' | 'already-active' | 'goal-owned' | 'route-probe';
+    };
+
+/**
+ * User cancellation (the Stop control) of an ordinary run that has not started. Goal-owned runs and route-probe runs are
+ * refused: their owners cancel them, and a user cancel must not bypass their reconciliation. A run the engine is already
+ * executing is left to RunEngine.cancel. This is synchronous. Its checks and the cancellation commit in one JavaScript
+ * turn, and engine.start persists `preparing` before it returns, so a queued run cannot start between the check and the
+ * commit. The commit is cancelQueuedRun, the same path the Goal supervisor uses for its own queued runs.
+ */
+export function cancelOrdinaryQueuedRun(
+  db: Db,
+  engine: RunEngine,
+  runId: string,
+): CancelOrdinaryQueuedRunResult {
+  const row = db.prepare('SELECT status, goal_cycle_id FROM runs WHERE id = ?').get(runId) as
+    { status: string; goal_cycle_id: string | null } | undefined;
+  if (!row) return { cancelled: false, reason: 'not-found' };
+  if (row.status !== 'queued') return { cancelled: false, reason: 'not-queued' };
+  if (engine.isActive(runId)) return { cancelled: false, reason: 'already-active' };
+  if (row.goal_cycle_id !== null) return { cancelled: false, reason: 'goal-owned' };
+  if (db.prepare('SELECT 1 FROM route_validation_probes WHERE run_id = ?').get(runId))
+    return { cancelled: false, reason: 'route-probe' };
+  const result = cancelQueuedRun(db, runId, 'Cancelled by the user before the run started.');
+  if (!result.cancelled) return { cancelled: false, reason: result.reason };
+  engine.publishRunStatus(runId, 'cancelled');
+  return { cancelled: true };
+}
+
 /** Ordinary run path: persist the queued run, then start it immediately. */
 export function createRun(db: Db, engine: RunEngine, preview: RunPreview, options: QueueRunOptions = {}) {
   const { runId } = queueRun(db, preview, options);

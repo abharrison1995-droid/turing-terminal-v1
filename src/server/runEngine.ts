@@ -136,6 +136,11 @@ export class RunEngine {
     private readonly emit: (type: string, payload: Record<string, unknown>) => void,
   ) {}
 
+  /** Publishes a run status change for a run this engine did not drive, such as a queued run cancelled before it started. */
+  publishRunStatus(runId: string, status: string): void {
+    this.emit('run_updated', { runId, status });
+  }
+
   start(runId: string, resume = false): void {
     if (this.active.has(runId)) return;
     const controller = new AbortController();

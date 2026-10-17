@@ -432,6 +432,19 @@ describe('Goal-origin run launch', () => {
       await vi.waitFor(() => expect(rowOf(runId).status).toBe('waiting_for_approval'));
     });
 
+    it('refuses a user cancel of a queued Goal-owned run: its Grand Project owns the cancellation', async () => {
+      const { runId } = queueRun(db, await goalPreview());
+      const response = await app.inject({ method: 'POST', url: `/api/runs/${runId}/cancel` });
+      expect(response.statusCode).toBe(409);
+      expect(response.json().error).toMatch(/Grand Project/);
+      expect(rowOf(runId).status).toBe('queued');
+      expect(
+        db
+          .prepare("SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND type = 'run_cancelled'")
+          .get(runId),
+      ).toEqual({ n: 0 });
+    });
+
     it('does not let engine recovery start a queued Goal-owned run (HR-Q4)', async () => {
       const { runId } = queueRun(db, await goalPreview());
       const restarted = new RunEngine(db, () => undefined);

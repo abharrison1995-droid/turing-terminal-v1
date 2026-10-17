@@ -47,7 +47,7 @@ import {
 } from './serialize.js';
 import { scanProject } from './projectScanner.js';
 import { RunEngine } from './runEngine.js';
-import { buildPreview, createRun, startQueuedRun } from './runLauncher.js';
+import { buildPreview, cancelOrdinaryQueuedRun, createRun, startQueuedRun } from './runLauncher.js';
 import {
   AUTHORING_LIMITS,
   GoalAuthoringError,
@@ -2003,6 +2003,14 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
   app.post('/api/runs/:id/cancel', async (request, reply) => {
     const id = (request.params as { id: string }).id;
     if (!getRunRow(db, id)) return reply.code(404).send({ error: 'Run was not found.' });
+    const queued = cancelOrdinaryQueuedRun(db, engine, id);
+    if (queued.cancelled) return { accepted: true, status: 'cancelled' };
+    if (queued.reason === 'goal-owned')
+      return reply
+        .code(409)
+        .send({ error: 'This run belongs to a Grand Project. Cancel it from the Grand Project.' });
+    if (queued.reason === 'route-probe')
+      return reply.code(409).send({ error: 'This run is a route validation probe. Its reconciler owns it.' });
     if (!engine.cancel(id)) return reply.code(409).send({ error: 'This run is not active.' });
     return { accepted: true };
   });

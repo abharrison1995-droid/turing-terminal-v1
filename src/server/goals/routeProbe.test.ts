@@ -623,6 +623,19 @@ describe('probe lifecycle and the validation record writer', () => {
     expect(records()).toHaveLength(0);
   });
 
+  it('refuses a user cancel of a queued route-validation probe: its reconciler owns the probe', async () => {
+    h = await probeHarness();
+    const queued = await createRouteProbe(h.db, probeRequest(), () => {
+      throw new Error('crashed before start');
+    });
+    const response = await h.app.inject({ method: 'POST', url: `/api/runs/${queued.runId}/cancel` });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().error).toMatch(/route validation/);
+    expect(h.db.prepare('SELECT status FROM runs WHERE id = ?').get(queued.runId)).toEqual({
+      status: 'queued',
+    });
+  });
+
   it('starts a queued probe exactly once after a restart, and a second pass does not start it again', async () => {
     h = await probeHarness();
     const starts: string[] = [];

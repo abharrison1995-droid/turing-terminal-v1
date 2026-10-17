@@ -254,7 +254,8 @@ export const api = {
     call<{ operations: ExecutionOperation[] }>(`/api/runs/${id}/execution-operations`),
   diff: (id: string) =>
     call<{ diff: string; truncated: boolean; cwd: string; message?: string }>(`/api/runs/${id}/diff`),
-  cancelRun: (id: string) => call<{ accepted: boolean }>(`/api/runs/${id}/cancel`, json('POST')),
+  cancelRun: (id: string) =>
+    call<{ accepted: boolean; status?: 'cancelled' }>(`/api/runs/${id}/cancel`, json('POST')),
   resumeRun: (id: string) => call<{ accepted: boolean }>(`/api/runs/${id}/resume`, json('POST')),
   confirmPromptRefinement: (id: string, specification: string, clarification: string) =>
     call<{ accepted: boolean }>(
