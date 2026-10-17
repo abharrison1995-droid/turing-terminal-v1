@@ -1,0 +1,318 @@
+/* UI.4 Settings, device pairing, Machines and Usage: layout and skin (docs/ui/UI4_SCOPE.md section 2).
+   Loaded after phase36.css and before goals.css. Every selector is scoped to one of the four pages (.pairing-*,
+   .settings-*, .machine-*, .usage-*) or to a page-level ancestor (.quota-envelope-panel, .usage-explorer,
+   .usage-table-panel, .pairing-settings), so shared primitives are never restyled globally. Tokens only: no colour
+   literal, no display face, no !important, no generated content beyond the empty string, no display:none. Motion sits
+   only under prefers-reduced-motion: no-preference. */
+
+/* 1. Device pairing: a centred card. Its title is a fixed, allow-listed title and keeps the display face and size
+   that pages.css gives it. The pairing page is a phone page, so its controls use the 44px touch height and the 16px
+   input size that stops mobile zoom. */
+.pairing-panel button,
+.pairing-panel .form-field select,
+.pairing-panel .form-field input {
+  min-height: var(--h-touch);
+}
+
+.pairing-panel .form-field input {
+  font-size: var(--fs-input);
+}
+
+/* 2. Settings: one column below 1100px in DOM order, two from 1100px. Read-only rows are label and value pairs that
+   wrap their long values (Tailscale login, origin, machine id) rather than overflowing the card. */
+.settings-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-4);
+}
+
+@media (min-width: 1100px) {
+  .settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Desktop padding only. At 680px and below mobile.css sets the compact section padding (--s-4), which must not be
+   overridden here. */
+@media (min-width: 681px) {
+  .settings-section {
+    gap: var(--s-3);
+    padding: var(--s-5);
+  }
+}
+
+.settings-readonly-row {
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-4);
+}
+
+.settings-readonly-row > span {
+  flex: 0 0 auto;
+}
+
+.settings-readonly-row strong {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.settings-section button,
+.settings-section summary,
+.settings-section .form-field select,
+.settings-section .form-field textarea,
+.settings-section .form-field input:not([type='checkbox']):not([type='radio']) {
+  min-height: var(--h-touch);
+}
+
+.settings-section button {
+  padding-inline: var(--s-3);
+}
+
+/* The OpenRouter connection row is a name field beside its add button. The shared three-column field grid gave the
+   button a third of the width, so its label ran past the border; the button now takes its own content width. */
+.settings-section .field-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.settings-section .field-row > button {
+  white-space: nowrap;
+}
+
+/* The Store and Remove actions under each OpenRouter key field. pages.css styles every direct span of a .form-field as
+   a caption (block, bottom margin, meta text), which overrode the action row's flex layout and left the buttons
+   hanging under their fields. The row is laid out as a flex row again, with its own top gap. */
+.settings-section .form-field > .stage-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1) var(--s-2);
+  margin: var(--s-1) 0 0;
+}
+
+@media (max-width: 680px) {
+  .settings-section .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Paired devices and requests: each row is a card. The status pill keeps its word; a request awaiting the owner is
+   the one amber state, because it is a request for the user. */
+.pairing-settings .pairing-device-row {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-2);
+  padding: var(--s-3);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+
+.pairing-settings .pairing-device-row > span:first-child {
+  flex: 1 1 200px;
+}
+
+.pairing-settings .pairing-device-row strong {
+  overflow-wrap: anywhere;
+}
+
+.pairing-settings .pairing-request-actions {
+  flex: 0 0 auto;
+}
+
+.pairing-settings .status-awaiting_approval {
+  color: var(--amber);
+  background: var(--amber-wash);
+}
+
+/* 3. Machines: each profile is a card with a presence dot and a word. The selected row keeps its "selected" text, and
+   the long origin, hostname and machine id wrap. */
+.machine-card-row {
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+
+.machine-card-main {
+  flex: 1 1 200px;
+  overflow-wrap: anywhere;
+}
+
+.machine-card-main strong,
+.machine-card-main span,
+.machine-card-main small {
+  overflow-wrap: anywhere;
+}
+
+.machine-card-row .status-pill {
+  flex: 0 0 auto;
+}
+
+.machine-card-row .status-pill::before {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  background: currentcolor;
+  border-radius: 50%;
+  content: '';
+}
+
+.machine-card-row button {
+  min-height: var(--h-touch);
+}
+
+/* 4. Usage: provenance words, the budget meter, and the summary tiles. Tiles are 4, 2 and 1 across the breakpoints;
+   each tile is a card with its value in the mono face. */
+.usage-controls button,
+.usage-controls .form-field select,
+.usage-controls .form-field input,
+.usage-export-actions a,
+.usage-table-panel button {
+  min-height: var(--h-touch);
+}
+
+.usage-provenance-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+
+.usage-provenance-row .provenance-badge {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 0 var(--s-2);
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-summary-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s-3);
+}
+
+/* Desktop padding and columns. On the phone the grid keeps pages.css padding, and mobile.css sets the tile gap. */
+@media (min-width: 681px) {
+  .usage-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: var(--s-3);
+  }
+}
+
+@media (min-width: 1024px) {
+  .usage-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+/* The tile gap is desktop only: mobile.css sets a 2px gap for .usage-metric at 680px and below. The tile padding keeps
+   its 16px sides on every width, which matches the phone --s-4 gutter. */
+.usage-summary-grid .usage-metric {
+  grid-template-columns: minmax(0, 1fr);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+}
+
+@media (min-width: 681px) {
+  .usage-summary-grid .usage-metric {
+    gap: var(--s-1);
+  }
+}
+
+.usage-summary-grid .usage-metric + .usage-metric {
+  border-top: 0;
+}
+
+.usage-summary-grid .usage-metric dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Breakdown tables scroll sideways rather than squeezing their figures below a readable width. */
+.usage-table {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.usage-table-head,
+.usage-table-row {
+  min-width: 460px;
+}
+
+.usage-table-panel .quota-envelope-values,
+.usage-explorer .quota-envelope-values {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 681px) {
+  .usage-table-panel .quota-envelope-values,
+  .usage-explorer .quota-envelope-values {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.quota-envelope-panel .quota-envelope-values {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 681px) {
+  .quota-envelope-panel .quota-envelope-values {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1100px) {
+  .quota-envelope-panel .quota-envelope-values {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.usage-table-panel .budget-meter-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  margin-top: var(--s-1);
+}
+
+.usage-table-panel .budget-meter-row .bar-track {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  height: 8px;
+}
+
+.usage-table-panel .budget-meter-row small {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The fill is always neutral. The meter receives only committed spend and the cap, not the warning ratio, so there is
+   no markup signal for a warning state; the red accent from pages.css is not used here. */
+.usage-table-panel .budget-meter-row .bar-track i {
+  background: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .usage-table-panel .budget-meter-row .bar-track i {
+    transition: width var(--dur) var(--ease);
+  }
+}

@@ -101,3 +101,20 @@ Limitations:
 - The desktop completion-standing fixture is not fully consistent: the handoff Goal's detail still reports the final-apply completion check as failing and external verification as "not integrated" beside a recorded attestation. These are fixture values, not product behaviour, and the capture does not show a successful completion.
 - `goalHandoff.test.tsx` has a known timing flake under full-suite load (one failure in one local full run, passing alone and on rerun).
 - Playwright is not run by CI; no physical iPhone, native Tauri or forced-colors check; fixtures only.
+
+## UI.4: Settings, device pairing, Machines, Usage
+
+Scope: `docs/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
+
+Changes: `pages-ui4.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in `phase36.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
+
+Captures: `docs/ui/evidence/ui4/after/` (18 PNGs, `SHA256SUMS` verified) from labelled fixtures.
+
+Findings and limitations:
+
+- **Owner decision, QR pairing:** `DevicePairingPage.tsx:22` returns early from the completion effect when `code` is empty, and `code` is never set in QR mode, so a phone that claims through a QR request never polls `completePairing` and appears to wait indefinitely after desktop approval. A one-line candidate fix (`if (!requestId || (!code && !qrRequestId)) return;`) worked in a scratch copy only. UI.4 forbids logic changes, so nothing was changed and the test was removed. QR claim remains an untested Tailscale row.
+- The pairing POSTs still send no body; the UI.0 spec expected a "bodyless-JSON fix" to be merged first and none was found.
+- `MachinesPage.tsx:133` static copy mentions a "pairing cookie" (copy only, no value).
+- The OpenRouter "Store" buttons sit slightly off their fields; pairing requests still show raw "Awaiting_approval" copy (a TSX copy change, out of scope); the revoked device is shown as an expired fixture.
+- The 44px control minimum applies at all widths.
+- **CI not run:** GitHub Actions is unavailable (billing) for the UI.3 and UI.4 commits; only the local gate has run. Playwright is not run by CI in any case. No physical iPhone, native Tauri or forced-colors check.

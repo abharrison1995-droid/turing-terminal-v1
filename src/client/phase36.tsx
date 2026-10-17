@@ -1707,6 +1707,47 @@ function bag(values: Record<string, number>): string {
   return entries.length ? entries.map(([key, count]) => `${key} ${count}`).join(' · ') : '—';
 }
 
+/** UI.4 provenance words. humanize() keeps underscores, so the words are spelled out here. */
+const PROVENANCE_WORDS: Record<string, string> = {
+  provider_measured: 'Provider measured',
+  locally_measured: 'Locally measured',
+  user_configured: 'User configured',
+  estimated: 'Estimated',
+  unavailable: 'Unavailable',
+};
+
+/** One provenance word with its count, or the bare word when there is no count. A null figure is never shown as 0. */
+function ProvenanceBadge({ provenance, count }: { provenance: string; count?: number }) {
+  return (
+    <span className="provenance-badge">
+      {PROVENANCE_WORDS[provenance] ?? provenance.replace(/_/g, ' ')}
+      {count === undefined ? '' : ` ${count}`}
+    </span>
+  );
+}
+
+/** A budget meter beside its text value. Rendered only when a cap is set; the cap-less row keeps its "No cap" text. */
+function BudgetMeter({
+  label,
+  committedUsd,
+  capUsd,
+}: {
+  label: string;
+  committedUsd: number;
+  capUsd: number;
+}) {
+  const value = `$${committedUsd.toFixed(2)} of $${capUsd.toFixed(2)} committed`;
+  const ratio = capUsd > 0 ? Math.min(1, Math.max(0, committedUsd / capUsd)) : 0;
+  return (
+    <span className="budget-meter-row">
+      <span className="bar-track" role="img" aria-label={`${label}: ${value}`}>
+        <i style={{ width: `${ratio * 100}%` }} />
+      </span>
+      <small>{value}</small>
+    </span>
+  );
+}
+
 export function UsageExplorer() {
   const narrow = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 680px)').matches);
   const [range, setRange] = useState<Range>(narrow ? 'today' : '7d');
@@ -1875,6 +1916,16 @@ export function UsageExplorer() {
       )}
       {analytics && totals && (
         <>
+          <div className="usage-provenance-row">
+            {Object.entries(totals.tokenProvenance)
+              .filter(([, count]) => count > 0)
+              .map(([provenance, count]) => (
+                <ProvenanceBadge key={provenance} provenance={provenance} count={count} />
+              ))}
+            {Object.values(totals.tokenProvenance).every((count) => count <= 0) && (
+              <ProvenanceBadge provenance="unavailable" />
+            )}
+          </div>
           <dl className="usage-summary-grid">
             {(
               [
@@ -2022,6 +2073,13 @@ export function UsageExplorer() {
                           ? 'No cap'
                           : `$${(budget.daily.capUsd - budget.daily.committedUsd).toFixed(4)} left of $${budget.daily.capUsd.toFixed(2)}`}
                       </strong>
+                      {budget.daily.capUsd !== null && (
+                        <BudgetMeter
+                          label="Daily budget"
+                          committedUsd={budget.daily.committedUsd}
+                          capUsd={budget.daily.capUsd}
+                        />
+                      )}
                     </span>
                     <span>
                       Turing monthly budget{' '}
@@ -2030,6 +2088,13 @@ export function UsageExplorer() {
                           ? 'No cap'
                           : `$${(budget.monthly.capUsd - budget.monthly.committedUsd).toFixed(4)} left of $${budget.monthly.capUsd.toFixed(2)}`}
                       </strong>
+                      {budget.monthly.capUsd !== null && (
+                        <BudgetMeter
+                          label="Monthly budget"
+                          committedUsd={budget.monthly.committedUsd}
+                          capUsd={budget.monthly.capUsd}
+                        />
+                      )}
                     </span>
                   </>
                 )}
