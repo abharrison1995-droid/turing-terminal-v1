@@ -29,8 +29,9 @@ Status: Owner decision d3e4 (2026-10-17) applied. This report does **not** decla
 ## 3. Hosted CI and what is blocked
 
 - Push to `feature/grand-project-goal-engine` fast-forwarded `1054b25..0701f9f`.
-- Hosted run `39026030332` (`gate`) **failed without starting**. GitHub reports that recent account payments failed or the spending limit must be raised. This is an account billing block, not a test result.
-- Not done: no billing controls were changed, no workaround was attempted. **Owner action:** resolve the GitHub billing or spending limit, then re-run CI for `0701f9f` and confirm the exact-SHA result.
+- Hosted run `39026030332` (`gate`) for `0701f9f` **failed without starting**: GitHub reported failed payments or a spending limit. This was an account billing block, not a test result. Re-runs of `39037113089` for `d2dcd52` failed the same way.
+- **Resolved 2026-10-17:** the repository was changed from private to public, which gives standard hosted runners unlimited free minutes. Re-running `39037113089` on `d2dcd52` started and finished with **`gate` success** (exact SHA). This covers `0701f9f` and the documentation in `d2dcd52`.
+- Owner decision: the repository is now public, so its code, commit history and issues are visible to anyone. Check that nothing sensitive is in the history. The scan before the change found only test fixtures with placeholder keys.
 - Separate pre-existing finding: local `npm audit` (including dev dependencies) reports two critical advisories for `shell-quote` through `concurrently`, a dev-only tool. CI runs `npm audit --omit=dev`, which passes. A lockfile change to fix it is a dependency decision and was not made here.
 
 ## 4. Live Tailscale verification (disposable second paired browser)
