@@ -7,7 +7,7 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['turing.svg', 'push-handler.js'],
+      includeAssets: ['turing.svg', 'apple-touch-icon.png', 'push-handler.js'],
       manifest: {
         name: 'Turing Terminal',
         short_name: 'Turing',

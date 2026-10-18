@@ -2,7 +2,7 @@
 """Regenerates the brand icons from the first idle frame of the approved skull.
 
 Reads src/client/ui/mascot/frames.generated.ts (24x24 cells over '.obsa') and the --tt-mascot-* hex tokens, then writes:
-  public/turing.svg (PWA icon and favicon), src-tauri/icons/{32x32,128x128,128x128@2x}.png and src-tauri/icons/icon.ico.
+  public/turing.svg (PWA icon and favicon), public/apple-touch-icon.png (180 px, full-bleed square for iOS), src-tauri/icons/{32x32,128x128,128x128@2x}.png and src-tauri/icons/icon.ico.
 Run from the repo root: python3 scripts/generate-brand-icons.py   (needs Pillow)
 """
 import re
@@ -67,4 +67,17 @@ icons = root / 'src-tauri/icons'
 for name, size in (('32x32.png', 32), ('128x128.png', 128), ('128x128@2x.png', 256)):
     render(size).save(icons / name)
 render(256).save(icons / 'icon.ico', sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+# iOS applies its own rounded mask and fills transparency with black, so the touch icon is an opaque full-bleed square.
+touch = Image.new('RGB', (180, 180), TILE)
+cell = 6
+offset = (180 - 24 * cell) // 2
+draw = ImageDraw.Draw(touch)
+for y, row in enumerate(rows):
+    for x, char in enumerate(row):
+        if char != '.':
+            draw.rectangle(
+                (offset + x * cell, offset + y * cell, offset + (x + 1) * cell - 1, offset + (y + 1) * cell - 1),
+                fill=palette[char],
+            )
+touch.save(root / 'public/apple-touch-icon.png')
 print('wrote public/turing.svg and src-tauri/icons')

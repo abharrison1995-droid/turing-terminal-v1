@@ -27,6 +27,16 @@ describe('brand icons', () => {
     expect(read('vite.config.ts')).toContain("src: '/turing.svg'");
   });
 
+  it('declares a 180 px opaque apple-touch-icon and precaches it', () => {
+    expect(read('index.html')).toMatch(
+      /<link\s+rel="apple-touch-icon"\s+href="\/apple-touch-icon\.png"\s*\/?>/,
+    );
+    expect(read('vite.config.ts')).toContain("'apple-touch-icon.png'");
+    const png = readFileSync(join(root, 'public/apple-touch-icon.png'));
+    expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([180, 180]);
+    expect(png[25]).toBe(2); // colour type 2 = RGB, so no alpha channel for iOS to fill with black
+  });
+
   it('the Tauri raster icons are regenerated at their declared sizes', () => {
     const png = (name: string) => readFileSync(join(root, 'src-tauri/icons', name));
     const size = (name: string) => [png(name).readUInt32BE(16), png(name).readUInt32BE(20)];
