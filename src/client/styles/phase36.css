@@ -134,7 +134,8 @@
 .chart-tooltip {
   position: absolute;
   top: 0;
-  z-index: 2;
+  left: clamp(80px, var(--tip-x, 50%), calc(100% - 80px));
+  z-index: var(--z-raised);
   display: grid;
   gap: 2px;
   min-width: 160px;

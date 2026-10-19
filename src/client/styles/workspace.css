@@ -127,7 +127,7 @@
 .run-diff-file h3 {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: var(--z-raised);
   padding: var(--s-2) var(--s-3);
   color: var(--ink-2);
   font-family: var(--font-mono);

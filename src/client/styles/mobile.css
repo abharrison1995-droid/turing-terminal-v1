@@ -91,7 +91,7 @@
 
   /* Navigation moves into a drawer */
   .sidebar {
-    z-index: 32;
+    z-index: var(--z-drawer);
     width: min(320px, calc(100vw - 48px));
     padding-top: calc(var(--s-3) + env(safe-area-inset-top));
     padding-bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
@@ -109,7 +109,7 @@
   }
   .mobile-scrim {
     position: fixed;
-    z-index: 30;
+    z-index: var(--z-scrim);
     inset: 0;
     display: block;
     background: var(--scrim);
@@ -202,6 +202,7 @@
     min-height: 60px;
   }
   .settings-disclosure > summary,
+  .settings-card > summary,
   .home-providers > summary,
   .rule-snapshot > summary,
   .execution-operation > summary {
@@ -328,9 +329,11 @@
   }
   .home-column > .composer {
     position: sticky;
-    z-index: 5;
+    z-index: var(--z-sticky);
     bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
     order: 10;
+    max-height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - var(--s-4));
+    overflow-y: auto;
     margin-bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
     padding: var(--s-3) var(--s-3) var(--s-2) var(--s-4);
     box-shadow: var(--elev-float);
@@ -490,8 +493,8 @@
   /* Workflow Studio on a phone: sections are accordions */
   .studio-nav {
     position: sticky;
-    z-index: 4;
-    top: var(--topbar-h);
+    z-index: var(--z-sticky);
+    top: calc(var(--topbar-h) + env(safe-area-inset-top));
     margin: 0 calc(var(--page-pad) * -1);
     padding: var(--s-2) var(--page-pad);
     background: var(--canvas);
@@ -538,7 +541,7 @@
   }
   .workflow-bottom-actions {
     position: sticky;
-    z-index: 4;
+    z-index: var(--z-sticky);
     bottom: 0;
     margin: 0 calc(var(--page-pad) * -1);
     padding: var(--s-3) var(--page-pad) calc(var(--s-3) + env(safe-area-inset-bottom));

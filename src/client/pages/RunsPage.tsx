@@ -35,6 +35,7 @@ import { MascotStatus } from '../ui/mascot';
 import { mascotForRunStatus } from '../ui/mascot/mascotState';
 import { formatDate, formatDuration, formatMilliseconds } from './shared/format';
 import { RuleListDetails } from './shared/RuleListDetails';
+import { useDismissibleDetails } from './shared/useDismissibleDetails';
 import { iconForStage } from './shared/stageMeta';
 import { RunWorkspaceTabs, type RunTab } from './runs/RunWorkspaceTabs';
 import { RunDiff, type RunDiffState } from './runs/RunDiff';
@@ -202,6 +203,8 @@ export function RunDetail({
   const [diffState, setDiffState] = useState<RunDiffState>({ status: 'idle' });
   const diffRequest = useRef(0);
   const [intervention, setIntervention] = useState('');
+  const runMenuRef = useRef<HTMLDetailsElement>(null);
+  useDismissibleDetails(runMenuRef);
   const isActive = activeStatuses.has(run.status);
   useEffect(() => {
     let live = true;
@@ -389,7 +392,7 @@ export function RunDetail({
           </div>
         </div>
         <span className={`status-pill status-${run.status}`}>{humanStatus(run.status)}</span>
-        <details className="run-menu">
+        <details className="run-menu" ref={runMenuRef}>
           <summary aria-label="Run actions">
             <MoreHorizontal size={18} />
           </summary>

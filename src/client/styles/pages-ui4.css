@@ -316,3 +316,30 @@
     transition: width var(--dur) var(--ease);
   }
 }
+
+/* 3. Settings cards (UI.9a): each card is a native disclosure. Its summary holds the existing title row and one line of
+   real data, and its body keeps every child mounted while the card is closed. The chevron comes from primitives.css,
+   and the compact 44px summary height from mobile.css. Tokens only. */
+.settings-card {
+  min-width: 0;
+}
+
+.settings-card > summary > .panel-title-row {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.settings-card-summary {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-regular);
+  overflow-wrap: anywhere;
+}
+
+.settings-card-body {
+  display: grid;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}

@@ -10,6 +10,17 @@
    ───────────────────────────────────────────────────────────── */
 :root {
   color-scheme: dark;
+  /* Overlay stacking (UI.9b). Every z-index in styles/*.css uses one of these. Menus sit under the topbar, and the
+     toast sits under the scrim and drawer. */
+  --z-raised: 1;
+  --z-sticky: 10;
+  --z-menu: 20;
+  --z-topbar: 30;
+  --z-toast: 40;
+  --z-scrim: 50;
+  --z-drawer: 60;
+  --z-palette: 70;
+  --z-dialog: 80;
 
   /* Type. Linux Libertine is the body face; UnifrakturCook is the
      display face and is used only on the five fixed titles that
