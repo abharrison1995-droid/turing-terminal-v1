@@ -91,7 +91,7 @@
 
   /* Navigation moves into a drawer */
   .sidebar {
-    z-index: 32;
+    z-index: var(--z-drawer);
     width: min(320px, calc(100vw - 48px));
     padding-top: calc(var(--s-3) + env(safe-area-inset-top));
     padding-bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
@@ -109,7 +109,7 @@
   }
   .mobile-scrim {
     position: fixed;
-    z-index: 30;
+    z-index: var(--z-scrim);
     inset: 0;
     display: block;
     background: var(--scrim);
@@ -132,8 +132,17 @@
   .topbar-title-quiet {
     visibility: visible;
   }
-  .connection-state {
-    font-size: 0;
+  /* Phone: the chip is a dot, and the state word stays available to assistive technology only. */
+  .connection-state-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .connection-state .presence-dot {
     width: 8px;
@@ -193,6 +202,7 @@
     min-height: 60px;
   }
   .settings-disclosure > summary,
+  .settings-card > summary,
   .home-providers > summary,
   .rule-snapshot > summary,
   .execution-operation > summary {
@@ -268,9 +278,7 @@
     min-height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - var(--s-4));
     gap: var(--s-3);
   }
-  .home-column > * {
-    order: 5;
-  }
+  /* Every child has its own compact order, so none falls back to a shared value. The composer is last and docked. */
   .home-column > .approval-inbox {
     order: 0;
   }
@@ -287,31 +295,45 @@
     order: 3;
     padding: var(--s-6) 0 var(--s-2);
   }
+  /* With activity the intro stays in the DOM for the h1, and is visually hidden rather than display:none. */
   .home-column.home-has-activity > .home-intro {
-    display: none;
-  }
-  .home-column > .launch-blockers {
-    order: 4;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
   .home-column > .run-preview-panel {
     order: 4;
   }
-  .home-column > .home-status {
+  .home-column > .launch-blockers {
+    order: 5;
+  }
+  .home-column > .safeguards {
     order: 6;
+  }
+  .home-column > .home-status {
+    order: 7;
     justify-content: flex-start;
   }
   .home-column > .home-providers {
-    order: 7;
+    order: 8;
   }
   .home-column > .composer-hint {
-    order: 8;
+    order: 9;
     margin: 0 var(--s-2);
   }
   .home-column > .composer {
     position: sticky;
-    z-index: 5;
+    z-index: var(--z-sticky);
     bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
-    order: 9;
+    order: 10;
+    max-height: calc(100dvh - var(--topbar-h) - env(safe-area-inset-top) - var(--s-4));
+    overflow-y: auto;
     margin-bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
     padding: var(--s-3) var(--s-3) var(--s-2) var(--s-4);
     box-shadow: var(--elev-float);
@@ -364,6 +386,7 @@
   }
   .launch-blockers .text-button {
     margin-left: 28px;
+    min-height: 44px;
   }
   .preview-summary {
     grid-template-columns: 1fr;
@@ -470,8 +493,8 @@
   /* Workflow Studio on a phone: sections are accordions */
   .studio-nav {
     position: sticky;
-    z-index: 4;
-    top: var(--topbar-h);
+    z-index: var(--z-sticky);
+    top: calc(var(--topbar-h) + env(safe-area-inset-top));
     margin: 0 calc(var(--page-pad) * -1);
     padding: var(--s-2) var(--page-pad);
     background: var(--canvas);
@@ -518,7 +541,7 @@
   }
   .workflow-bottom-actions {
     position: sticky;
-    z-index: 4;
+    z-index: var(--z-sticky);
     bottom: 0;
     margin: 0 calc(var(--page-pad) * -1);
     padding: var(--s-3) var(--page-pad) calc(var(--s-3) + env(safe-area-inset-bottom));

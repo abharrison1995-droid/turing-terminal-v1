@@ -69,7 +69,7 @@ None of these has been performed on real devices. CI smoke tests do not count.
 - Provider allowance and reset are not queried for CLI backends.
 - Cline CLI has no documented model catalog; explicit model/provider values are required.
 - OpenRouter and the Decision Layer are optional and off by default.
-- Light theme only.
+- Dark theme only. This supersedes the earlier light-theme-only note: UI.1b (docs/ui/UI1B_SCOPE.md) replaces the light palette with a dark theme and no theme switch.
 
 ## V1 scope still to implement
 
@@ -381,3 +381,13 @@ Corrections to earlier text (dated 2026-10-13; the earlier text is not rewritten
 - **Known blockers for 1.0.0:** this list does not yet name HR-Q4 or live Tailscale verification. The table above is the current record for both.
 - **D.4F status, "Phone enforcement" item (line 348):** S1b is no longer "owner pending". O1 is approved for V1, conditionally. Live Tailscale remains pending and is blocking.
 - **D.4F status, known limits:** G14 is partly addressed (see table). CS-1 is addressed for the Goal list and desktop Overview. The phone cockpit header still shows bare "Completed" for contested Goals. U1 is addressed: `GoalExternalIntegration` no longer prints a raw reason code. P5e is partly addressed.
+
+## 2026-10-15: UI overhaul, limited baseline acceptance
+
+The owner accepted `67af34f2f633aa2c8570a74990c6097f6aafbf4d` as the baseline for UI development **only**. HR-Q4 remains a mandatory V1 blocker (fixed in code, not owner-accepted). Live Tailscale verification, physical Windows/iPhone and live-provider gates, and every outstanding owner decision remain open and are not waived. V1 is NOT release-ready. The UI overhaul is an owner-approved exception to the post-Goal-Engine feature freeze and does not start the Model Opportunity Layer. The overhaul makes the product dark-only, which supersedes the "Light theme only" limitation when UI.1b lands; that line is not changed before then. Evidence, scope and wording: [docs/ui/UI_BASELINE_ACCEPTANCE.md](ui/UI_BASELINE_ACCEPTANCE.md).
+
+## 2026-10-15: partial physical iPhone and Tailscale acceptance
+
+Recorded in [LIVE_TAILSCALE_ACCEPTANCE.md](LIVE_TAILSCALE_ACCEPTANCE.md): remote approval, intervention with pause/resume, persistence across a PWA close and relaunch, 403 refusal of the five desktop-only Goal routes for a paired phone through Tailscale Serve, and device revocation (401 afterwards) all passed on a physical iPhone. Not tested or not recorded: manual-code pairing, push notifications, the locked-phone interval, PWA home-screen installation, QR claim, and any Android or Windows check. Live Tailscale verification is therefore substantially evidenced but **not waived and not closed**: the 403 response code was inferred from source, and the remaining rows above are open. The owner has not accepted any V1 blocker here. HR-Q4 acceptance, physical Windows, live providers and the other owner decisions remain open. V1 is NOT release-ready.
+
+Owner decision, 2026-10-15: the remaining physical iPhone and Tailscale rows (manual-code pairing, push notifications, the locked-phone interval, home-screen installation, QR claim) and all physical Windows verification are deferred to the end of the verification and testing programme. They stay open V1 gates. Deferral is scheduling only, not acceptance.

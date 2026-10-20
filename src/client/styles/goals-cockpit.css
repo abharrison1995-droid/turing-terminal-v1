@@ -1,0 +1,179 @@
+/* UI.3 Goal cockpit: layout and skin for the Grand Projects list and cockpit (docs/ui/UI3_SCOPE.md section 2).
+   Loaded directly after goals.css, so it may override that file's rules. It does not repeat or change the rules that
+   goals.css pins for a11yTokens (S2 to S6) and QF09: the 680px completion touch rules, the one-colour completion states,
+   and the .goal-confirm heading rule. Tokens only: no colour literal, no display face, no !important, no generated
+   content, no progress construct. Motion sits only under prefers-reduced-motion: no-preference. */
+
+/* 1. List: one card per Goal. An attention row keeps an amber edge, and its "Needs you" text is always shown. The desktop
+   spacing skips .goal-row-mobile, so the compact row that goals.css sets at 640px and below keeps its own spacing. */
+.goal-list {
+  gap: var(--s-3);
+}
+
+.goal-row:not(.goal-row-mobile) {
+  gap: var(--s-3) var(--s-4);
+  padding: var(--s-3) var(--s-4);
+}
+
+.goal-row {
+  border-radius: var(--r-md);
+}
+
+.goal-row-attention {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.goal-row-main,
+.goal-row-next {
+  gap: var(--s-1);
+}
+
+.goal-row-next {
+  color: var(--ink-2);
+}
+
+/* 2. Cockpit header: a card. From 1024px up its title takes the first column and the status pill the second. Two
+   columns apply to this header only because the cockpit DOM has no side rail: the body stays one column in DOM order at
+   every width. */
+.goal-cockpit-head {
+  gap: var(--s-3) var(--s-4);
+  padding: var(--s-4);
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+
+.goal-cockpit-head h2 {
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1024px) {
+  .goal-cockpit-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+}
+
+/* 3. Tabs: one row of Goal sections that lines up with the workspace tabs and scrolls sideways on narrow screens. The
+   tab ring is drawn inside the tab, because the scroll box would clip an outline that spills past its edge. */
+.goal-tabs {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.goal-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: var(--h-control);
+  padding: 0 var(--s-3);
+  font-size: var(--fs-control);
+  line-height: var(--lh-control);
+  white-space: nowrap;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+}
+
+/* The active tab keeps its own colour and underline on hover, so only the other tabs take the hover fill. */
+.goal-tab:not(.goal-tab-active):hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.goal-tabs .goal-tab:focus-visible {
+  outline-offset: -2px;
+}
+
+/* 4. Lists (milestones, cycles, reviews, findings, evidence): spacing on the scale, hairlines between items only. Status
+   is text plus a chip. No progress bar, connector or check glyph is drawn. */
+.goal-milestones > li + li,
+.goal-cycles > li + li,
+.goal-reviews > li + li,
+.goal-findings > li + li,
+.goal-evidence > li + li {
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--hairline);
+}
+
+/* 5. Completion standing: framing from border and background tokens only. The text colour of each state stays on the
+   pinned goals.css rules, so these rules declare no colour of their own. */
+.goal-completion-standing,
+.goal-mobile-standing {
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+
+.goal-completion-standing:has(.goal-completion-contested),
+.goal-mobile-standing:has(.goal-completion-contested) {
+  border-color: var(--amber-line);
+}
+
+.goal-completion-standing:has(.goal-completion-invalid),
+.goal-mobile-standing:has(.goal-completion-invalid) {
+  border-color: var(--red-line);
+}
+
+/* 6. Handoff, integration, diff and path blocks. Code panes scroll, and long dynamic strings wrap rather than widen the
+   page. A wrapped line keeps its +, - or context marker, so the diff stays readable. */
+.goal-handoff-code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.goal-handoff-diff {
+  overflow: auto;
+}
+
+.goal-handoff-paths,
+.goal-handoff-paths li {
+  overflow-wrap: anywhere;
+}
+
+.goal-handoff-identity dd,
+.goal-fact dd,
+.goal-mobile-integration code {
+  overflow-wrap: anywhere;
+}
+
+/* 7. Controls and confirm panels: wrap, and space on the scale. */
+.goal-control-buttons {
+  gap: var(--s-2);
+}
+
+.goal-confirm {
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+}
+
+/* 8. Compact: single column in DOM order (the one-column rules above apply below 1024px), and every interactive control
+   on the Goals page is at least 44px tall. The 680px block is a safe superset of the 640px compact gating in goals.css
+   and useCompactViewport (GOAL_COMPACT_QUERY), so every width that renders the compact list also gets these targets. */
+@media (max-width: 680px) {
+  .goals-page button,
+  .goals-page select,
+  .goals-page summary,
+  .goals-page input:not([type='checkbox']):not([type='radio']),
+  .goal-row,
+  .goal-tab,
+  .goal-version {
+    min-height: var(--h-touch);
+  }
+}
+
+/* 9. Motion: colour, background and border changes only, and only for users who have not asked for less. */
+@media (prefers-reduced-motion: no-preference) {
+  .goal-row,
+  .goal-tab,
+  .goal-version {
+    transition:
+      color var(--dur-fast) var(--ease),
+      background-color var(--dur-fast) var(--ease),
+      border-color var(--dur-fast) var(--ease);
+  }
+}

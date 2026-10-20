@@ -1,0 +1,62 @@
+[
+  {
+    "file": "UnifrakturCook-Bold.ttf",
+    "source_url": "https://raw.githubusercontent.com/google/fonts/fa02673f3b360ca4b9a8ba4f6d5a4aeb59eecd32/ofl/unifrakturcook/UnifrakturCook-Bold.ttf",
+    "upstream_commit": "fa02673f3b360ca4b9a8ba4f6d5a4aeb59eecd32",
+    "sha256": "ea002fa9c65f1a612af100e00d87ab65f16381f450020ec3d021f3dbf79a6dcd"
+  },
+  {
+    "file": "OFL.txt",
+    "source_url": "https://raw.githubusercontent.com/google/fonts/fa02673f3b360ca4b9a8ba4f6d5a4aeb59eecd32/ofl/unifrakturcook/OFL.txt",
+    "upstream_commit": "fa02673f3b360ca4b9a8ba4f6d5a4aeb59eecd32",
+    "sha256": "99d2f30e282d6174af8ff68597f58bb53c0dcb2b104a4c1b8d19da49021d00d3"
+  },
+  {
+    "file": "LinLibertine_Rah.ttf",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "LinLibertine_Rah.ttf",
+    "sha256": "06e2b67aa9a899e71f78b91da21cd0bba0fb1c5791fd3b58752ea25a4b9b79d7"
+  },
+  {
+    "file": "LinLibertine_RBah.ttf",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "LinLibertine_RBah.ttf",
+    "sha256": "b044e2233db4f1a792e8422827679f3bc3b573c164597e9d3b03a63f123b4cdf"
+  },
+  {
+    "file": "OFL-1.1.txt",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "OFL-1.1.txt",
+    "sha256": "3fc6b39399fa6ca1311bb233a6be549bc0ab212f93dd791658f247fe1ac92f33"
+  },
+  {
+    "file": "GPL.txt",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "GPL.txt",
+    "sha256": "de694db5ca6a8995ab115aa9d4bb0c4bd6f617921088ca786c9e746e02777c03"
+  },
+  {
+    "file": "LICENCE.txt",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "LICENCE.txt",
+    "sha256": "73e4f0243fc4fd7a1bafaf13439e708c7194ac154942f52c86f30339c5395470"
+  },
+  {
+    "file": "README",
+    "source_url": "https://downloads.sourceforge.net/project/linuxlibertine/linuxlibertine/5.3.0/LinLibertineTTF_5.3.0_2012_07_02.tgz",
+    "archive_sha256": "24a593a949808d976850131a953c0c0d7a72299531dfbb348191964cc038d75d",
+    "release": "5.3.0",
+    "archive_member": "README",
+    "sha256": "4ab3e892db52874dd9aa002c4a766165102f72de9ca0b866f9ecf3c6818f4eca"
+  }
+]

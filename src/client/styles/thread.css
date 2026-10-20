@@ -20,8 +20,7 @@
   margin-right: auto;
   margin-left: auto;
 }
-.approval-inbox + .runs-layout,
-.approval-inbox + .home-intro {
+.approval-inbox + .runs-layout {
   margin-top: var(--s-4);
 }
 .runs-list-panel {
@@ -181,10 +180,6 @@
   flex-basis: 100%;
   color: var(--amber);
 }
-.run-detail-meta + .run-runtime-summary {
-  margin-top: calc(var(--s-3) * -1);
-}
-
 /* State strip: same anatomy for running, approval, completed, failed */
 .thread-state {
   display: flex;
@@ -203,14 +198,25 @@
   align-items: flex-start;
   gap: var(--s-3);
 }
+/* Fixed 24 px mark slot. The state icon, or the thinking mark while running, sits in it, so the row height is the same
+   in both cases. */
+.thread-state-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
 .thread-state-copy svg.lucide {
   width: 20px;
   height: 20px;
-  margin-top: 1px;
   color: var(--icon);
 }
 .thread-state-copy strong {
-  display: block;
+  display: flex;
+  align-items: center;
+  min-height: 24px;
   font-size: var(--fs-control);
   line-height: var(--lh-control);
 }
@@ -312,8 +318,7 @@
   justify-content: space-between;
   margin-bottom: var(--s-2);
 }
-.timeline-heading h3,
-.diff-viewer-head h3 {
+.timeline-heading h3 {
   font-size: var(--fs-section);
   line-height: var(--lh-section);
 }
@@ -455,7 +460,6 @@
 }
 .stage-output pre,
 .raw-log pre,
-.diff-viewer pre,
 .execution-operation pre,
 .stage-model-history pre {
   max-height: 320px;
@@ -583,28 +587,10 @@
   color: var(--ink-3);
 }
 
-/* Diff */
-.diff-viewer {
-  display: grid;
-  gap: var(--s-2);
-}
-.diff-viewer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.diff-viewer pre {
-  max-height: 480px;
-  padding: var(--s-3);
-  background: var(--surface);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-lg);
-}
-
 /* Follow-up: docked like a composer */
 .intervention-box {
   position: sticky;
-  z-index: 6;
+  z-index: var(--z-sticky);
   bottom: var(--s-3);
   display: flex;
   align-items: flex-end;
@@ -620,7 +606,7 @@
 }
 .intervention-box:focus-within {
   border-color: var(--accent-fill);
-  outline: 3px solid rgb(181 83 47 / 22%);
+  outline: 3px solid var(--focus-halo);
 }
 .intervention-box .form-field {
   flex: 1;

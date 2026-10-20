@@ -22,11 +22,12 @@
     "test": "vitest run",
     "lint": "eslint src",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "e2e:screenshots": "playwright test -c e2e/playwright.config.ts",
+    "typecheck:e2e": "tsc -p e2e/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@fastify/static": "^10.1.5",
-    "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "better-sqlite3": "^13.0.3",
     "fastify": "^5.12.5",
@@ -39,6 +40,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.63.0",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/cli": "^2.12.1",
     "@testing-library/react": "^16.3.3",

@@ -31,3 +31,8 @@ coverage/
 *.log
 .DS_Store
 Thumbs.db
+
+# Playwright screenshot harness output (D-8); evidence is committed deliberately under docs/ui/evidence
+e2e/.artifacts/
+test-results/
+playwright-report/

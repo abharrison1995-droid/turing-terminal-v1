@@ -319,7 +319,7 @@ input[type='radio'] {
   left: 2px;
   width: 14px;
   height: 14px;
-  background: var(--white);
+  background: var(--on-accent);
   border-radius: 50%;
   content: '';
   transition: transform var(--dur) var(--ease);
@@ -545,6 +545,7 @@ input[type='radio'] {
   border-top: 1px solid var(--hairline);
 }
 .settings-disclosure > summary,
+.settings-card > summary,
 .home-providers > summary,
 .rule-snapshot > summary,
 .execution-operation > summary {
@@ -561,12 +562,14 @@ input[type='radio'] {
   cursor: pointer;
 }
 .settings-disclosure > summary::-webkit-details-marker,
+.settings-card > summary::-webkit-details-marker,
 .home-providers > summary::-webkit-details-marker,
 .rule-snapshot > summary::-webkit-details-marker,
 .execution-operation > summary::-webkit-details-marker {
   display: none;
 }
 .settings-disclosure > summary::after,
+.settings-card > summary::after,
 .home-providers > summary::after,
 .rule-snapshot > summary::after,
 .execution-operation > summary::after {
@@ -582,6 +585,7 @@ input[type='radio'] {
   transition: transform var(--dur) var(--ease);
 }
 .settings-disclosure[open] > summary::after,
+.settings-card[open] > summary::after,
 .home-providers[open] > summary::after,
 .rule-snapshot[open] > summary::after,
 .execution-operation[open] > summary::after {
@@ -697,7 +701,7 @@ input[type='radio'] {
 }
 .toast {
   position: fixed;
-  z-index: 40;
+  z-index: var(--z-toast);
   top: calc(var(--topbar-h) + var(--s-3));
   right: var(--s-6);
   display: flex;
@@ -914,7 +918,7 @@ input[type='radio'] {
 }
 .run-menu-list {
   position: absolute;
-  z-index: 8;
+  z-index: var(--z-menu);
   top: calc(100% + var(--s-1));
   right: 0;
   display: grid;

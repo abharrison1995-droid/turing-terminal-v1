@@ -15,13 +15,18 @@ html {
 }
 body {
   min-height: 100vh;
-  background: var(--canvas);
+  background: var(--canvas-gradient);
   font-feature-settings:
     'ss01' off,
     'tnum' on;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+}
+@supports (height: 100dvh) {
+  body {
+    min-height: 100dvh;
+  }
 }
 button,
 input,
