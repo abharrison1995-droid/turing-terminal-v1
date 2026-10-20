@@ -1257,7 +1257,13 @@ describe('desktop external integration confirmation', () => {
     recoveryAvailable = true;
     await user.click(screen.getByRole('button', { name: 'Reconcile pending confirmation' }));
     expect(await screen.findByText('User confirmed — source history observed')).toBeInTheDocument();
-    expect(sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`)).toBeNull();
+    // The label renders from the attestation read; the lock is released by the effect that validates it, one render
+    // later. Wait for that release rather than racing it.
+    await waitFor(() =>
+      expect(
+        sessionStorage.getItem(`turing.goalExternalIntegration.v1:goal-1:${record.handoffId}`),
+      ).toBeNull(),
+    );
     await user.click(screen.getByRole('button', { name: 'Verify external integration' }));
     expect(await screen.findByText(actionB.actionDigest)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Confirm external integration' }));
