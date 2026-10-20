@@ -50,13 +50,14 @@ npm run typecheck
 npm test
 npm run build
 npm audit --omit=dev
+npm run docs:links
 ```
 
 Do not weaken tests to get green output.
 
 ## Documentation
 
-[docs/README.md](docs/README.md) is the index. It marks each document as current reference, a proposal awaiting an owner decision, or history. Do not read a history document, or the stage-by-stage status lines inside Goal design documents, as current product state.
+[docs/README.md](docs/README.md) is the index. It marks each document as current reference, a proposal awaiting an owner decision, or history: current reference is in `docs/`, the Goal Engine overview and contracts in `docs/goals/`, proposals in `docs/proposals/` and frozen records in `docs/history/`. Do not read a history document, or the stage-by-stage status lines inside Goal design documents, as current product state.
 
 ## Working rules
 

@@ -7,6 +7,8 @@ flowchart LR
   Desktop[Desktop browser or installed PWA] -->|localhost API| Master[Local Node.js master]
   Phone[Mobile PWA] -->|Tailscale Serve + paired device cookie| Master
   Master --> Store[(SQLite)]
+  Master --> Goals[Goal Engine]
+  Goals -->|bounded runs| Engine
   Master --> Engine[Durable workflow engine]
   Engine --> Git[Git and project worktrees]
   Engine --> Adapter[Provider adapters]
@@ -37,13 +39,19 @@ An AI stage keeps execution backend, connection profile, provider/billing lane, 
 
 The deterministic workflow engine remains authoritative, including when the optional AI Orchestrator stage is used. Subscription Only and Lock Providers are enabled by default. Provider-side billing remains outside Turing's control where the provider does not expose a supported status mechanism; for OpenCode Go, the UI explicitly reports that account-side PAYG fallback cannot be verified.
 
-Before model execution, the engine prepares bounded context and structured handoff artifacts. Each AI stage has its own strategy, file/token/size limits, inclusion rules, and over-limit behavior. The execution broker applies the same context constraints to later tool reads and outputs. Preview token counts are estimates, not provider-reported exact input usage. See [Phase 3.6 configuration](phase3.6-provider-model-context.md) for defaults and precedence.
+Before model execution, the engine prepares bounded context and structured handoff artifacts. Each AI stage has its own strategy, file/token/size limits, inclusion rules, and over-limit behavior. The execution broker applies the same context constraints to later tool reads and outputs. Preview token counts are estimates, not provider-reported exact input usage. See [Model configuration](MODEL_CONFIGURATION.md) and [Context management](CONTEXT_MANAGEMENT.md) for defaults and precedence.
 
 ## Run lifecycle
 
 `QUEUED → PREPARING → RUNNING ↔ WAITING_FOR_APPROVAL | WAITING_FOR_USER → COMPLETED | FAILED | CANCELLED`
 
 Each stage has an independent state and an event trail. Workflow JSON is copied into the run at creation so later edits cannot rewrite history. Every loop and parallel group has a configured limit.
+
+## Goal Engine
+
+The Goal Engine (shown as Grand Projects) sits above the run engine. A Goal has a versioned, user-approved definition, and the supervisor advances it one persisted step at a time. Its model work runs as ordinary bounded runs; it never rewrites `RunEngine`. Work happens on the Goal's own ref, `refs/heads/turing/goal/<goal-id>`, which is never checked out, and Turing never writes the user's base branch: a finished Goal is delivered as a manual handoff for the user to integrate. Completion, attestation and correction decisions are desktop-only.
+
+Production constructs a disabled Goal executor, so starting a Goal fails preflight and only authoring runs reach a model today. See [Goal Engine](goals/GOAL_ENGINE.md).
 
 ## Desktop and PWA boundary
 

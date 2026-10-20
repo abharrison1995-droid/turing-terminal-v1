@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * T8 (UI.1b, docs/ui/UI1B_SCOPE.md section 3 and 5). The shipped fonts are the unchanged upstream files, pinned by SHA-256
+ * T8 (UI.1b, docs/history/ui/UI1B_SCOPE.md section 3 and 5). The shipped fonts are the unchanged upstream files, pinned by SHA-256
  * to the supplement's font-provenance.json (verified 2026-10-15). No subsetting, no WOFF, no Italic. Each file is
  * served from the app itself (no CDN), within the Workbox per-file limit, and the Tauri CSP is left as it is.
  */

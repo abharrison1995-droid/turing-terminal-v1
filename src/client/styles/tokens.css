@@ -1,7 +1,7 @@
 /* ─────────────────────────────────────────────────────────────
    Design tokens. Every colour, size, radius, shadow and duration
    used by the app is defined here; components reference tokens only.
-   Dark theme only (UI.1b, docs/ui/UI1B_SCOPE.md section 2). There is
+   Dark theme only (UI.1b, docs/history/ui/UI1B_SCOPE.md section 2). There is
    no light palette and no theme switch: colour-scheme is dark.
    Surfaces step: canvas → nav → raised surface → secondary surface.
    Warm crimson is the product accent (primary action, selection
