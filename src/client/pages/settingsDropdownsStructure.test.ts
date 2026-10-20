@@ -56,11 +56,14 @@ function cardsIn(file: string, source: string): Card[] {
 }
 
 const settingsCards = () => cardsIn('SettingsPage.tsx', pageSource('SettingsPage.tsx'));
-const allCards = () => [...settingsCards(), ...cardsIn('phase36.tsx', phase36Source)];
+const providerCards = () => cardsIn('settings/ProviderSetup.tsx', pageSource('settings/ProviderSetup.tsx'));
+const allCards = () => [...settingsCards(), ...providerCards(), ...cardsIn('phase36.tsx', phase36Source)];
 
+// The 'Provider integrations' card moved to settings/ProviderSetup.tsx and became 'Providers & connections' (provider and
+// workflow redesign). It is scanned separately below; it is the one card whose default is open, because connecting a
+// service is the first thing a new user needs.
 const SETTINGS_HEADINGS = [
   'Machine identity',
-  'Provider integrations',
   'Permission modes',
   'Notifications',
   'Desktop application',
@@ -72,7 +75,7 @@ const SETTINGS_HEADINGS = [
 /** The scope's default table, keyed by the h2 text each card keeps. */
 const DEFAULTS: Record<string, 'true' | 'false'> = {
   'Machine identity': 'true',
-  'Provider integrations': 'false',
+  'Providers &amp; connections': 'true',
   'Permission modes': 'false',
   Notifications: 'false',
   'Desktop application': 'false',
@@ -97,14 +100,17 @@ describe('Settings structure before and after the card conversion (UI9 UI.9a)', 
   it('[RED] the ten cards are SettingsCard elements, each with an id, and the ids are unique across both files', () => {
     const cards = allCards();
 
-    expect(settingsCards()).toHaveLength(8);
+    expect(settingsCards()).toHaveLength(7);
+    expect(providerCards()).toHaveLength(1);
     expect(cardsIn('phase36.tsx', phase36Source)).toHaveLength(2);
     expect(cards.every((card) => card.id && card.id.length > 0)).toBe(true);
     expect(new Set(cards.map((card) => card.id)).size).toBe(10);
+    expect(cards).toHaveLength(10);
   });
 
   it('[RED] each card holds exactly one h2 literal, and those h2s keep their original order', () => {
     expect(settingsCards().map((card) => card.name)).toEqual(SETTINGS_HEADINGS);
+    expect(providerCards().map((card) => card.name)).toEqual(['Providers &amp; connections']);
     expect(cardsIn('phase36.tsx', phase36Source).map((card) => card.name)).toEqual([
       'OpenRouter (optional, metered)',
       'Turing metered budgets',

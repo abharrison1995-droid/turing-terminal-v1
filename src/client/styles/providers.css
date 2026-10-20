@@ -1,0 +1,276 @@
+/* ─────────────────────────────────────────────────────────────
+   Providers & connections (Settings) and the shared readiness
+   and command-block pieces. Every state carries an icon and a
+   word as well as a colour. Tokens only.
+   ───────────────────────────────────────────────────────────── */
+.setup-boundary {
+  padding: var(--s-3) var(--s-4);
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  font-size: var(--fs-meta);
+}
+.setup-block {
+  display: grid;
+  gap: var(--s-3);
+  padding-top: var(--s-4);
+}
+.setup-block > h3 {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+}
+
+/* Saved connections */
+.connection-list {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connection-row {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.connection-row-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.connection-row-main small {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+.connection-row-actions,
+.connection-row-edit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--s-2);
+}
+.connection-row-edit {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.connection-row-edit > .stage-actions-row {
+  grid-column: 1 / -1;
+}
+
+/* Service chooser */
+.service-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.service-choices > legend {
+  grid-column: 1 / -1;
+  margin-bottom: var(--s-1);
+  padding: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-meta);
+}
+.service-choice {
+  display: grid;
+  min-height: var(--h-touch);
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.service-choice:hover {
+  background: var(--surface-3);
+}
+.service-choice-selected {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+}
+.service-choice small {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+
+/* Guided steps */
+.setup-steps {
+  display: grid;
+  gap: var(--s-4);
+  margin: 0;
+  padding: 0;
+  counter-reset: setup-step;
+  list-style: none;
+}
+.setup-steps > li {
+  display: grid;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-4) var(--s-4) var(--s-12);
+  position: relative;
+  background: var(--surface-2);
+  border-radius: var(--r-lg);
+  counter-increment: setup-step;
+}
+.setup-steps > li::before {
+  position: absolute;
+  top: var(--s-4);
+  left: var(--s-4);
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  color: var(--ink-2);
+  background: var(--surface-3);
+  border-radius: 50%;
+  font-size: var(--fs-meta);
+  font-variant-numeric: tabular-nums;
+  content: counter(setup-step);
+}
+.setup-steps h4 {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+}
+.setup-instruction-list {
+  display: grid;
+  gap: var(--s-1);
+  margin: 0;
+  padding-left: var(--s-5);
+  color: var(--ink-2);
+}
+.setup-docs {
+  font-size: var(--fs-meta);
+}
+.setup-docs a {
+  color: var(--accent-ink);
+}
+.command-block {
+  display: grid;
+  gap: var(--s-1);
+  padding: var(--s-2) var(--s-3);
+  background: var(--canvas);
+  border: 1px solid var(--hairline);
+  border-radius: var(--r-md);
+}
+.command-block-label {
+  color: var(--ink-3);
+  font-size: var(--fs-micro);
+}
+.command-block-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.command-block-line code {
+  min-width: 0;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Readiness: four separate checks */
+.readiness-lines {
+  display: grid;
+  gap: var(--s-2);
+  margin: 0;
+}
+.readiness-line {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  gap: var(--s-1) var(--s-3);
+  padding: var(--s-2) var(--s-3);
+  background: var(--surface);
+  border-left: 3px solid var(--line);
+  border-radius: var(--r-md);
+}
+.readiness-line dt {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.readiness-line dd {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  margin: 0;
+}
+.readiness-line dd small {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.readiness-value {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+.readiness-word {
+  font-size: var(--fs-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.readiness-line.readiness-ok {
+  border-left-color: var(--green);
+}
+.readiness-line.readiness-ok .readiness-value svg,
+.readiness-line.readiness-ok .readiness-word {
+  color: var(--green);
+}
+.readiness-line.readiness-attention {
+  border-left-color: var(--amber);
+}
+.readiness-line.readiness-attention .readiness-value svg,
+.readiness-line.readiness-attention .readiness-word {
+  color: var(--amber);
+}
+.readiness-line.readiness-missing {
+  border-left-color: var(--red);
+}
+.readiness-line.readiness-missing .readiness-value svg,
+.readiness-line.readiness-missing .readiness-word {
+  color: var(--red);
+}
+.readiness-line.readiness-unknown {
+  border-left-color: var(--info);
+}
+.readiness-line.readiness-unknown .readiness-value svg,
+.readiness-line.readiness-unknown .readiness-word {
+  color: var(--info);
+}
+.prerequisite-met .readiness-word {
+  color: var(--green);
+}
+.prerequisite-missing .readiness-word {
+  color: var(--red);
+}
+.prerequisite-attention .readiness-word {
+  color: var(--amber);
+}
+.prerequisite-unknown .readiness-word {
+  color: var(--info);
+}
+
+.custom-route {
+  display: grid;
+}
+.custom-route > .form-grid-two,
+.custom-route > .quiet-note,
+.custom-route > button {
+  margin-top: var(--s-3);
+}
+
+/* The providers card is the main thing on its page, so it spans the Settings grid. */
+.settings-grid > #providers-connections-section {
+  grid-column: 1 / -1;
+}

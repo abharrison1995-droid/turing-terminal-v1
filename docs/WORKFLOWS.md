@@ -2,6 +2,12 @@
 
 A saved workflow is an ordered list of stages with bounded loops, parallel review, and conditional branches. At run creation Turing copies the workflow and resolved model metadata into a snapshot, so later edits or provider catalog changes do not rewrite history. Preview resolves each stage's connection, backend, provider/billing lane, exact model and variant, context policy and estimate, permission label, branch strategy, and warnings before the user starts a run.
 
+## Editing in the Workflow Studio
+
+The editor leads with the workflow name and purpose, a compact safety and billing summary, and the ordered stage list. Stage rows show name and type, connection, model, enabled state and any issue; one stage editor is open at a time. Alt+Arrow Up/Down (or the move buttons) reorders stages. **Add stage** offers the existing stage types in groups, including **Decision gate**. Safety, context, retry, generation and instruction settings are in named secondary panels. Duplicate, import and export are under **More**. There is one primary **Save** with unsaved, saved and error states, and switching workflows or leaving the page with unsaved edits asks first. Drafts survive a visit to Settings.
+
+Each stage's connection is chosen from saved connections created in [Settings → Providers & connections](PROVIDERS.md#providers--connections-settings). The editor shows whether a value is inherited from the workflow default or overridden on the stage. Changing a connection lists affected stages and incompatible settings and never replaces a provider or model on its own.
+
 ## Stage behavior
 
 | Stage                      | Behavior                                                                                                                                                                                                                                                                                                        |

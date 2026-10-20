@@ -28,6 +28,8 @@ import { RunsPage } from './pages/RunsPage';
 import { UsagePage } from './pages/UsagePage';
 import { MachinesPage } from './pages/MachinesPage';
 import { SettingsPage } from './pages/SettingsPage';
+import type { SettingsIntent } from './pages/shared/settingsIntent';
+import { hasUnsavedWorkflowDrafts } from './pages/workflows/draftStore';
 import { CommandPalette } from './ui/shell/CommandPalette';
 import { ConnectionBanner } from './ui/shell/ConnectionBanner';
 import { NavGuardDialog } from './ui/shell/NavGuardDialog';
@@ -158,7 +160,15 @@ function App() {
   };
   // Unsaved Goal definition work (a boolean reported by the Goals page; the text never leaves it).
   const [goalsUnsaved, setGoalsUnsaved] = useState(false);
-  const [queuedNav, setQueuedNav] = useState<{ next: Page; then?: () => void } | null>(null);
+  const [queuedNav, setQueuedNav] = useState<{
+    next: Page;
+    then?: () => void;
+    source: 'goals' | 'workflows';
+  } | null>(null);
+  // A request from another page to open part of Settings. It carries no workflow data; drafts stay in their own store.
+  const [settingsRequest, setSettingsRequest] = useState<{ intent: SettingsIntent; signal: number } | null>(
+    null,
+  );
   const navGuard = useRef<HTMLDivElement>(null);
   const navGuardTrigger = useRef<HTMLElement | null>(null);
   const navGuardCancelled = useRef(false);
@@ -221,22 +231,36 @@ function App() {
    * navigation is actually accepted, so cancelling leaves the app exactly where it was.
    */
   const navigate = (next: Page, then?: () => void) => {
-    if (page === 'goals' && next !== 'goals' && goalsUnsaved) {
-      setQueuedNav({ next, ...(then ? { then } : {}) });
+    const source =
+      page === 'goals' && next !== 'goals' && goalsUnsaved
+        ? 'goals'
+        : page === 'workflows' && next !== 'workflows' && hasUnsavedWorkflowDrafts()
+          ? 'workflows'
+          : null;
+    if (source) {
+      setQueuedNav({ next, source, ...(then ? { then } : {}) });
       return;
     }
     then?.();
     changePage(next);
   };
+  /** Workflow drafts survive leaving, so a deliberate trip to Settings to finish a setup step needs no prompt. */
+  const openSettings = (intent: SettingsIntent) => {
+    setSettingsRequest((current) => ({ intent, signal: (current?.signal ?? 0) + 1 }));
+    changePage('settings');
+  };
+  useEffect(() => {
+    if (page !== 'settings') setSettingsRequest(null);
+  }, [page]);
   const cancelNavigation = () => {
     navGuardCancelled.current = true;
     setQueuedNav(null);
   };
   const discardAndLeave = () => {
     if (!queuedNav) return;
-    const { next, then } = queuedNav;
+    const { next, then, source } = queuedNav;
     setQueuedNav(null);
-    setGoalsUnsaved(false);
+    if (source === 'goals') setGoalsUnsaved(false);
     focusNextPageHeading.current = true;
     then?.();
     changePage(next);
@@ -328,7 +352,20 @@ function App() {
     <>
       <div className="app-shell" aria-hidden={paletteOpen || undefined}>
         {queuedNav && (
-          <NavGuardDialog dialogRef={navGuard} onKeepEditing={cancelNavigation} onDiscard={discardAndLeave} />
+          <NavGuardDialog
+            dialogRef={navGuard}
+            onKeepEditing={cancelNavigation}
+            onDiscard={discardAndLeave}
+            {...(queuedNav.source === 'workflows'
+              ? {
+                  title: 'Leave Workflow Studio with unsaved changes?',
+                  description:
+                    'Your edits stay as a draft while this window is open, but they are not saved to the Desktop Master. Closing or reloading the app discards them.',
+                  discardLabel: 'Leave and keep draft',
+                  destructive: false,
+                }
+              : {})}
+          />
         )}
         <Sidebar
           open={mobileMenuOpen}
@@ -409,6 +446,7 @@ function App() {
                   providers={snapshot.providers}
                   onSaved={() => void refresh(true)}
                   onNotice={setNotice}
+                  onOpenSettings={openSettings}
                 />
               )}
               {page === 'projects' && snapshot && (
@@ -483,7 +521,14 @@ function App() {
                 />
               )}
               {page === 'settings' && snapshot && (
-                <SettingsPage snapshot={snapshot} onNotice={setNotice} onChanged={() => void refresh(true)} />
+                <SettingsPage
+                  snapshot={snapshot}
+                  onNotice={setNotice}
+                  onChanged={() => void refresh(true)}
+                  intent={settingsRequest?.intent}
+                  intentSignal={settingsRequest?.signal}
+                  onReturnToWorkflows={() => changePage('workflows')}
+                />
               )}
             </>
           )}

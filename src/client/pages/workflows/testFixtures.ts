@@ -1,0 +1,110 @@
+import type {
+  ConnectionProfile,
+  ModelOption,
+  ProviderCapabilities,
+  ProviderStatus,
+  WorkflowDefinition,
+  WorkflowStage,
+} from '../../../shared/types';
+
+/** Builders shared by the workflow editor tests. They create plain data only: no credentials, no network. */
+export const capabilities = (modelDiscovery: boolean): ProviderCapabilities => ({
+  authentication: true,
+  subscriptionAuth: true,
+  modelDiscovery,
+  execution: true,
+  streaming: true,
+  cancellation: true,
+  usageTelemetry: false,
+  remainingAllowance: false,
+  resetTelemetry: false,
+  structuredOutput: false,
+  sessionResume: false,
+  toolMediation: true,
+});
+
+export const makeProvider = (
+  id: string,
+  models: ModelOption[] = [],
+  overrides: Partial<ProviderStatus> = {},
+): ProviderStatus => ({
+  id,
+  name: id,
+  cli: id,
+  detected: true,
+  version: '1.0.0',
+  authentication: 'unknown',
+  subscriptionAuthenticated: null,
+  authMechanism: 'official CLI',
+  note: '',
+  checkedAt: '2026-10-20T10:00:00.000Z',
+  capabilities: capabilities(models.length > 0),
+  models,
+  catalogSource: models.length ? 'live' : 'none',
+  catalogRefreshedAt: null,
+  ...overrides,
+});
+
+export const makeConnection = (
+  overrides: Partial<ConnectionProfile> & { credentials?: { inference: boolean; management: boolean } } = {},
+): ConnectionProfile & { credentials?: { inference: boolean; management: boolean } } => ({
+  id: 'conn-go',
+  name: 'OpenCode Go',
+  backendId: 'opencode',
+  providerId: 'opencode-go',
+  billingLane: 'opencode-go-subscription',
+  credentialStoreRef: null,
+  metadata: {},
+  createdAt: '2026-10-20T09:00:00.000Z',
+  updatedAt: '2026-10-20T09:00:00.000Z',
+  ...overrides,
+});
+
+export const makeStage = (overrides: Partial<WorkflowStage> = {}): WorkflowStage => ({
+  id: 'stage-1',
+  label: 'Implement',
+  kind: 'implementer',
+  role: 'implementer',
+  enabled: true,
+  ...overrides,
+});
+
+export const makeWorkflow = (overrides: Partial<WorkflowDefinition> = {}): WorkflowDefinition => ({
+  id: 'fixture',
+  name: 'Fixture delivery',
+  description: 'A fixture workflow.',
+  template: 'fixture',
+  executionProfile: 'balanced',
+  permissionMode: 'supervised',
+  promptRefinementDefault: false,
+  maxRemediationRounds: 1,
+  maxParallelAgents: 2,
+  maxDurationMinutes: 120,
+  retryPolicy: { maxRetries: 1, initialDelayMs: 1000, maxDelayMs: 10000 },
+  isolatedWorktree: true,
+  subscriptionOnly: true,
+  billingMode: 'subscriptions-only',
+  meteredBudget: { perRunUsd: null, unknownCostPolicy: 'block' },
+  externalDecisionDataPolicy: 'ask-first',
+  lockProviders: true,
+  contextPolicy: {
+    strategy: 'focused',
+    maxFiles: 40,
+    maxEstimatedTokens: 60000,
+    maxFileBytes: 200000,
+    includeGlobs: [],
+    excludeGlobs: [],
+    includeCurrentDiff: false,
+    includeTestOutput: true,
+    includeBuildOutput: true,
+    includePreviousArtifact: true,
+    includePreviousTranscript: false,
+    onLimitExceeded: 'compact',
+  },
+  stages: [makeStage()],
+  version: 3,
+  isDefault: false,
+  createdAt: '2026-10-20T09:00:00.000Z',
+  updatedAt: '2026-10-20T09:30:00.000Z',
+  ...overrides,
+});

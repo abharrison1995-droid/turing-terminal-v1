@@ -9,7 +9,9 @@
 //   --z-palette 70 and --z-dialog 80, as plain integers.
 // - No styles/*.css file except tokens.css contains a raw integer z-index. Each one uses var(--z-*).
 // - The `.toast` rule in primitives.css uses var(--z-toast).
-// - A rule in mobile.css whose selector is `.studio-nav` sets top to a calc() that includes env(safe-area-inset-top).
+// - A rule in mobile.css whose selector is `.workflow-save-bar` pads its bottom with a calc() that includes
+//   env(safe-area-inset-bottom). (The sticky `.studio-nav` section tabs this pin used to cover were removed by the workflow
+//   editor redesign; the sticky element that replaces them is the save bar.)
 // - A rule in phase36.css whose selector is `.chart-tooltip` sets left to a clamp(). The inline left in phase36.tsx
 //   (chart-tooltip) must move into a custom property for this to take effect, because an inline style beats a stylesheet.
 // - A rule in mobile.css whose selector ends in `.composer` (for example `.home-column > .composer`) sets a max-height
@@ -96,12 +98,14 @@ describe('the z-index scale (UI9 UI.9b, R1)', () => {
 });
 
 describe('mobile and overlay rules (UI9 UI.9b, R4 to R6)', () => {
-  it('[RED] the studio nav in mobile.css places its sticky top below the safe area: calc() with env(safe-area-inset-top)', () => {
-    const nav = rulesIn(read('mobile.css')).filter((rule) => rule.selectors.includes('.studio-nav'));
+  it('[RED] the workflow save bar in mobile.css pads its bottom with calc() including env(safe-area-inset-bottom)', () => {
+    const bar = rulesIn(read('mobile.css')).filter((rule) => rule.selectors.includes('.workflow-save-bar'));
 
-    expect(nav.length).toBeGreaterThan(0);
+    expect(bar.length).toBeGreaterThan(0);
     expect(
-      nav.some((rule) => /top\s*:\s*calc\([^;]*env\(\s*safe-area-inset-top\s*\)[^;]*\)\s*;/.test(rule.body)),
+      bar.some((rule) =>
+        /padding\s*:[^;]*calc\([^;]*env\(\s*safe-area-inset-bottom\s*\)[^;]*\)\s*;/.test(rule.body),
+      ),
     ).toBe(true);
   });
 

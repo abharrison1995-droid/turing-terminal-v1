@@ -4,6 +4,18 @@ The Decision Layer is **optional and absent by default**. No shipped workflow co
 
 A **Decision Gate** is a workflow node that sends bounded, structured run state to a Decision Engine with one constrained question, then routes according to an explicit Turing policy. **Engines provide judgement; Turing decides what is permitted.** A gate cannot bypass permissions, provider lock, billing mode, budgets, approvals, workflow bounds, or loop limits.
 
+## Adding a Jev decision in the Workflow Studio
+
+Choose **Add stage → Decision gate → JEV via OpenRouter**. The editor has three parts:
+
+1. **Question**: Yes/no, Choose an option, or Score.
+2. **Evidence**: structured categories (task specification, artifacts, diff summary, test and build results, review findings, final gate result). These are sent to OpenRouter and Jev, which is external; the editor says so beside the list.
+3. **Outcome**: what happens on PASS, FAIL and UNCERTAIN. UNCERTAIN always has its own route. A plain-language routing summary restates the thresholds, and probability, confidence and score are labelled as three different measures.
+
+A **prerequisites** panel lists everything the gate needs together: an OpenRouter connection, an exact compatible model, a per-run decision spending cap, a billing mode that permits `openrouter-metered`, and permission to send external decision data. Each unmet item has a contextual fix action that preserves the unsaved draft. Turing does not enable spending, authorize external data, or add a gate when an OpenRouter connection is created. Saved exact model versions are kept as typed; there is no "latest" alias.
+
+**Check configuration** validates locally and sends nothing. **External test** is a separate section that needs sample text, a spending cap of at most 10 USD and an explicit confirmation checkbox before **Run external test** is enabled; it may spend money up to that cap.
+
 ## Engines
 
 The workflow engine depends only on the `DecisionEngine` interface (`src/server/decisionEngines.ts`), which is batch-shaped (`evaluate(requests[])`, shared `batchId`).

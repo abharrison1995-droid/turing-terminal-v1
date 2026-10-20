@@ -3,20 +3,12 @@
   :root {
     --page-pad: var(--s-6);
   }
-  .workflow-studio-layout {
-    grid-template-columns: 200px minmax(0, 1fr);
-    gap: var(--s-6);
-  }
-  .stage-node-config,
   .stage-advanced-grid,
   .field-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .stage-model-field {
-    grid-column: span 2;
-  }
-  .reasoning-field {
-    grid-column: span 1;
+  .stage-row-toggle {
+    grid-template-columns: auto minmax(100px, 1fr) minmax(0, 1fr) auto;
   }
 }
 
@@ -31,45 +23,12 @@
   .usage-two-column {
     grid-template-columns: minmax(0, 1fr);
   }
-  .workflow-studio-layout {
-    grid-template-columns: 1fr;
-    gap: var(--s-4);
-  }
-  .studio-rail {
-    position: static;
-    max-height: none;
-  }
-  .studio-rail-group:not(.studio-rail-sections) {
-    display: none;
-  }
   .page-heading {
     flex-direction: column;
     gap: var(--s-3);
   }
   .page-heading .page-actions {
     justify-content: flex-start;
-  }
-  .studio-nav {
-    display: flex;
-    gap: var(--s-2);
-    overflow-x: auto;
-    padding-bottom: var(--s-1);
-  }
-  .studio-nav a {
-    flex: 0 0 auto;
-    background: var(--surface);
-    border-radius: var(--r-pill);
-  }
-  .studio-nav a span {
-    display: none;
-  }
-  .studio-template-select {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--s-2);
-  }
-  .studio-template-select .form-field {
-    flex: 1;
   }
   .run-inspector-empty {
     min-height: 130px;
@@ -197,8 +156,7 @@
   }
   .run-list-row,
   .full-run-row,
-  .project-row,
-  .workflow-select-row {
+  .project-row {
     min-height: 60px;
   }
   .settings-disclosure > summary,
@@ -490,69 +448,101 @@
     white-space: normal;
   }
 
-  /* Workflow Studio on a phone: sections are accordions */
-  .studio-nav {
-    position: sticky;
-    z-index: var(--z-sticky);
-    top: calc(var(--topbar-h) + env(safe-area-inset-top));
-    margin: 0 calc(var(--page-pad) * -1);
-    padding: var(--s-2) var(--page-pad);
-    background: var(--canvas);
+  /* Workflow Studio on a phone: one column, compact stage rows, a save bar above the home indicator */
+  .workflow-page {
+    padding-bottom: calc(var(--s-12) + env(safe-area-inset-bottom));
   }
-  .studio-section-head {
-    min-height: 64px;
-    padding: var(--s-3) var(--s-4);
-  }
-  .studio-section-body {
-    padding: var(--s-1) var(--s-4) var(--s-4);
-  }
-  .workflow-stage-node {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
-  .stage-node-rail {
-    display: none;
-  }
-  .stage-node-head {
-    flex-wrap: wrap;
-    padding-right: var(--s-2);
-  }
-  .stage-node-head .stage-kind-badge,
-  .stage-reorder {
-    display: none;
-  }
-  .workflow-stage-open .stage-reorder {
-    display: flex;
-    flex: 1 1 100%;
-    justify-content: flex-end;
-    order: 3;
-  }
-  .stage-node-config,
-  .stage-advanced-grid {
+  .workflow-title-fields,
+  .stage-basics,
+  .assignment-settings,
+  .assignment-preset-grid,
+  .question-types,
+  .service-choices,
+  .connection-row-edit,
+  .context-inclusion-flags {
     grid-template-columns: minmax(0, 1fr);
   }
-  .stage-model-field,
-  .reasoning-field {
-    grid-column: 1 / -1;
+  .stage-advanced-grid,
+  .field-row {
+    grid-template-columns: minmax(0, 1fr);
   }
   .stage-editor-heading {
     align-items: flex-start;
     flex-direction: column;
   }
-  .workflow-bottom-actions {
-    position: sticky;
-    z-index: var(--z-sticky);
+  .stage-row-head {
+    flex-wrap: wrap;
+    padding: var(--s-1) var(--s-2);
+  }
+  .stage-grip {
+    display: none;
+  }
+  .stage-row-toggle {
+    flex: 1 1 calc(100% - 40px);
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .stage-row-assignment {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .stage-row-toggle > .source-chip {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .stage-row-issue {
+    grid-column: 2 / -1;
+  }
+  .stage-enabled {
+    margin-left: var(--s-10);
+  }
+  .stage-reorder {
+    margin-left: auto;
+  }
+  .stage-menu-list {
+    right: auto;
+    left: 0;
+  }
+  .add-stage-menu .stage-menu-list {
+    position: fixed;
+    right: var(--s-4);
+    bottom: calc(var(--s-4) + env(safe-area-inset-bottom));
+    left: var(--s-4);
+    top: auto;
+    width: auto;
+    max-width: none;
+    max-height: 70dvh;
+  }
+  .workflow-save-bar {
     bottom: 0;
     margin: 0 calc(var(--page-pad) * -1);
     padding: var(--s-3) var(--page-pad) calc(var(--s-3) + env(safe-area-inset-bottom));
-    background: var(--canvas);
-    border-top: 1px solid var(--line);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 0;
   }
-  .workflow-bottom-actions .primary-button {
+  .workflow-save-bar .save-actions {
+    flex: 1 1 100%;
+  }
+  .workflow-save-bar .primary-button {
     flex: 1;
   }
-  .workflow-version {
-    display: none;
+  .workflow-setting > summary {
+    min-height: var(--h-touch);
+  }
+  .routing-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1);
+  }
+  .readiness-line {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .prerequisite-cap input {
+    width: 100%;
+  }
+  .command-block-line {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   /* Other pages */
@@ -584,17 +574,23 @@
   }
   .home-status .text-button,
   .window-switcher button,
-  .studio-nav a,
-  .stage-expand,
   .compact-toggle,
-  .stage-name-input input {
+  .stage-reorder .icon-button,
+  .stage-menu > summary,
+  .stage-menu-item,
+  .prerequisite-cap input,
+  .service-choice,
+  .question-type,
+  .link-button,
+  .command-block .quiet-button {
     min-height: var(--h-touch);
   }
-  .stage-expand {
-    width: var(--h-touch);
+  .stage-reorder .icon-button {
+    min-width: var(--h-touch);
   }
-  .stage-name-input input {
-    font-size: var(--fs-input);
+  .link-button {
+    display: inline-flex;
+    align-items: center;
   }
   .usage-table-head,
   .usage-table-row {
