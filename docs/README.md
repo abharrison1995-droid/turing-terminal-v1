@@ -36,9 +36,9 @@ These define the authority boundaries the code enforces today.
 
 ## History
 
-Kept for the evidence trail. Do not read these as current state. They will move to `docs/history/`.
+Kept for the evidence trail. Do not read these as current state. Those not yet in `docs/history/` will move there.
 
 - Baselines and old releases: [PHASE2_BASELINE.md](PHASE2_BASELINE.md), [PHASE3_BASELINE.md](PHASE3_BASELINE.md), [RELEASE_NOTES_1.0.0-rc1.md](RELEASE_NOTES_1.0.0-rc1.md).
 - Goal Engine design and stage records: [GRAND_PROJECT_GOAL_ENGINE_DESIGN.md](GRAND_PROJECT_GOAL_ENGINE_DESIGN.md), [GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md](GOAL_AUTONOMOUS_IMPLEMENTATION_PROGRESS.md), [GOAL_E2E_ACCEPTANCE_MATRIX.md](GOAL_E2E_ACCEPTANCE_MATRIX.md), [GOAL_FINAL_APPLY_REF_ONLY_DECISION.md](GOAL_FINAL_APPLY_REF_ONLY_DECISION.md), [GOAL_EXTERNAL_INTEGRATION_ATTESTATION_DESIGN.md](GOAL_EXTERNAL_INTEGRATION_ATTESTATION_DESIGN.md), [GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md](GOAL_EXTERNAL_COMPLETION_CONTRACT_DESIGN.md), [GOAL_CROSS_ATTESTATION_RECOVERY_DESIGN.md](GOAL_CROSS_ATTESTATION_RECOVERY_DESIGN.md), [GOAL_D32_CONSUMER_AUDIT.md](GOAL_D32_CONSUMER_AUDIT.md), [GOAL_ENGINE_CLOSURE_2026-10-17.md](GOAL_ENGINE_CLOSURE_2026-10-17.md).
 - UI overhaul packets (completed): [ui/UI0_SPEC.md](ui/UI0_SPEC.md), [ui/UI_BASELINE_ACCEPTANCE.md](ui/UI_BASELINE_ACCEPTANCE.md), [ui/UI1B_SCOPE.md](ui/UI1B_SCOPE.md), [ui/UI1C_SCOPE.md](ui/UI1C_SCOPE.md), [ui/UI2_SCOPE.md](ui/UI2_SCOPE.md), [ui/UI3_SCOPE.md](ui/UI3_SCOPE.md), [ui/UI4_SCOPE.md](ui/UI4_SCOPE.md), [ui/UI5_SCOPE.md](ui/UI5_SCOPE.md), [ui/UI6_SCOPE.md](ui/UI6_SCOPE.md), [ui/UI9_SCOPE.md](ui/UI9_SCOPE.md).
-- The stage-by-stage sections of [V1_READINESS.md](V1_READINESS.md) below "Exit criteria".
+- [history/V1_READINESS_LOG.md](history/V1_READINESS_LOG.md): the readiness tracker's stage-by-stage record, frozen on 2026-10-20.

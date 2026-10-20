@@ -124,7 +124,7 @@ Coverage: `completionAuthorityPolicy.test.ts` has 49 test cases that reference c
 
 The full locations, the conflicting statements and the proposed wording are in [GOAL_X1_AUTH_WORDING_PROPOSAL.md](GOAL_X1_AUTH_WORDING_PROPOSAL.md). Summary:
 
-- The owner must decide whether S1b (same-user local process) is accepted. Four records say O1 was approved for V1 on 2026-10-13, conditionally. Four others (`docs/SECURITY.md:49` and `docs/V1_READINESS.md:167`, `:348`, `:353`) still say it is pending. These must be reconciled.
+- The owner must decide whether S1b (same-user local process) is accepted. Four records say O1 was approved for V1 on 2026-10-13, conditionally. Four others (`docs/SECURITY.md:49` and `docs/history/V1_READINESS_LOG.md:167`, `:348`, `:353`) still say it is pending. These must be reconciled.
 - The conditional part of O1 is that live Tailscale verification is not waived. The `desktop_required` check is done. Identity-header handling is still pending.
 
 ## 9. Remaining gates before release
