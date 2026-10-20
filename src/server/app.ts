@@ -38,6 +38,7 @@ import type { Db } from './db.js';
 import {
   getRunRow,
   localMachine,
+  runCancellationOwner,
   toApproval,
   toConnectionProfile,
   toModelPreset,
@@ -2082,6 +2083,15 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
     const id = (request.params as { id: string }).id;
     const row = db.prepare('SELECT status FROM runs WHERE id = ?').get(id) as { status: string } | undefined;
     if (!row) return reply.code(404).send({ error: 'Run was not found.' });
+    // A Goal-owned or route-probe run is started and retired by its owner, the same rule the cancel route applies.
+    // The check runs before any stage is reset or the engine is started.
+    const owner = runCancellationOwner(db, id);
+    if (owner === 'goal-owned')
+      return reply.code(409).send({
+        error: 'This run belongs to a Grand Project, which starts and retires it. It cannot be resumed here.',
+      });
+    if (owner === 'route-probe')
+      return reply.code(409).send({ error: 'This run is a route validation probe. Its reconciler owns it.' });
     if (row.status !== 'paused' && row.status !== 'failed')
       return reply.code(409).send({ error: 'Only paused or failed runs can be resumed.' });
     db.prepare(
