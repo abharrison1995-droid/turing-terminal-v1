@@ -90,9 +90,11 @@ describe('heading and control inventories (UI4 section 4, B2)', () => {
   });
 
   it('[GUARD] the Settings h2 inventory is unchanged, including the OpenRouter and budget sections', () => {
+    // The old 'Provider integrations' card is replaced by 'Providers & connections', which lives in
+    // settings/ProviderSetup.tsx (covered by settings/ProviderSetup.test.tsx and the card inventory in
+    // settingsDropdownsStructure.test.ts).
     expect(headings(pageSource('SettingsPage.tsx'), 'h2')).toEqual([
       'Machine identity',
-      'Provider integrations',
       'Permission modes',
       'Notifications',
       'Desktop application',
@@ -100,6 +102,7 @@ describe('heading and control inventories (UI4 section 4, B2)', () => {
       'Paired devices',
       'Global and project rules',
     ]);
+    expect(headings(pageSource('settings/ProviderSetup.tsx'), 'h2')).toEqual(['Providers &amp; connections']);
     expect(headings(sectionOf(meteredSource, 'export function OpenRouterSettings'), 'h2')).toEqual([
       'OpenRouter (optional, metered)',
       'Turing metered budgets',
@@ -123,7 +126,10 @@ describe('heading and control inventories (UI4 section 4, B2)', () => {
     ]);
   });
 
-  it('[GUARD] SettingsPage.tsx adds no control: 18 buttons, 9 inputs, 2 selects and 1 textarea', () => {
+  // 19 buttons: the 18 that remain after the provider controls moved to settings/ProviderSetup.tsx, plus the one
+  // "Back to Workflows" button shown only when Settings was opened from the workflow editor. The provider setup
+  // controls are exercised by settings/ProviderSetup.test.tsx.
+  it('[GUARD] SettingsPage.tsx adds no control: 19 buttons, 9 inputs, 2 selects and 1 textarea', () => {
     const source = pageSource('SettingsPage.tsx');
     const count = (pattern: RegExp) => (source.match(pattern) ?? []).length;
 
@@ -132,7 +138,7 @@ describe('heading and control inventories (UI4 section 4, B2)', () => {
       input: count(/<input\b/g),
       select: count(/<select\b/g),
       textarea: count(/<textarea\b/g),
-    }).toEqual({ button: 18, input: 9, select: 2, textarea: 1 });
+    }).toEqual({ button: 19, input: 9, select: 2, textarea: 1 });
   });
 });
 

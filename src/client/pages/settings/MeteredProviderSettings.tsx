@@ -9,7 +9,13 @@ import { api, type BudgetStatus, type ConnectionProfileWithCredentials } from '.
 
 /* ───────────────────────── Settings: OpenRouter + budgets ───────────────────────── */
 
-export function OpenRouterSettings({ onNotice }: { onNotice: (message: string) => void }) {
+export function OpenRouterSettings({
+  onNotice,
+  openSignal,
+}: {
+  onNotice: (message: string) => void;
+  openSignal?: number;
+}) {
   const [profiles, setProfiles] = useState<ConnectionProfileWithCredentials[]>([]);
   const [name, setName] = useState('OpenRouter');
   const [secrets, setSecrets] = useState<Record<string, string>>({});
@@ -73,6 +79,7 @@ export function OpenRouterSettings({ onNotice }: { onNotice: (message: string) =
     <section className="surface-panel settings-section" aria-label="OpenRouter">
       <SettingsCard
         id="openrouter"
+        openSignal={openSignal}
         summary={openRouterSummary}
         defaultOpen={true}
         attention={telemetryErrors.length > 0}

@@ -339,6 +339,7 @@ function run(spec: RunSpec): RunSummary {
     stages: runStages(spec.id, spec.stages, startedAt),
     elapsedMs: spec.elapsedMs,
     remainingMs: null,
+    cancellable: ['running', 'queued', 'waiting_for_approval'].includes(spec.status),
   };
 }
 
