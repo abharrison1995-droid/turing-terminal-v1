@@ -26,7 +26,7 @@ import {
   request,
 } from './routingKit.js';
 
-/** Stage 5A.1: persisted authority is self-authenticating and re-proven against the approved definition. */
+/** Persisted routing authority is self-authenticating and re-proven against the approved definition. */
 
 const A = 'opencode-go/a';
 const B = 'opencode-go/b';

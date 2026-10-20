@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 /*
  * UI.5 viewport meta (UI5_SCOPE section 2, item 7 and matrix M1). viewport-fit=cover lets iOS report the
- * env(safe-area-inset-*) values that mobile-ui5.css reads; without it every inset is 0. The theme colour stays on the dark
+ * env(safe-area-inset-*) values that mobile-remote.css reads; without it every inset is 0. The theme colour stays on the dark
  * canvas, and no apple-mobile-web-app tags are added, because the manifest and standalone launch do not need them.
  */
 

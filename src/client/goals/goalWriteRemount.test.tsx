@@ -7,7 +7,7 @@
  *
  * The registry is page memory only. A page reload loses it. A write whose response was lost is then handled by the
  * server-side unknown-outcome read path, and the registry never resubmits anything. The cases at the end of this file
- * hold that limit and the launch points' synchronous-throw and double-click behaviour (GH.6c).
+ * hold that limit and the launch points' synchronous-throw and double-click behaviour.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -304,7 +304,7 @@ const recordWrite = (over: Partial<InflightWrite> = {}): InflightWrite => ({
   ...over,
 });
 
-describe('launch controls fired twice synchronously in one act() (GH.6c item 1)', () => {
+describe('launch controls fired twice synchronously in one act()', () => {
   it('Record completion decision sends exactly one decision write', async () => {
     const user = userEvent.setup();
     const response = deferred<Response>();
@@ -355,7 +355,7 @@ describe('launch controls fired twice synchronously in one act() (GH.6c item 1)'
   });
 });
 
-describe('the known read-before-settle window (GH.6c item 1b)', () => {
+describe('the known read-before-settle window', () => {
   // Known window, pinned so that a change to it is deliberate. Panel B's read begins while attestation A's Complete write is
   // unresolved in this page, and that write settles before B's read completes. The mechanism is that settleInflight
   // notifies only the panels for the same Goal and attestation scope, so B is not told and does not read again. The
@@ -397,7 +397,7 @@ describe('the known read-before-settle window (GH.6c item 1b)', () => {
   });
 });
 
-describe('a synchronous throw from recordCompletionDecision (GH.6c item 2)', () => {
+describe('a synchronous throw from recordCompletionDecision', () => {
   it('settles its entry, sends nothing, and shows the unknown-outcome copy until the saved state is read', async () => {
     const user = userEvent.setup();
     const reread = deferred<unknown>();
@@ -440,7 +440,7 @@ describe('a synchronous throw from recordCompletionDecision (GH.6c item 2)', () 
   });
 });
 
-describe('the registry is page memory only (GH.6c item 3)', () => {
+describe('the registry is page memory only', () => {
   it('after a reload-equivalent clear and a remount, no write is sent without a user action', async () => {
     const user = userEvent.setup();
     const response = deferred<Response>();

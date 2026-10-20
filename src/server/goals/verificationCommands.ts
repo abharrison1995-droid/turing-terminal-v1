@@ -4,10 +4,10 @@ import { isSafeProjectCommand } from '../commandPolicy.js';
 import type { Db } from '../db.js';
 
 /**
- * Deterministic materialisation of an approved build/test/lint verifier into a workflow stage (Stage 4A helper for the
- * Stage 4B verification workflow). A model never supplies a command: it is either the approved definition command
+ * Deterministic materialisation of an approved build/test/lint verifier into a workflow stage (a helper for the
+ * verification workflow). A model never supplies a command: it is either the approved definition command
  * (re-validated here, at the execution boundary) or the registered project profile's default. Nothing is invented: an
- * absent default is a stable `verification_command_missing` result that Stage 4B can surface as missing evidence.
+ * absent default is a stable `verification_command_missing` result that verification surfaces as missing evidence.
  */
 export type VerifierMaterialization =
   | {

@@ -5,7 +5,7 @@ import { toConnectionProfile } from '../serialize.js';
 import type { ProfileObservation, RouteSnapshot } from './routeIdentity.js';
 
 /**
- * The live provider/profile observation the routing authority reads (Stage 5B). It goes through the same provider
+ * The live provider/profile observation the routing authority reads. It goes through the same provider
  * infrastructure every run uses (`allProviders`) and reduces credentials to ONE boolean per profile: whether the stored
  * inference credential this backend needs is present. The secret itself is never read into the snapshot.
  */

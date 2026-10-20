@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 // UI.6 A7 (UI6_SCOPE sections 1 and 5): styles/mascot.css. The file does not exist yet, so every test asserts that first
-// and fails with a clear message. The CSS is read as text, as in ui4Css.test.ts, so these tests check declarations,
+// and fails with a clear message. The CSS is read as text, as in pagesSettingsCss.test.ts, so these tests check declarations,
 // not layout.
 //
 // Contract assumed for the implementer:

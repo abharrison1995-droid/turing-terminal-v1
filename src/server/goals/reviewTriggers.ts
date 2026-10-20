@@ -10,7 +10,7 @@ import { resolveGoalRepository, type GoalRepositoryState } from './repository.js
 import { selectReviewRange } from './reviewCycle.js';
 
 /**
- * Deterministic review triggering (Stage 6B.1). Everything here is derived from durable facts: the approved definition,
+ * Deterministic review triggering. Everything here is derived from durable facts: the approved definition,
  * `goal_cycles`, `goal_reviews`, `goal_runtime` counters, `goal_integration_ops` and the Goal's integration head/tree.
  * There is no cursor, flag or in-memory counter: a restart with unchanged DB/Git state selects the same trigger, and
  * evaluating never consumes one. A trigger is "satisfied" only because history proves the relevant source state already

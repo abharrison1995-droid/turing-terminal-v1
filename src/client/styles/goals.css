@@ -1,4 +1,4 @@
-/* Grand Projects (Stage 7B.1): read-only Goal list and cockpit. Uses the shared tokens only. */
+/* Grand Projects: Goal list and cockpit. Uses the shared tokens only. */
 .goals-page {
   display: grid;
   gap: var(--s-4);
@@ -457,7 +457,7 @@
   line-height: var(--lh-title);
 }
 
-/* Stage 7B.2A: Goal controls, unified approvals, finding decisions. */
+/* Goal controls, unified approvals, finding decisions. */
 .goal-controls {
   display: grid;
   gap: var(--s-2);
@@ -534,7 +534,7 @@
   cursor: progress;
 }
 
-/* Stage 7C.2B.4: immutable manual-integration review surface. */
+/* Immutable manual-handoff review surface. */
 .goal-handoff,
 .goal-handoff-projection {
   display: grid;
@@ -827,7 +827,7 @@
   }
 }
 
-/* Stage 7B.2B: definition authority (create, edit, approve, reject, revise). */
+/* Definition authority (create, edit, approve, reject, revise). */
 .goal-new,
 .goal-workbench {
   display: grid;
@@ -891,7 +891,7 @@
   align-items: center;
 }
 
-/* Stage 7B.2B.1: shell-level leave confirmation for unsaved Goal definition work. */
+/* Shell-level leave confirmation for unsaved Goal definition work. */
 .nav-guard-backdrop {
   position: fixed;
   inset: 0;

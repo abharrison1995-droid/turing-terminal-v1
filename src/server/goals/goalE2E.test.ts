@@ -286,7 +286,7 @@ const runFor = (
   return row;
 };
 
-describe('Stage 7C.1 deterministic Goal prove-it', () => {
+describe('deterministic Goal prove-it', () => {
   it(
     'runs a proposal through final-apply readiness using real Goal, run, Git, evidence, and review authority',
     async () => {
@@ -1219,7 +1219,7 @@ describe('Stage 7C.1 deterministic Goal prove-it', () => {
         ...(configuration as WorkflowDefinition),
         id: ordinaryId,
         name: 'Ordinary Goal boundary regression',
-        description: 'A single bounded provider stage for the Stage 7C.1 regression.',
+        description: 'A single bounded provider stage for the prove-it regression.',
         template: 'ordinary-regression',
         permissionMode: 'yolo',
         billingMode: 'subscriptions-only',

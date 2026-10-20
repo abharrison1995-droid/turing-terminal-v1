@@ -3,7 +3,7 @@
  * machine origins use the reserved `.invalid` domain, and no value is a real key, cookie, token, device or spend figure.
  * Each object is checked with `satisfies` against the shared or client types, so a drifting shape fails the typecheck.
  *
- * `ui4Routes` is `populatedRoutes` with the Settings, Usage and pairing endpoints replaced. `populated.ts` is not
+ * `settingsRoutes` is `populatedRoutes` with the Settings, Usage and pairing endpoints replaced. `populated.ts` is not
  * changed, so the UI.1c, UI.2 and UI.3 captures keep the inputs they were taken with.
  */
 import type {
@@ -25,19 +25,19 @@ const at = (daysBeforeNow: number): string => new Date(NOW_MS - daysBeforeNow * 
 const ahead = (daysAfterNow: number): string => new Date(NOW_MS + daysAfterNow * DAY_MS).toISOString();
 
 /** The QR pairing request id a phone opens with: a fixture UUID, valid for the pairing page's parser. */
-export const UI4_QR_REQUEST = '3f2c9a10-5b7e-4d2a-9c1e-8a7b6c5d4e3f';
+export const SETTINGS_QR_REQUEST = '3f2c9a10-5b7e-4d2a-9c1e-8a7b6c5d4e3f';
 
 /** The three machine origins seeded into localStorage. They use the reserved `.invalid` domain and are never reached. */
-export const UI4_ORIGINS = {
+export const SETTINGS_ORIGINS = {
   online: 'https://desk.fixture.invalid',
   offline: 'https://laptop.fixture.invalid',
   checking: 'https://studio.fixture.invalid',
 } as const;
 
 /** Machine profiles for the Machines page. Probes are stubbed per origin in the spec: online answers, offline fails, checking never answers. */
-export const UI4_MACHINE_PROFILES = [
+export const SETTINGS_MACHINE_PROFILES = [
   {
-    origin: UI4_ORIGINS.online,
+    origin: SETTINGS_ORIGINS.online,
     machineId: 'fixture-machine-desk',
     name: 'Fixture desk master',
     hostname: 'fixture-desk-host',
@@ -46,7 +46,7 @@ export const UI4_MACHINE_PROFILES = [
     reachability: 'online',
   },
   {
-    origin: UI4_ORIGINS.offline,
+    origin: SETTINGS_ORIGINS.offline,
     machineId: null,
     name: 'Fixture laptop master',
     hostname: null,
@@ -55,7 +55,7 @@ export const UI4_MACHINE_PROFILES = [
     reachability: 'offline',
   },
   {
-    origin: UI4_ORIGINS.checking,
+    origin: SETTINGS_ORIGINS.checking,
     machineId: 'fixture-machine-studio-0000-4000-8000-00000000002a-with-a-long-identifier',
     name: 'Fixture studio master with a long display name',
     hostname: 'fixture-studio-host.tailnet-long-name.invalid',
@@ -66,7 +66,7 @@ export const UI4_MACHINE_PROFILES = [
 ] satisfies MachineProfile[];
 
 /** The dashboard error a device gets before it is paired. The spec answers `/api/dashboard` with this status. */
-export const UI4_PAIRING_REQUIRED = {
+export const SETTINGS_PAIRING_REQUIRED = {
   status: 401,
   body: { error: 'Pair this device with the desktop before using it.' },
 } satisfies { status: number; body: { error: string } };
@@ -239,7 +239,7 @@ const usageAnalytics = {
 
 // ---- Budgets (non-zero committed spend; one cap set, one not, so the meter and the "No cap" row both render) ----------
 
-export const ui4BudgetStatus = {
+export const settingsBudgetStatus = {
   timeZone: 'UTC',
   run: { committedUsd: 0, capUsd: null },
   daily: { committedUsd: 4.2, capUsd: 10 },
@@ -425,11 +425,11 @@ const pairedDevices = {
  * `/api/usage` and the pairing endpoints are weakly typed (see `usageLegacy` and `pairedDevices`), so their shapes are
  * checked only by the page that reads them, not by the typecheck.
  */
-export const ui4Routes: Record<string, unknown> = {
+export const settingsRoutes: Record<string, unknown> = {
   ...populatedRoutes,
   '/api/usage': usageLegacy,
   '/api/usage/analytics': usageAnalytics,
-  '/api/budgets': { settings: budgetSettings, status: ui4BudgetStatus, systemTimeZone: 'UTC' },
+  '/api/budgets': { settings: budgetSettings, status: settingsBudgetStatus, systemTimeZone: 'UTC' },
   '/api/connection-profiles': { profiles: [openRouterConnection] },
   '/api/pairing/requests': pairingRequests,
   '/api/pairing/devices': pairedDevices,

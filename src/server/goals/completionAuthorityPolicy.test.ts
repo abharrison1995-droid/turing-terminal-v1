@@ -284,7 +284,7 @@ describe('completion authority classifier: classes', () => {
         eligible: false,
       });
       expect(result.entries[0]?.correctionTipDigest).toMatch(/^[0-9a-f]{64}$/);
-      // Slice 2a: a corrected decision for another attestation no longer blocks a fresh B at check 4. The fixture then
+      // A corrected decision for another attestation no longer blocks a fresh B at check 4. The fixture then
       // reaches a Git refusal, because the destination was restored to its prior tip after B was observed.
       const preflight = await computeExternalCompletionPreflight(db, goalId, { attestationId: otherId });
       expect(preflight.reasons[0]?.code).toBe('destination_advanced_after_observation');
@@ -850,7 +850,7 @@ describe('completion authority classifier: policy digest', () => {
   );
 });
 
-describe('completion authority classifier: the public preflight by class (D.4R Slice 2a)', () => {
+describe('completion authority classifier: the public preflight by class', () => {
   it(
     'class 3: a fresh attestation is ready when the only decision is for another attestation and that decision is corrected',
     async () => {
@@ -1164,7 +1164,7 @@ function tamperApprovalDetail(decided: Awaited<ReturnType<typeof v2DecidedFixtur
   );
 }
 
-describe('completion authority classifier: runtime isolation from Git and child processes (GH.5c)', () => {
+describe('completion authority classifier: runtime isolation from Git and child processes', () => {
   it(
     'classes 1, 2 and 5 call no spied child_process or goalGit export, and the spies do count a direct call',
     async () => {
@@ -1198,7 +1198,7 @@ describe('completion authority classifier: runtime isolation from Git and child 
 });
 
 /**
- * Static import ratchet (GH.5c). RESIDUAL, NOT A CLOSED ITEM, for GH.6 review: the static import closure of
+ * Static import ratchet. RESIDUAL, NOT A CLOSED ITEM: the static import closure of
  * completionAuthorityPolicy.ts REACHES write-capable modules (Goal database writes, Git ref writes, goal status
  * transitions). The chains are recorded below. This suite does not prove static isolation. What holds for the classifier
  * path is the runtime spy test above, plus this ratchet, which only makes a change visible: the closure must equal the
@@ -1459,7 +1459,7 @@ const WRITE_CAPABLE = [
   'goals/stateMachine.ts',
 ];
 
-describe('completion authority classifier: static import closure ratchet (GH.5c, residual for GH.6)', () => {
+describe('completion authority classifier: static import closure ratchet (residual)', () => {
   it('the walker counts dynamic import() and import types, so the edge that reaches finalApply.ts is seen', () => {
     expect(specifiersOf(join(SERVER_ROOT, 'goalGit.ts'))).toContain('./goals/finalApply.js');
     expect(specifiersOf(CLASSIFIER_FILE)).toContain('../db.js');

@@ -856,7 +856,7 @@ describe('advanceGoalRef', () => {
     );
   });
 
-  describe('stage outcomes (Stage 1.1)', () => {
+  describe('stage outcomes', () => {
     const addStages = (h: Harness, runId: string, statuses: string[]) =>
       statuses.forEach((status, index) =>
         h.db
@@ -951,7 +951,7 @@ describe('advanceGoalRef', () => {
     );
   });
 
-  describe('bookkeeping invariants (Stage 1.1)', () => {
+  describe('bookkeeping invariants', () => {
     async function crashedAfterCas(h: Harness) {
       const cycle = h.newCycle();
       const run = h.makeRun(cycle, { 'a.txt': '1\n' });

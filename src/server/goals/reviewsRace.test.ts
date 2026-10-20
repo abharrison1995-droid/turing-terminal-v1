@@ -41,7 +41,7 @@ function amendAndApprove(fx: GoalRepoFixture): number {
   return version;
 }
 
-describe('createReview authority race (Stage 2B.2)', () => {
+describe('createReview authority race', () => {
   it(
     'inserts nothing when the definition changes between the first check and the insert',
     async () => {

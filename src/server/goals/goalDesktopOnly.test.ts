@@ -10,7 +10,7 @@ import { approveDefinition, createGoalDraft } from './definitions.js';
 import { simpleDefinition } from './repoKit.js';
 
 /**
- * GH.1 (S1a): the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the five
+ * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the five
  * user-only Goal authority routes. The only remote signal is the existing predicate in app.ts. Local callers keep today's
  * behaviour. This does NOT distinguish the desktop UI from another same-user local process (S1b, owner decision pending).
  */
@@ -123,7 +123,7 @@ function expectDesktopRefusal(response: { statusCode: number; body: string }) {
   expect(JSON.parse(response.body)).toMatchObject({ code: DESKTOP_REFUSAL });
 }
 
-describe('GH.1 desktop-only Goal authority routes', () => {
+describe('desktop-only Goal authority routes', () => {
   it('(a) local callers are not refused by the desktop guard on the five routes', async () => {
     for (const call of desktopOnlyCalls(seededGoalId)) {
       const response = await app.inject({
@@ -259,7 +259,7 @@ describe('GH.1 desktop-only Goal authority routes', () => {
  * running the router. Each handler body is the text from its registration to the next registration. The check is
  * therefore a text check, not a semantic proof; it fails closed on any unclassified non-GET route.
  */
-describe('GH.1 drift guard over goalRoutes.ts', () => {
+describe('desktop-only drift guard over goalRoutes.ts', () => {
   const source = readFileSync(new URL('./goalRoutes.ts', import.meta.url), 'utf8');
 
   // Keyed "METHOD path". Exactly these five may call requireDesktopCaller, and each must call it before any body or reply use.

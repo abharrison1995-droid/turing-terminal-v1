@@ -5,7 +5,7 @@ import { materializeVerifierStage } from './verificationCommands.js';
 import { listVerifiers, type CurrentVerifier } from './verifierDigest.js';
 
 /**
- * Deterministic Goal verification (Stage 4B). A verification workflow is a trusted, server-built override of the
+ * Deterministic Goal verification. A verification workflow is a trusted, server-built override of the
  * reserved `goal-verification-v1` workflow: it contains only build/test/lint stages that `materializeVerifierStage`
  * produced from the approved definition, each named `gv-<64-hex verifier digest>`. No stage is model-backed, so there is
  * no route plan, provider or model. The collector later trusts the stage id only after re-deriving the command.

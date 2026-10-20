@@ -69,7 +69,7 @@ export async function realRunHarness(
     scripts?: { build: string; test: string };
     /** Non-built-in workflows registered and selected for a purpose (context-authority tests). */
     custom?: Array<{ purpose: 'planning' | 'execution'; workflow: WorkflowDefinition }>;
-    /** A real route-plan provider in place of the fixed test provider (Stage 5B). */
+    /** A real route-plan provider in place of the fixed test provider. */
     planProvider?: (db: Db) => GoalRunPlanProvider;
     requireResolvedRoutes?: boolean;
     /** Git object format of the isolated repository; omitted means sha1, as `goalRepoFixture` defaults. */

@@ -6,20 +6,20 @@ import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
 import { FIXTURE_TASK } from './fixtures/populated';
-import { ui5Routes } from './fixtures/ui5';
-import { UI4_MACHINE_PROFILES, UI4_ORIGINS, UI4_PAIRING_REQUIRED } from './fixtures/ui4';
+import { mobileRoutes } from './fixtures/mobile';
+import { SETTINGS_MACHINE_PROFILES, SETTINGS_ORIGINS, SETTINGS_PAIRING_REQUIRED } from './fixtures/settings';
 
 /**
  * UI.5 evidence capture and phone geometry (UI5_SCOPE sections 5 and 6, matrix M2 to M12). Fixture-only and deterministic:
- * every API call is answered from `fixtures/ui5.ts`, which layers the UI.2, UI.3 and UI.4 fixture sets unchanged. Their
+ * every API call is answered from `fixtures/mobile.ts`, which layers the UI.2, UI.3 and UI.4 fixture sets unchanged. Their
  * values are invented and labelled as fixtures. The viewport, dark scheme, reduced motion and blocked service workers come
- * from `playwright.config.ts`; the clock and the two-identical-frames capture are the same as `ui4.spec.ts`.
+ * from `playwright.config.ts`; the clock and the two-identical-frames capture are the same as `settings-pages.spec.ts`.
  *
  * Chromium is not WebKit and it reports every env(safe-area-inset-*) as 0. The safe-area checks below read computed
  * declarations only. They are labelled "not verified on device" in the evidence and in the report, never as a device result.
  *
  * Not part of `npm test` (vitest excludes e2e/) or the CI gate. Run with:
- *   npx playwright test -c e2e/playwright.config.ts e2e/ui5.spec.ts
+ *   npx playwright test -c e2e/playwright.config.ts e2e/mobile.spec.ts
  * Images are written to docs/ui/evidence/ui5/after/ as `<capture>-<viewport>.png`.
  */
 const OUT = fileURLToPath(new URL('../docs/ui/evidence/ui5/after/', import.meta.url));
@@ -62,8 +62,8 @@ function seedMachineProfiles(seed: { key: string; value: unknown }) {
  */
 async function openApp(page: Page, viewport: ViewportName, options: { pairingRequired?: boolean } = {}) {
   await page.setViewportSize(VIEWPORTS[viewport]);
-  const api = await installFixtures(page, ui5Routes);
-  await page.route(`${UI4_ORIGINS.online}/api/health`, (route) =>
+  const api = await installFixtures(page, mobileRoutes);
+  await page.route(`${SETTINGS_ORIGINS.online}/api/health`, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -71,21 +71,24 @@ async function openApp(page: Page, viewport: ViewportName, options: { pairingReq
       body: JSON.stringify({ ok: true, service: 'turing-terminal' }),
     }),
   );
-  await page.route(`${UI4_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
+  await page.route(`${SETTINGS_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
   // The checking origin is deliberately never answered, so its row keeps the Checking state for the capture.
-  await page.route(`${UI4_ORIGINS.checking}/api/health`, () => {
+  await page.route(`${SETTINGS_ORIGINS.checking}/api/health`, () => {
     // Intentional hang: see the comment above.
   });
   if (options.pairingRequired) {
     await page.route('**/api/dashboard', (route) =>
       route.fulfill({
-        status: UI4_PAIRING_REQUIRED.status,
+        status: SETTINGS_PAIRING_REQUIRED.status,
         contentType: 'application/json',
-        body: JSON.stringify(UI4_PAIRING_REQUIRED.body),
+        body: JSON.stringify(SETTINGS_PAIRING_REQUIRED.body),
       }),
     );
   }
-  await page.addInitScript(seedMachineProfiles, { key: MACHINE_PROFILES_KEY, value: UI4_MACHINE_PROFILES });
+  await page.addInitScript(seedMachineProfiles, {
+    key: MACHINE_PROFILES_KEY,
+    value: SETTINGS_MACHINE_PROFILES,
+  });
   // Freeze the fake clock one second after FIXED_NOW, so elapsed-time labels cannot drift between frames.
   await page.clock.pauseAt(new Date(Date.parse(FIXED_NOW) + 1_000));
   return api;

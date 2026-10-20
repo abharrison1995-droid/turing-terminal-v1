@@ -35,14 +35,13 @@ import {
   inferBillingLane as inferClientBillingLane,
 } from '../../shared/billing';
 import { pruneModelSettings } from '../../shared/modelSettings';
+import { DecisionGateEditor, defaultDecisionConfig } from './shared/DecisionPanels';
 import {
   BillingSafetyFields,
-  DecisionGateEditor,
   ModelSettingsFields,
   ModelStatusLine,
   OrchestratorBranchesEditor,
-  defaultDecisionConfig,
-} from '../phase36';
+} from './workflows/StageFields';
 import { PageHeading, EmptyState } from './shared/parts';
 import { isAiStage, iconForStage, stageLabels } from './shared/stageMeta';
 import { capitalize } from './shared/runStatus';

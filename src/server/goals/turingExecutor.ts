@@ -171,7 +171,7 @@ interface Loaded {
  * does, once), never receives the RunEngine, never reads provider output except the persisted planning stage, and
  * never selects a route: a `GoalRunPlanProvider` supplies the already-concrete workflow.
  *
- * Stage 4A does not wire this into production; `src/server/index.ts` keeps `DisabledGoalExecutor` until Stage 5.
+ * Not wired into production: `src/server/index.ts` constructs `DisabledGoalExecutor`.
  */
 export class TuringGoalExecutor implements GoalExecutor {
   readonly id = 'turing';

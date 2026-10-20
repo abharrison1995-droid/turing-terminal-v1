@@ -8,12 +8,12 @@ import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
 import { FIXTURE_TASK } from './fixtures/populated';
-import { ui5Routes } from './fixtures/ui5';
-import { UI4_MACHINE_PROFILES, UI4_ORIGINS } from './fixtures/ui4';
+import { mobileRoutes } from './fixtures/mobile';
+import { SETTINGS_MACHINE_PROFILES, SETTINGS_ORIGINS } from './fixtures/settings';
 
 /**
  * UI.9 Settings dropdowns and overlay hygiene (UI9_SCOPE, UI.9a and UI.9b). Fixture-only and deterministic: every `/api/*`
- * request is answered from the UI.5 route table (`fixtures/ui5.ts`), so no master, provider or live data is involved.
+ * request is answered from the UI.5 route table (`fixtures/mobile.ts`), so no master, provider or live data is involved.
  * The clock, dark scheme, reduced motion and blocked service workers come from `playwright.config.ts`.
  *
  * Geometry is read with getBoundingClientRect and document.elementFromPoint. Two boxes overlap when their intersection
@@ -26,7 +26,7 @@ import { UI4_MACHINE_PROFILES, UI4_ORIGINS } from './fixtures/ui4';
  *   docs/ui/evidence/ui9/RESULTS.md            one row per test and viewport, with the measured numbers
  *
  * Not part of `npm test` or the CI gate. Run with:
- *   npm run e2e:screenshots -- e2e/ui9.spec.ts
+ *   npm run e2e:screenshots -- e2e/overlays.spec.ts
  */
 
 type ViewportName = keyof typeof VIEWPORTS;
@@ -118,15 +118,15 @@ function overlapArea(a: Geo, b: Geo): number {
   return width > 0 && height > 0 ? width * height : 0;
 }
 
-/** Health probes for the three machine origins, as ui5.spec.ts: online answers, offline fails, checking never answers. */
+/** Health probes for the three machine origins, as mobile.spec.ts: online answers, offline fails, checking never answers. */
 async function openApp(
   page: Page,
   viewport: ViewportName,
   options: { noPairingRequests?: boolean } = {},
 ): Promise<MockApi> {
   await page.setViewportSize(VIEWPORTS[viewport]);
-  const api = await installFixtures(page, ui5Routes);
-  await page.route(`${UI4_ORIGINS.online}/api/health`, (route) =>
+  const api = await installFixtures(page, mobileRoutes);
+  await page.route(`${SETTINGS_ORIGINS.online}/api/health`, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -134,8 +134,8 @@ async function openApp(
       body: JSON.stringify({ ok: true, service: 'turing-terminal' }),
     }),
   );
-  await page.route(`${UI4_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
-  await page.route(`${UI4_ORIGINS.checking}/api/health`, () => {
+  await page.route(`${SETTINGS_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
+  await page.route(`${SETTINGS_ORIGINS.checking}/api/health`, () => {
     // Intentional hang: the checking row keeps its pending state.
   });
   if (options.noPairingRequests) {
@@ -156,7 +156,7 @@ async function openApp(
         // Storage is blocked; the Machines page then shows no saved profiles.
       }
     },
-    { key: MACHINE_PROFILES_KEY, value: UI4_MACHINE_PROFILES },
+    { key: MACHINE_PROFILES_KEY, value: SETTINGS_MACHINE_PROFILES },
   );
   await page.clock.pauseAt(new Date(Date.parse(FIXED_NOW) + 1_000));
   return api;
@@ -172,7 +172,7 @@ async function openHome(page: Page) {
   await expect(page.locator('#task-input')).toBeVisible();
 }
 
-/** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as ui7.spec.ts). */
+/** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as qualification.spec.ts). */
 async function goTo(page: Page, label: string) {
   const nav = page.getByRole('navigation', { name: 'Workspace' });
   if (!(await nav.first().isVisible())) {
@@ -427,7 +427,7 @@ async function expectNoOverflow(page: Page, route: string) {
   );
 }
 
-/** Every /api request the page made was answered by a fixture (as ui5.spec.ts). */
+/** Every /api request the page made was answered by a fixture (as mobile.spec.ts). */
 function expectFixtureCoverage(api: MockApi, route: string) {
   expect.soft(api.unmapped, `${route}: every /api call must be answered by a fixture`).toEqual([]);
 }
@@ -981,7 +981,7 @@ for (const viewport of VIEWPORT_NAMES) {
     const lastGeo = await settledGeo(page, tooltip, 'Chart tooltip (last bar)');
     expectInViewport('Chart tooltip (last bar hovered)', route, lastGeo, VIEWPORTS[viewport]);
     note(`Chart tooltip, last bar: ${describeGeo(lastGeo)}`);
-    // The tooltip is pointer-events: none (phase36.css), so an elementFromPoint hit test is not applicable to it.
+    // The tooltip is pointer-events: none (billing-routing-usage.css), so an elementFromPoint hit test is not applicable to it.
     note('Chart tooltip: pointer-events none by design, so elementFromPoint is not used for it (exception)');
     await frame(page, `usage-tooltip-${viewport}`);
 
@@ -1154,7 +1154,7 @@ test.afterAll(() => {
   lines.push('# UI.9 results');
   lines.push('');
   lines.push(
-    'Generated by `e2e/ui9.spec.ts` from fixtures only (no master, provider or live data). Same run, same output: no timestamps.',
+    'Generated by `e2e/overlays.spec.ts` from fixtures only (no master, provider or live data). Same run, same output: no timestamps.',
   );
   lines.push('');
   lines.push(

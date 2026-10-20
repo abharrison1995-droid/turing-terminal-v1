@@ -370,9 +370,9 @@ describe('compact Goal standing: read-only section and pill tone', () => {
   });
 });
 
-// --- GH.6b residual A: the phone header label follows the saved standing --------------------------------------------
+// --- The phone header label follows the saved standing --------------------------------------------------------------
 
-describe('compact Goal header label (GH.6b)', () => {
+describe('compact Goal header label', () => {
   const header = () => document.querySelector('.goal-mobile-heading') as HTMLElement;
 
   it('H1 a contested completed Goal does not show the bare Completed text in the header and shows the contested label', async () => {

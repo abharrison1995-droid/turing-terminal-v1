@@ -6,24 +6,24 @@ import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
 import {
-  UI4_MACHINE_PROFILES,
-  UI4_ORIGINS,
-  UI4_PAIRING_REQUIRED,
-  UI4_QR_REQUEST,
-  ui4Routes,
-} from './fixtures/ui4';
+  SETTINGS_MACHINE_PROFILES,
+  SETTINGS_ORIGINS,
+  SETTINGS_PAIRING_REQUIRED,
+  SETTINGS_QR_REQUEST,
+  settingsRoutes,
+} from './fixtures/settings';
 
 /**
  * UI.4 evidence capture (UI4_SCOPE section 6). Fixture-only and deterministic: every API call is answered from
- * `fixtures/ui4.ts` (on top of `populated.ts`), whose values are invented and labelled as fixtures. The clock, the dark
- * scheme, reduced motion, the blocked service workers and the two-identical-frames capture are the same as `ui3.spec.ts`.
+ * `fixtures/settings.ts` (on top of `populated.ts`), whose values are invented and labelled as fixtures. The clock, the dark
+ * scheme, reduced motion, the blocked service workers and the two-identical-frames capture are the same as `goal-cockpit.spec.ts`.
  *
  * Two inputs are not plain fixtures. `/api/dashboard` answers 401 for the pairing-needed captures, which the fixture
  * table cannot express, so the spec overrides that one route. The machine health probes are answered by the spec too, so
  * no device is ever reached: the online origin answers, the offline origin fails, and the checking origin never answers.
  *
  * Not part of `npm test` (vitest excludes e2e/) or the CI gate. Run with:
- *   npx playwright test -c e2e/playwright.config.ts e2e/ui4.spec.ts
+ *   npx playwright test -c e2e/playwright.config.ts e2e/settings-pages.spec.ts
  * Images are written to docs/ui/evidence/ui4/after/ as `<capture>-<viewport>.png`.
  */
 const OUT = fileURLToPath(new URL('../docs/ui/evidence/ui4/after/', import.meta.url));
@@ -54,8 +54,8 @@ function seedMachineProfiles(seed: { key: string; value: unknown }) {
  */
 async function openApp(page: Page, viewport: ViewportName, options: { pairingRequired?: boolean } = {}) {
   await page.setViewportSize(VIEWPORTS[viewport]);
-  const api = await installFixtures(page, ui4Routes);
-  await page.route(`${UI4_ORIGINS.online}/api/health`, (route) =>
+  const api = await installFixtures(page, settingsRoutes);
+  await page.route(`${SETTINGS_ORIGINS.online}/api/health`, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -63,22 +63,25 @@ async function openApp(page: Page, viewport: ViewportName, options: { pairingReq
       body: JSON.stringify({ ok: true, service: 'turing-terminal' }),
     }),
   );
-  await page.route(`${UI4_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
+  await page.route(`${SETTINGS_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
   // The checking origin is deliberately never answered, so its row keeps the Checking state for the capture. The handler
   // neither fulfils, continues nor aborts the request, so it stays pending on purpose. Do not "fix" this into a reply.
-  await page.route(`${UI4_ORIGINS.checking}/api/health`, () => {
+  await page.route(`${SETTINGS_ORIGINS.checking}/api/health`, () => {
     // Intentional hang: see the comment above.
   });
   if (options.pairingRequired) {
     await page.route('**/api/dashboard', (route) =>
       route.fulfill({
-        status: UI4_PAIRING_REQUIRED.status,
+        status: SETTINGS_PAIRING_REQUIRED.status,
         contentType: 'application/json',
-        body: JSON.stringify(UI4_PAIRING_REQUIRED.body),
+        body: JSON.stringify(SETTINGS_PAIRING_REQUIRED.body),
       }),
     );
   }
-  await page.addInitScript(seedMachineProfiles, { key: MACHINE_PROFILES_KEY, value: UI4_MACHINE_PROFILES });
+  await page.addInitScript(seedMachineProfiles, {
+    key: MACHINE_PROFILES_KEY,
+    value: SETTINGS_MACHINE_PROFILES,
+  });
   // Freeze the fake clock one second after FIXED_NOW, as in ui1c, ui2 and ui3, so elapsed-time labels cannot drift.
   await page.clock.pauseAt(new Date(Date.parse(FIXED_NOW) + 1_000));
   return api;
@@ -210,7 +213,7 @@ for (const viewport of VIEWPORT_NAMES) {
 
   test(`pairing QR detected at ${viewport}`, async ({ page }) => {
     const api = await openApp(page, viewport, { pairingRequired: true });
-    await page.goto(`/?pairRequest=${UI4_QR_REQUEST}`);
+    await page.goto(`/?pairRequest=${SETTINGS_QR_REQUEST}`);
     await expect(
       page.getByText('QR pairing request detected. The desktop owner must approve this phone.'),
     ).toBeVisible();
@@ -256,7 +259,7 @@ for (const viewport of VIEWPORT_NAMES) {
     await expect(page.locator('.usage-metric', { hasText: 'Cached input' }).locator('dd')).toHaveText(
       'Unavailable',
     );
-    // Tile gap: 4px on desktop from pages-ui4.css, 2px on the phone from mobile.css.
+    // Tile gap: 4px on desktop from pages-settings.css, 2px on the phone from mobile.css.
     const tileGap = await page
       .locator('.usage-metric')
       .first()

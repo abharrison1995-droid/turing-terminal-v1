@@ -29,7 +29,7 @@ import {
   type ExternalIntegrationAttestationV1,
 } from './externalIntegration.js';
 
-// Stage 7C.2B.5D.2: append-only correction ledger for external-integration attestations.
+// Append-only correction ledger for external-integration attestations.
 // Every read and write re-verifies the whole per-attestation chain. Git is never consulted here: a correction is a
 // user decision about a historical claim, so it remains valid even when the repository has since moved.
 

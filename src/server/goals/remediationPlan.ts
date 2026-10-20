@@ -7,7 +7,7 @@ import { allowedOpenFindings, getGoalFinding, listGoalFindings, type GoalFinding
 import { getReview } from './reviews.js';
 
 /**
- * What a finding-remediation cycle was created to address (Stage 6B.2). Like the review plan it is persisted write-once
+ * What a finding-remediation cycle was created to address. Like the review plan it is persisted write-once
  * in `goal_cycles.outcome_json` - here as `remediationPlan`, atomically with the INSERT - and is re-read, recomputed and
  * re-validated whenever it is used. It carries identities only: no finding text, evidence or provider prose, which stay
  * in their canonical finding/review rows. A corrupt plan fails closed and is never repaired or recomputed in place.

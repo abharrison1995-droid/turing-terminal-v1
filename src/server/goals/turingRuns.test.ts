@@ -223,7 +223,7 @@ describe('Goal execution run on the real RunEngine', () => {
       expect(h.fx.head()).not.toBe(base);
       expect(h.fx.git('rev-parse', `refs/heads/turing/goal/${h.fx.goalId}`)).toBe(h.fx.head());
       expect(h.fx.git('show', `${h.fx.head()}:src/a.ts`)).toBe('export const a = 1;');
-      // Stage 4A records no evidence.
+      // Queueing alone records no evidence.
       expect(h.fx.db.prepare('SELECT COUNT(*) AS n FROM goal_evidence').get()).toEqual({ n: 0 });
       expect(
         h.fx.db.prepare("SELECT COUNT(*) AS n FROM goal_events WHERE type = 'run_evidence_collected'").get(),

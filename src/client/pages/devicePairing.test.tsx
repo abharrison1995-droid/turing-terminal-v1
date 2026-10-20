@@ -11,7 +11,7 @@
 // - QR state: the callout "QR pairing request detected. The desktop owner must approve this phone." replaces the code input.
 // - The pairRequest query parameter is removed from the address bar; other parameters and the hash are kept.
 //
-// [RED] ui4Pairing: the QR completion poll. In QR mode the page never sets `code`, and its completion effect returns early
+// [RED] devicePairing: the QR completion poll. In QR mode the page never sets `code`, and its completion effect returns early
 // when `code` is empty, so completePairing is never called after a QR claim. The scope's K1 wording expects a call with an
 // undefined code. UI.4 forbids logic changes, so the test was removed and the finding is recorded in docs/ui/EVIDENCE.md
 // for an owner decision; it is not fixed here.

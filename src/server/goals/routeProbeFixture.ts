@@ -9,7 +9,7 @@ import { localMachine } from '../serialize.js';
 const execFile = promisify(callbackExecFile);
 
 /**
- * The Turing-owned route-validation fixture repository (Stage 5B). It is created from `PROBE_FIXTURE_FILES` with a fixed
+ * The Turing-owned route-validation fixture repository. It is created from `PROBE_FIXTURE_FILES` with a fixed
  * author, committer and time, so the same content always yields the same tree and commit. It is never a user project,
  * never a copy of one, and is verified before every probe. A mismatch fails closed: nothing is repaired or reset.
  */

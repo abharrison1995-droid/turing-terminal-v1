@@ -1,4 +1,4 @@
-import { formatMetric } from '../phase36';
+import { formatMetric } from '../pages/usage/UsageExplorer';
 import { goalsApi } from './api';
 import { Empty, Resource } from './parts';
 import { useLoad } from './useLoad';
