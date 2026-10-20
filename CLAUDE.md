@@ -5,4 +5,5 @@ Read [AGENTS.md](AGENTS.md) first; it is the canonical cross-agent context. Rele
 - Use the standard validation gate listed in AGENTS.md before declaring work done.
 - Frontend work follows [DESIGN.md](DESIGN.md) and the `impeccable` skill in `.claude/skills/`.
 - Before assessing project state, check `git fetch` and compare with `origin/master`; local checkouts have been stale before.
+- Use [docs/README.md](docs/README.md) to find documents. Documents it lists under History are evidence records, not current state; check the code before relying on them.
 - Commit messages end with the Co-Authored-By line given by the session attribution reminder.
