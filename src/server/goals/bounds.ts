@@ -29,6 +29,11 @@ export interface BoundsContext {
   liveActiveMs?: number;
   /** The cycle about to be created, if any; remediation attempts are per milestone. */
   next?: { kind: 'execution' | 'remediation'; milestoneKey: string };
+  /**
+   * True when the caller creates a verification cycle: the execution-cycle and consecutive-failure bounds do not apply
+   * to it. Wall-clock, active-time and spend checks always apply. Absent or false keeps every bound in force.
+   */
+  skipExecutionBounds?: boolean;
 }
 
 /**
@@ -78,14 +83,14 @@ export function evaluateBounds(db: Db, goalId: string, context: BoundsContext): 
     | undefined;
   if (!runtime) return null;
 
-  if (runtime.cycles_executed >= limits.maxExecutionCycles)
+  if (!context.skipExecutionBounds && runtime.cycles_executed >= limits.maxExecutionCycles)
     return {
       reason: 'bound_cycles',
       message: 'The Goal reached its execution cycle limit.',
       limit: limits.maxExecutionCycles,
       observed: runtime.cycles_executed,
     };
-  if (runtime.consecutive_failed_cycles >= limits.maxConsecutiveFailedCycles)
+  if (!context.skipExecutionBounds && runtime.consecutive_failed_cycles >= limits.maxConsecutiveFailedCycles)
     return {
       reason: 'bound_failures',
       message: 'The Goal reached its consecutive failed cycle limit.',

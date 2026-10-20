@@ -331,6 +331,34 @@ describe('cycle creation', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+
+  it(
+    'still creates a verification cycle at the execution cycle limit, while an execution cycle is refused',
+    () => {
+      const definition = simpleDefinition();
+      definition.limits.maxExecutionCycles = 1;
+      delete definition.review.periodic;
+      delete definition.review.onRepeatedFailure;
+      const fx = running(definition);
+      finish(fx, 'succeeded');
+      const verification = createCycle(fx.db, {
+        goalId: fx.goalId,
+        kind: 'verification',
+        triggerCode: 't',
+        milestoneKey: 'm1',
+      });
+      expect(verification.created).toBe(true);
+      if (!verification.created) throw new Error('expected a verification cycle');
+      finalizeCycle(fx.db, { cycleId: verification.cycle.id, to: 'cancelled', outcomeCode: 'cancelled' });
+      try {
+        make(fx);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'bound_exceeded', breach: { reason: 'bound_cycles' } });
+      }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('runtime counters', () => {
