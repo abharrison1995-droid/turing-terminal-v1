@@ -112,6 +112,14 @@ export function qualifierCopy(qualifier: GoalCompletionStandingClaim['qualifier'
   return QUALIFIER_COPY[qualifier as GoalCompletionStandingClaim['qualifier']];
 }
 
+/** A corrected attestation can no longer authorise completion. Names the ways forward; terminal Goals never reopen. */
+const CORRECTED_ATTESTATION_COPY =
+  'This attestation was corrected, so it cannot complete the Goal. Confirm the external integration for the current handoff again, after reconciling the repository if needed. You can also start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish). Completed and abandoned Goals do not reopen.';
+
+/** Saved completion records failed verification. Refreshing can clear a transient failure; if it persists, name the ways forward. */
+const HISTORY_INVALID_COPY =
+  'The saved completion records could not be verified, so nothing was recorded. Refresh to check them again. If they still fail, this Goal cannot be completed from here: start a new Goal, or abandon this Goal (pause it first if it is running; abandon waits for any work in flight to finish).';
+
 /** The `completion_already_recorded` blocker with detail `competing_decision`: another attestation's eligible decision. */
 const COMPETING_DECISION_REASON =
   'A completion decision for a different attestation can already complete this Goal, so none can be recorded here. Open that attestation, or correct it, to continue.';
@@ -129,9 +137,9 @@ const PREFLIGHT_REASON_COPY: Record<string, string> = {
   handoff_invalid: 'The handoff record is invalid, so the review cannot continue.',
   correction_standing_unavailable: 'The correction history could not be read. Refresh the review.',
   correction_standing_invalid: 'The correction history failed a check. Refresh the review.',
-  attestation_disputed: 'The attestation was corrected, so it cannot be used.',
-  attestation_withdrawn: 'The attestation was corrected, so it cannot be used.',
-  attestation_superseded: 'The attestation was corrected, so it cannot be used.',
+  attestation_disputed: CORRECTED_ATTESTATION_COPY,
+  attestation_withdrawn: CORRECTED_ATTESTATION_COPY,
+  attestation_superseded: CORRECTED_ATTESTATION_COPY,
   completion_not_ready: 'The completion review is no longer ready. Refresh to review it again.',
   destination_advanced_after_observation:
     'The destination branch moved after the attestation. Refresh the review.',
@@ -143,8 +151,7 @@ const PREFLIGHT_REASON_COPY: Record<string, string> = {
   verification_busy: 'Turing is busy checking Git. Try again in a moment.',
   observation_changed: 'The Git observation changed. Refresh the review.',
   preflight_internal_invalid: 'The completion review failed an internal check. Refresh to review it again.',
-  completion_history_invalid:
-    'The saved completion records could not be verified, so no decision can be recorded here. Refresh to check them again.',
+  completion_history_invalid: HISTORY_INVALID_COPY,
 };
 
 const GENERIC_REASON = 'The completion review is no longer ready. Refresh to review it again.';
@@ -353,15 +360,13 @@ const CODE_REFUSALS: Record<string, CompletionRefusal> = {
 };
 
 const PREFLIGHT_DETAIL_REFUSALS: Record<string, CompletionRefusal> = {
-  attestation_disputed: refuse('The attestation was corrected, so it cannot be used.'),
-  attestation_withdrawn: refuse('The attestation was corrected, so it cannot be used.'),
-  attestation_superseded: refuse('The attestation was corrected, so it cannot be used.'),
+  attestation_disputed: refuse(CORRECTED_ATTESTATION_COPY),
+  attestation_withdrawn: refuse(CORRECTED_ATTESTATION_COPY),
+  attestation_superseded: refuse(CORRECTED_ATTESTATION_COPY),
   verification_busy: refuse('Turing is busy checking Git. Try again in a moment.'),
   git_unavailable: refuse('Git could not be read. Try again.'),
   preflight_unavailable: refuse('Git could not be read. Try again.'),
-  completion_history_invalid: refuse(
-    'The saved completion records could not be verified, so nothing was recorded. Refresh to check them again.',
-  ),
+  completion_history_invalid: refuse(HISTORY_INVALID_COPY),
 };
 
 /**

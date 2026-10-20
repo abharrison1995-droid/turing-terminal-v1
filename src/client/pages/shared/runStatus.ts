@@ -1,15 +1,8 @@
 import type { RunSummary } from '../../../shared/types';
+import { ACTIVE_RUN_STATUSES } from '../../../shared/runStatus';
 import { formatMilliseconds } from './format';
 
-export const activeStatuses = new Set([
-  'queued',
-  'preparing',
-  'running',
-  'waiting_for_approval',
-  'waiting_for_user',
-  'retrying',
-  'cancelling',
-]);
+export const activeStatuses = new Set<string>(ACTIVE_RUN_STATUSES);
 
 export const waitingStatuses = new Set(['waiting_for_approval', 'waiting_for_user']);
 

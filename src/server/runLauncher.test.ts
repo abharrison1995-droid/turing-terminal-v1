@@ -7,6 +7,7 @@ import { openDatabase } from './db.js';
 import { RunEngine } from './runEngine.js';
 import {
   buildPreview,
+  cancelOrdinaryQueuedRun,
   cancelQueuedRun,
   createRun,
   queueRun,
@@ -237,6 +238,77 @@ describe('run launcher', () => {
       expect(firstStart).toHaveBeenCalledExactlyOnceWith(runId);
       expect(secondStart).not.toHaveBeenCalled();
       expect(recoveredEvents(runId)).toBe(1);
+    });
+  });
+  describe('user cancellation of a queued ordinary run (Stop before start)', () => {
+    const statusOf = (runId: string) =>
+      (db.prepare('SELECT status FROM runs WHERE id = ?').get(runId) as { status: string }).status;
+    const cancelledEvents = (runId: string) =>
+      (
+        db
+          .prepare("SELECT COUNT(*) AS n FROM run_events WHERE run_id = ? AND type = 'run_cancelled'")
+          .get(runId) as { n: number }
+      ).n;
+    const cancel = (runId: string) => app.inject({ method: 'POST', url: `/api/runs/${runId}/cancel` });
+
+    it('cancels a queued ordinary run without starting it, records one event, and marks its pending stages cancelled', async () => {
+      const { runId } = queueRun(db, await preview());
+      const start = vi.spyOn(engine, 'start');
+      const published = vi.spyOn(engine, 'publishRunStatus');
+      const response = await cancel(runId);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ accepted: true, status: 'cancelled' });
+      expect(published).toHaveBeenCalledExactlyOnceWith(runId, 'cancelled');
+      expect(statusOf(runId)).toBe('cancelled');
+      expect(start).not.toHaveBeenCalled();
+      expect(cancelledEvents(runId)).toBe(1);
+      const stages = db.prepare('SELECT status FROM stages WHERE run_id = ?').all(runId) as Array<{
+        status: string;
+      }>;
+      expect(stages.length).toBeGreaterThan(0);
+      expect(stages.every((stage) => stage.status === 'cancelled')).toBe(true);
+    });
+
+    it('is idempotent: a repeated cancel reports the run cancelled and records no second event', async () => {
+      const { runId } = queueRun(db, await preview());
+      expect((await cancel(runId)).statusCode).toBe(200);
+      const published = vi.spyOn(engine, 'publishRunStatus');
+      const again = await cancel(runId);
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toEqual({ accepted: true, status: 'cancelled' });
+      expect(published).not.toHaveBeenCalled();
+      expect(statusOf(runId)).toBe('cancelled');
+      expect(cancelledEvents(runId)).toBe(1);
+    });
+
+    it('a run cancelled before a restart is never started by recovery, and a later start is refused', async () => {
+      const { runId } = queueRun(db, await preview());
+      expect((await cancel(runId)).statusCode).toBe(200);
+      const restarted = new RunEngine(db, () => undefined);
+      const start = vi.spyOn(restarted, 'start');
+      expect(recoverQueuedRunsAfterRestart(db, restarted)).toEqual([]);
+      expect(start).not.toHaveBeenCalled();
+      expect(startQueuedRun(db, restarted, runId)).toEqual({ started: false, reason: 'not-queued' });
+      expect(statusOf(runId)).toBe('cancelled');
+    });
+
+    it('a run that recovery already claimed and started is never cancelled through the queued path', async () => {
+      const { runId } = queueRun(db, await preview());
+      const restarted = new RunEngine(db, () => undefined);
+      // Recovery commits the `preparing` claim before start, so execution is stubbed: it must not outlive the database.
+      const start = vi.spyOn(restarted, 'start').mockImplementation(() => {});
+      expect(recoverQueuedRunsAfterRestart(db, restarted)).toEqual([runId]);
+      expect(start).toHaveBeenCalledExactlyOnceWith(runId);
+      expect(statusOf(runId)).toBe('preparing');
+      // The new guard refuses on status alone, before any engine check, so the claimed run is protected directly.
+      expect(cancelOrdinaryQueuedRun(db, restarted, runId)).toEqual({
+        cancelled: false,
+        reason: 'not-queued',
+      });
+      const response = await cancel(runId);
+      expect(response.json()).not.toEqual({ accepted: true, status: 'cancelled' });
+      expect(statusOf(runId)).not.toBe('cancelled');
+      expect(cancelledEvents(runId)).toBe(0);
     });
   });
 });

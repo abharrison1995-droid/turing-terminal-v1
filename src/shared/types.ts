@@ -540,6 +540,8 @@ export interface RunSummary {
   stages: RunStage[];
   elapsedMs: number;
   remainingMs: number | null;
+  /** Whether the user's Stop control may cancel this run. False for Goal-owned and route-probe runs and settled runs. */
+  cancellable: boolean;
 }
 
 export type UsageReconciliationState = 'pending' | 'locally_estimated' | 'provider_reconciled' | 'final';

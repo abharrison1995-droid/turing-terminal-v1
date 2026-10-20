@@ -43,11 +43,12 @@ import {
   toModelPreset,
   toProject,
   toRun,
+  toRuns,
   toWorkflow,
 } from './serialize.js';
 import { scanProject } from './projectScanner.js';
 import { RunEngine } from './runEngine.js';
-import { buildPreview, createRun, startQueuedRun } from './runLauncher.js';
+import { buildPreview, cancelOrdinaryQueuedRun, createRun, startQueuedRun } from './runLauncher.js';
 import {
   AUTHORING_LIMITS,
   GoalAuthoringError,
@@ -935,7 +936,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
       projects,
       workflows,
       providers,
-      runs: runRows.map((row) => toRun(db, row)),
+      runs: toRuns(db, runRows),
       approvals,
       usage: {
         events: usage.events,
@@ -1932,7 +1933,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
         `SELECT r.*, p.name AS project_name, w.name AS workflow_name FROM runs r JOIN projects p ON p.id = r.project_id JOIN workflows w ON w.id = r.workflow_id ${where} ORDER BY r.created_at DESC LIMIT 100`,
       )
       .all(...values) as Array<Record<string, unknown>>;
-    return { runs: rows.map((row) => toRun(db, row)) };
+    return { runs: toRuns(db, rows) };
   });
 
   app.get('/api/runs/:id', async (request, reply) => {
@@ -2003,6 +2004,20 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
   app.post('/api/runs/:id/cancel', async (request, reply) => {
     const id = (request.params as { id: string }).id;
     if (!getRunRow(db, id)) return reply.code(404).send({ error: 'Run was not found.' });
+    // An owned run that is still queued is refused: its owner starts it. An owned run that is executing stays stoppable
+    // through RunEngine, because the Goal supervisor has no other cancel path and a wedged Goal run must be stoppable.
+    const queued = cancelOrdinaryQueuedRun(db, engine, id);
+    if (queued.cancelled) return { accepted: true, status: 'cancelled' };
+    if (queued.reason === 'goal-owned')
+      return reply.code(409).send({
+        error:
+          'This run belongs to a Grand Project, which starts and retires it. It cannot be cancelled here.',
+      });
+    if (queued.reason === 'route-probe')
+      return reply.code(409).send({ error: 'This run is a route validation probe. Its reconciler owns it.' });
+    // A repeated Stop on a run that is already cancelled is idempotent, unless something is still executing it.
+    if (getRunRow(db, id)?.status === 'cancelled' && !engine.isActive(id))
+      return { accepted: true, status: 'cancelled' };
     if (!engine.cancel(id)) return reply.code(409).send({ error: 'This run is not active.' });
     return { accepted: true };
   });

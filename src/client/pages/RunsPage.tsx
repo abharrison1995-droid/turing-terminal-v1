@@ -304,9 +304,13 @@ export function RunDetail({
   const stop = () =>
     void api
       .cancelRun(run.id)
-      .then(() => {
+      .then((result) => {
         onRefresh();
-        onNotice('Stop requested. The provider process is being terminated.');
+        onNotice(
+          result.status === 'cancelled'
+            ? 'Queued run cancelled. It will not start.'
+            : 'Stop requested. The provider process is being terminated.',
+        );
       })
       .catch((error) => onNotice(error.message));
   const findings = details?.findings ?? [];
@@ -432,7 +436,7 @@ export function RunDetail({
               Resume run
             </button>
           )}
-          {isActive && (
+          {isActive && run.cancellable && (
             <button className="danger-button" onClick={stop}>
               <StopCircle size={14} />
               Stop run
