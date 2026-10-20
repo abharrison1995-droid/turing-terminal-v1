@@ -115,8 +115,10 @@ function sanitizeWorkflowExport<T>(value: T): T {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
+        // Numeric limits such as maxEstimatedTokens are not credentials. Every other matching key stays dropped.
         .filter(
-          ([key]) =>
+          ([key, item]) =>
+            typeof item === 'number' ||
             !/secret|token|api.?key|password|cookie|credential|connectionProfileId|modelSnapshot/i.test(key),
         )
         .map(([key, item]) => [key, sanitizeWorkflowExport(item)]),

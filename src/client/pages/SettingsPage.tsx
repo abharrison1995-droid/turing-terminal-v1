@@ -16,7 +16,7 @@ import QRCode from 'qrcode';
 import type { DashboardSnapshot, ProjectProfile, StageKind, TuringRule } from '../../shared/types';
 import { api } from '../api';
 import { MeteredBudgetSettingsPanel, OpenRouterSettings } from '../phase36';
-import { desktop, isDesktopShell, type DesktopRuntime } from '../desktop';
+import { desktop, isDesktopShell, setMasterApiBase, type DesktopRuntime } from '../desktop';
 import { makePairingQrUrl } from '../pairingQr.js';
 import { decodeVapidPublicKey, pushSubscriptionStorageKey } from '../pushNotifications.js';
 import { PageHeading } from './shared/parts';
@@ -400,7 +400,8 @@ function DesktopSettingsCard() {
     setBusy(true);
     setError('');
     try {
-      await desktop.restartMaster();
+      const runtime = (await desktop.restartMaster()) ?? (await desktop.runtime());
+      setMasterApiBase(runtime.masterUrl);
       refresh();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The Desktop Master could not be restarted.');
