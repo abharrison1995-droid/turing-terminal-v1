@@ -28,7 +28,7 @@ import {
 } from './finalApplyAuthority.js';
 
 /**
- * Narrow, user-initiated Goal commands (Stage 7A). Each is a thin composition of the accepted domain services: status
+ * Narrow, user-initiated Goal commands. Each is a thin composition of the accepted domain services: status
  * only ever changes through `transitionGoal` and a finding decision only through `decideFinding`. The actor is fixed
  * here and never supplied by a caller.
  */

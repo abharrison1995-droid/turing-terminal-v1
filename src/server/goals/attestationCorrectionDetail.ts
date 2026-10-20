@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './definitionHash.js';
 
-// Stage 7C.2B.5D.2: pure schemas and digests for append-only external-integration attestation corrections.
+// Pure schemas and digests for append-only external-integration attestation corrections.
 // A correction is a user decision about one immutable attestation. Nothing here reads the database or Git.
 
 export const ATTESTATION_CORRECTION_ACTION = 'correct_external_integration_attestation_v1' as const;

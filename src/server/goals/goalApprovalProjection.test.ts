@@ -13,7 +13,7 @@ import { transitionGoal } from './stateMachine.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 
 /**
- * Projection of dedicated-service approvals in the unified inbox (GH.3a). A pending correction approval, and a pending
+ * Projection of dedicated-service approvals in the unified inbox. A pending correction approval, and a pending
  * completion approval, are decided only by their dedicated services. The inbox must therefore never offer a generic
  * decision for them (`decidable: false`), must say where the decision is made (`dedicatedDecision`), and must keep them
  * in every history. The generic decision route keeps refusing them with the same codes, whatever the client shows.

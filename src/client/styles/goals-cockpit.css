@@ -1,4 +1,4 @@
-/* UI.3 Goal cockpit: layout and skin for the Grand Projects list and cockpit (docs/ui/UI3_SCOPE.md section 2).
+/* UI.3 Goal cockpit: layout and skin for the Grand Projects list and cockpit (docs/history/ui/UI3_SCOPE.md section 2).
    Loaded directly after goals.css, so it may override that file's rules. It does not repeat or change the rules that
    goals.css pins for a11yTokens (S2 to S6) and QF09: the 680px completion touch rules, the one-colour completion states,
    and the .goal-confirm heading rule. Tokens only: no colour literal, no display face, no !important, no generated

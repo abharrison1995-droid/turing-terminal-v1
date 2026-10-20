@@ -36,3 +36,12 @@ Thumbs.db
 e2e/.artifacts/
 test-results/
 playwright-report/
+# Earlier UI stage captures were pruned on 2026-10-20 (git history keeps them); only ui7 and ui9 are committed.
+# Re-running the older stage specs writes here without re-adding them.
+docs/ui/evidence/ui1b/
+docs/ui/evidence/ui1c/
+docs/ui/evidence/ui2/
+docs/ui/evidence/ui3/
+docs/ui/evidence/ui4/
+docs/ui/evidence/ui5/
+docs/ui/evidence/ui6/

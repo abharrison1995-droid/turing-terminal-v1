@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 /*
  * Static checks on the stylesheets and the completion and correction sources. They read files and compute colour
- * contrast from the dark tokens in tokens.css (UI.1b, docs/ui/UI1B_SCOPE.md sections 2 and 5). They prove that rules
+ * contrast from the dark tokens in tokens.css (UI.1b, docs/history/ui/UI1B_SCOPE.md sections 2 and 5). They prove that rules
  * are declared; they do not prove how a browser renders them.
  *
  * Background rule: T1 checks each opaque surface token. T2 and T3 check every opaque surface and its hover and pressed

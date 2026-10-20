@@ -1,440 +1,370 @@
+// Workflow stage editor fields: billing safety, model capability controls and Orchestrator branches.
+
 import type {
-  WorkflowCondition,
-  WorkflowConditionPath,
+  BillingMode,
+  ExternalDataPolicy,
+  ModelOption,
+  ProviderStatus,
+  UnknownCostPolicy,
   WorkflowDefinition,
   WorkflowStage,
 } from '../../../shared/types';
-import { OrchestratorBranchesEditor } from '../../phase36';
-import { isAiStage } from '../shared/stageMeta';
+import { billingLaneLabel, METERED_LANES } from '../../../shared/billing';
+import {
+  advancedSettingsFor,
+  classifyModelIdentity,
+  reasoningControlFor,
+  reasoningControlLabel,
+} from '../../../shared/modelSettings';
 
-type Change = (patch: Partial<WorkflowStage>) => void;
+/* ───────────────────────── Billing & safety ───────────────────────── */
 
-const globs = (value: string) =>
-  value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+export function BillingSafetyFields({
+  workflow,
+  onChange,
+}: {
+  workflow: WorkflowDefinition;
+  onChange: (patch: Partial<WorkflowDefinition>) => void;
+}) {
+  const mode = workflow.billingMode ?? (workflow.subscriptionOnly ? 'subscriptions-only' : 'custom');
+  const budget = workflow.meteredBudget ?? { perRunUsd: null, unknownCostPolicy: 'block' as const };
+  return (
+    <div className="billing-safety-fields">
+      <div className="form-grid-two">
+        <label className="form-field">
+          <span>Billing mode</span>
+          <select
+            value={mode}
+            onChange={(event) => {
+              const billingMode = event.target.value as BillingMode;
+              onChange({ billingMode, subscriptionOnly: billingMode !== 'custom' });
+            }}
+          >
+            <option value="subscriptions-only">Subscriptions Only (recommended)</option>
+            <option value="subscriptions-plus-decision-budget">Subscriptions + Decision Budget</option>
+            <option value="custom">Custom metered lanes</option>
+          </select>
+          <small>
+            {mode === 'subscriptions-only'
+              ? 'No metered route may run. OpenRouter, API, and PAYG lanes are blocked.'
+              : mode === 'subscriptions-plus-decision-budget'
+                ? 'Only explicitly configured Decision Gates may spend, under the per-run cap below. Generative OpenRouter use stays blocked.'
+                : 'Explicitly configured metered lanes may run. Turing still never substitutes a lane or model.'}
+          </small>
+        </label>
+        <label className="form-field small-number-field">
+          <span>Per-run metered cap (USD)</span>
+          <input
+            type="number"
+            min={0}
+            max={1000}
+            step={0.01}
+            value={budget.perRunUsd ?? ''}
+            placeholder={mode === 'subscriptions-plus-decision-budget' ? 'Required' : 'No per-run cap'}
+            onChange={(event) =>
+              onChange({
+                meteredBudget: {
+                  ...budget,
+                  perRunUsd: event.target.value === '' ? null : Math.max(0, Number(event.target.value)),
+                },
+              })
+            }
+          />
+          <small>Turing hard cap, reserved atomically before each metered request.</small>
+        </label>
+        <label className="form-field">
+          <span>Unknown-cost requests</span>
+          <select
+            value={budget.unknownCostPolicy}
+            onChange={(event) =>
+              onChange({
+                meteredBudget: { ...budget, unknownCostPolicy: event.target.value as UnknownCostPolicy },
+              })
+            }
+          >
+            <option value="block">Block (default)</option>
+            <option value="ask">Ask before sending</option>
+            <option value="allow-with-warning">Allow with warning · hard cap not guaranteed</option>
+          </select>
+        </label>
+        <label className="form-field">
+          <span>External decision data</span>
+          <select
+            value={workflow.externalDecisionDataPolicy ?? 'ask-first'}
+            onChange={(event) =>
+              onChange({ externalDecisionDataPolicy: event.target.value as ExternalDataPolicy })
+            }
+          >
+            <option value="ask-first">Ask before first external send (default)</option>
+            <option value="allow">Allow configured external engines</option>
+            <option value="block">Block external decision data</option>
+          </select>
+          <small>Separate from billing: allowing spend does not allow sending project state.</small>
+        </label>
+      </div>
+      {mode === 'custom' && (
+        <fieldset className="condition-skip-targets">
+          <legend>Allowed metered lanes (none checked = every explicitly configured lane)</legend>
+          {METERED_LANES.map((lane) => (
+            <label className="rule-flag" key={lane}>
+              <input
+                type="checkbox"
+                checked={workflow.customAllowedLanes?.includes(lane) ?? false}
+                onChange={(event) => {
+                  const next = new Set(workflow.customAllowedLanes ?? []);
+                  if (event.target.checked) next.add(lane);
+                  else next.delete(lane);
+                  onChange({ customAllowedLanes: next.size ? [...next] : undefined });
+                }}
+              />
+              {billingLaneLabel(lane)}
+            </label>
+          ))}
+        </fieldset>
+      )}
+    </div>
+  );
+}
 
-/** Fields that belong to one stage kind. AI stages also get their instructions here; the model lives in StageAssignment. */
-export function StageTypeFields({
+/* ───────────────────────── Model capability controls ───────────────────────── */
+
+export function ModelStatusLine({
+  backendId,
+  modelId,
+  model,
+  snapshot,
+  catalogSource,
+}: {
+  backendId?: string;
+  modelId?: string;
+  model?: ModelOption;
+  snapshot?: WorkflowStage['modelSnapshot'];
+  catalogSource?: ProviderStatus['catalogSource'];
+}) {
+  if (!modelId) return null;
+  const identity = model?.identity ?? classifyModelIdentity(backendId, modelId);
+  const status = model
+    ? (model.status ?? (catalogSource === 'cache' ? 'last-known' : 'current'))
+    : catalogSource === 'live'
+      ? 'unavailable'
+      : (snapshot?.status ?? 'last-known');
+  const label = status === 'last-known' ? 'LAST KNOWN' : status.toUpperCase();
+  return (
+    <small className={`model-catalog-status model-status-${status}`}>
+      {label} · {identity === 'floating' ? 'FLOATING / ROUTED alias' : 'PINNED'}
+      {model?.discoveredAt ? ` · catalog ${new Date(model.discoveredAt).toLocaleString()}` : ''}
+      {(status === 'unavailable' || status === 'deprecated') &&
+        ' · Choose replacement: pick a current model below. Turing will not migrate it automatically.'}
+      {model?.deprecationDate ? ` · provider deprecation ${model.deprecationDate}` : ''}
+    </small>
+  );
+}
+
+export function ModelSettingsFields({
+  backendId,
+  model,
+  reasoning,
+  variantId,
+  nativeSettings,
+  onChange,
+}: {
+  backendId?: string;
+  model?: ModelOption;
+  reasoning?: string;
+  variantId?: string;
+  nativeSettings?: WorkflowStage['nativeSettings'];
+  onChange: (patch: Partial<Pick<WorkflowStage, 'reasoning' | 'variantId' | 'nativeSettings'>>) => void;
+}) {
+  if (!backendId) return null;
+  const control = reasoningControlFor(backendId, model);
+  const advanced = advancedSettingsFor(backendId, model);
+  return (
+    <>
+      {control === 'effort' && model?.reasoningLevels?.length ? (
+        <label className="form-field reasoning-field">
+          <span>Reasoning · provider-native</span>
+          <select
+            value={reasoning ?? ''}
+            onChange={(event) => onChange({ reasoning: event.target.value || undefined })}
+          >
+            <option value="">Provider default</option>
+            {model.reasoningLevels.map((level) => (
+              <option value={level} key={level}>
+                {level}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : control === 'variant' && model?.variantIds?.length ? (
+        <label className="form-field reasoning-field">
+          <span>Model variant · provider-native</span>
+          <select
+            value={variantId ?? ''}
+            onChange={(event) => onChange({ variantId: event.target.value || undefined })}
+          >
+            <option value="">Provider default</option>
+            {model.variantIds.map((variant) => (
+              <option value={variant} key={variant}>
+                {variant}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : control === 'provider-controlled' ? (
+        <div className="form-field reasoning-field">
+          <span>Reasoning</span>
+          <small className="quiet-note">
+            Provider controlled — this backend reports no configurable reasoning for the selected model.
+          </small>
+        </div>
+      ) : null}
+      {advanced.length > 0 && (
+        <details className="settings-disclosure stage-wide">
+          <summary>
+            Advanced Model Settings
+            <small>{reasoningControlLabel(control)} · only settings this model reports are shown</small>
+          </summary>
+          <div className="form-grid-two">
+            {advanced.map((setting) => (
+              <label className="form-field small-number-field" key={setting.key}>
+                <span>{setting.label}</span>
+                <input
+                  type="number"
+                  min={setting.min}
+                  max={setting.max}
+                  step={setting.step}
+                  value={
+                    typeof nativeSettings?.[setting.key] === 'number'
+                      ? Number(nativeSettings[setting.key])
+                      : ''
+                  }
+                  placeholder="Provider default"
+                  onChange={(event) => {
+                    const next = { ...(nativeSettings ?? {}) };
+                    if (event.target.value === '') delete next[setting.key];
+                    else next[setting.key] = Number(event.target.value);
+                    onChange({ nativeSettings: Object.keys(next).length ? next : undefined });
+                  }}
+                />
+                <small>{setting.help}</small>
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
+    </>
+  );
+}
+
+/* ───────────────────────── Orchestrator branches ───────────────────────── */
+
+export function OrchestratorBranchesEditor({
   stage,
   laterStages,
   onChange,
 }: {
   stage: WorkflowStage;
   laterStages: WorkflowStage[];
-  onChange: Change;
+  onChange: (patch: Partial<WorkflowStage>) => void;
 }) {
-  const updateCondition = (condition: NonNullable<WorkflowStage['condition']>) => onChange({ condition });
+  const orchestration = stage.orchestration;
+  const branches = orchestration?.branches ?? [];
+  const update = (next: NonNullable<WorkflowStage['orchestration']> | undefined) =>
+    onChange({ orchestration: next });
   return (
-    <>
-      {stage.kind === 'orchestrator' && (
-        <OrchestratorBranchesEditor stage={stage} laterStages={laterStages} onChange={onChange} />
-      )}
-      {stage.kind === 'parallelReview' && (
-        <label className="form-field small-number-field">
-          <span>Reviewer count</span>
-          <input
-            type="number"
-            min={1}
-            max={8}
-            value={stage.parallelism ?? 1}
-            onChange={(event) =>
-              onChange({ parallelism: Math.min(8, Math.max(1, Number(event.target.value))) })
-            }
-          />
-        </label>
-      )}
-      {stage.kind === 'shellCommand' && (
-        <label className="form-field">
-          <span>Project command</span>
-          <input
-            value={stage.command?.join(' ') ?? ''}
-            onChange={(event) =>
-              onChange({ command: event.target.value.trim().split(/\s+/).filter(Boolean) })
-            }
-            placeholder="npm run test"
-          />
-          <small>Only package scripts named build, test, or lint are supported.</small>
-        </label>
-      )}
-      {stage.kind === 'notification' && (
-        <label className="form-field">
-          <span>Notification message</span>
-          <textarea
-            value={stage.notificationMessage ?? ''}
-            maxLength={1_000}
-            onChange={(event) => onChange({ notificationMessage: event.target.value })}
-            placeholder="A workflow notification stage was reached."
-            rows={3}
-          />
-          <small>Delivered to connected browser clients with notification permission.</small>
-        </label>
-      )}
-      {stage.kind === 'gitCommit' && (
-        <label className="form-field">
-          <span>Commit message</span>
-          <input
-            value={stage.commitMessage ?? ''}
-            maxLength={120}
-            onChange={(event) => onChange({ commitMessage: event.target.value })}
-            placeholder="Turing Terminal run commit"
-          />
-          <small>Only changes under the registered project folder are included.</small>
-        </label>
-      )}
-      {stage.kind === 'gitPush' && (
-        <>
+    <fieldset className="condition-skip-targets stage-wide">
+      <legend>Explicit branches the Orchestrator may choose (optional)</legend>
+      <small className="quiet-note">
+        The Orchestrator can only pick one of these. Turing's state machine applies it; unknown answers use
+        the default branch.
+      </small>
+      {branches.map((branch, index) => (
+        <div className="orchestrator-branch" key={branch.id}>
           <label className="form-field">
-            <span>Remote</span>
+            <span>Branch {index + 1}</span>
             <input
-              value={stage.pushRemote ?? 'origin'}
-              maxLength={61}
-              onChange={(event) => onChange({ pushRemote: event.target.value })}
-              placeholder="origin"
-            />
-          </label>
-          <label className="form-field">
-            <span>Remote branch</span>
-            <input
-              value={stage.pushBranch ?? ''}
-              maxLength={100}
-              onChange={(event) => onChange({ pushBranch: event.target.value })}
-              placeholder="Same as the Turing run branch"
-            />
-            <small>Force push is never used. Push always waits for approval, including in ENIGMA.</small>
-          </label>
-        </>
-      )}
-      {stage.kind === 'gitRollback' && (
-        <label className="form-field">
-          <span>Restore point</span>
-          <select
-            value={stage.rollbackTarget ?? 'runStart'}
-            onChange={(event) =>
-              onChange({ rollbackTarget: event.target.value as WorkflowStage['rollbackTarget'] })
-            }
-          >
-            <option value="runStart">Run start</option>
-            <option value="latestCheckpoint">Latest earlier checkpoint</option>
-          </select>
-          <small>Always asks before changing the isolated run worktree.</small>
-        </label>
-      )}
-      {stage.kind === 'conditionalBranch' && (
-        <>
-          <label className="form-field">
-            <span>Condition field</span>
-            <select
-              value={stage.condition?.path ?? 'build.success'}
-              onChange={(event) => {
-                const path = event.target.value as WorkflowConditionPath;
-                updateCondition({
-                  path,
-                  operator: 'equals',
-                  value: path === 'build.success' ? true : path === 'finalGate.status' ? 'PASS' : 0,
-                });
-              }}
-            >
-              <option value="build.success">Build succeeded</option>
-              <option value="tests.failed">Failed test stages</option>
-              <option value="review.openCritical">Open critical findings</option>
-              <option value="review.openHigh">Open high findings</option>
-              <option value="finalGate.status">Final gate status</option>
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Comparison</span>
-            <select
-              value={stage.condition?.operator ?? 'equals'}
+              value={branch.label}
+              maxLength={120}
               onChange={(event) =>
-                stage.condition &&
-                updateCondition({
-                  ...stage.condition,
-                  operator: event.target.value as WorkflowCondition['operator'],
-                })
-              }
-            >
-              <option value="equals">equals</option>
-              <option value="notEquals">does not equal</option>
-              {stage.condition?.path !== 'finalGate.status' && (
-                <>
-                  <option value="greaterThan">greater than</option>
-                  <option value="lessThan">less than</option>
-                </>
-              )}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>Expected value</span>
-            {stage.condition?.path === 'build.success' ? (
-              <select
-                value={String(stage.condition.value)}
-                onChange={(event) =>
-                  stage.condition &&
-                  updateCondition({ ...stage.condition, value: event.target.value === 'true' })
-                }
-              >
-                <option value="true">true</option>
-                <option value="false">false</option>
-              </select>
-            ) : stage.condition?.path === 'finalGate.status' ? (
-              <select
-                value={String(stage.condition.value)}
-                onChange={(event) =>
-                  stage.condition && updateCondition({ ...stage.condition, value: event.target.value })
-                }
-              >
-                <option value="PASS">PASS</option>
-                <option value="FAIL">FAIL</option>
-              </select>
-            ) : (
-              <input
-                type="number"
-                min={0}
-                value={Number(stage.condition?.value ?? 0)}
-                onChange={(event) =>
-                  stage.condition &&
-                  updateCondition({ ...stage.condition, value: Number(event.target.value) })
-                }
-              />
-            )}
-          </label>
-          <fieldset className="condition-skip-targets">
-            <legend>Skip these later stages when the condition is false</legend>
-            {laterStages.map((later) => (
-              <label className="rule-flag" key={later.id}>
-                <input
-                  type="checkbox"
-                  checked={(stage.skipStageIds ?? []).includes(later.id)}
-                  onChange={(event) =>
-                    onChange({
-                      skipStageIds: event.target.checked
-                        ? [...(stage.skipStageIds ?? []), later.id]
-                        : (stage.skipStageIds ?? []).filter((id) => id !== later.id),
-                    })
-                  }
-                />
-                {later.label}
-              </label>
-            ))}
-          </fieldset>
-        </>
-      )}
-      {['build', 'test', 'shellCommand'].includes(stage.kind) && (
-        <label className="rule-flag">
-          <input
-            type="checkbox"
-            checked={Boolean(stage.continueOnFailure)}
-            onChange={(event) => onChange({ continueOnFailure: event.target.checked })}
-          />
-          Continue to conditional stages after failure
-        </label>
-      )}
-      {isAiStage(stage.kind) && (
-        <label className="form-field stage-wide">
-          <span>Custom stage instructions</span>
-          <textarea
-            rows={3}
-            maxLength={8_000}
-            value={stage.customInstructions ?? ''}
-            onChange={(event) => onChange({ customInstructions: event.target.value })}
-            placeholder="Optional. These stay below mandatory security, Global Rules, Project Rules, and Turing role instructions."
-          />
-        </label>
-      )}
-    </>
-  );
-}
-
-/** Per-stage overrides for time, retries and context. Each shows the workflow value it would otherwise inherit. */
-export function StageLimitsFields({
-  stage,
-  workflowContextPolicy,
-  onChange,
-}: {
-  stage: WorkflowStage;
-  workflowContextPolicy: WorkflowDefinition['contextPolicy'];
-  onChange: Change;
-}) {
-  const ai = isAiStage(stage.kind);
-  const policy = stage.contextPolicy;
-  const setPolicy = (patch: Partial<NonNullable<WorkflowStage['contextPolicy']>>) =>
-    onChange({ contextPolicy: { ...policy, ...patch } });
-  return (
-    <details className="settings-disclosure stage-advanced">
-      <summary>
-        Limits and context
-        <small>
-          {stage.timeoutMinutes ? `${stage.timeoutMinutes} min timeout` : 'Workflow timeout'}
-          {ai ? ` · ${policy?.strategy ?? workflowContextPolicy.strategy} context` : ''}
-        </small>
-      </summary>
-      <div className="stage-advanced-grid">
-        <label className="form-field small-number-field">
-          <span>Stage timeout (minutes)</span>
-          <input
-            type="number"
-            min={1}
-            max={360}
-            value={stage.timeoutMinutes ?? ''}
-            placeholder="Workflow default"
-            onChange={(event) =>
-              onChange({
-                timeoutMinutes: event.target.value
-                  ? Math.min(360, Math.max(1, Number(event.target.value)))
-                  : undefined,
-              })
-            }
-          />
-        </label>
-        {ai && (
-          <label className="form-field small-number-field">
-            <span>Retry override</span>
-            <input
-              type="number"
-              min={0}
-              max={5}
-              value={stage.retryPolicy?.maxRetries ?? ''}
-              placeholder="Workflow default"
-              onChange={(event) =>
-                onChange({
-                  retryPolicy: {
-                    ...stage.retryPolicy,
-                    maxRetries: event.target.value
-                      ? Math.min(5, Math.max(0, Number(event.target.value)))
-                      : undefined,
-                  },
+                update({
+                  ...orchestration!,
+                  branches: branches.map((item) =>
+                    item.id === branch.id ? { ...item, label: event.target.value } : item,
+                  ),
                 })
               }
             />
           </label>
-        )}
-        {ai && (
-          <>
-            <label className="form-field">
-              <span>Context strategy</span>
-              <select
-                value={policy?.strategy ?? workflowContextPolicy.strategy}
-                onChange={(event) =>
-                  setPolicy({
-                    strategy: event.target.value as WorkflowDefinition['contextPolicy']['strategy'],
-                  })
-                }
-              >
-                <option value="focused">AUTO / Focused</option>
-                <option value="changed-files">Changed Files</option>
-                <option value="artifacts-only">Artifacts Only</option>
-                <option value="full-project">Full Project / Broad</option>
-              </select>
-            </label>
-            <label className="form-field small-number-field">
-              <span>Estimated token limit</span>
+          <label className="rule-flag">
+            <input
+              type="radio"
+              checked={orchestration?.defaultBranchId === branch.id}
+              onChange={() => update({ ...orchestration!, defaultBranchId: branch.id })}
+            />
+            Default
+          </label>
+          {laterStages.map((later) => (
+            <label className="rule-flag" key={later.id}>
               <input
-                type="number"
-                min={1000}
-                max={500000}
-                value={policy?.maxEstimatedTokens ?? workflowContextPolicy.maxEstimatedTokens}
+                type="checkbox"
+                checked={branch.skipStageIds.includes(later.id)}
                 onChange={(event) =>
-                  setPolicy({
-                    maxEstimatedTokens: Math.min(500000, Math.max(1000, Number(event.target.value))),
+                  update({
+                    ...orchestration!,
+                    branches: branches.map((item) =>
+                      item.id === branch.id
+                        ? {
+                            ...item,
+                            skipStageIds: event.target.checked
+                              ? [...item.skipStageIds, later.id]
+                              : item.skipStageIds.filter((id) => id !== later.id),
+                          }
+                        : item,
+                    ),
                   })
                 }
               />
+              Skip {later.label}
             </label>
-            <label className="form-field small-number-field">
-              <span>Maximum files</span>
-              <input
-                type="number"
-                min={1}
-                max={500}
-                value={policy?.maxFiles ?? workflowContextPolicy.maxFiles}
-                onChange={(event) =>
-                  setPolicy({ maxFiles: Math.min(500, Math.max(1, Number(event.target.value))) })
-                }
-              />
-            </label>
-            <label className="form-field small-number-field">
-              <span>Maximum file size (bytes)</span>
-              <input
-                type="number"
-                min={1024}
-                max={2000000}
-                value={policy?.maxFileBytes ?? workflowContextPolicy.maxFileBytes}
-                onChange={(event) =>
-                  setPolicy({ maxFileBytes: Math.min(2000000, Math.max(1024, Number(event.target.value))) })
-                }
-              />
-            </label>
-            <label className="form-field">
-              <span>Include globs (one per line)</span>
-              <textarea
-                rows={2}
-                value={(policy?.includeGlobs ?? workflowContextPolicy.includeGlobs).join('\n')}
-                onChange={(event) => setPolicy({ includeGlobs: globs(event.target.value) })}
-                placeholder="src/**/*.ts"
-              />
-            </label>
-            <label className="form-field">
-              <span>Exclude globs (one per line)</span>
-              <textarea
-                rows={2}
-                value={(policy?.excludeGlobs ?? workflowContextPolicy.excludeGlobs).join('\n')}
-                onChange={(event) => setPolicy({ excludeGlobs: globs(event.target.value) })}
-                placeholder="node_modules/**"
-              />
-            </label>
-            <div className="context-inclusion-flags stage-wide">
-              {(
-                [
-                  ['includeCurrentDiff', 'Include current diff'],
-                  ['includeTestOutput', 'Include structured test summary'],
-                  ['includeBuildOutput', 'Include structured build summary'],
-                  ['includePreviousArtifact', 'Include previous stage artifact'],
-                ] as const
-              ).map(([key, label]) => (
-                <label className="rule-flag" key={key}>
-                  <input
-                    type="checkbox"
-                    checked={
-                      policy?.[key] ??
-                      (key === 'includeCurrentDiff'
-                        ? ['reviewer', 'parallelReview', 'finalGate', 'consolidate'].includes(stage.kind) &&
-                          workflowContextPolicy[key]
-                        : workflowContextPolicy[key])
+          ))}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              const rest = branches.filter((item) => item.id !== branch.id);
+              update(
+                rest.length
+                  ? {
+                      branches: rest,
+                      defaultBranchId: rest.some((item) => item.id === orchestration?.defaultBranchId)
+                        ? orchestration!.defaultBranchId
+                        : rest[0]!.id,
                     }
-                    onChange={(event) => setPolicy({ [key]: event.target.checked })}
-                  />
-                  {label}
-                </label>
-              ))}
-              <label className="rule-flag">
-                <input
-                  type="checkbox"
-                  checked={
-                    policy?.includePreviousTranscript ?? workflowContextPolicy.includePreviousTranscript
-                  }
-                  onChange={(event) => setPolicy({ includePreviousTranscript: event.target.checked })}
-                />
-                Include prior AI stage responses (larger context)
-              </label>
-              <label className="form-field">
-                <span>Over budget</span>
-                <select
-                  value={policy?.onLimitExceeded ?? workflowContextPolicy.onLimitExceeded}
-                  onChange={(event) =>
-                    setPolicy({ onLimitExceeded: event.target.value as 'compact' | 'ask' | 'stop' })
-                  }
-                >
-                  <option value="compact">Compact optional context</option>
-                  <option value="ask">Require user review</option>
-                  <option value="stop">Stop stage</option>
-                </select>
-              </label>
-            </div>
-          </>
-        )}
-      </div>
-    </details>
+                  : undefined,
+              );
+            }}
+          >
+            Remove branch
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="quiet-button"
+        disabled={branches.length >= 10}
+        onClick={() => {
+          const id = `branch-${branches.length + 1}-${Math.random().toString(36).slice(2, 5)}`;
+          update({
+            branches: [
+              ...branches,
+              { id, label: branches.length ? 'Alternative path' : 'Standard path', skipStageIds: [] },
+            ],
+            defaultBranchId: orchestration?.defaultBranchId ?? id,
+          });
+        }}
+      >
+        Add branch
+      </button>
+    </fieldset>
   );
 }

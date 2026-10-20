@@ -1048,7 +1048,7 @@ describe('external completion (R3)', () => {
       });
       expect(wholeState(fx)).toEqual(beforeX);
 
-      // Slice 2a: R2 refuses a decision for Y while X's eligible decision exists. The option does not waive class 4.
+      // R2 refuses a decision for Y while X's eligible decision exists. The option does not waive class 4.
       const beforeY = wholeState(fx);
       const refusedY = await call(
         app,
@@ -1061,7 +1061,7 @@ describe('external completion (R3)', () => {
         },
         { 'if-match': `"${digestY}"` },
       );
-      // Slice 2b: the decision service reports the competing decision by its own code, with no detail.
+      // The decision service reports the competing decision by its own code, with no detail.
       expect(refusedY).toMatchObject({ status: 409, body: { code: 'competing_decision' } });
       expect(refusedY.body).not.toHaveProperty('detail');
       expect(wholeState(fx)).toEqual(beforeY);
@@ -1325,7 +1325,7 @@ describe('external completion status after a correction and for a legacy complet
   );
 });
 
-// --- Eligibility and the decided state (D.4R Slice 3) ---------------------------------------------------------------------
+// --- Eligibility and the decided state ------------------------------------------------------------------------------------
 
 /** Moves the destination branch to a commit made outside Turing and leaves it there. */
 function moveDestination(fx: GoalFixture, baseRef: string, label: string): void {
@@ -1368,7 +1368,7 @@ function seedApprovedRow(fx: GoalFixture, body: Record<string, unknown>): string
   return approval.id;
 }
 
-describe('external completion status eligibility and the decided state (D.4R Slice 3)', () => {
+describe('external completion status eligibility and the decided state', () => {
   const statusUrl = (goalId: string) => `/api/goals/${goalId}/completion`;
 
   it.each([

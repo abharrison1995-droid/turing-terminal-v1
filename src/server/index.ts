@@ -23,7 +23,7 @@ const engine = new RunEngine(database, masterEventPublisher.publishRun);
 engine.reconcileInterruptedRuns();
 // HR-Q4: ordinary runs left queued by a crash before start. Goal-owned and probe runs are left to their reconcilers.
 recoverQueuedRunsAfterRestart(database, engine);
-// Stage 3: the Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
+// The Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
 // route is ever reported ready and no child run or provider call can be started from a Goal.
 const goalSupervisor = createGoalSupervisor({
   db: database,
@@ -32,13 +32,13 @@ const goalSupervisor = createGoalSupervisor({
   resumeRun: (runId) => engine.start(runId, true),
 });
 await goalSupervisor.reconcile();
-// Stage 4B.2: user-triggered Goal authoring runs are consumed from persisted state, with or without the HTTP request
+// User-triggered Goal authoring runs are consumed from persisted state, with or without the HTTP request
 // that started them. This is the only Goal path that starts a model run, and it uses the user's exact pinned route.
 const authoringReconciler = new AuthoringReconciler(database, (runId) =>
   startQueuedRun(database, engine, runId),
 );
 await authoringReconciler.reconcile();
-// Stage 5B.1: user-initiated route-validation probes are consumed from persisted state. This reconciler only advances
+// User-initiated route-validation probes are consumed from persisted state. This reconciler only advances
 // probes that already exist; it never creates one and never revalidates anything because a record expired.
 const routeProbeReconciler = new RouteProbeReconciler(database, (runId) =>
   startQueuedRun(database, engine, runId),

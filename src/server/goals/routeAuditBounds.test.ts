@@ -5,7 +5,7 @@ import { computeRouteIdentity, isStoredRouteIdentity } from './routeIdentity.js'
 import { resolveRoutes } from './routing.js';
 import { env, member, model, policy, pool, provider, request } from './routingKit.js';
 
-/** Stage 5B section 0: the strict audit schema is never tighter than what the definition validator accepts. */
+/** The strict audit schema is never tighter than what the definition validator accepts. */
 
 function resolved(settings: Record<string, string | number>, modelId = 'opencode-go/a'): RoleResolution {
   const m = member(modelId, { nativeSettings: settings });

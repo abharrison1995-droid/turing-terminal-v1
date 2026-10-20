@@ -11,7 +11,7 @@ import type {
   WorkflowDefinition,
   WorkflowStage,
 } from '../../../shared/types';
-import { ModelSettingsFields, ModelStatusLine } from '../../phase36';
+import { ModelSettingsFields, ModelStatusLine } from './StageFields';
 import {
   applyConnectionPatch,
   connectionChangeImpact,

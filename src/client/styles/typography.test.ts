@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * T6 and T7 (UI.1b, docs/ui/UI1B_SCOPE.md sections 2, 3 and 5). The display face (UnifrakturCook) may appear only on five
+ * T6 and T7 (UI.1b, docs/history/ui/UI1B_SCOPE.md sections 2, 3 and 5). The display face (UnifrakturCook) may appear only on five
  * fixed-title selectors (R-4: user-supplied titles must never use it). The type scale, the font stacks and the
  * dependency on Geist sans are pinned by value.
  */

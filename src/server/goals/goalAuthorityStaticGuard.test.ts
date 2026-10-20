@@ -25,7 +25,7 @@ const KIT_FILE_NAMES = new Set([
  */
 const D3D_COMPLETION_IDENTIFIER_FILES = [
   'goals/approvals.ts',
-  // D.4R Slice 1: the read-only classifier and the leaf module that reads completion-decision rows.
+  // The read-only completion authority classifier and the leaf module that reads completion-decision rows.
   'goals/completionAuthorityPolicy.ts',
   'goals/evidence.ts',
   'goals/externalCompletionDecision.ts',
@@ -113,7 +113,7 @@ const RULES: readonly AuthorityRule[] = [
     files: [
       'goals/externalCompletionApi.ts',
       'goals/externalCompletionDecision.ts',
-      // Defines the readers that the decision module re-exports (D.4R Slice 1).
+      // Defines the readers that the decision module re-exports.
       'goals/externalCompletionDecisionRows.ts',
       'goals/externalCompletionTerminal.ts',
       'goals/externalCompletion.ts',
@@ -222,7 +222,7 @@ const RULES: readonly AuthorityRule[] = [
       'goals/externalCompletionApi.ts',
     ],
     reason:
-      'Only the completion authority classifier module, the public preflight, the decision service and the terminal consumer name its entry point. Slice 2a adds the preflight caller; Slice 2b adds the decision caller, which classifies inside its transaction; Slice 2c adds the terminal caller, which re-classifies inside the completion transaction. Slice 3 adds the read-only status shaper, which reads the classifier entries for eligibility and never writes. A later caller must extend this list in the same commit.',
+      'Only the completion authority classifier module, the public preflight, the decision service and the terminal consumer name its entry point: the preflight caller; the decision caller, which classifies inside its transaction; the terminal caller, which re-classifies inside the completion transaction; and the read-only status shaper, which reads the classifier entries for eligibility and never writes. A later caller must extend this list in the same commit.',
   },
   {
     id: 'classifier_not_writer',

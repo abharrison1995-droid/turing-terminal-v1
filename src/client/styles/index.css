@@ -10,10 +10,10 @@
 @import './providers.css';
 @import './pages.css';
 @import './mobile.css';
-@import './phase36.css';
-@import './pages-ui4.css';
+@import './billing-routing-usage.css';
+@import './pages-settings.css';
 @import './goals.css';
 @import './goals-cockpit.css';
 @import './palette.css';
 @import './mascot.css';
-@import './mobile-ui5.css';
+@import './mobile-remote.css';

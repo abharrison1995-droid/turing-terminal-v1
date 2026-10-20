@@ -8,13 +8,13 @@ web
 
 ## Stack
 
-React and TypeScript for one interface shared by the desktop shell and the phone PWA, with a local Node.js master for orchestration and SQLite persistence. The desktop shell is Tauri, packaged for Windows (NSIS installer) and Linux (.deb and AppImage) as 1.0.0-rc2, and it bundles Node. macOS is not packaged.
+React and TypeScript for one interface shared by the desktop shell and the phone PWA, with a local Node.js master for orchestration and SQLite persistence. The desktop shell is Tauri, packaged for Windows (NSIS installer) and Linux (.deb and AppImage), and it bundles Node. macOS is not packaged.
 
 ## Users
 
 Developers who want to coordinate coding agents and repository workflows from a development computer, with the ability to monitor and control runs from a phone.
 
-V1 is a private tool for its owner and the owner's own machines: the repository is private, installers are unsigned, and each phone is paired and approved per device. Sharing with a team or distributing to other developers is undecided and is not a V1 capability.
+V1 is a personal tool for its owner and the owner's own machines: installers are unsigned, nothing is distributed outside the repository's build artifacts, and each phone is paired and approved per device. The source repository is public, so it must never contain secrets or private data. Sharing with a team or distributing to other developers is undecided and is not a V1 capability.
 
 ## Product Purpose
 
@@ -41,13 +41,13 @@ The desktop master owns repository access, process execution, provider authentic
 
 ## Brand Commitments
 
-Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. The look (updated for the polish pass): a deep pale-blue field with white work surfaces, black text, and restrained Claude-style warm orange as the product accent for primary actions and small identity marks. Typography is Geist Sans with Geist Mono for technical identifiers. Red is reserved for failure, green for completion, amber for assistance required. Light only; no dark theme is planned. Desktop is the IDE and the phone is the remote cockpit. The home is a task-thread workspace (composer first, runs as threads in a task list), not a dashboard of cards.
+Use the name Turing Terminal. The interface should feel like a calm, technical engineering control center: clear, professional, information-dense, and accessible. Avoid hacker-terminal clichés, Matrix green, fake CRT effects, and excessive monospace. The look: dark only, with near-black surfaces, off-white text, and a scarce crimson accent for primary actions and identity marks. Linux Libertine is the reading face, Geist Mono is for technical identifiers, and a UnifrakturCook wordmark is reserved for branding and fixed titles. A skull mascot appears only for real activity and always next to a text status. Red is reserved for failure, green for completion, amber for assistance required. There is no theme switch. [DESIGN.md](DESIGN.md) has the details. Desktop is the IDE and the phone is the remote cockpit. The home is a task-thread workspace (composer first, runs as threads in a task list), not a dashboard of cards.
 
 ## Evidence on Hand
 
 The implementation directive is the product brief. There are no supplied logos, customer claims, benchmark claims, pricing claims, or production usage data. Do not invent them.
 
-Release state is 1.0.0-rc2 for acceptance testing. Physical Windows and Linux installs and phone pairing over Tailscale have not yet been verified on real devices (see README and docs/RELEASE_NOTES_1.0.0-rc2.md), so do not present them as proven.
+Release state lives in [docs/V1_READINESS.md](docs/V1_READINESS.md). Do not present a physical install, phone capability, or live provider path as proven unless that file records the evidence.
 
 ## Product Principles
 

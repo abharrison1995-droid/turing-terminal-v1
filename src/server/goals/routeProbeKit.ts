@@ -12,7 +12,7 @@ import { SUBSCRIPTION_TEST_ROUTE } from './testPlanProvider.js';
 import type { ProviderRunRequest } from '../providers.js';
 
 /**
- * Shared harness for the Stage 5B probe tests: real SQLite, real temporary Git (the fixture repository is built under a
+ * Shared harness for the route-validation probe tests: real SQLite, real temporary Git (the fixture repository is built under a
  * temporary TT_DATA_DIR), the real RunEngine and Fastify app. Only the provider process boundary is faked by the calling
  * test (`vi.mock('../providers.js')`); no test ever reaches a real provider or the network.
  */

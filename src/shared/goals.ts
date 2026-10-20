@@ -498,9 +498,9 @@ export interface RouteValidationRecord {
   expiresAt: string;
 }
 
-// --- Evidence evaluation and completion (Stage 2B) --------------------------------------------------------------
+// --- Evidence evaluation and completion -------------------------------------------------------------------------
 
-/** What a completed final review records about independence; established by the Stage 5 routing authority. */
+/** What a completed final review records about independence; established by the routing authority. */
 export interface ReviewIndependence {
   established: boolean;
   /** The policy it was established under; must equal the current definition's `routing.independence.finalReview`. */

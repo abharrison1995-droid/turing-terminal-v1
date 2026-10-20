@@ -1301,7 +1301,7 @@ const decisionWrite = (decision: 'approved' | 'denied'): InflightWrite => ({
   }),
 });
 
-describe('correction launch controls fired twice synchronously in one act() (GH.6c item 1)', () => {
+describe('correction launch controls fired twice synchronously in one act()', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -1368,7 +1368,7 @@ describe('correction launch controls fired twice synchronously in one act() (GH.
   });
 });
 
-describe('synchronous throws from requestCorrection and decideCorrection (GH.6c item 2)', () => {
+describe('synchronous throws from requestCorrection and decideCorrection', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });

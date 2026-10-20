@@ -19,7 +19,7 @@ import { validateNextTask } from './nextTask.js';
 import { reviewReportSchema } from './reviews.js';
 
 /**
- * Deterministic post-checking of a finished probe run (Stage 5B). A verdict is computed ONLY from persisted run state,
+ * Deterministic post-checking of a finished probe run. A verdict is computed ONLY from persisted run state,
  * the broker's own operation audit and Git: never from what the model says about itself. The result is a finite list of
  * check codes and booleans. No model text, transcript, stderr or path is carried out of this module.
  */

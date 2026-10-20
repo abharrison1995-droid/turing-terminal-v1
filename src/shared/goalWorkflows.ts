@@ -10,9 +10,9 @@ import {
 } from './routeProbe.js';
 
 /**
- * Turing-reserved Goal workflow templates (Goal Engine Stage 4A). They are deterministic, versioned in their id, run in
+ * Turing-reserved Goal workflow templates. They are deterministic, versioned in their id, run in
  * an isolated worktree, contain no merge, push or rollback stage, and carry no model route: a concrete route is
- * supplied later by the Goal run plan (Stage 5), never chosen here.
+ * supplied by the Goal run plan, never chosen here.
  *
  * Permission mode is a static, audited property of each template. Planning, review and authoring are read-only roles
  * (the execution broker denies them every write in every mode). Execution is the only template that edits files and

@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Shield } from 'lucide-react';
 import type { RunPreview } from '../../../shared/types';
 import { billingLaneLabel, billingModeLabel } from '../../../shared/billing';
 import { classifyModelIdentity } from '../../../shared/modelSettings';
-import { RoutingSummaryPanel, decisionAssignmentLine } from '../../phase36';
+import { RoutingSummaryPanel, decisionAssignmentLine } from '../shared/DecisionPanels';
 import { RuleListDetails } from '../shared/RuleListDetails';
 import { capitalize } from '../shared/runStatus';
 

@@ -12,7 +12,7 @@ import { registeredGoalWorkflow } from './turingExecutor.js';
 import { transitionGoal } from './stateMachine.js';
 
 /**
- * Chooses the honest start of the reviewed range (design 11, Stage 6A section 11). `null` means "the whole relevant
+ * Chooses the honest start of the reviewed range (design section 11). `null` means "the whole relevant
  * history"; a commit is returned only when it is still an ancestor of the integration head. `createReview()` re-proves
  * ancestry when the review row is bound, so this is a deterministic hint, never authority.
  *

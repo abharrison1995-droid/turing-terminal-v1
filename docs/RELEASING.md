@@ -1,10 +1,10 @@
 # Release process
 
-The release candidate version is `1.0.0-rc2`. Keep `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src/shared/version.ts` aligned when changing it.
+The current version is in `package.json` (`1.0.0-rc2` at the time of writing). Keep `package.json`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, and `src/shared/version.ts` aligned when changing it.
 
 ## Build and validate
 
-The `Desktop installers` workflow runs on `workflow_dispatch` and the exact `v1.0.0-rc2` tag. It uses native Linux and Windows runners, installs no provider credentials, and does not contact AI providers. Linux builds `.deb` and AppImage packages and runs local Master health/manifest checks. Windows builds the NSIS installer, performs a quiet install, launches the app, checks health and manifest routes, and uninstalls it.
+The `Desktop installers` workflow runs on `workflow_dispatch` and on the tags listed under `on.push.tags` in `.github/workflows/desktop-installers.yml` (currently only `v1.0.0-rc2`). Add the new tag there when the version changes. It uses native Linux and Windows runners, installs no provider credentials, and does not contact AI providers. Linux builds `.deb` and AppImage packages and runs local Master health/manifest checks. Windows builds the NSIS installer, performs a quiet install, launches the app, checks health and manifest routes, and uninstalls it.
 
 To prepare the RC tag after those checks pass:
 
@@ -16,16 +16,19 @@ npm run typecheck
 npm test
 npm run build
 npm audit --omit=dev
-git tag v1.0.0-rc2
+npm run docs:links
+git tag v<version>
 ```
 
-Push a tag only after release approval. The workflow uploads checksummed GitHub Actions artifacts; it does not publish a GitHub Release. The Windows build is unsigned for RC2 and may show Unknown Publisher or SmartScreen warnings. Add a real certificate and CI signing secret only after a signing process is approved; never store a certificate in the repository.
+Push a tag only after release approval. The workflow uploads checksummed GitHub Actions artifacts; it does not publish a GitHub Release. The Windows build is unsigned and may show Unknown Publisher or SmartScreen warnings. Add a real certificate and CI signing secret only after a signing process is approved; never store a certificate in the repository.
 
 ## Artifacts
 
-- `Turing-Terminal-Setup-x64-1.0.0-rc2.exe`
-- `turing-terminal_1.0.0-rc2_amd64.deb`
-- `Turing-Terminal-x86_64-1.0.0-rc2.AppImage`
+Names come from `scripts/release-artifact-names.mjs`:
+
+- `Turing-Terminal-Setup-x64-<version>.exe`
+- `turing-terminal_<version>_amd64.deb`
+- `Turing-Terminal-x86_64-<version>.AppImage`
 - `SHA256SUMS.txt`
 - `RELEASE_NOTES.md`
 

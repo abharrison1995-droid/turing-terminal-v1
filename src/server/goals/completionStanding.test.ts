@@ -279,7 +279,7 @@ describe('completion standing: pure fallback for an impossible pairing', () => {
 });
 
 /**
- * GH.6a, D3-2 option (1). The Booleans mean an uncontested recorded decision on a proof. They never mean content
+ * D3-2 option (1). The Booleans mean an uncontested recorded decision on a proof. They never mean content
  * correctness, and `contentPreservation` is the field that says what is not proven. These invariants are over the
  * producer's whole input space: every typed fact, plus the impossible pairings a cast can reach.
  */

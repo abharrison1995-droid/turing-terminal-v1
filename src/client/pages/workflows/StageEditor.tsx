@@ -11,7 +11,7 @@ import type { ConnectionProfileWithCredentials } from '../../api';
 import { isAiStage, stageLabels } from '../shared/stageMeta';
 import { DecisionGateEditor } from './DecisionGateEditor';
 import { StageAssignment } from './StageAssignment';
-import { StageLimitsFields, StageTypeFields } from './StageFields';
+import { StageLimitsFields, StageTypeFields } from './StageEditorFields';
 import { kindChangePatch } from './stageFactory';
 import type { StageIssue } from './stageIssues';
 

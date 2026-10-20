@@ -957,7 +957,7 @@ export const populatedRoutes: Record<string, unknown> = {
   },
 };
 
-// ---- UI.2 evidence: run detail, Changes and Home preview (used by e2e/ui2.spec.ts only) ---------------------------------
+// ---- UI.2 evidence: run detail, Changes and Home preview (used by e2e/home-run.spec.ts only) ---------------------------------
 
 /*
  * `populatedRoutes` and `POPULATED_SNAPSHOT` above are not changed, so the UI.1c captures keep the inputs they were
@@ -1052,7 +1052,7 @@ function diffResponse(runId: string) {
   return { diff: '', truncated: false, cwd: `/fixture/worktrees/${runId}` };
 }
 
-/** Used by the truncated-diff capture. Exact-key override on top of `ui2Routes`. */
+/** Used by the truncated-diff capture. Exact-key override on top of `homeRunRoutes`. */
 const ui2TruncatedDiff = {
   diff: TRUNCATED_DIFF,
   truncated: true,
@@ -1267,7 +1267,7 @@ export const ui2Preview = {
 };
 
 /** Route table for the UI.2 captures. Exact keys win over the `:param` patterns. */
-export const ui2Routes: Record<string, unknown> = {
+export const homeRunRoutes: Record<string, unknown> = {
   ...populatedRoutes,
   '/api/dashboard': ui2Snapshot,
   // The run view subscribes to a run's event stream. This fixture is a stream with no events, so nothing is pushed.
@@ -1282,7 +1282,7 @@ export const ui2Routes: Record<string, unknown> = {
     diffResponse(params.id ?? ''),
 };
 
-/** Per-capture swaps on top of `ui2Routes`. A key here replaces the `:param` pattern it names. */
+/** Per-capture swaps on top of `homeRunRoutes`. A key here replaces the `:param` pattern it names. */
 export const ui2Variants = {
   needsSetup: { '/api/runs/preview': ui2Preview.needsSetup },
   truncatedDiff: { [`/api/runs/${FAILED_RUN}/diff`]: ui2TruncatedDiff },

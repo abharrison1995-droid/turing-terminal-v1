@@ -7,7 +7,7 @@ import type {
   ProviderStatus,
   WorkflowDefinition,
 } from '../../../shared/types';
-import { BillingSafetyFields } from '../../phase36';
+import { BillingSafetyFields } from './StageFields';
 import { isAiStage } from '../shared/stageMeta';
 import { capitalize } from '../shared/runStatus';
 import {

@@ -392,7 +392,7 @@ describe('first-use gate for a running Goal', () => {
   );
 });
 
-describe('resume preflight keeps a persisted current-cycle route (Stage 5B.4)', () => {
+describe('resume preflight keeps a persisted current-cycle route', () => {
   it(
     'does not recompute or rotate the persisted orchestrator when its evidence later expires, and resumes the exact paused run',
     async () => {

@@ -14,8 +14,8 @@ import type { GoalReviewRole } from './reviewRole.js';
  * untrusted structured output of a finished proposal run. It is never handed a way to change a Goal or cycle status,
  * and it never starts a run: the supervisor starts each persisted run exactly once.
  *
- * Stage 3 ships a deliberately disabled production executor. Real child-run workflows (Stage 4) and route resolution
- * (Stage 5) implement this interface later; nothing here launches a provider call.
+ * Production uses `DisabledGoalExecutor`. `TuringGoalExecutor` (child-run workflows over resolved routes) implements
+ * this interface but is used only by tests; nothing here launches a provider call.
  */
 export type RouteReadiness =
   | { ready: true }
@@ -129,7 +129,7 @@ export interface GoalExecutor {
   queueReviewRun(request: ReviewRunRequest): Promise<{ runId: string }>;
 }
 
-/** Production executor for Stage 3/3.1: never ready, never queues a proposal or child run. No provider work can start. */
+/** The production executor: never ready, never queues a proposal or child run. No provider work can start. */
 export class DisabledGoalExecutor implements GoalExecutor {
   readonly id = 'disabled';
 

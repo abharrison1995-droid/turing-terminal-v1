@@ -14,7 +14,7 @@ import {
 import QRCode from 'qrcode';
 import type { DashboardSnapshot, ProjectProfile, StageKind, TuringRule } from '../../shared/types';
 import { api } from '../api';
-import { MeteredBudgetSettingsPanel, OpenRouterSettings } from '../phase36';
+import { MeteredBudgetSettingsPanel, OpenRouterSettings } from './settings/MeteredProviderSettings';
 import { desktop, isDesktopShell, type DesktopRuntime } from '../desktop';
 import { makePairingQrUrl } from '../pairingQr.js';
 import { decodeVapidPublicKey, pushSubscriptionStorageKey } from '../pushNotifications.js';

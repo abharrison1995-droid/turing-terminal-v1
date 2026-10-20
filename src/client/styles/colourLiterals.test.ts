@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * T5 (UI.1b, docs/ui/UI1B_SCOPE.md section 5): tokens.css is the only place that holds colour literals. Scans the client
+ * T5 (UI.1b, docs/history/ui/UI1B_SCOPE.md section 5): tokens.css is the only place that holds colour literals. Scans the client
  * CSS, the client TypeScript and TSX (test files excluded, since they do not ship), and every SVG under src/client or
  * public. Also checks that every var(--name) without a fallback resolves to a declaration, and that the white tokens
  * retired by the dark theme are gone.
