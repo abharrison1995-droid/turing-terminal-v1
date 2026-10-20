@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-installers-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     runs-on: ubuntu-22.04
@@ -53,7 +57,7 @@ jobs:
             dist/release/1.0.0-rc2/*.deb
             dist/release/1.0.0-rc2/*.AppImage
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   windows:
     runs-on: windows-latest
@@ -84,9 +88,12 @@ jobs:
           name: turing-terminal-windows-rc2
           path: dist/release/1.0.0-rc2/*.exe
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 1
 
   release-bundle:
+    permissions:
+      contents: read
+      actions: write
     needs: [linux, windows]
     runs-on: ubuntu-latest
     steps:
@@ -108,4 +115,19 @@ jobs:
           name: Turing-Terminal-1.0.0-rc2
           path: dist/release/1.0.0-rc2
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
+      # Remove duplicate installers only after the combined bundle uploads successfully.
+      # Failed or cancelled builds retain their intermediate artifacts for one day.
+      - name: Remove intermediate installer artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_ids="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name == "turing-terminal-linux-rc2" or .name == "turing-terminal-windows-rc2") | .id')"
+          for artifact_id in $artifact_ids; do
+            gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$artifact_id"
+          done
