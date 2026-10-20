@@ -203,3 +203,7 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 - Evidence: `e2e/ui9.spec.ts` (49 cells at 1440, 390 and 375) and `docs/ui/evidence/ui9/` (24 PNGs, `RESULTS.md`, `SHA256SUMS`). Documented exception: a toast is a transient overlay over page content, so it may cover a scrolled Home Options panel; its Dismiss control is the topmost element and nothing covers the panel once it is dismissed. Two phone run-menu frames differ by 1 to 8 antialiased pixels between runs (Chromium rasterisation), so their checksums may not repeat.
 - Review: APPROVE WITH FIXES; the accessible-name and rail-versus-topbar fixes were applied. Not applied: Escape propagation in the dismiss hook; a budget attention trigger (the panel shows no live warning status).
 - NOT PERFORMED: physical iPhone, Safari, screen readers.
+
+## Owner report: pairing and QR (2026-10-20)
+
+- The owner reported, on their own devices, that the new build works and that QR pairing works after the bodyless-JSON and QR-completion-poll fixes (`3bb44aa`). This is an owner-reported result, not a check performed by the implementer, and it does not cover the rest of the physical-device checklist in `docs/ui/UI5_SCOPE.md` §7 (insets, keyboard, landscape, offline, push, install behaviour), which stays NOT PERFORMED until the owner records it. It does not accept any V1 blocker or declare V1 release-ready.
