@@ -364,7 +364,7 @@ describe('integration recovery keeps history honest', () => {
     'planned op, CAS not done, finding decided once recovery released it: nothing advances, cycle retires',
     async () => {
       const { h, finding, base, op } = await crashed();
-      // (While the op is planned the decision is refused - Stage 6B.2.2 - so recovery runs first.)
+      // (While the op is planned the decision is refused, so recovery runs first.)
       await recoverIntegrationOps(h.fx.db, h.fx.goalId);
       decide(h, finding);
       const results = await h.supervisor.reconcile();

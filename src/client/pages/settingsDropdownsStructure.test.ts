@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 // UI.9a structure pins for the Settings dropdowns (UI9_SCOPE, "UI.9a: Settings dropdowns"). Source scans only, read the
-// same way ui4Structure.test.tsx reads SettingsPage.tsx; that file is not edited. [GUARD] tests hold today. [RED] tests
+// same way settingsPagesStructure.test.tsx reads SettingsPage.tsx; that file is not edited. [GUARD] tests hold today. [RED] tests
 // need each card wrapped in SettingsCard, so they fail until the cards are converted.
 //
 // Contract the implementer must match (the scope gives the rules; these are the forms the scans read):
@@ -9,8 +9,8 @@
 //   attribute-free `<h2>Name</h2>` between those two tags. Props are read from the first occurrence in the card's source,
 //   which is the opening tag. A bare `defaultOpen` counts as true.
 // - Every card has `id="..."` and `summary="..."`. The four cards named in the scope also have `attention={...}`.
-// - Ids are unique across SettingsPage.tsx and phase36.tsx, since both write one localStorage map.
-// - The ten cards are the eight Settings cards in SettingsPage.tsx, then OpenRouter and Turing metered budgets in phase36.tsx.
+// - Ids are unique across SettingsPage.tsx and settings/MeteredProviderSettings.tsx, since both write one localStorage map.
+// - The ten cards are the eight Settings cards in SettingsPage.tsx, then OpenRouter and Turing metered budgets in settings/MeteredProviderSettings.tsx.
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,7 +19,7 @@ import { describe, expect, it } from 'vitest';
 
 const pagesDir = dirname(fileURLToPath(import.meta.url));
 const pageSource = (file: string) => readFileSync(join(pagesDir, file), 'utf8');
-const phase36Source = readFileSync(join(pagesDir, '..', 'phase36.tsx'), 'utf8');
+const meteredSource = pageSource('settings/MeteredProviderSettings.tsx');
 
 /** Static heading literals (no interpolation, no attributes) of one tag, in source order. */
 const headings = (source: string, tag: 'h1' | 'h2') =>
@@ -56,7 +56,10 @@ function cardsIn(file: string, source: string): Card[] {
 }
 
 const settingsCards = () => cardsIn('SettingsPage.tsx', pageSource('SettingsPage.tsx'));
-const allCards = () => [...settingsCards(), ...cardsIn('phase36.tsx', phase36Source)];
+const allCards = () => [
+  ...settingsCards(),
+  ...cardsIn('settings/MeteredProviderSettings.tsx', meteredSource),
+];
 
 const SETTINGS_HEADINGS = [
   'Machine identity',
@@ -90,22 +93,22 @@ describe('Settings structure before and after the card conversion (UI9 UI.9a)', 
     expect(headings(source, 'h2')).toEqual(SETTINGS_HEADINGS);
     expect(source.match(/<h2\b/g)?.length ?? 0).toBe(SETTINGS_HEADINGS.length);
     expect(source.match(/<section className="surface-panel settings-section/g)?.length ?? 0).toBe(8);
-    expect(phase36Source).toContain('aria-label="OpenRouter"');
-    expect(phase36Source).toContain('aria-label="Metered budgets"');
+    expect(meteredSource).toContain('aria-label="OpenRouter"');
+    expect(meteredSource).toContain('aria-label="Metered budgets"');
   });
 
   it('[RED] the ten cards are SettingsCard elements, each with an id, and the ids are unique across both files', () => {
     const cards = allCards();
 
     expect(settingsCards()).toHaveLength(8);
-    expect(cardsIn('phase36.tsx', phase36Source)).toHaveLength(2);
+    expect(cardsIn('settings/MeteredProviderSettings.tsx', meteredSource)).toHaveLength(2);
     expect(cards.every((card) => card.id && card.id.length > 0)).toBe(true);
     expect(new Set(cards.map((card) => card.id)).size).toBe(10);
   });
 
   it('[RED] each card holds exactly one h2 literal, and those h2s keep their original order', () => {
     expect(settingsCards().map((card) => card.name)).toEqual(SETTINGS_HEADINGS);
-    expect(cardsIn('phase36.tsx', phase36Source).map((card) => card.name)).toEqual([
+    expect(cardsIn('settings/MeteredProviderSettings.tsx', meteredSource).map((card) => card.name)).toEqual([
       'OpenRouter (optional, metered)',
       'Turing metered budgets',
     ]);

@@ -1923,7 +1923,7 @@ describe('saved attestation reasons (D.4F.1)', () => {
   });
 });
 
-describe('GH.6b residual B: preparation refusal copy', () => {
+describe('preparation refusal copy', () => {
   it('B1 a refused preparation shows the server copy and never prints the raw error code', async () => {
     const message = 'The Goal requires manual reconciliation before a handoff can be prepared.';
     serve(

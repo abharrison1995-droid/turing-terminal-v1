@@ -1,7 +1,7 @@
 import type { ValidationProfile } from './goals.js';
 
 /**
- * Route-validation probe contract (Goal Engine Stage 5B). Pure, shared data: the Turing-owned fixture repository
+ * Route-validation probe contract. Pure, shared data: the Turing-owned fixture repository
  * content, the per-profile instructions a probe stage receives, and the finite expectations the server checks. Nothing
  * here is a credential, a provider claim or a route. The probe never asks a model to describe itself: every verdict is
  * computed by the server from the persisted run, the broker audit and Git.

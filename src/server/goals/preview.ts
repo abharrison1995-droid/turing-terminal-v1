@@ -25,7 +25,7 @@ import { READINESS_ROLES, workflowBillingTerms } from './routePlan.js';
 import { TuringExecutorError, registeredGoalWorkflow } from './turingExecutor.js';
 
 /**
- * The Goal Preview (Stage 7A): "what would Turing do next, and is it allowed" without doing any of it. It is a pure read
+ * The Goal Preview: "what would Turing do next, and is it allowed" without doing any of it. It is a pure read
  * of persisted rows, in-memory observations and Git objects at the Goal head:
  *   - no provider call, no provider discovery, no network request, no probe, no model catalog write;
  *   - no run, cycle, route resolution, approval, event or Goal status change is created, and no pool rotates;

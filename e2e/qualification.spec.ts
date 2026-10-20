@@ -6,8 +6,8 @@ import { MACHINE_PROFILES_KEY } from '../src/client/machineProfiles';
 import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
-import { ui5Routes } from './fixtures/ui5';
-import { UI4_MACHINE_PROFILES, UI4_ORIGINS, UI4_PAIRING_REQUIRED } from './fixtures/ui4';
+import { mobileRoutes } from './fixtures/mobile';
+import { SETTINGS_MACHINE_PROFILES, SETTINGS_ORIGINS, SETTINGS_PAIRING_REQUIRED } from './fixtures/settings';
 
 /**
  * UI.7 qualification matrix (UI0_SPEC section 8, UI.7; D-6, D-8). Fixture-only: every `/api/*` request is answered by the
@@ -37,7 +37,7 @@ import { UI4_MACHINE_PROFILES, UI4_ORIGINS, UI4_PAIRING_REQUIRED } from './fixtu
  * matrix, findings and exceptions). Per-cell JSON is kept in e2e/.artifacts/ui7-matrix/, which is gitignored.
  *
  * Not part of `npm test` or the CI gate. Run with:
- *   npm run e2e:screenshots -- e2e/ui7.spec.ts
+ *   npm run e2e:screenshots -- e2e/qualification.spec.ts
  */
 
 type ViewportName = keyof typeof VIEWPORTS;
@@ -75,10 +75,10 @@ const ACTIVE_GOAL = 'Fixture: retry backoff for the Atlas client';
 /** The running fixture run. Its detail shows "Now: Implement" and the intervention box. */
 const RUNNING_RUN = 'fixture-run-001';
 
-/** Named by the Goal cockpit's own copy. Anchored to the start of a control's own text (as in ui5.spec.ts). */
+/** Named by the Goal cockpit's own copy. Anchored to the start of a control's own text (as in mobile.spec.ts). */
 const COMPLETION_CONTROL =
   /^(?:Complete Goal|Record completion decision|Dispute|Withdraw|Replace with another|Confirm correction|Decline this request|Apply|Attest|Approve definition)\b/i;
-/** Any control named like a billing fallback or an automatic paid lane (as in ui5.spec.ts). */
+/** Any control named like a billing fallback or an automatic paid lane (as in mobile.spec.ts). */
 const FALLBACK_CONTROL = /fallback|auto(?:matic(?:ally)?)?[ -]?pa(?:id|y)|pay[ -]as[ -]you[ -]go|payg/i;
 /** Visible copy that offers or describes an automatic paid fallback. Matches are reported for review, not waived. */
 const FALLBACK_TEXT =
@@ -91,13 +91,13 @@ const CONSOLE_EXCEPTIONS: {
 }[] = [
   {
     reason:
-      'Fixture by design: openApp aborts the offline machine health probe (UI4_ORIGINS.offline) so the offline row can render; the browser logs the failed request.',
+      'Fixture by design: openApp aborts the offline machine health probe (SETTINGS_ORIGINS.offline) so the offline row can render; the browser logs the failed request.',
     matches: (error) =>
-      error.url.startsWith(UI4_ORIGINS.offline) && /failed to load resource/i.test(error.text),
+      error.url.startsWith(SETTINGS_ORIGINS.offline) && /failed to load resource/i.test(error.text),
   },
   {
     reason:
-      'Fixture by design: on the device-pairing route /api/dashboard answers 401 (UI4_PAIRING_REQUIRED). That response is what shows the pairing gate, so the browser logs it.',
+      'Fixture by design: on the device-pairing route /api/dashboard answers 401 (SETTINGS_PAIRING_REQUIRED). That response is what shows the pairing gate, so the browser logs it.',
     matches: (error, context) =>
       context.pairing && error.url.endsWith('/api/dashboard') && /status of 401/.test(error.text),
   },
@@ -174,11 +174,11 @@ function seedMachineProfiles(seed: { key: string; value: unknown }) {
   }
 }
 
-/** Pins the clock, answers every API call from the UI.5 table, and fixes the three machine origins (as ui5.spec.ts). */
+/** Pins the clock, answers every API call from the UI.5 table, and fixes the three machine origins (as mobile.spec.ts). */
 async function openApp(page: Page, viewport: ViewportName, options: { pairing?: boolean } = {}) {
   await page.setViewportSize(VIEWPORTS[viewport]);
-  const api = await installFixtures(page, ui5Routes);
-  await page.route(`${UI4_ORIGINS.online}/api/health`, (route) =>
+  const api = await installFixtures(page, mobileRoutes);
+  await page.route(`${SETTINGS_ORIGINS.online}/api/health`, (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -186,21 +186,24 @@ async function openApp(page: Page, viewport: ViewportName, options: { pairing?: 
       body: JSON.stringify({ ok: true, service: 'turing-terminal' }),
     }),
   );
-  await page.route(`${UI4_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
+  await page.route(`${SETTINGS_ORIGINS.offline}/api/health`, (route) => route.abort('failed'));
   // Deliberately never answered, so the checking row keeps its pending state.
-  await page.route(`${UI4_ORIGINS.checking}/api/health`, () => {
+  await page.route(`${SETTINGS_ORIGINS.checking}/api/health`, () => {
     // Intentional hang.
   });
   if (options.pairing) {
     await page.route('**/api/dashboard', (route) =>
       route.fulfill({
-        status: UI4_PAIRING_REQUIRED.status,
+        status: SETTINGS_PAIRING_REQUIRED.status,
         contentType: 'application/json',
-        body: JSON.stringify(UI4_PAIRING_REQUIRED.body),
+        body: JSON.stringify(SETTINGS_PAIRING_REQUIRED.body),
       }),
     );
   }
-  await page.addInitScript(seedMachineProfiles, { key: MACHINE_PROFILES_KEY, value: UI4_MACHINE_PROFILES });
+  await page.addInitScript(seedMachineProfiles, {
+    key: MACHINE_PROFILES_KEY,
+    value: SETTINGS_MACHINE_PROFILES,
+  });
   await page.clock.pauseAt(new Date(Date.parse(FIXED_NOW) + 1_000));
   return api;
 }
@@ -209,7 +212,7 @@ async function expectTopbar(page: Page, label: string) {
   await expect(page.locator('.topbar-title')).toHaveText(label);
 }
 
-/** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as ui6.spec.ts). */
+/** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as mascot.spec.ts). */
 async function goTo(page: Page, label: string) {
   const nav = page.getByRole('navigation', { name: 'Workspace' });
   if (!(await nav.first().isVisible())) {
@@ -792,7 +795,7 @@ test.afterAll(() => {
   const markdown = [
     '# UI.7 qualification results',
     '',
-    'Generated by `e2e/ui7.spec.ts` from fixtures only (no master, provider or live data). Same run, same output: no timestamps.',
+    'Generated by `e2e/qualification.spec.ts` from fixtures only (no master, provider or live data). Same run, same output: no timestamps.',
     '',
     `Summary: ${cellCount} route and interaction cells, ${passCount} pass, ${cellCount - passCount} fail or error. ${captured} full-page screenshots, ${totalBytes} bytes (capture set \`${CAPTURE_SET}\`; budget 6 MB, ${totalBytes > 6_000_000 ? `OVER budget by ${totalBytes - 6_000_000} bytes` : 'within budget'}). Checksums: \`after/SHA256SUMS\`.`,
     '',
@@ -817,7 +820,7 @@ test.afterAll(() => {
     '',
     '## Scope notes',
     '',
-    '- Touch targets: height is checked against 44 px (as the spec states), at the compact widths (<= 640 px, the useCompactViewport breakpoint). Width is not checked here; ui5.spec.ts checks both.',
+    '- Touch targets: height is checked against 44 px (as the spec states), at the compact widths (<= 640 px, the useCompactViewport breakpoint). Width is not checked here; mobile.spec.ts checks both.',
     '- Full-page captures show the document only. A container that scrolls inside the page is captured at its top.',
     '- Contrast: not run. No axe dependency exists in package.json or node_modules, and none was added.',
     '- Palette: Ctrl+K and Meta+K are checked at 1920, 1440, 1280 and 1024 px (every width above the compact breakpoint).',

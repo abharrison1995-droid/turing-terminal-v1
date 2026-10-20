@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 // UI.3 tests for the Goal cockpit stylesheet (UI3_SCOPE sections 4 and 5, matrix G1 to G9). They read the CSS as text,
-// the same way ui2Css.test.ts does. They prove that rules are declared, not how a browser lays them out.
+// the same way homeWorkspaceCss.test.ts does. They prove that rules are declared, not how a browser lays them out.
 // [RED] tests need goals-cockpit.css, which does not exist yet; each one asserts the file exists first, so a missing file
 // fails with a clear message. [GUARD] tests characterise rules that already hold. A GUARD that scans goals-cockpit.css
 // passes vacuously while that file is absent, so the goals.css half of each GUARD carries the signal until then.

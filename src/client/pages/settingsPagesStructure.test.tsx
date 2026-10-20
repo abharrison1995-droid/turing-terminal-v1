@@ -2,17 +2,17 @@
 
 // UI.4 structure tests (UI4_SCOPE sections 4 and 5; matrix P1, P2, B1 and B2). GUARD tests characterise what the four
 // pages already do: heading and control inventories, the Machines Connect and Remove rules, the billing copy that must
-// not gain a fallback, and the UsageExplorer figures. RED tests need the approved presentational hooks in phase36.tsx.
+// not gain a fallback, and the UsageExplorer figures. RED tests need the approved presentational hooks in usage/UsageExplorer.tsx.
 // Nothing here renders the full SettingsPage; Settings is covered by source inventories.
 //
 // Expectations the implementer must match (UI4_SCOPE gives the rules, these are the exact forms chosen for the tests):
-// - ProvenanceBadge (phase36.tsx, rendered in the UsageExplorer summary): one element with the class `provenance-badge`
+// - ProvenanceBadge (usage/UsageExplorer.tsx, rendered in the UsageExplorer summary): one element with the class `provenance-badge`
 //   for each tokenProvenance key whose count is above zero. Its text is the word, one space, then the count. The words:
 //   provider_measured -> "Provider measured", locally_measured -> "Locally measured", user_configured -> "User configured",
 //   estimated -> "Estimated", unavailable -> "Unavailable". (humanize() keeps underscores, so it is not used.)
 //   Example: "Locally measured 128". With no counted provenance, one badge reads exactly "Unavailable", never "0".
 //   The class is the one className hook for this: the same words recur across cards, so a class is the only stable scope.
-// - Budget meter (phase36.tsx, "Metered spend and budgets" in the UsageExplorer): when budget.<window>.capUsd is non-null,
+// - Budget meter (usage/UsageExplorer.tsx, "Metered spend and budgets" in the UsageExplorer): when budget.<window>.capUsd is non-null,
 //   an element with role="img" whose aria-label is exactly "Daily budget: $0.42 of $2.00 committed" (or "Monthly budget:"),
 //   with committedUsd and capUsd each to two decimal places. The visible text "$0.42 of $2.00 committed" sits in the same
 //   parent element as the meter. When capUsd is null, the row reads "No cap" and no budget meter is rendered.
@@ -29,7 +29,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DashboardSnapshot } from '../../shared/types';
 import type { BudgetStatus, MetricTotal, UsageAggregate, UsageAnalytics } from '../api';
 import type { MachineProfile } from '../machineProfiles';
-import { UsageExplorer } from '../phase36';
+import { UsageExplorer } from './usage/UsageExplorer';
 import { MachinesPage } from './MachinesPage';
 
 const usageAnalytics = vi.hoisted(() => vi.fn());
@@ -46,7 +46,8 @@ vi.mock('../machineProfiles', async (importActual) => ({
 
 const pagesDir = dirname(fileURLToPath(import.meta.url));
 const pageSource = (file: string) => readFileSync(join(pagesDir, file), 'utf8');
-const phase36Source = readFileSync(join(pagesDir, '..', 'phase36.tsx'), 'utf8');
+const meteredSource = pageSource('settings/MeteredProviderSettings.tsx');
+const usageSource = pageSource('usage/UsageExplorer.tsx');
 
 /** The source from one marker up to (not including) the next stop marker, or to the end of the file. */
 function sectionOf(source: string, marker: string, stop?: string): string {
@@ -99,17 +100,15 @@ describe('heading and control inventories (UI4 section 4, B2)', () => {
       'Paired devices',
       'Global and project rules',
     ]);
-    expect(
-      headings(
-        sectionOf(phase36Source, 'export function OpenRouterSettings', 'export function formatMetric'),
-        'h2',
-      ),
-    ).toEqual(['OpenRouter (optional, metered)', 'Turing metered budgets']);
+    expect(headings(sectionOf(meteredSource, 'export function OpenRouterSettings'), 'h2')).toEqual([
+      'OpenRouter (optional, metered)',
+      'Turing metered budgets',
+    ]);
   });
 
   it('[GUARD] the Usage and Machines h2 inventories are unchanged', () => {
     expect(headings(pageSource('UsagePage.tsx'), 'h2')).toEqual(['User-configured quota envelopes']);
-    expect(headings(sectionOf(phase36Source, 'export function UsageExplorer'), 'h2')).toEqual([
+    expect(headings(sectionOf(usageSource, 'export function UsageExplorer'), 'h2')).toEqual([
       'By provider / billing lane',
       'By model',
       'Metered spend and budgets',
@@ -147,10 +146,8 @@ describe('no fallback or auto-paid control (UI4 section 3, B1)', () => {
       'MachinesPage.tsx': pageSource('MachinesPage.tsx'),
       'UsagePage.tsx': pageSource('UsagePage.tsx'),
       'DevicePairingPage.tsx': pageSource('DevicePairingPage.tsx'),
-      'phase36.tsx (OpenRouter, budgets, usage)': sectionOf(
-        phase36Source,
-        'export function OpenRouterSettings',
-      ),
+      'settings/MeteredProviderSettings.tsx': sectionOf(meteredSource, 'export function OpenRouterSettings'),
+      'usage/UsageExplorer.tsx': sectionOf(usageSource, 'const SERIES'),
     };
 
     for (const [file, source] of Object.entries(sources)) {
@@ -160,7 +157,7 @@ describe('no fallback or auto-paid control (UI4 section 3, B1)', () => {
 
   it('[GUARD] the OpenRouter "unused until you explicitly select it" notice is unchanged', () => {
     const openRouter = sectionOf(
-      phase36Source,
+      meteredSource,
       'export function OpenRouterSettings',
       'export function MeteredBudgetSettingsPanel',
     );

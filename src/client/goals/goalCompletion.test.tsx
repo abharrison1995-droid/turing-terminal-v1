@@ -1146,7 +1146,7 @@ describe('completion recovery after an ambiguous write (D.4E)', () => {
   });
 });
 
-describe('completion relation to other and corrected decisions (D.4R Slice 3)', () => {
+describe('completion relation to other and corrected decisions', () => {
   const preflightReads = () => calls.filter((call) => call.path === '/api/goals/goal-1/completion-preflight');
   const corrected = (attestationId: string) =>
     ({

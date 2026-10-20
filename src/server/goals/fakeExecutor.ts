@@ -25,7 +25,7 @@ export interface FakeRunRequest {
  * TEST-ONLY executor. It is never imported by production code, is excluded from the server build, and no setting or
  * environment variable selects it.
  *
- * It models the Stage 4 contract: every proposal and child run is an ordinary persisted run, queueing is idempotent per
+ * It models the executor contract: every proposal and child run is an ordinary persisted run, queueing is idempotent per
  * (cycle, purpose) and answered from the database (so a brand-new executor instance returns the same run), and a
  * proposal is read back from the run's persisted stage output (`stages.output_json.text`), never from memory. Nothing
  * here calls a model: tests complete runs themselves.

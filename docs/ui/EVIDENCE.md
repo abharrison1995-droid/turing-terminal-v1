@@ -108,7 +108,7 @@ Limitations:
 
 Scope: `docs/history/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
 
-Changes: `pages-ui4.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in `phase36.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
+Changes: `pages-settings.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in what was then `phase36.tsx`, now `src/client/pages/usage/UsageExplorer.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
 
 Captures: `docs/ui/evidence/ui4/after/` (18 PNGs, `SHA256SUMS` verified) from labelled fixtures.
 
@@ -123,7 +123,7 @@ Findings and limitations:
 
 ## UI.5: mobile PWA (remote control only)
 
-Scope: `docs/history/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/ui5Review.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileUi5Css.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-ui5.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/ui5.spec.ts`.
+Scope: `docs/history/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/noticeTimeoutRelease.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileRemoteCss.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-remote.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/mobile.spec.ts`.
 
 Review fixes:
 
@@ -139,7 +139,7 @@ Review fixes:
 - **Home cushion.** A 16px bottom padding on `.home-column`, under the docked composer. Before the cushion, the composer sat at its natural position at the end of the scroll with nothing under it, so the cushion guards the edge rather than fixing an existing overlap. The scrolling element is the window. The cushion moves the Home background behind the drawer scrim; the drawer capture changed for that reason, confirmed by removing the cushion for one run.
 - **Palette `@supports`.** The desktop `dvh` values equal HEAD's `vh` values where the two units match, which is every desktop window. Measured at 1440x900: backdrop padding-top 108px (12vh of 900) and palette max-height 480px (min(480px, 70vh) is 480px at 900px). The phone `80dvh` changes only where browser chrome moves the viewport.
 
-Captures: `docs/ui/evidence/ui5/after/`, 32 PNGs at 375x812 and 390x844: the 14 earlier captures plus `toast-preview` and `home-end`. Three full runs of `e2e/ui5.spec.ts` (30 tests each) produced identical hashes, and `SHA256SUMS` was refreshed from them. Captures use fixtures only. Chromium reports every `env(safe-area-inset-*)` as 0.
+Captures: `docs/ui/evidence/ui5/after/`, 32 PNGs at 375x812 and 390x844: the 14 earlier captures plus `toast-preview` and `home-end`. Three full runs of `e2e/mobile.spec.ts` (30 tests each) produced identical hashes, and `SHA256SUMS` was refreshed from them. Captures use fixtures only. Chromium reports every `env(safe-area-inset-*)` as 0.
 
 Precache (method: `vite build` at HEAD in a scratch export, and in the working tree; `sw.js` reports the total): HEAD 18 entries, 2420.39 KiB; UI.5 18 entries, 2424.71 KiB (+4.32 KiB).
 
@@ -161,7 +161,7 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 
 ## UI.7: qualification
 
-- `e2e/ui7.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
+- `e2e/qualification.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
 - Captures: `docs/ui/evidence/ui7/after/` (34 PNGs, 6.6 MB; full six-viewport set was 14 MB so desktop 1440 and 390 cover every route and the other viewports cover Home, run detail and the Goal cockpit).
 - NOT PERFORMED: axe contrast scan (no dependency), drawer scrim close, physical iPhone, native Tauri, screen readers, forced-colors, live data, CI.
 
@@ -202,7 +202,7 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 
 - Settings cards are native `<details>` disclosures (`SettingsCard`): Machine identity, OpenRouter, Global and project rules and Paired devices open by default, the rest closed; summaries use only loaded data; attention (pairing request awaiting approval or new code, Tailscale or desktop error, push notice, OpenRouter telemetry errors) opens a card; open state is remembered per viewer in `localStorage`. Children stay mounted when closed. The summary's accessible name is the card title with the one-line summary as its description.
 - Overlay hygiene: one `--z-*` scale in `tokens.css` (the toast now sits below the scrim and drawer, the rail one above the topbar); the Run actions menu closes on outside click, Escape, focus loss, item click and when another managed menu opens; the studio nav clears the iOS notch; chart tooltips are clamped inside the viewport; the compact composer is capped to the visible height and scrolls.
-- Evidence: `e2e/ui9.spec.ts` (49 cells at 1440, 390 and 375) and `docs/ui/evidence/ui9/` (24 PNGs, `RESULTS.md`, `SHA256SUMS`). Documented exception: a toast is a transient overlay over page content, so it may cover a scrolled Home Options panel; its Dismiss control is the topmost element and nothing covers the panel once it is dismissed. Two phone run-menu frames differ by 1 to 8 antialiased pixels between runs (Chromium rasterisation), so their checksums may not repeat.
+- Evidence: `e2e/overlays.spec.ts` (49 cells at 1440, 390 and 375) and `docs/ui/evidence/ui9/` (24 PNGs, `RESULTS.md`, `SHA256SUMS`). Documented exception: a toast is a transient overlay over page content, so it may cover a scrolled Home Options panel; its Dismiss control is the topmost element and nothing covers the panel once it is dismissed. Two phone run-menu frames differ by 1 to 8 antialiased pixels between runs (Chromium rasterisation), so their checksums may not repeat.
 - Review: APPROVE WITH FIXES; the accessible-name and rail-versus-topbar fixes were applied. Not applied: Escape propagation in the dismiss hook; a budget attention trigger (the panel shows no live warning status).
 - NOT PERFORMED: physical iPhone, Safari, screen readers.
 

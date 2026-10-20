@@ -1,17 +1,17 @@
 // @vitest-environment node
 
 // UI.5 tests for the mobile PWA stylesheet (UI5_SCOPE sections 2, 4 and 5; matrix M3 to M11 and M13). They read the CSS as
-// text, the same way ui4Css.test.ts does. They prove that rules are declared, not how a browser lays them out. Layout is
-// proven by Playwright (e2e/ui5.spec.ts), not here.
+// text, the same way pagesSettingsCss.test.ts does. They prove that rules are declared, not how a browser lays them out. Layout is
+// proven by Playwright (e2e/mobile.spec.ts), not here.
 //
-// [RED] tests need mobile-ui5.css, which does not exist yet. Each one asserts the file exists first, so a missing file
+// [RED] tests need mobile-remote.css, which does not exist yet. Each one asserts the file exists first, so a missing file
 // fails with a clear message. The viewport-unit test is RED on the layout stylesheets, which still hold vh and 100vh.
-// [GUARD] tests characterise rules that already hold. A GUARD that scans mobile-ui5.css passes vacuously while that file
+// [GUARD] tests characterise rules that already hold. A GUARD that scans mobile-remote.css passes vacuously while that file
 // is absent, so the GUARDs that matter also scan the existing styles where those comply.
 //
 // Selector and value contract for the implementer (UI5_SCOPE gives no exact values, so these are the expectations):
-// - Home (item 1): `.home-column > .launch-blockers` declares an integer `order` in mobile-ui5.css. Its effective compact
-//   order (later rules win; mobile-ui5.css is imported last) is lower than `.home-column > .home-tasks`, which holds the
+// - Home (item 1): `.home-column > .launch-blockers` declares an integer `order` in mobile-remote.css. Its effective compact
+//   order (later rules win; mobile-remote.css is imported last) is lower than `.home-column > .home-tasks`, which holds the
 //   Recent list. It also declares scroll-margin-bottom, so the sticky composer does not hide it.
 // - Toast (item 2): the exact selector `.toast` sets top from var(--topbar-h) with env(safe-area-inset-top) and bottom: auto.
 //   The exact selector `.toast button` sets min-height var(--h-touch) or 44px. A rule naming toast sets line-clamp: 3.
@@ -35,7 +35,7 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const indexPath = join(here, 'index.css');
-const ui5Path = join(here, 'mobile-ui5.css');
+const ui5Path = join(here, 'mobile-remote.css');
 const mobilePath = join(here, 'mobile.css');
 const palettePath = join(here, 'palette.css');
 /** The layout stylesheets named in UI5_SCOPE item 6. They must not hold vh outside a dvh fallback. */
@@ -120,17 +120,17 @@ const bodiesFor = (css: string, selector: string): string[] =>
     .filter((rule) => rule.selectors.includes(selector))
     .map((rule) => rule.body);
 
-/** mobile-ui5.css, which must exist for a [RED] test to reach its real assertion. */
+/** mobile-remote.css, which must exist for a [RED] test to reach its real assertion. */
 const uiCss = (): string => {
-  expect(existsSync(ui5Path), 'mobile-ui5.css exists').toBe(true);
+  expect(existsSync(ui5Path), 'mobile-remote.css exists').toBe(true);
   return read(ui5Path);
 };
 
-/** mobile-ui5.css when present, otherwise empty, for the GUARDs that must not fail on a missing file. */
+/** mobile-remote.css when present, otherwise empty, for the GUARDs that must not fail on a missing file. */
 const uiCssIfPresent = (): string => (existsSync(ui5Path) ? read(ui5Path) : '');
 
 /**
- * The compact `order` each Home child ends with. Later rules win, so mobile.css is read before mobile-ui5.css. Keys are
+ * The compact `order` each Home child ends with. Later rules win, so mobile.css is read before mobile-remote.css. Keys are
  * the child class names, for example `launch-blockers` for `.home-column > .launch-blockers`.
  */
 function compactHomeOrders(files: string[]): Map<string, number> {
@@ -166,10 +166,10 @@ function unguardedViewportRules(css: string): Rule[] {
   );
 }
 
-describe('mobile-ui5.css is wired last in the cascade (UI5 section 2)', () => {
-  it('[RED] index.css imports ./mobile-ui5.css as its final stylesheet', () => {
+describe('mobile-remote.css is wired last in the cascade (UI5 section 2)', () => {
+  it('[RED] index.css imports ./mobile-remote.css as its final stylesheet', () => {
     const imports = [...read(indexPath).matchAll(/@import\s+['"]\.\/([^'"]+)['"]/g)].map((match) => match[1]);
-    expect(imports[imports.length - 1]).toBe('mobile-ui5.css');
+    expect(imports[imports.length - 1]).toBe('mobile-remote.css');
   });
 
   it('[RED] every rule sits in the 680px block, a reduced-motion block or an @supports fallback', () => {
@@ -190,10 +190,11 @@ describe('mobile-ui5.css is wired last in the cascade (UI5 section 2)', () => {
 });
 
 describe('Home: blockers ahead of the Recent list on compact (item 1; matrix M5)', () => {
-  it('[RED] mobile-ui5.css gives .launch-blockers an explicit compact order below .home-tasks', () => {
-    expect(compactHomeOrders([ui5Path]).has('launch-blockers'), 'mobile-ui5.css orders launch-blockers').toBe(
-      true,
-    );
+  it('[RED] mobile-remote.css gives .launch-blockers an explicit compact order below .home-tasks', () => {
+    expect(
+      compactHomeOrders([ui5Path]).has('launch-blockers'),
+      'mobile-remote.css orders launch-blockers',
+    ).toBe(true);
 
     const effective = compactHomeOrders([mobilePath, ui5Path]);
     const blockers = effective.get('launch-blockers');
@@ -207,7 +208,7 @@ describe('Home: blockers ahead of the Recent list on compact (item 1; matrix M5)
     expect(bodiesNaming(uiCss(), 'launch-blockers').join('\n')).toMatch(/scroll-margin(?:-bottom)?\s*:/);
   });
 
-  it('[GUARD] the compact Home children hold unique order values (mobile.css, and mobile-ui5.css when present)', () => {
+  it('[GUARD] the compact Home children hold unique order values (mobile.css, and mobile-remote.css when present)', () => {
     const orders = compactHomeOrders([mobilePath, ...(existsSync(ui5Path) ? [ui5Path] : [])]);
 
     expect(orders.size).toBeGreaterThan(0);
@@ -249,7 +250,7 @@ describe('intervention box (item 3; matrix M6)', () => {
     expect(capped).toBe(true);
   });
 
-  it('[RED] mobile-ui5.css reserves room for the last stage row with scroll-padding-bottom', () => {
+  it('[RED] mobile-remote.css reserves room for the last stage row with scroll-padding-bottom', () => {
     expect(uiCss()).toMatch(/scroll-padding-bottom\s*:/);
   });
 });
@@ -315,7 +316,7 @@ describe('safe-area insets (item 7; matrix M10)', () => {
     ['drawer (.sidebar)', 'sidebar', ['left', 'right']],
     ['composer', 'composer', []],
     ['palette', 'palette', []],
-  ])('[RED] mobile-ui5.css declares a safe-area env() on the %s', (_label, className, sides) => {
+  ])('[RED] mobile-remote.css declares a safe-area env() on the %s', (_label, className, sides) => {
     const bodies = bodiesNaming(uiCss(), className).join('\n');
 
     if (sides.length === 0) expect(bodies).toMatch(/env\(\s*safe-area-inset-/);
@@ -326,7 +327,7 @@ describe('safe-area insets (item 7; matrix M10)', () => {
 });
 
 describe('motion, colour and hidden content (item 9; matrix M11 and M13)', () => {
-  it('[GUARD] any animation or transition in mobile-ui5.css sits inside prefers-reduced-motion: no-preference', () => {
+  it('[GUARD] any animation or transition in mobile-remote.css sits inside prefers-reduced-motion: no-preference', () => {
     const unguarded = withoutBlocks(uiCssIfPresent(), 'media', (query) =>
       /prefers-reduced-motion:\s*no-preference/.test(query),
     );
@@ -334,7 +335,7 @@ describe('motion, colour and hidden content (item 9; matrix M11 and M13)', () =>
     expect(unguarded).not.toMatch(/\b(?:animation|transition)(?:-[a-z-]+)?\s*:/);
   });
 
-  it('[GUARD] no colour literal in mobile-ui5.css or the layout stylesheets', () => {
+  it('[GUARD] no colour literal in mobile-remote.css or the layout stylesheets', () => {
     const sources = [...layoutPaths, mobilePath, ui5Path]
       .filter((path) => existsSync(path))
       .map((path) => ({ file: basename(path), css: stripComments(read(path)) }));
@@ -344,7 +345,7 @@ describe('motion, colour and hidden content (item 9; matrix M11 and M13)', () =>
     }
   });
 
-  it('[GUARD] mobile-ui5.css uses no display face and hides nothing with display: none', () => {
+  it('[GUARD] mobile-remote.css uses no display face and hides nothing with display: none', () => {
     const css = stripComments(uiCssIfPresent());
     const hidden = rulesIn(css)
       .filter((rule) => /display\s*:\s*none\b/.test(rule.body))

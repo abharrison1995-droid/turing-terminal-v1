@@ -26,7 +26,7 @@ import { observeRouteSnapshot } from './routingSnapshot.js';
 import { canonicalNonRouteWorkflow, PLAN_ROUTE_FIELDS, registeredGoalWorkflow } from './turingExecutor.js';
 
 /**
- * Route-validation probes (Goal Engine Stage 5B.1). A probe is a USER-INITIATED, ordinary, billed run of the reserved
+ * Route-validation probes. A probe is a USER-INITIATED, ordinary, billed run of the reserved
  * `goal-probe-v1` workflow against the Turing-owned fixture repository, on exactly the route the user named. It is
  * persisted before any provider work (`route_validation_probes`, migration 021), survives a restart, and is consumed
  * from persisted run state alone into immutable `route_validations` rows by `reconcileRouteProbe`.

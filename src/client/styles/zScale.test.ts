@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 // UI.9b z-index scale and overlay CSS (UI9_SCOPE, "UI.9b: overlay hygiene": R1, R4, R5 and R6). They read the CSS as text,
-// the same way ui4Css.test.ts does, and prove that rules are declared, not how a browser stacks them. rulesIn is copied
-// from ui4Css.test.ts so this file does not depend on a test file it cannot edit.
+// the same way pagesSettingsCss.test.ts does, and prove that rules are declared, not how a browser stacks them. rulesIn is copied
+// from pagesSettingsCss.test.ts so this file does not depend on a test file it cannot edit.
 //
 // Contract the implementer must match:
 // - tokens.css declares --z-raised 1, --z-sticky 10, --z-menu 20, --z-topbar 30, --z-toast 40, --z-scrim 50, --z-drawer 60,
@@ -10,7 +10,7 @@
 // - No styles/*.css file except tokens.css contains a raw integer z-index. Each one uses var(--z-*).
 // - The `.toast` rule in primitives.css uses var(--z-toast).
 // - A rule in mobile.css whose selector is `.studio-nav` sets top to a calc() that includes env(safe-area-inset-top).
-// - A rule in phase36.css whose selector is `.chart-tooltip` sets left to a clamp(). The inline left in phase36.tsx
+// - A rule in billing-routing-usage.css whose selector is `.chart-tooltip` sets left to a clamp(). The inline left in pages/usage/UsageExplorer.tsx
 //   (chart-tooltip) must move into a custom property for this to take effect, because an inline style beats a stylesheet.
 // - A rule in mobile.css whose selector ends in `.composer` (for example `.home-column > .composer`) sets a max-height
 //   with dvh and overflow-y: auto in the same rule.
@@ -105,8 +105,10 @@ describe('mobile and overlay rules (UI9 UI.9b, R4 to R6)', () => {
     ).toBe(true);
   });
 
-  it('[RED] the chart tooltip in phase36.css clamps its left offset with clamp()', () => {
-    const tooltip = rulesIn(read('phase36.css')).filter((rule) => rule.selectors.includes('.chart-tooltip'));
+  it('[RED] the chart tooltip in billing-routing-usage.css clamps its left offset with clamp()', () => {
+    const tooltip = rulesIn(read('billing-routing-usage.css')).filter((rule) =>
+      rule.selectors.includes('.chart-tooltip'),
+    );
 
     expect(tooltip.length).toBeGreaterThan(0);
     expect(tooltip.some((rule) => /(?:^|[\s;])left\s*:\s*clamp\(/.test(rule.body))).toBe(true);

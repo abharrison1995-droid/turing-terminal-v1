@@ -286,7 +286,7 @@ export class GoalSupervisor {
       (options.reasonCode === 'user_resume' && goal.status !== 'paused') ||
       (options.reasonCode === 'blocker_resolved' && goal.status !== 'blocked') ||
       (options.reasonCode === 'run_resumed' &&
-        // A paused review run is handed to the user as review_needs_decision (accepted Stage 6 behaviour).
+        // A paused review run is handed to the user as review_needs_decision (accepted review behaviour).
         !(
           goal.status === 'needs_user' &&
           (goal.status_reason_code === 'run_interrupted' ||
@@ -1706,7 +1706,7 @@ export class GoalSupervisor {
 
   /**
    * Real work outside the milestone scope is never integrated and never retried automatically: the cycle fails and,
-   * in the same transaction, the Goal goes to the user. (A later scope-change review is Stage 6.)
+   * in the same transaction, the Goal goes to the user. (A scope-change review is a separate review cycle.)
    */
   private scopeViolation(goalId: string, cycle: CycleRow, run: RunRow, paths: string[]): TickResult {
     const safe = paths.slice(0, 20).map((path) => path.slice(0, 200));
@@ -1746,7 +1746,7 @@ export class GoalSupervisor {
     return { action: 'integration_blocked', goalId, cycleId: cycle.id, code };
   }
 
-  // --- Review cycles (Stage 6A) ----------------------------------------------------------------------------------
+  // --- Review cycles ---------------------------------------------------------------------------------------------
 
   /**
    * A `needs_user(review_needs_decision)` Goal that the user resumed is `running` again with its review cycle still

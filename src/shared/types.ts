@@ -657,7 +657,7 @@ export interface DashboardSnapshot {
   providers: ProviderStatus[];
   runs: RunSummary[];
   approvals: Approval[];
-  /** Additive Goal fields the server already returns (Stage 7A); absent from older masters. */
+  /** Additive Goal fields the server already returns; absent from older masters. */
   goals?: GoalDashboardSummary;
   goalApprovals?: GoalDashboardApprovals;
   usage: {

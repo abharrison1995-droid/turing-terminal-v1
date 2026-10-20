@@ -5,7 +5,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Static consumer guard for the completion Booleans `unqualifiedSuccessAllowed` and `trustedForDownstream` (GH.6a, D3-2
+ * Static consumer guard for the completion Booleans `unqualifiedSuccessAllowed` and `trustedForDownstream` (D3-2
  * option 1). The Booleans mean an uncontested recorded decision on a proof. They never mean content correctness, so every
  * production read of a Boolean must sit in a scope that also names `contentPreservation`, and no file outside the
  * allow-list may read one at all.

@@ -404,7 +404,7 @@ const BLOCKING_KINDS: Record<GoalReviewKind, 'periodic' | 'always'> = {
  * Completes a pending review exactly once from a strictly validated ReviewReport. The report's goalFindingIds must
  * exist in this Goal and be unique, and criterion keys must exist in the review's definition version. `blocking` is
  * derived: a `block` verdict blocks, except that a periodic review blocks only when the definition says so.
- * `independence` is recorded as supplied by the routing/review authority; Stage 2B never infers it.
+ * `independence` is recorded as supplied by the routing/review authority; this module never infers it.
  */
 export function completeReview(
   db: Db,

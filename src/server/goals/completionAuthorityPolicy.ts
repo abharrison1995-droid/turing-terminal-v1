@@ -16,7 +16,7 @@ import {
 import { loadValidatedRecord } from './externalIntegration.js';
 
 /**
- * Read-only completion authority classifier (D.4R Slice 1). It reads the Goal's proof rows and completion-decision rows
+ * Read-only completion authority classifier. It reads the Goal's proof rows and completion-decision rows
  * and reports which authority state the Goal is in. It reads no Git state, no clock, and writes nothing. Its policy
  * digest is a domain-separated identity of that state, so a flow can detect that authority moved between two reads.
  */

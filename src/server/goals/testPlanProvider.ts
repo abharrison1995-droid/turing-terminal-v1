@@ -3,7 +3,7 @@ import type { RouteReadiness } from './executor.js';
 import type { GoalRunPlan, GoalRunPlanProvider, GoalRunPlanRequest } from './runPlan.js';
 import { goalBuiltinById } from '../../shared/goalWorkflows.js';
 
-/** A fixed concrete route for every AI stage. Test-only: production has no plan provider until Stage 5. */
+/** A fixed concrete route for every AI stage. Test-only. */
 export interface FixedRoute {
   backendId: string;
   providerId: string;

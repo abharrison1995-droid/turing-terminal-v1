@@ -916,7 +916,7 @@ describe('worktree retention and database invariants', () => {
   });
 });
 
-describe('Stage 5B.3: pre-start identity reproof and the exact starting commit', () => {
+describe('pre-start identity reproof and the exact starting commit', () => {
   const queuedProbe = async () =>
     createRouteProbe(h.db, probeRequest(), () => {
       throw new Error('crashed before start');

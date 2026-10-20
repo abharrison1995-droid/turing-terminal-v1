@@ -4,16 +4,16 @@ import { expect, test, type Page } from '@playwright/test';
 import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
-import { FIXTURE_TASK, ui2Routes, ui2Variants } from './fixtures/populated';
+import { FIXTURE_TASK, homeRunRoutes, ui2Variants } from './fixtures/populated';
 
 /**
  * UI.2 evidence capture (UI2_SCOPE section 4). Fixture-only and deterministic: every API call is answered from
  * `fixtures/populated.ts`, whose values are invented and labelled as fixtures. Viewport, dark scheme, reduced motion and
  * blocked service workers come from `playwright.config.ts`; the clock and the two-identical-frames capture are the same
- * as `ui1c.spec.ts`.
+ * as `shell.spec.ts`.
  *
  * Not part of `npm test` (vitest excludes e2e/) or the CI gate. Run with:
- *   npx playwright test -c e2e/playwright.config.ts e2e/ui2.spec.ts
+ *   npx playwright test -c e2e/playwright.config.ts e2e/home-run.spec.ts
  * Images are written to docs/ui/evidence/ui2/after/ as `<capture>-<viewport>.png`.
  */
 const OUT = fileURLToPath(new URL('../docs/ui/evidence/ui2/after/', import.meta.url));
@@ -29,7 +29,7 @@ const FAILED_RUN = 'fixture-run-005';
 /** Running in its Implement stage. */
 const RUNNING_RUN = 'fixture-run-001';
 
-async function openApp(page: Page, viewport: ViewportName, routes: Record<string, unknown> = ui2Routes) {
+async function openApp(page: Page, viewport: ViewportName, routes: Record<string, unknown> = homeRunRoutes) {
   await page.setViewportSize(VIEWPORTS[viewport]);
   const api = await installFixtures(page, routes);
   // Freeze the fake clock one second after FIXED_NOW, as in ui1c, so elapsed-time labels cannot drift between frames.
@@ -134,7 +134,7 @@ for (const viewport of VIEWPORT_NAMES) {
   });
 
   test(`needs-setup run preview at ${viewport}`, async ({ page }) => {
-    const api = await openApp(page, viewport, { ...ui2Routes, ...ui2Variants.needsSetup });
+    const api = await openApp(page, viewport, { ...homeRunRoutes, ...ui2Variants.needsSetup });
     await openHome(page);
     await requestPreview(page);
     await expect(page.getByRole('heading', { name: 'Setup needed before this can start' })).toBeVisible();
@@ -178,7 +178,7 @@ for (const viewport of VIEWPORT_NAMES) {
   });
 
   test(`truncated diff at ${viewport}`, async ({ page }) => {
-    const api = await openApp(page, viewport, { ...ui2Routes, ...ui2Variants.truncatedDiff });
+    const api = await openApp(page, viewport, { ...homeRunRoutes, ...ui2Variants.truncatedDiff });
     await openHome(page);
     await openRun(page, viewport, FAILED_RUN);
     await page.getByRole('tab', { name: 'Changes' }).click();

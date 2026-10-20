@@ -12,7 +12,7 @@ import { populatedRoutes } from './fixtures/populated';
  * service workers come from `playwright.config.ts`.
  *
  * Not part of `npm test` (vitest excludes e2e/) or the CI gate. Run with:
- *   npx playwright test -c e2e/playwright.config.ts e2e/ui1c.spec.ts
+ *   npx playwright test -c e2e/playwright.config.ts e2e/shell.spec.ts
  * Images are written to docs/ui/evidence/ui1c/after/ as `<screen>-<viewport>.png`.
  */
 const OUT = fileURLToPath(new URL('../docs/ui/evidence/ui1c/after/', import.meta.url));

@@ -4,8 +4,8 @@ import type { FirstUseRequest, GoalRunPurpose, RouteReadiness } from './executor
 import type { GoalReviewRole } from './reviewRole.js';
 
 /**
- * The Stage 4 / Stage 5 seam. Stage 4 consumes an ALREADY CONCRETE workflow (a registered Goal workflow whose AI stages
- * carry an exact route); Stage 5 will later decide which exact route produced it. Nothing on this side inspects route
+ * The executor / routing seam. The executor consumes an ALREADY CONCRETE workflow (a registered Goal workflow whose AI
+ * stages carry an exact route); the routing authority (`routePlan.ts`) decides which exact route produced it. Nothing on this side inspects route
  * pools, picks members, rotates, evaluates validation freshness, refreshes catalogs, probes, infers fallbacks, or writes
  * route-resolution records.
  */
@@ -57,7 +57,7 @@ export interface GoalRunPlanProvider {
   planRun(request: GoalRunPlanRequest): Promise<GoalRunPlan>;
 }
 
-/** The only provider shipped in Stage 4A: no routes exist until Stage 5, so nothing is ever ready. */
+/** A provider with no routes, so nothing is ever ready. `ResolvedGoalRunPlanProvider` is the routed one. */
 export class UnroutedGoalRunPlanProvider implements GoalRunPlanProvider {
   async checkRoutes(): Promise<RouteReadiness> {
     return {

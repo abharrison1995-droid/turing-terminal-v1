@@ -4,16 +4,16 @@ import { expect, test, type Page } from '@playwright/test';
 import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
-import { ui3Routes } from './fixtures/goals';
+import { goalCockpitRoutes } from './fixtures/goals';
 
 /**
  * UI.3 evidence capture (UI3_SCOPE section 6). Fixture-only and deterministic: every API call is answered from
  * `fixtures/goals.ts` (on top of `populated.ts`), whose values are invented and labelled as fixtures. Viewport, dark
  * scheme, reduced motion and blocked service workers come from `playwright.config.ts`; the clock and the stable-frame
- * capture are the same as `ui2.spec.ts`.
+ * capture are the same as `home-run.spec.ts`.
  *
  * Not part of `npm test` (vitest excludes e2e/) or the CI gate. Run with:
- *   npx playwright test -c e2e/playwright.config.ts e2e/ui3.spec.ts
+ *   npx playwright test -c e2e/playwright.config.ts e2e/goal-cockpit.spec.ts
  * Images are written to docs/ui/evidence/ui3/after/ as `<capture>-<viewport>.png`.
  *
  * Tabs and the handoff are captured on desktop only. Completion, correction, attestation and final-apply are desktop-only
@@ -45,7 +45,7 @@ const ROWS = {
 
 async function openApp(page: Page, viewport: ViewportName) {
   await page.setViewportSize(VIEWPORTS[viewport]);
-  const api = await installFixtures(page, ui3Routes);
+  const api = await installFixtures(page, goalCockpitRoutes);
   // Freeze the fake clock one second after FIXED_NOW, as in ui1c and ui2, so elapsed-time labels cannot drift.
   await page.clock.pauseAt(new Date(Date.parse(FIXED_NOW) + 1_000));
   return api;

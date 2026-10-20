@@ -1,11 +1,11 @@
 // @vitest-environment node
 
 // UI.4 tests for the Settings, pairing, Machines and Usage stylesheet (UI4_SCOPE sections 2, 4 and 5; matrix S1 to S5).
-// They read the CSS as text, the same way ui3Css.test.ts does. They prove that rules are declared, not how a browser lays
+// They read the CSS as text, the same way goalsCockpitCss.test.ts does. They prove that rules are declared, not how a browser lays
 // them out.
 //
-// [RED] tests need pages-ui4.css, which does not exist yet. Each one asserts the file exists first, so a missing file
-// fails with a clear message. [GUARD] tests characterise rules that already hold. A GUARD that scans pages-ui4.css passes
+// [RED] tests need pages-settings.css, which does not exist yet. Each one asserts the file exists first, so a missing file
+// fails with a clear message. [GUARD] tests characterise rules that already hold. A GUARD that scans pages-settings.css passes
 // vacuously while that file is absent, so the GUARDs that matter also scan the existing page styles where those comply.
 //
 // Selector and value contract for the implementer (UI4_SCOPE gives no exact values, so these are the expectations):
@@ -26,9 +26,9 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const indexPath = join(here, 'index.css');
-const ui4Path = join(here, 'pages-ui4.css');
+const ui4Path = join(here, 'pages-settings.css');
 /** Existing page styles that the Usage, Settings and Machines pages already use and that comply with the GUARDs. */
-const existingPageStyles = ['phase36.css', 'mobile.css'].map((name) => join(here, name));
+const existingPageStyles = ['billing-routing-usage.css', 'mobile.css'].map((name) => join(here, name));
 
 const read = (path: string) => readFileSync(path, 'utf8');
 const stripComments = (css: string) => css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -97,38 +97,38 @@ function trackCount(value: string): number {
 const columnsOf = (body: string): string | null =>
   /(?:^|[\s;{])grid-template-columns\s*:\s*([^;]+);/.exec(body)?.[1]?.trim() ?? null;
 
-/** pages-ui4.css, which must exist for a [RED] test to reach its real assertion. */
+/** pages-settings.css, which must exist for a [RED] test to reach its real assertion. */
 const uiCss = (): string => {
-  expect(existsSync(ui4Path), 'pages-ui4.css exists').toBe(true);
+  expect(existsSync(ui4Path), 'pages-settings.css exists').toBe(true);
   return read(ui4Path);
 };
 
-/** pages-ui4.css when present, otherwise empty, for the GUARDs that must not fail on a missing file. */
+/** pages-settings.css when present, otherwise empty, for the GUARDs that must not fail on a missing file. */
 const uiCssIfPresent = (): string => (existsSync(ui4Path) ? read(ui4Path) : '');
 
-/** Styles the GUARDs scan: the existing page styles, plus pages-ui4.css when it exists. */
+/** Styles the GUARDs scan: the existing page styles, plus pages-settings.css when it exists. */
 const guardSources = (): Array<{ file: string; css: string }> =>
   [...existingPageStyles, ui4Path]
     .filter((path) => existsSync(path))
     .map((path) => ({ file: basename(path), css: stripComments(read(path)) }));
 
-describe('pages-ui4.css is wired between phase36.css and goals.css (UI4 section 2, S1)', () => {
-  it('[RED] index.css imports ./pages-ui4.css directly after ./phase36.css and directly before ./goals.css', () => {
+describe('pages-settings.css is wired between billing-routing-usage.css and goals.css (UI4 section 2, S1)', () => {
+  it('[RED] index.css imports ./pages-settings.css directly after ./billing-routing-usage.css and directly before ./goals.css', () => {
     const imports = [...read(indexPath).matchAll(/@import\s+['"]\.\/([^'"]+)['"]/g)].map((match) => match[1]);
-    expect(imports, 'index.css imports pages-ui4.css').toContain('pages-ui4.css');
-    expect(imports[imports.indexOf('phase36.css') + 1]).toBe('pages-ui4.css');
-    expect(imports[imports.indexOf('pages-ui4.css') + 1]).toBe('goals.css');
+    expect(imports, 'index.css imports pages-settings.css').toContain('pages-settings.css');
+    expect(imports[imports.indexOf('billing-routing-usage.css') + 1]).toBe('pages-settings.css');
+    expect(imports[imports.indexOf('pages-settings.css') + 1]).toBe('goals.css');
   });
 });
 
 describe('tokens only and no display face (S1)', () => {
-  it('[RED] pages-ui4.css holds no colour literal (hex, rgb, hsl, hwb, oklch, oklab or color())', () => {
+  it('[RED] pages-settings.css holds no colour literal (hex, rgb, hsl, hwb, oklch, oklab or color())', () => {
     const source = stripComments(uiCss());
     expect(source).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     expect(source).not.toMatch(/\b(?:rgba?|hsla?|hwb|oklch|oklab|color)\(/i);
   });
 
-  it('[RED] pages-ui4.css uses no display face (--font-display or UnifrakturCook)', () => {
+  it('[RED] pages-settings.css uses no display face (--font-display or UnifrakturCook)', () => {
     expect(stripComments(uiCss())).not.toMatch(/--font-display|UnifrakturCook/);
   });
 
@@ -142,7 +142,7 @@ describe('tokens only and no display face (S1)', () => {
 });
 
 describe('compact targets (S2)', () => {
-  it('[RED] pages-ui4.css gives a control in each of the four pages a min-height of --h-touch', () => {
+  it('[RED] pages-settings.css gives a control in each of the four pages a min-height of --h-touch', () => {
     const touchSelectors = rulesIn(uiCss())
       .filter((rule) => /min-height\s*:\s*var\(--h-touch\)/.test(rule.body))
       .flatMap((rule) => rule.selectors);
@@ -219,13 +219,13 @@ describe('tables and long strings (S4)', () => {
 });
 
 describe('motion, hidden text and glyphs (S5)', () => {
-  it('[GUARD] motion in pages-ui4.css sits only under prefers-reduced-motion: no-preference', () => {
+  it('[GUARD] motion in pages-settings.css sits only under prefers-reduced-motion: no-preference', () => {
     const unguarded = withoutMediaBlocks(uiCssIfPresent(), /prefers-reduced-motion:\s*no-preference/);
 
     expect(unguarded).not.toMatch(/\b(?:animation|transition)(?:-[a-z-]+)?\s*:/);
   });
 
-  it('[GUARD] no pages-ui4.css selector hides its content with display:none', () => {
+  it('[GUARD] no pages-settings.css selector hides its content with display:none', () => {
     const hidden = rulesIn(uiCssIfPresent())
       .filter((rule) => /display\s*:\s*none\b/.test(rule.body))
       .flatMap((rule) => rule.selectors);

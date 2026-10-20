@@ -914,7 +914,7 @@ describe('external completion service: adversarial matrix', () => {
       fx.db.prepare("UPDATE goal_approvals SET status = 'denied' WHERE id = ?").run(attestation.approval_id);
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
-      // Slice 2a: the Goal's own completion row fails the classifier (its standing read is unavailable), so check 4
+      // The Goal's own completion row fails the classifier (its standing read is unavailable), so check 4
       // refuses with completion_history_invalid before the attestation's standing check is reached.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
@@ -1111,7 +1111,7 @@ describe('external completion service: lineage, attestation approval and base hi
       fx.db.prepare(`UPDATE goal_approvals SET ${column} = ? WHERE id = ?`).run(value, decided.approval.id);
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
-      // Slice 2a: the approval no longer matches the attestation, so the Goal's own completion row fails the classifier at
+      // The approval no longer matches the attestation, so the Goal's own completion row fails the classifier at
       // check 4. The reason's detail is the classifier's integrity code, and the Git observation is never reached.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
@@ -1152,7 +1152,7 @@ describe('external completion service: lineage, attestation approval and base hi
         );
       const before = snapshotOf(fx, decided.recorded.approvalId);
 
-      // Slice 2a: the Goal's own completion row is class 5 (its attestation cannot be read), so check 4 refuses first.
+      // The Goal's own completion row is class 5 (its attestation cannot be read), so check 4 refuses first.
       expect(await refusal(completeGoalFromExternalDecision(fx.db, requestFor(decided)))).toEqual({
         code: 'preflight_refused',
         detail: 'completion_history_invalid',

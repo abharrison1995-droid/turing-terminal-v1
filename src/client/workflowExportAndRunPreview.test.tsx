@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { RunPreview, WorkflowDefinition } from '../shared/types';
 import { DEFAULT_WORKFLOWS } from '../shared/workflows';
 import { api } from './api';
-import { formatMetric, RoutingSummaryPanel, decisionAssignmentLine } from './phase36';
+import { RoutingSummaryPanel, decisionAssignmentLine } from './pages/shared/DecisionPanels';
+import { formatMetric } from './pages/usage/UsageExplorer';
 
 afterEach(cleanup);
 

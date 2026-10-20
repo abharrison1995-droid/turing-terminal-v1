@@ -1,6 +1,6 @@
 /* ───────────── UI.5: the phone as a remote control ─────────────
    Imported last so these rules win the cascade (UI5_SCOPE section 2). Every rule sits in the 680px block, a
-   reduced-motion block or an @supports fallback (mobileUi5Css.test.ts). Tokens only: no colour literal, no display face,
+   reduced-motion block or an @supports fallback (mobileRemoteCss.test.ts). Tokens only: no colour literal, no display face,
    no display: none. Layout heights use dvh; the vh declaration each one replaces stays in its own stylesheet, so engines
    without dvh keep it. Safe-area insets come from env(), which Chromium reports as 0: these rules are asserted as
    computed declarations and are not verified on a notched device. */

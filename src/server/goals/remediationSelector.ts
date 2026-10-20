@@ -15,7 +15,7 @@ import {
 } from './remediationPlan.js';
 
 /**
- * Deterministic remediation selection (Stage 6B.2). Read-only: it never creates a cycle, transitions the Goal, calls a
+ * Deterministic remediation selection. Read-only: it never creates a cycle, transitions the Goal, calls a
  * provider, resolves a route, requests an approval or touches a finding. The supervisor hands a returned plan to
  * `createCycle`, which persists it atomically with the remediation cycle.
  *

@@ -5,11 +5,11 @@ import { VIEWPORTS } from './playwright.config';
 import { FIXED_NOW, emptyDashboard } from './fixtures/dashboard';
 import { installFixtures, type MockApi } from './fixtures/mockApi';
 import { FIXTURE_TASK } from './fixtures/populated';
-import { ui5Routes } from './fixtures/ui5';
+import { mobileRoutes } from './fixtures/mobile';
 
 /**
  * UI.6 mascot evidence (UI6_SCOPE). Fixture-only and deterministic: every `/api/*` request is answered by the UI.5 route
- * table (`fixtures/ui5.ts`), except where a state needs a request held open (loading, preview) or an empty dashboard (the
+ * table (`fixtures/mobile.ts`), except where a state needs a request held open (loading, preview) or an empty dashboard (the
  * idle Runs page). The clock is paused one second after FIXED_NOW, so the mascot's own `setTimeout` frame timer only moves
  * when a test advances it with `page.clock.runFor`.
  *
@@ -26,7 +26,7 @@ import { ui5Routes } from './fixtures/ui5';
  *
  * Images are written to docs/ui/evidence/ui6/after/. Frame PNGs for the strips are kept in e2e/.artifacts/ui6-frames/,
  * which is gitignored. Run with:
- *   npm run e2e:screenshots -- e2e/ui6.spec.ts
+ *   npm run e2e:screenshots -- e2e/mascot.spec.ts
  */
 const OUT = fileURLToPath(new URL('../docs/ui/evidence/ui6/after/', import.meta.url));
 const FRAMES = fileURLToPath(new URL('./.artifacts/ui6-frames/', import.meta.url));
@@ -68,7 +68,7 @@ const STATES: Record<StateName, StateSpec> = {
 
 /** The UI.5 route table, unchanged, except that the idle state answers the dashboard with an empty snapshot. */
 function routesFor(state: StateName): Record<string, unknown> {
-  return state === 'runs-empty-idle' ? { ...ui5Routes, '/api/dashboard': emptyDashboard } : ui5Routes;
+  return state === 'runs-empty-idle' ? { ...mobileRoutes, '/api/dashboard': emptyDashboard } : mobileRoutes;
 }
 
 /** The shell is ready once the top-bar title renders. */
