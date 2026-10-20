@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest';
-import { getWebPushConfiguration, isAllowedPushEndpoint, noticeForMasterEvent } from './webPush.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openDatabase } from './db.js';
+import {
+  deliverPushNotice,
+  getWebPushConfiguration,
+  isAllowedPushEndpoint,
+  noticeForMasterEvent,
+} from './webPush.js';
+
+const sendNotification = vi.hoisted(() => vi.fn());
+vi.mock('web-push', () => ({
+  default: { setVapidDetails: vi.fn(), sendNotification },
+}));
 
 describe('Web Push boundary', () => {
   it('requires a complete VAPID configuration and never returns the private key', () => {
@@ -127,5 +141,73 @@ describe('Web Push boundary', () => {
     expect(
       noticeForMasterEvent('usage_threshold', { runId: 'run-a', quotaId: 'weekly', resetAt: '2026-10-10' }),
     ).toMatchObject({ key: 'quota:weekly:2026-10-10' });
+  });
+});
+
+describe('Web Push delivery', () => {
+  let root = '';
+  let db: ReturnType<typeof openDatabase>;
+  let previousEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'turing-webpush-'));
+    db = openDatabase(join(root, 'state'));
+    previousEnv = {
+      TT_WEB_PUSH_PUBLIC_KEY: process.env.TT_WEB_PUSH_PUBLIC_KEY,
+      TT_WEB_PUSH_PRIVATE_KEY: process.env.TT_WEB_PUSH_PRIVATE_KEY,
+      TT_WEB_PUSH_SUBJECT: process.env.TT_WEB_PUSH_SUBJECT,
+    };
+    process.env.TT_WEB_PUSH_PUBLIC_KEY = 'A'.repeat(87);
+    process.env.TT_WEB_PUSH_PRIVATE_KEY = 'B'.repeat(43);
+    process.env.TT_WEB_PUSH_SUBJECT = 'mailto:operator@example.test';
+    db.prepare(
+      `INSERT INTO push_subscriptions (id, device_session_id, endpoint, p256dh, auth, created_at, last_seen_at)
+       VALUES ('push-a', NULL, 'https://fcm.googleapis.com/fcm/send/delivery-test', ?, ?, ?, ?)`,
+    ).run('A'.repeat(87), 'B'.repeat(22), new Date().toISOString(), new Date().toISOString());
+    sendNotification.mockReset();
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(root, { recursive: true, force: true });
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  const keyRows = () =>
+    (
+      db
+        .prepare("SELECT delivery_key FROM push_delivery_keys WHERE delivery_key = 'run:run-retry:failed'")
+        .all() as unknown[]
+    ).length;
+
+  it('lets a later retry deliver a notice whose send failed transiently, then dedupes the success', async () => {
+    sendNotification.mockRejectedValueOnce(
+      Object.assign(new Error('upstream unavailable'), { statusCode: 503 }),
+    );
+    await deliverPushNotice(db, 'run_failed', { runId: 'run-retry' });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    // A transient failure must not leave the key recorded as delivered.
+    expect(keyRows()).toBe(0);
+
+    sendNotification.mockResolvedValueOnce({});
+    await deliverPushNotice(db, 'run_failed', { runId: 'run-retry' });
+    expect(sendNotification).toHaveBeenCalledTimes(2);
+    expect(keyRows()).toBe(1);
+
+    // Delivered once: the recorded key suppresses any further send for the same notice.
+    await deliverPushNotice(db, 'run_failed', { runId: 'run-retry' });
+    expect(sendNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the key recorded when the subscription is gone, because that failure is not transient', async () => {
+    sendNotification.mockRejectedValueOnce(Object.assign(new Error('gone'), { statusCode: 410 }));
+    await deliverPushNotice(db, 'run_failed', { runId: 'run-retry' });
+    expect(db.prepare("SELECT id FROM push_subscriptions WHERE id = 'push-a'").get()).toBeUndefined();
+    expect(keyRows()).toBe(1);
+    await deliverPushNotice(db, 'run_failed', { runId: 'run-retry' });
+    expect(sendNotification).toHaveBeenCalledTimes(1);
   });
 });
