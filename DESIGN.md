@@ -1,61 +1,75 @@
 ---
 name: Turing Terminal
-description: A calm, technical task workspace for supervising coding agents. Desktop is the IDE, the phone is the cockpit.
+description: A calm, technical task workspace for supervising coding agents. Dark only. Desktop is the IDE, the phone is the cockpit.
 colors:
-  canvas: '#dce8f4'
-  nav: '#c9dcef'
-  surface: '#f8fafc'
-  surface-2: '#eef4fa'
-  surface-3: '#e4edf7'
-  selected: '#b9d0e8'
-  ink: '#17202a'
-  ink-2: '#3e4b5a'
-  ink-3: '#4f5f72'
-  control-line: '#6f8299'
-  accent: '#d97757'
-  accent-fill: '#b5532f'
-  accent-fill-hover: '#a34726'
-  accent-ink: '#a34726'
-  accent-wash: '#fbece5'
-  green: '#1e7a4d'
-  green-wash: '#e3f1e8'
-  amber: '#8a5a00'
-  amber-wash: '#fbefd0'
-  red: '#b42318'
-  red-wash: '#fde8e6'
-  info: '#2c5d8f'
+  canvas: '#08080a'
+  canvas-top: '#050506'
+  canvas-bottom: '#16161a'
+  nav: '#0b0b0e'
+  surface: '#131317'
+  surface-2: '#1a1a1f'
+  surface-3: '#222228'
+  selected: '#2b2b33'
+  field: '#1a1a1f'
+  ink: '#ecebe8'
+  ink-2: '#c9c8c6'
+  ink-3: '#b0afb5'
+  ink-disabled: '#7c7b83'
+  control-line: '#8b8b92'
+  accent: '#e14d60'
+  accent-fill: '#a81c2c'
+  accent-fill-hover: '#961827'
+  accent-fill-pressed: '#831422'
+  accent-ink: '#f78e98'
+  accent-wash: '#2c1015'
+  on-accent: '#ffffff'
+  focus-ring: '#ff8f99'
+  green: '#52c98a'
+  green-wash: '#0e2a1b'
+  amber: '#e3ad3f'
+  amber-wash: '#2b2108'
+  red: '#ff8b7a'
+  red-wash: '#2e1411'
+  info: '#77b0f1'
+  info-wash: '#0e2236'
 typography:
-  title:
-    fontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif"
+  display-title:
+    fontFamily: "'UnifrakturCook', 'Linux Libertine', Georgia, serif"
+    fontSize: '30px'
+    fontWeight: 700
+  display-brand:
+    fontFamily: "'UnifrakturCook', 'Linux Libertine', Georgia, serif"
     fontSize: '22px'
-    fontWeight: 600
-    lineHeight: '28px'
-    letterSpacing: '-0.02em'
+    fontWeight: 700
+  title:
+    fontFamily: "'Linux Libertine', Georgia, 'Times New Roman', serif"
+    fontSize: '24px'
+    fontWeight: 700
+    lineHeight: '32px'
   section:
-    fontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif"
-    fontSize: '15px'
-    fontWeight: 600
-    lineHeight: '20px'
+    fontFamily: "'Linux Libertine', Georgia, 'Times New Roman', serif"
+    fontSize: '17px'
+    fontWeight: 700
+    lineHeight: '24px'
   body:
-    fontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif"
+    fontFamily: "'Linux Libertine', Georgia, 'Times New Roman', serif"
+    fontSize: '15px'
+    fontWeight: 400
+    lineHeight: '22px'
+  control:
+    fontFamily: "'Linux Libertine', Georgia, 'Times New Roman', serif"
     fontSize: '14px'
     fontWeight: 400
     lineHeight: '20px'
-  control:
-    fontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif"
-    fontSize: '13px'
-    fontWeight: 500
-    lineHeight: '18px'
   meta:
-    fontFamily: "'Geist Variable', ui-sans-serif, system-ui, sans-serif"
-    fontSize: '12px'
+    fontFamily: "'Linux Libertine', Georgia, 'Times New Roman', serif"
+    fontSize: '13px'
     fontWeight: 400
-    lineHeight: '16px'
+    lineHeight: '18px'
   mono:
-    fontFamily: "'Geist Mono Variable', ui-monospace, Menlo, Consolas, monospace"
-    fontSize: '12px'
+    fontFamily: "'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace"
+    fontSize: '0.92em'
     fontWeight: 400
-    lineHeight: '16px'
 rounded:
   sm: '6px'
   md: '8px'
@@ -70,105 +84,111 @@ spacing:
   5: '20px'
   6: '24px'
   8: '32px'
+  10: '40px'
+  12: '48px'
 components:
   button-primary:
     backgroundColor: '{colors.accent-fill}'
-    textColor: '#ffffff'
+    textColor: '{colors.on-accent}'
     rounded: '{rounded.md}'
     padding: '0 12px'
     height: '36px'
   button-primary-hover:
     backgroundColor: '{colors.accent-fill-hover}'
+  button-primary-pressed:
+    backgroundColor: '{colors.accent-fill-pressed}'
   button-secondary:
     backgroundColor: '{colors.surface}'
     textColor: '{colors.ink}'
     rounded: '{rounded.md}'
-    height: '36px'
-  composer:
-    backgroundColor: '{colors.surface}'
-    textColor: '{colors.ink}'
-    rounded: '{rounded.xl}'
-    padding: '16px 16px 12px'
-  chip-control:
-    backgroundColor: '{colors.surface-2}'
-    textColor: '{colors.ink}'
-    rounded: '{rounded.md}'
-    height: '36px'
-  nav-active:
-    backgroundColor: '{colors.selected}'
-    textColor: '{colors.ink}'
-    rounded: '{rounded.md}'
+    padding: '0 12px'
     height: '36px'
 ---
 
-> **Superseded by UI.1b.** The app is dark theme only (docs/ui/UI1B_SCOPE.md). The light palette in the front matter and the light-theme contrast notes below are retired. `src/client/styles/tokens.css` is now the source of truth for colour, type and contrast.
-
 # Design System: Turing Terminal
 
-The single source of truth in code is `src/client/styles/tokens.css`. This document describes the intent behind it.
+The source of truth in code is `src/client/styles/tokens.css`. If this file and `tokens.css` disagree, `tokens.css` wins and this file is out of date. This document describes the intent behind the tokens. The contrast, typography, font and colour-literal rules are enforced by tests (`src/client/goals/a11yTokens.test.ts` and `src/client/styles/*.test.ts`).
 
 ## Overview
 
 **North star: The Task Thread.** One workspace in which a task is a thread: you describe it, agents work on it, you answer when they need you. Desktop is the IDE (orchestration, configuration, inspection). The phone is the cockpit (start, watch, approve, intervene), reached through the same components in a different arrangement, not a shrunken desktop.
 
-Character: Codex-level restraint, Claude-like warmth, a deep pale-blue field. Calm, technical, dense where useful, never a dashboard.
+Character: dark, quiet and technical, with a scarce crimson accent and a blackletter wordmark. Dense where useful, never a dashboard.
 
 Hierarchy: application canvas → navigation → workspace → object → control. Typography, spacing and tonal change come before borders. A card is an object, not a layout primitive.
 
 ## Colors
 
-- **Canvas / nav (`#dce8f4` / `#c9dcef`)**: the pale-blue field. Navigation is one step deeper than the canvas.
-- **Surface / surface-2 / surface-3**: raised work surface, its quieter sibling for chips and nested groups, and a pressed or selected-soft tone.
-- **Selected (`#b9d0e8`)**: the one blue tonal selection state (nav, active thread).
-- **Ink / ink-2 / ink-3**: three text levels. All pass 4.5:1 on canvas and nav. There is no lighter text; placeholders use ink-3.
-- **Accent (warm orange)**: `accent-fill` carries primary actions and the switch-on state (white text, 4.9:1); `accent` is for small identity marks only (brand mark, bar fill); `accent-ink` is for text actions. Orange is never a status colour and never used for destructive actions.
-- **Status**: red = failed, green = completed, amber = assistance required, `info` = running (with a pulsing dot). Everything else is neutral. State is always also stated in words or by icon shape.
+The app is dark only. There is one `color-scheme: dark`, no light palette and no theme switch.
+
+- **Canvas and nav**: near-black. The body and app shell use a vertical black-to-charcoal gradient (`--canvas-gradient`). Navigation sits one step above the canvas.
+- **Surface, surface-2, surface-3**: the raised work surface, its quieter sibling for chips and nested groups, and a pressed or selected-soft tone. Hover and pressed are white overlays (`--hover`, `--pressed`).
+- **Ink, ink-2, ink-3**: three text levels. All pass 4.5:1 on every surface, including hover and pressed composites. `--ink-disabled` is the one documented exemption.
+- **Accent (crimson)**: `accent-fill` carries primary actions (white text). `accent` is a non-text identity colour (brand marks, selection marks). `accent-ink` is for text actions. The accent is never a status colour and never used for destructive actions.
+- **Status**: red = failed, green = completed, amber = assistance required, `info` = running. Each has a wash for tinted backgrounds. Failure red is kept visibly distinct from the crimson accent, and failure always carries an icon plus a word. State is never shown by colour alone.
 
 ### Named rules
 
-- **The Orange Budget.** At most one orange fill per view region: the Run button, Approve once, Resume run, Save. If two orange fills compete, one is wrong.
+- **The Accent Budget.** At most one crimson fill per view region: the Run button, Approve once, Resume run, Save. If two crimson fills compete, one is wrong.
 - **The Three Signals Rule.** Colour marks failure, completion and a request for the user. Informational notes stay neutral.
-- **Borders Are Last.** Prefer a tone step, then spacing, then a hairline. Inputs keep a 3:1 border because they must be findable.
+- **Borders Are Last.** Prefer a tone step, then spacing, then a hairline. Inputs keep a 3:1 border (`control-line`) because they must be findable.
+- **No Literals.** Colour values exist only in `tokens.css`. CSS, TSX and `public/turing.svg` reference tokens (the SVG must use the same hex values as the tokens).
 
 ## Typography
 
-Geist Sans for UI, Geist Mono for commands, branches, model and provider ids, hashes, logs and code. Both are bundled (`@fontsource-variable`), so the app works offline in the PWA and the Tauri shell. Tabular numerals are on globally for elapsed time, tokens, costs and counts.
+- **Reading face:** Linux Libertine for all UI text.
+- **Display face:** UnifrakturCook, used only on the brand wordmark and five fixed titles (`.brand-name`, `.page-heading h1`, `.home-intro h1`, `.pairing-panel h1`, `.desktop-startup-card h1`). It never appears on user content such as Goal titles or run prompts, in navigation, labels, tables or code.
+- **Mono:** Geist Mono for commands, branches, model and provider ids, hashes, logs and code.
 
-Scale: title 22/28, section 15/20, body 14/20, control 13/18 (medium), meta 12/16, micro 11 (badges and counters only). Weights: 400 body, 500 controls, 600 headings. The composer input and phone form fields use 16px (prevents mobile zoom).
+All fonts are bundled locally, so the app works offline in the PWA and the Tauri shell. Only weights 400 and 700 ship, with `font-synthesis: none`. Elapsed time, tokens, costs and counts use tabular numerals.
+
+Scale (size/line height in px):
+
+| Role          | Size/line |
+| ------------- | --------- |
+| Display title | 30        |
+| Brand         | 22        |
+| Title         | 24/32     |
+| Section       | 17/24     |
+| Body          | 15/22     |
+| Control       | 14/20     |
+| Meta          | 13/18     |
+| Micro         | 12        |
+
+Micro is the floor, used for badges, counters and chart ticks. The composer input and phone form fields use 16px, which prevents mobile zoom.
 
 ## Layout and spacing
 
-4px/8px rhythm (`--s-1` to `--s-12`). Desktop page width 1280, padding 32. Home column 760. Thread column 820. Controls are 36px (28 compact, 40 large); every control on a phone is 44px.
+4px/8px rhythm (`--s-1` to `--s-12`). Desktop page width 1280, padding 32, sidebar 264, topbar 52. Controls are 36px (28 compact, 40 large); every control on a phone is 44px.
 
-## Elevation
+## Elevation and stacking
 
-One level only (`--elev-float`) for floating UI: menus, toasts, the phone drawer, the docked phone composer, the sticky follow-up bar. Cards, panels and the desktop composer are flat.
+One elevation level only (`--elev-float`) for floating UI: menus, toasts, the phone drawer, the docked phone composer and the sticky follow-up bar. On dark surfaces it pairs an inner light edge with a shadow. Cards, panels and the desktop composer are flat. Every `z-index` uses a `--z-*` token, ordered: raised, sticky, menu, topbar, toast, scrim, drawer, palette, dialog.
 
 ## Shapes
 
 Radii: 6 (chips, kbd), 8 (controls, rows), 12 (panels), 16 (composer, bubbles), pill (counts, glance chips, status pills).
 
+## Motion
+
+Durations are 120, 160 and 180 ms with one easing curve. A global `prefers-reduced-motion: reduce` rule disables animation. The skull mascot (`src/client/ui/mascot/`) plays only for real activity (idle, thinking, loading, phase transitions). It always sits next to a text status, never replaces an error, warning or approval, and shows a static first frame under reduced motion.
+
 ## Components
 
-- **Buttons**: primary (orange), secondary (surface), quiet, danger (red wash), text (accent-ink), icon (36px, 18px glyph). States: hover, pressed, focus-visible (2px orange ring, 2px offset), disabled, `aria-busy`.
-- **Fields**: 36px, 1px `control-line`, focus ring in accent. Toggles are switches (orange when on); checkboxes use accent colour.
-- **Status pill**: tonal fill, no border, 12px medium. Running shows a pulsing dot.
+- **Buttons**: primary (crimson), secondary (surface with a line border), quiet, danger (red wash), text (accent-ink), icon (36px, 18px glyph). States: hover, pressed, focus-visible (focus ring), disabled, `aria-busy`.
+- **Fields**: 36px, 1px `control-line`, focus ring in the accent. Checkboxes and toggle lines use `accent-fill` as their accent colour.
+- **Status pill**: tonal fill, no border. Running shows a pulsing dot.
 - **Rows**: one interactive-row recipe for runs, projects and templates; hairline separators only inside lists and tables.
 - **Disclosure**: one chevron, one summary pattern (`settings-disclosure`), used for advanced settings everywhere.
 - **Notices**: neutral by default; amber and red tints only for assistance and failure.
-- **Composer (signature)**: the largest object on Home. Textarea, agent chips (stage + exact model, mono), project and workflow selectors, Options, voice, Run with its shortcut (Ctrl or ⌘ + Enter).
-- **Thread**: every state shares header → state strip → prompt bubble → stages → activity. The state strip carries icon, plain-language state and the relevant actions (Stop, Resume, View diff). The follow-up composer docks to the bottom.
-- **Workflow Studio**: sections (Basics, Safety, Agents, Context, Generation) with a sticky navigator on desktop and accordions plus a chip bar on phones. Each agent is a card: role, provider, model, reasoning, context, permissions and enabled state on one scannable line; full settings expand, with an Advanced disclosure for the long tail.
+- **Composer (signature)**: the largest object on Home. Textarea, agent chips (stage plus exact model, mono), project and workflow selectors, Options, voice, Run with its shortcut (Ctrl or ⌘ + Enter).
+- **Thread**: every state shares header → state strip → prompt bubble → stages → activity. The state strip carries the icon, the plain-language state and the relevant actions (Stop, Resume, View diff). The follow-up composer docks to the bottom.
+- **Workflow Studio**: sections (Basics, Safety, Agents, Context, Generation) with a sticky navigator on desktop and accordions plus a chip bar on phones. Each agent is a card: role, provider, model, reasoning, context, permissions and enabled state on one scannable line. Full settings expand, with an Advanced disclosure for the long tail.
+- **Command palette**: Ctrl or ⌘ + K, limited to supported navigation and existing actions. It never offers Goal completion, correction, attestation or mobile-restricted operations.
 - **Phone**: drawer navigation, glance chips (needs you / running / failed) and attention lists above the docked composer, 44px targets, safe-area insets respected.
 
 ## Do's and Don'ts
 
 Do: use tokens only; keep status colour to the three signals; show model ids in mono; keep the phone's first screen answering "what is it doing, does it need me, did it fail, can I tell it something".
 
-Don't: add one-off CSS per screen, wrap a card in a card, use orange for anything destructive, communicate state by colour alone, add a second elevation level, or let important text fall below 12px.
-
-## Known drift and defects (not canonized)
-
-- Settings rule forms and Machines profile forms use the new primitives but keep their original form-and-panel composition.
-- Diff output is monochrome; a line-level diff view is not designed yet.
-- Workflow Studio has no workflow-level output settings, so the brief's "Output" group is represented by output-type stages (commit, push, notification) inside Agents.
+Don't: add one-off CSS per screen, wrap a card in a card, use crimson for anything destructive, communicate state by colour alone, add a second elevation level, use the display face outside its allow-list, or let important text fall below 12px.
