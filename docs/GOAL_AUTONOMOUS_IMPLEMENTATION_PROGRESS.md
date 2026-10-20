@@ -746,7 +746,7 @@ Whole-programme review: `VERDICT: PASS WITH NON-BLOCKING FINDINGS`, Sonnet 5.5 M
 Non-blocking findings from the whole-programme review, carried forward as follow-ups:
 
 1. The header comment in `externalCompletionDecision.ts` (around lines 21-24) describes the pre-D.4R behaviour and is stale.
-2. The D.3 candidate paragraph in `V1_READINESS.md` (around line 311) says a concurrent duplicate decision is refused rather than reused. That was true at D.3, and it is a historical record. It is not a current claim, but it should not be read as one.
+2. The D.3 candidate paragraph in `docs/history/V1_READINESS_LOG.md` (around line 311) says a concurrent duplicate decision is refused rather than reused. That was true at D.3, and it is a historical record. It is not a current claim, but it should not be read as one.
 3. The classifier's isolation guard forbids the preflight, decision, terminal, route and lock modules. It does not forbid the Git or child-process imports reachable through `externalIntegration.js`. The imports used are DB-only readers, but a tighter guard would make the isolation claim exact.
 4. The decision service can return `reused: true` for a decision whose attestation was disputed in a narrow race. The terminal refuses it (`own_decision_ineligible`, seam test B5). No test drives that race through the decision service itself.
 5. The in-transaction class-5 reason is `completion_history_invalid`, while the pre-lock check and the terminal return `decision_corrupt`. This is the owner decision recorded in the Slice 2b record.
