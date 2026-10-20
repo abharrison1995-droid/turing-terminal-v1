@@ -23,6 +23,7 @@
     "lint": "eslint src",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "docs:links": "node scripts/check-doc-links.mjs",
     "e2e:screenshots": "playwright test -c e2e/playwright.config.ts",
     "typecheck:e2e": "tsc -p e2e/tsconfig.json --noEmit"
   },

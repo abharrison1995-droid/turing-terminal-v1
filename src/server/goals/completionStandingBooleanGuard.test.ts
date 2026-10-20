@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
  *
  * Limits:
  * - The scan covers production files under src only (not *.test.ts, *.test.tsx or *.d.ts). It cannot see a consumer
- *   outside src, such as a script, a separate package or a doc example that runs. docs/GOAL_D32_CONSUMER_AUDIT.md lists
+ *   outside src, such as a script, a separate package or a doc example that runs. docs/history/goals/GOAL_D32_CONSUMER_AUDIT.md lists
  *   the consumers the audit grep found. A new consumer outside src needs a manual review.
  * - Pairing is checked on the enclosing function, or on the whole file for a top-level read. It proves that the scope
  *   names `contentPreservation` (and, for the client classifier, the literal 'not_proven'). It does not prove the scope

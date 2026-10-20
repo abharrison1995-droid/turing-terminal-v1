@@ -47,4 +47,4 @@ Tauri IPC is available only to the bundled local frontend. The Master accepts CO
 
 ## Artifact naming
 
-`npm run desktop:release` collects available package outputs under `dist/release/1.0.0-rc2/` and emits SHA-256 checksums and release notes. CI builds Windows and Linux on native runners and combines the packages into a workflow artifact. It does not create a GitHub Release or publish a package.
+`npm run desktop:release` collects available package outputs under `dist/release/<version>/` and emits SHA-256 checksums and release notes. CI builds Windows and Linux on native runners and combines the packages into a workflow artifact. It does not create a GitHub Release or publish a package.

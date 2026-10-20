@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /*
- * T9 (UI.1b, docs/ui/UI1B_SCOPE.md section 5). The browser theme colour, the colour-scheme meta and the PWA manifest colours
+ * T9 (UI.1b, docs/history/ui/UI1B_SCOPE.md section 5). The browser theme colour, the colour-scheme meta and the PWA manifest colours
  * follow the dark canvas token. The old light canvas (#dce8f4) must not survive in any of them.
  */
 

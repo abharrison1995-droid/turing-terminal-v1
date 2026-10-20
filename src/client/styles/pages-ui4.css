@@ -1,4 +1,4 @@
-/* UI.4 Settings, device pairing, Machines and Usage: layout and skin (docs/ui/UI4_SCOPE.md section 2).
+/* UI.4 Settings, device pairing, Machines and Usage: layout and skin (docs/history/ui/UI4_SCOPE.md section 2).
    Loaded after phase36.css and before goals.css. Every selector is scoped to one of the four pages (.pairing-*,
    .settings-*, .machine-*, .usage-*) or to a page-level ancestor (.quota-envelope-panel, .usage-explorer,
    .usage-table-panel, .pairing-settings), so shared primitives are never restyled globally. Tokens only: no colour

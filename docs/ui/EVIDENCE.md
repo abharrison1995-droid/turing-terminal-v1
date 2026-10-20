@@ -2,9 +2,11 @@
 
 Evidence for UI stages. UI approval is for development only; none of this marks V1 release-ready.
 
+Only the UI.7 qualification captures (`evidence/ui7/`) and the latest UI.9 set (`evidence/ui9/`) are still in the tree. The earlier stage captures (UI.1b to UI.6) cited below were removed on 2026-10-20; they remain in Git history, for example at commit `5316527`.
+
 ## UI.1b: dark tokens, fonts, CSS primitive layer, PWA meta
 
-- **Scope and matrix:** [UI1B_SCOPE.md](UI1B_SCOPE.md). See the CI and review record at the end of this section.
+- **Scope and matrix:** [UI1B_SCOPE.md](../history/ui/UI1B_SCOPE.md). See the CI and review record at the end of this section.
 - **What changed:** dark-only token set (`tokens.css`); three unchanged upstream TTFs with their licences under `src/client/assets/fonts/`; `fonts.css`; the display face on five fixed selectors only; colour literals moved into `tokens.css` (8 CSS, 3 chart, icon values); Geist Sans removed (Geist Mono kept); `theme-color` and manifest colours; `color-scheme: dark`; Playwright pinned to dark. No server, shared, migration, Goal-model or Tauri change.
 - **Mascot:** only the four `--tt-mascot-*` tokens and their contrast tests are in this stage. The `Mascot` component and animation are UI.6.
 
@@ -54,7 +56,7 @@ Observed discrepancies (not pixel-perfect claims; no packet mockup is in the rep
 
 ## UI.1c: shell, states and command palette
 
-Scope: `docs/ui/UI1C_SCOPE.md`. Planner: Sonnet 5.5 Medium. RED tests: Haiku 5.5 High (commit `46b94fd`). Implementation and review fixes: Haiku 5.5 High. Independent review: fresh Sonnet 5.5 Medium, verdict APPROVE WITH FIXES; all six findings fixed (Restart Master on first-load error, `<main>` landmark for Loading/ErrorState, palette dialog focus, palette closed on pairing, drawer reset on widen, combobox `aria-expanded`), covered by `src/client/ui/shell/shellReview.test.tsx`.
+Scope: `docs/history/ui/UI1C_SCOPE.md`. Planner: Sonnet 5.5 Medium. RED tests: Haiku 5.5 High (commit `46b94fd`). Implementation and review fixes: Haiku 5.5 High. Independent review: fresh Sonnet 5.5 Medium, verdict APPROVE WITH FIXES; all six findings fixed (Restart Master on first-load error, `<main>` landmark for Loading/ErrorState, palette dialog focus, palette closed on pairing, drawer reset on widen, combobox `aria-expanded`), covered by `src/client/ui/shell/shellReview.test.tsx`.
 
 One RED test was corrected, not weakened: `paletteNoMutations.test.tsx` re-pressed the toggle shortcut on an already-open palette, which closes it. The helper now presses Escape after reading the labels; every assertion is unchanged.
 
@@ -74,7 +76,7 @@ UI.1c CI: run 38830237379, event push, tested exact `ff4dcc546866b69c128d256effb
 
 ## UI.2: Home composer, run preview, read-only run workspace
 
-Scope: `docs/ui/UI2_SCOPE.md`. Planner Sonnet 5.5 Medium; RED tests `7f5863a` (38 tests, 29 RED); implementation and review fixes Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, all findings fixed (invented Details empty states, diff refresh for active runs, "View diff" focus, rename/quoted-path and cap handling in `diffModel`, stale-details alert, compact CSS order tie, preview notice copy, error icon+word) with 22 new tests. No change under `src/server`, `src/shared`, `src/client/goals` or `src/client/api.ts`. No paid-fallback control added; Safeguards is read-only; the pre-existing "Custom metered lanes" billing option is untouched and flagged for the owner.
+Scope: `docs/history/ui/UI2_SCOPE.md`. Planner Sonnet 5.5 Medium; RED tests `7f5863a` (38 tests, 29 RED); implementation and review fixes Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, all findings fixed (invented Details empty states, diff refresh for active runs, "View diff" focus, rename/quoted-path and cap handling in `diffModel`, stale-details alert, compact CSS order tie, preview notice copy, error icon+word) with 22 new tests. No change under `src/server`, `src/shared`, `src/client/goals` or `src/client/api.ts`. No paid-fallback control added; Safeguards is read-only; the pre-existing "Custom metered lanes" billing option is untouched and flagged for the owner.
 
 Captures: `docs/ui/evidence/ui2/after/` (18 PNGs, `SHA256SUMS`) from labelled fixtures. The UI.1c PNGs were deliberately not regenerated; they remain the UI.1c record and differ from a rerun because Home changed.
 
@@ -91,7 +93,7 @@ UI.2 CI: run 38840346275, event push, tested exact `5ba015804f4d8c986aa1a3d26ac2
 
 ## UI.3: Goal cockpit (styling and layout only)
 
-Scope: `docs/ui/UI3_SCOPE.md`. Planner Sonnet 5.5 Medium; RED and guard tests `8ea5fa1` (22 tests: 7 RED, 15 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (compact list-row spacing cascade, a positive control for the phone "no completion controls" test, active-tab hover, comments). The change is CSS only (`goals-cockpit.css` plus one `@import`); `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts` and `src/client/goals`. Pinned `a11yTokens`/QF09 rules are untouched.
+Scope: `docs/history/ui/UI3_SCOPE.md`. Planner Sonnet 5.5 Medium; RED and guard tests `8ea5fa1` (22 tests: 7 RED, 15 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (compact list-row spacing cascade, a positive control for the phone "no completion controls" test, active-tab hover, comments). The change is CSS only (`goals-cockpit.css` plus one `@import`); `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts` and `src/client/goals`. Pinned `a11yTokens`/QF09 rules are untouched.
 
 Captures: `docs/ui/evidence/ui3/after/` (11 PNGs, `SHA256SUMS`) from labelled fixtures (`e2e/fixtures/goals.ts`). Desktop and phone cover the list, active and needs-user cockpits; phone covers contested and legacy standing; desktop covers the Definitions tab, Handoff tab and completion standing. The phone spec asserts that completion, correction, attestation and apply controls are absent from the DOM, with a desktop positive control.
 
@@ -104,7 +106,7 @@ Limitations:
 
 ## UI.4: Settings, device pairing, Machines, Usage
 
-Scope: `docs/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
+Scope: `docs/history/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
 
 Changes: `pages-ui4.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in `phase36.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
 
@@ -121,7 +123,7 @@ Findings and limitations:
 
 ## UI.5: mobile PWA (remote control only)
 
-Scope: `docs/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/ui5Review.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileUi5Css.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-ui5.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/ui5.spec.ts`.
+Scope: `docs/history/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/ui5Review.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileUi5Css.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-ui5.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/ui5.spec.ts`.
 
 Review fixes:
 
@@ -143,11 +145,11 @@ Precache (method: `vite build` at HEAD in a scratch export, and in the working t
 
 Not verified: physical iPhone (not performed); WebKit; notched or landscape safe areas; CI (GitHub Actions unavailable, so no CI run exists for the UI.3 to UI.5 SHAs).
 
-UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
+UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/history/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
 
 ## UI.6: mascot status marks
 
-- Scope `docs/ui/UI6_SCOPE.md`; RED tests `2c8617a`; implementation committed after independent review (APPROVE WITH FIXES, all required fixes applied).
+- Scope `docs/history/ui/UI6_SCOPE.md`; RED tests `2c8617a`; implementation committed after independent review (APPROVE WITH FIXES, all required fixes applied).
 - Shipped: idle, thinking and loading animations only (18 frames, `frames.generated.ts` 16.8 KB, provenance in `docs/ui/MASCOT_PROVENANCE.json`). Wipes and the phase-transition animation are deferred by owner decision (no truthful trigger).
 - Placements, each with adjacent visible text and `aria-hidden` art: Loading (48 px), Home composer preview pending (24 px), run detail while `run.status === 'running'` (24 px), empty Runs state (idle). Not in Sidebar, startup mark, alerts, dialogs, approvals or Goal UI. No success or failure art. Reduced motion shows the static first frame with no timers.
 - Deviation for owner sign-off: the running mark is in the run detail only, not on every Runs list row (avoids many concurrent timers).
@@ -206,4 +208,4 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 
 ## Owner report: pairing and QR (2026-10-20)
 
-- The owner reported, on their own devices, that the new build works and that QR pairing works after the bodyless-JSON and QR-completion-poll fixes (`3bb44aa`). This is an owner-reported result, not a check performed by the implementer, and it does not cover the rest of the physical-device checklist in `docs/ui/UI5_SCOPE.md` §7 (insets, keyboard, landscape, offline, push, install behaviour), which stays NOT PERFORMED until the owner records it. It does not accept any V1 blocker or declare V1 release-ready.
+- The owner reported, on their own devices, that the new build works and that QR pairing works after the bodyless-JSON and QR-completion-poll fixes (`3bb44aa`). This is an owner-reported result, not a check performed by the implementer, and it does not cover the rest of the physical-device checklist in `docs/history/ui/UI5_SCOPE.md` §7 (insets, keyboard, landscape, offline, push, install behaviour), which stays NOT PERFORMED until the owner records it. It does not accept any V1 blocker or declare V1 release-ready.

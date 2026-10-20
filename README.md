@@ -13,13 +13,13 @@ The master, project files, provider sign-ins, and run history stay on your compu
 
 ## Install on Windows
 
-Download `Turing-Terminal-Setup-x64-1.0.0-rc2.exe` from a successful **Desktop installers** workflow run in this private repository. Double-click the installer, then launch **Turing Terminal** from the Start Menu. This release candidate is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning. See [Windows installation](docs/INSTALL_WINDOWS.md).
+Download `Turing-Terminal-Setup-x64-1.0.0-rc2.exe` from a successful **Desktop installers** workflow run in this repository. Double-click the installer, then launch **Turing Terminal** from the Start Menu. This release candidate is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning. See [Windows installation](docs/INSTALL_WINDOWS.md).
 
 ## Install on Linux
 
 Download `turing-terminal_1.0.0-rc2_amd64.deb` and open it with your distribution's software installer, or use the portable `Turing-Terminal-x86_64-1.0.0-rc2.AppImage`. The app appears in your application menu after the `.deb` install. See [Linux installation](docs/INSTALL_LINUX.md).
 
-Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. The repository is private, so downloading its Actions artifacts requires a GitHub account with repository access. RC2 is for acceptance testing; physical Windows/Linux and phone pairing checks remain pending.
+Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. Downloading GitHub Actions artifacts requires signing in to GitHub. RC2 is for acceptance testing. Its installers were built before the Goal Engine and the dark interface reached `master`, so build from source to try the current app. Release state and the remaining physical checks are in [V1 readiness](docs/V1_READINESS.md).
 
 ## How to use Turing Terminal
 
@@ -54,10 +54,18 @@ npm run lint
 npm run typecheck
 npm test
 npm run build
+npm audit --omit=dev
+npm run docs:links
 ```
 
 ## Documentation
 
+The full index is [docs/README.md](docs/README.md). Start with:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Development](docs/DEVELOPMENT.md)
+- [V1 readiness](docs/V1_READINESS.md)
+- [Goal Engine (Grand Projects)](docs/goals/GOAL_ENGINE.md)
 - [Desktop Master and packaging](docs/DESKTOP_MASTER.md)
 - [Install on Windows](docs/INSTALL_WINDOWS.md)
 - [Install on Linux](docs/INSTALL_LINUX.md)
@@ -65,7 +73,7 @@ npm run build
 - [Release process](docs/RELEASING.md)
 - [Provider setup](docs/PROVIDERS.md)
 - [Provider capability matrix](docs/PROVIDER_CAPABILITY_MATRIX.md)
-- [Phase 3.6 provider, model, context, and billing configuration](docs/phase3.6-provider-model-context.md)
+- [Model configuration](docs/MODEL_CONFIGURATION.md), [context management](docs/CONTEXT_MANAGEMENT.md) and [billing safety](docs/BILLING_SAFETY.md)
 - [Security and trust boundaries](docs/SECURITY.md)
 - [Workflows](docs/WORKFLOWS.md)
 - [Usage accounting and estimates](docs/USAGE_ACCOUNTING.md)
