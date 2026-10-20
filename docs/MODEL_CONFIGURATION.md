@@ -44,6 +44,8 @@ The Workflow Studio shows a reasoning selector only for `effort`, a variant sele
 | Unavailable | absent from a live, complete catalog               |
 | Deprecated  | the provider reports a deprecation/expiration date |
 
+Stage assignment in the Workflow Studio follows one order: saved connection, then a model compatible with that connection, then reasoning or variant. Where discovery is unavailable the model field is a labelled manual entry that says the ID has not been checked against a catalog. Exact IDs are preserved as typed.
+
 Turing never replaces an unavailable or deprecated model. The editor says **Choose replacement**; the user picks one.
 
 ## Pinned vs floating

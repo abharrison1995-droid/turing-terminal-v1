@@ -5,14 +5,14 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Static consumer guard for the completion Booleans `unqualifiedSuccessAllowed` and `trustedForDownstream` (GH.6a, D3-2
+ * Static consumer guard for the completion Booleans `unqualifiedSuccessAllowed` and `trustedForDownstream` (D3-2
  * option 1). The Booleans mean an uncontested recorded decision on a proof. They never mean content correctness, so every
  * production read of a Boolean must sit in a scope that also names `contentPreservation`, and no file outside the
  * allow-list may read one at all.
  *
  * Limits:
  * - The scan covers production files under src only (not *.test.ts, *.test.tsx or *.d.ts). It cannot see a consumer
- *   outside src, such as a script, a separate package or a doc example that runs. docs/GOAL_D32_CONSUMER_AUDIT.md lists
+ *   outside src, such as a script, a separate package or a doc example that runs. docs/history/goals/GOAL_D32_CONSUMER_AUDIT.md lists
  *   the consumers the audit grep found. A new consumer outside src needs a manual review.
  * - Pairing is checked on the enclosing function, or on the whole file for a top-level read. It proves that the scope
  *   names `contentPreservation` (and, for the client classifier, the literal 'not_proven'). It does not prove the scope

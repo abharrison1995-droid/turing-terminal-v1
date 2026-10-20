@@ -777,8 +777,7 @@ input[type='radio'] {
 /* ───────────── Interactive rows ───────────── */
 .run-list-row,
 .full-run-row,
-.project-row,
-.workflow-select-row {
+.project-row {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -796,13 +795,11 @@ input[type='radio'] {
 }
 .run-list-row:hover,
 .full-run-row:hover,
-.project-row:hover,
-.workflow-select-row:hover {
+.project-row:hover {
   background: var(--hover);
 }
 .full-run-selected,
-.project-selected,
-.workflow-selected {
+.project-selected {
   background: var(--surface-3);
 }
 .workflow-row-icon,
@@ -814,7 +811,6 @@ input[type='radio'] {
   place-items: center;
   color: var(--icon);
 }
-.workflow-select-list,
 .run-timeline {
   display: grid;
   gap: 1px;

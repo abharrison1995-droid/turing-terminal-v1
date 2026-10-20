@@ -9,7 +9,7 @@ import { parseVerificationStageId } from './verification.js';
 import { VERIFIER_EVIDENCE_KIND, listVerifiers, type CurrentVerifier } from './verifierDigest.js';
 
 /**
- * The Stage 4B run-evidence collector. It works only from persisted state and Git: no provider is called, no model is
+ * The Goal run-evidence collector. It works only from persisted state and Git: no provider is called, no model is
  * consulted, and nothing is inferred from a label. For every terminal Goal repository run (execution, remediation or
  * verification) of a terminal cycle it
  *   1. re-derives which approved verifier a deterministic stage actually ran, by re-materialising the verifier command

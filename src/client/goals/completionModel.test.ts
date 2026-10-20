@@ -839,7 +839,7 @@ describe('recovery copy', () => {
   });
 });
 
-// --- Decision relation and the copy for corrected and competing decisions (D.4R Slice 3) -------------------------------
+// --- Decision relation and the copy for corrected and competing decisions ----------------------------------------------
 
 function withDecisions(decisions: unknown[]): GoalExternalCompletionStatus {
   return { ...statusFor('not_completed'), decisions: decisions as GoalExternalCompletionStatus['decisions'] };

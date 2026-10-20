@@ -19,7 +19,7 @@ import type {
 } from './goals.js';
 
 /**
- * Stage 7A: the typed Goal HTTP surface. Pure data. Every shape here is a bounded, JSON-safe projection built by the
+ * The typed Goal HTTP surface. Pure data. Every shape here is a bounded, JSON-safe projection built by the
  * server read-model layer from canonical rows; none of them is an authority and none exposes a raw `*_json` column.
  */
 
@@ -826,7 +826,7 @@ export interface GoalFinalApplyPreflightView {
   changedPathCount: number;
   changedPaths: string[];
   safety: { ok: boolean; violationCount: number };
-  /** The only place applied-externally will be offered; the action itself is not implemented yet (Stage 7C). */
+  /** Always false: the applied-externally action is not implemented. Delivery is the manual handoff. */
   appliedExternallySupported: false;
   manualReconciliationRequired: boolean;
 }

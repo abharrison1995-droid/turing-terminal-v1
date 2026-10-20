@@ -63,7 +63,7 @@ import type { RoleResolution } from './routeAudit.js';
 import { findVerifier, normalizeVerifierDigests } from './verifierDigest.js';
 
 /**
- * Stage 7A read models: bounded, JSON-safe projections of canonical Goal rows. Nothing here writes, calls a provider or
+ * Goal read models: bounded, JSON-safe projections of canonical Goal rows. Nothing here writes, calls a provider or
  * model, refreshes a provider, or touches a user's checkout; repository reads go to Git objects at the Goal head only.
  */
 export type GoalReadErrorCode = 'goal_not_found' | 'definition_not_found' | 'invalid_filter';

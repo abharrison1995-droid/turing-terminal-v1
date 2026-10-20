@@ -52,6 +52,7 @@ vi.mock('./api', async (importActual) => ({
 }));
 
 import App from './App';
+import { resetWorkflowDraftStore } from './pages/workflows/draftStore';
 
 const WORKSPACE_NAV = [
   'Workflows',
@@ -151,6 +152,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  resetWorkflowDraftStore();
   window.localStorage.clear();
   vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
   dashboard.mockResolvedValue(snapshot());
@@ -262,41 +264,111 @@ describe('App shell deep links', () => {
   });
 });
 
-describe('Workflow Studio section defaults', () => {
-  // Observable state: each StudioSection's head button carries aria-expanded. The initial open
-  // set is decided once at mount from matchMedia('(max-width: 680px)').
-  const expanded = (name: string) =>
-    screen.getByRole('button', { name: new RegExp(`^${name}`) }).getAttribute('aria-expanded');
-
-  it('on a narrow viewport opens Basics and Agents only and collapses the other three sections', async () => {
-    stubNarrowViewport(true);
+// The long accordion form (Basics, Safety, Agents, Context, Generation) was replaced by a compact stage list plus named
+// secondary settings panels (provider and workflow redesign). Same observable contract, new presentation: on a phone and
+// on a wide screen alike, the stage sequence is in the foreground, no stage editor is expanded by default, and the
+// detailed settings panels start closed. Full behaviour coverage lives in pages/WorkflowsPage.test.tsx.
+describe('Workflow Studio defaults', () => {
+  const openWorkflows = async (narrow: boolean) => {
+    stubNarrowViewport(narrow);
     dashboard.mockResolvedValue(snapshot({ workflows: [WORKFLOW] }));
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole('heading', { name: 'What should the agents do?' });
-
     await user.click(workspaceNav().getByRole('button', { name: 'Workflows' }));
-
     expect(await screen.findByRole('heading', { name: 'Workflow Studio' })).toBeTruthy();
-    expect(expanded('Basics')).toBe('true');
-    expect(expanded('Agents')).toBe('true');
-    expect(expanded('Safety')).toBe('false');
-    expect(expanded('Context')).toBe('false');
-    expect(expanded('Generation')).toBe('false');
-  });
+  };
+  const stageToggles = () =>
+    screen.getAllByRole('button').filter((button) => button.classList.contains('stage-row-toggle'));
 
-  it('on a wide viewport opens every studio section', async () => {
+  it.each([
+    ['a narrow viewport', true],
+    ['a wide viewport', false],
+  ])(
+    'on %s lists the stages collapsed and keeps the detailed settings panels closed',
+    async (_name, narrow) => {
+      await openWorkflows(narrow);
+
+      expect(stageToggles().length).toBeGreaterThan(0);
+      expect(stageToggles().every((button) => button.getAttribute('aria-expanded') === 'false')).toBe(true);
+      for (const name of [
+        'Safety and billing',
+        'Retry and limits',
+        'Context',
+        'Generation defaults',
+        'Instructions',
+      ]) {
+        const panel = screen.getByText(name, { selector: '.workflow-setting-name' }).closest('details');
+        expect(panel, name).toBeTruthy();
+        expect(panel!.open, name).toBe(false);
+      }
+      expect(screen.getByRole('button', { name: 'Save workflow' })).toHaveProperty('disabled', true);
+    },
+  );
+});
+
+// Workflow drafts live outside the page so a trip to Settings (to set up a provider) and back loses nothing, while
+// leaving the editor for any other page asks first. Behaviour of the editor itself is in pages/WorkflowsPage.test.tsx.
+describe('Workflow editor, unsaved drafts and the Settings handoff', () => {
+  const openWorkflows = async () => {
     stubNarrowViewport(false);
     dashboard.mockResolvedValue(snapshot({ workflows: [WORKFLOW] }));
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole('heading', { name: 'What should the agents do?' });
-
     await user.click(workspaceNav().getByRole('button', { name: 'Workflows' }));
+    await screen.findByRole('heading', { name: 'Workflow Studio' });
+    return user;
+  };
+  const rename = async (user: Awaited<ReturnType<typeof openWorkflows>>, value: string) => {
+    const input = screen.getByRole('textbox', { name: 'Workflow name' });
+    await user.clear(input);
+    await user.type(input, value);
+  };
+
+  it('asks before leaving with unsaved edits, and Keep editing leaves everything as it was', async () => {
+    const user = await openWorkflows();
+    await rename(user, 'Edited in place');
+
+    await user.click(workspaceNav().getByRole('button', { name: 'Projects' }));
+
+    const dialog = await screen.findByRole('alertdialog', {
+      name: 'Leave Workflow Studio with unsaved changes?',
+    });
+    await user.click(within(dialog).getByRole('button', { name: /keep editing/i }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect((screen.getByRole('textbox', { name: 'Workflow name' }) as HTMLInputElement).value).toBe(
+      'Edited in place',
+    );
+  });
+
+  it('does not prompt when nothing is unsaved', async () => {
+    const user = await openWorkflows();
+
+    await user.click(workspaceNav().getByRole('button', { name: 'Projects' }));
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(await screen.findByRole('heading', { name: 'Projects' })).toBeTruthy();
+  });
+
+  it('opens Providers & connections from a stage, then returns to the same unsaved draft without a prompt', async () => {
+    const user = await openWorkflows();
+    await rename(user, 'Draft kept across Settings');
+    await user.click(
+      within(screen.getByRole('list', { name: 'Stages' })).getByRole('button', { name: /^Plan/ }),
+    );
+
+    await user.click(screen.getByRole('button', { name: /Set up providers/ }));
+
+    expect(await screen.findByRole('heading', { name: 'Providers & connections' })).toBeTruthy();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByText('Your workflow draft is kept')).toBeTruthy();
+
+    await user.click(screen.getByRole('button', { name: 'Back to Workflows' }));
 
     expect(await screen.findByRole('heading', { name: 'Workflow Studio' })).toBeTruthy();
-    for (const name of ['Basics', 'Safety', 'Agents', 'Context', 'Generation']) {
-      expect(expanded(name)).toBe('true');
-    }
+    expect((screen.getByRole('textbox', { name: 'Workflow name' }) as HTMLInputElement).value).toBe(
+      'Draft kept across Settings',
+    );
   });
 });

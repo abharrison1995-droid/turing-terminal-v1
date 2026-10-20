@@ -494,7 +494,7 @@ function cloneWorkflow(db: Db, from: string, id: string, lanes: string[]) {
   ).run(id, id, row.description, row.template, JSON.stringify(config), NOW, NOW);
 }
 
-describe("Stage 5B.3: readiness uses each role's own workflow billing", () => {
+describe("readiness uses each role's own workflow billing", () => {
   const billed = (planning: string[], execution: string[]) =>
     fx({
       prepare(db, definition) {
@@ -550,7 +550,7 @@ describe("Stage 5B.3: readiness uses each role's own workflow billing", () => {
   });
 });
 
-describe('Stage 5B.3: an active round-robin cycle is not its own history', () => {
+describe('an active round-robin cycle is not its own history', () => {
   const nextCycle = (f: Fx, sequence: number) => {
     const id = randomUUID();
     f.db
@@ -602,7 +602,7 @@ describe('Stage 5B.3: an active round-robin cycle is not its own history', () =>
   });
 });
 
-describe('Stage 5B.4: a persisted current-cycle route is frozen during resume preflight', () => {
+describe('a persisted current-cycle route is frozen during resume preflight', () => {
   const LATER = '2026-12-01T12:00:00.000Z'; // beyond every validation lifetime
   const rawJson = (f: Fx) =>
     (

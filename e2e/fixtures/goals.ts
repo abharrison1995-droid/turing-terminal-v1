@@ -3,7 +3,7 @@
  * paths carry a "Fixture" marker, and no value describes a real repository, a real run or a real completion. Each object
  * is checked with `satisfies` against the shared Goal API types, so a drifting shape fails the typecheck.
  *
- * `ui3Routes` is `populatedRoutes` with the Goal endpoints replaced. `populated.ts` is not changed, so the UI.1c and UI.2
+ * `goalCockpitRoutes` is `populatedRoutes` with the Goal endpoints replaced. `populated.ts` is not changed, so the UI.1c and UI.2
  * captures keep the inputs they were taken with.
  */
 import type {
@@ -1122,7 +1122,7 @@ const unknownGoal = { error: 'Fixture: no Goal with that id.' };
  * The UI.3 route table. Every Goal endpoint the list, the cockpit tabs and the Handoff tab read is answered here, from the
  * fixtures above. The rest of the shell comes from `populatedRoutes`, unchanged.
  */
-export const ui3Routes: Record<string, unknown> = {
+export const goalCockpitRoutes: Record<string, unknown> = {
   ...populatedRoutes,
   '/api/goals': ui3List,
   '/api/goals/:id': (_url: URL, _method: string, params: Record<string, string>) => {

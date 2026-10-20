@@ -31,6 +31,8 @@ interface SettingsCardProps {
   summary: string;
   defaultOpen: boolean;
   attention?: boolean;
+  /** Bumps each time something elsewhere asks for this card to be open (for example a link from Workflows). */
+  openSignal?: number;
   children: ReactNode;
 }
 
@@ -44,6 +46,7 @@ export function SettingsCard({
   summary,
   defaultOpen,
   attention = false,
+  openSignal,
   children,
 }: SettingsCardProps) {
   const [open, setOpen] = useState(() => attention || (readStoredSections()[id] ?? defaultOpen));
@@ -52,6 +55,11 @@ export function SettingsCard({
   if (attention !== seenAttention) {
     setSeenAttention(attention);
     if (attention) setOpen(true);
+  }
+  const [seenSignal, setSeenSignal] = useState(openSignal);
+  if (openSignal !== seenSignal) {
+    setSeenSignal(openSignal);
+    if (openSignal) setOpen(true);
   }
   // The summary's accessible name is the card title only; the one-line summary is its description. Without this the
   // long description paragraph in the title row would become part of the toggle's name.

@@ -2,6 +2,23 @@
 
 Turing launches the provider's installed command line program (OpenCode, Cline, Codex CLI, Claude Code) or, for the optional metered OpenRouter connection, calls OpenRouter's HTTP API with a key stored on the desktop. Sign in through that provider's own supported flow first. Each stage resolves an execution backend, optional connection profile, provider/billing lane, and exact model configuration through workflow defaults, stage-kind defaults, and node overrides. Turing does not choose fallback models. Connection profiles and presets store references/configuration, not provider credentials. Install and update provider tools using their official instructions.
 
+## Providers & connections (Settings)
+
+Connections are created in one place: **Settings → Providers & connections**. Workflow screens only _select_ a saved connection and link back here; they have no separate creation form. A connection is a reusable reference to a route (backend, provider, billing lane) plus a label you type. Saving one does not sign in, does not switch the account a CLI is signed in to, and stores no credentials.
+
+The guided flow has five steps: choose a service, check the installation, complete the provider's official authentication on the Desktop Master computer, check the connection, then save it. Turing displays the official commands for the installation and authentication steps; it never runs them, never installs software, never starts an OAuth flow of its own and never reads provider-owned credential stores. **Check again** re-runs the existing read-only status checks after you have done the step yourself. Authentication and credentials always stay on Desktop Master, including when the interface is open from a phone.
+
+| Service                      | Backend       | Provider                 | Billing lane               |
+| ---------------------------- | ------------- | ------------------------ | -------------------------- |
+| OpenCode Go                  | `opencode`    | `opencode-go`            | `opencode-go-subscription` |
+| Codex — ChatGPT subscription | `codex-cli`   | `openai-codex`           | `chatgpt-subscription`     |
+| Claude Pro / Max             | `claude-code` | `anthropic-subscription` | `claude-subscription`      |
+| ClinePass                    | `cline`       | `cline-pass`             | `clinepass-subscription`   |
+
+The plan name (for example ChatGPT Pro or Claude Pro) is a label you provide. Turing cannot verify the plan, so it never says it did. Custom routes (other backend, provider or lane combinations) are under **Advanced**.
+
+Setup shows four readings separately: **Installation** (a CLI was found and reported a version), **Authentication** (sign-in status where the provider documents a way to read it), **Model catalog** (whether exact models could be listed) and **Last check**. Each can be _Unknown_, and Unknown is preserved rather than rounded to ready. A detected CLI does not mean the subscription, or any particular model, is usable. Cline authentication is always Unknown and has no catalog; OpenCode's `auth list` shows only that some credential exists.
+
 ## OpenCode
 
 Install OpenCode, then use `opencode auth` to connect the provider. Turing reads `opencode models --verbose` for exact model IDs, reported variants, capabilities, and other safe catalog metadata. It starts a run with the provider-native `provider/model#variant` selector when a variant is selected; history separately retains the base model ID and exact variant. The discovered model list is refreshed once per minute. An empty list means the backend is detected but the model catalog could not be read; check `opencode models --verbose` in a terminal.
@@ -40,7 +57,7 @@ Provider detection means only that the CLI can be launched and returns a version
 
 Provider support changes over time. The [capability matrix](PROVIDER_CAPABILITY_MATRIX.md) lists the official documentation reviewed for this release. Check those sources again when updating a CLI adapter. Turing does not scrape subscription websites or reuse credentials from provider-owned stores.
 
-Connection checks use authentication status, CLI status, and model discovery where those mechanisms are available. They do not send a generation prompt. Run Preview shows each stage's exact route and groups stages under the selected billing lane. Subscription Only blocks Turing-managed OpenAI/Anthropic API routes, Cline usage billing, OpenCode metered routes, and other configured PAYG routes. It cannot guarantee the provider will not bill through an account-side fallback that Turing cannot inspect; Preview reports provider-side fallback as **unknown** for every subscription lane (OpenCode Go, ClinePass, ChatGPT, Claude). See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for route rules, context defaults, snapshots, and run-history behavior.
+Connection checks use authentication status, CLI status, and model discovery where those mechanisms are available. They do not send a generation prompt. Run Preview shows each stage's exact route and groups stages under the selected billing lane. Subscription Only blocks Turing-managed OpenAI/Anthropic API routes, Cline usage billing, OpenCode metered routes, and other configured PAYG routes. It cannot guarantee the provider will not bill through an account-side fallback that Turing cannot inspect; Preview reports provider-side fallback as **unknown** for every subscription lane (OpenCode Go, ClinePass, ChatGPT, Claude). See [Phase 3.6 provider, model, and context configuration](history/phase3.6-provider-model-context.md) for route rules, context defaults, snapshots, and run-history behavior.
 
 ## Official sources
 

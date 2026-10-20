@@ -10,7 +10,7 @@ import {
 
 /**
  * Route validation records, read side only (design section 12). `route_validations` is immutable history written by
- * the Stage 5B probe lifecycle; Stage 5A only selects among seeded records. Nothing here validates, probes or refreshes.
+ * the route-validation probe lifecycle; the routing authority only selects among them. Nothing here validates, probes or refreshes.
  */
 
 /** The one authoritative role -> required validation profiles mapping. */

@@ -428,7 +428,7 @@ const pushSubscriptionSchema = z.object({
 export interface AppOptions {
   database: Db;
   engine: RunEngine;
-  /** Stage 7A: serves the Goal start/resume endpoints. Without it they answer 503. */
+  /** Serves the Goal start/resume endpoints. Without it they answer 503. */
   goalSupervisor?: GoalSupervisor;
 }
 
@@ -1695,7 +1695,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
     return reply.code(202).send({ run });
   });
 
-  // Stage 4B.2: the only Goal endpoint. It persists a draft Goal, an authoring cycle and one queued run, then answers
+  // Goal authoring: the only Goal endpoint here. It persists a draft Goal, an authoring cycle and one queued run, then answers
   // 202 at once; the user-pinned route is exact (no pool, fallback or substitution) and the output is consumed later.
   const authoringBody = {
     title: z.string().trim().min(1).max(AUTHORING_LIMITS.titleChars),
@@ -1761,8 +1761,8 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
     return { authoring: status };
   });
 
-  // Stage 7A: the Goal read models, explicit user controls and unified approvals (thin adapters over the services).
-  // GH.1 (S1a): paired remote devices (Tailscale identity) are refused on the user-only completion and correction routes.
+  // The Goal read models, explicit user controls and unified approvals (thin adapters over the services).
+  // Desktop-only authority: paired remote devices (Tailscale identity) are refused on the user-only completion and correction routes.
   // This is the same predicate the global hook uses; it does not distinguish the desktop UI from a same-user local process.
   registerGoalRoutes(app, {
     db,
@@ -1772,7 +1772,7 @@ export function createApp({ database: db, engine, goalSupervisor }: AppOptions):
       !isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])),
   });
 
-  // Stage 5B.1: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
+  // Route-validation probes: a user asks for ONE exact route to be probed. The server derives the profiles from the roles, captures
   // the route identity itself and answers as soon as the run is queued. There is no revalidation endpoint: a probe only
   // ever exists because a user posted this request.
   app.post('/api/route-validations', async (request, reply) => {

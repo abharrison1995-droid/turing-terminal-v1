@@ -82,7 +82,7 @@ function triggerNames(db: Db): unknown {
   return db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name").all();
 }
 
-describe('external completion terminal seams: Slice 2c refusals reached only after the identity read', () => {
+describe('external completion terminal seams: refusals reached only after the identity read', () => {
   it(
     'B4 refuses when the approval stops being approved inside the transaction, and rolls the hook back',
     async () => {

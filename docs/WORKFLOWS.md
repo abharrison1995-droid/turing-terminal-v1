@@ -2,6 +2,12 @@
 
 A saved workflow is an ordered list of stages with bounded loops, parallel review, and conditional branches. At run creation Turing copies the workflow and resolved model metadata into a snapshot, so later edits or provider catalog changes do not rewrite history. Preview resolves each stage's connection, backend, provider/billing lane, exact model and variant, context policy and estimate, permission label, branch strategy, and warnings before the user starts a run.
 
+## Editing in the Workflow Studio
+
+The editor leads with the workflow name and purpose, a compact safety and billing summary, and the ordered stage list. Stage rows show name and type, connection, model, enabled state and any issue; one stage editor is open at a time. Alt+Arrow Up/Down (or the move buttons) reorders stages. **Add stage** offers the existing stage types in groups, including **Decision gate**. Safety, context, retry, generation and instruction settings are in named secondary panels. Duplicate, import and export are under **More**. There is one primary **Save** with unsaved, saved and error states, and switching workflows or leaving the page with unsaved edits asks first. Drafts survive a visit to Settings.
+
+Each stage's connection is chosen from saved connections created in [Settings → Providers & connections](PROVIDERS.md#providers--connections-settings). The editor shows whether a value is inherited from the workflow default or overridden on the stage. Changing a connection lists affected stages and incompatible settings and never replaces a provider or model on its own.
+
 ## Stage behavior
 
 | Stage                      | Behavior                                                                                                                                                                                                                                                                                                        |
@@ -43,7 +49,7 @@ At Start, the run snapshots model ID, display name, provider, selected variant/s
 
 When repairing a duplicate, the model editor suggests models discovered for the selected backend where catalog discovery is supported; choosing a discovered model also applies its reported provider ID. Other providers accept an exact model ID. The final provider/model/connection combination is checked in Run Preview, and the user makes the replacement choice.
 
-Every AI stage may include custom instructions. They follow mandatory Turing security and permission enforcement, mandatory rules, built-in role instructions, advisory rules, and workflow instructions. Text instructions cannot grant broker permissions or bypass approval gates. The full order is documented in [Phase 3.6 configuration](phase3.6-provider-model-context.md#instruction-precedence).
+Every AI stage may include custom instructions. They follow mandatory Turing security and permission enforcement, mandatory rules, built-in role instructions, advisory rules, and workflow instructions. Text instructions cannot grant broker permissions or bypass approval gates. The full order is documented in [Phase 3.6 configuration](history/phase3.6-provider-model-context.md#instruction-precedence).
 
 ## Context policy and structured handoffs
 
@@ -67,6 +73,6 @@ Only package scripts matching `npm|pnpm|yarn|bun run build|test|lint` can be con
 
 Git workflow stages require a clean starting repository and isolated worktree execution. Commit and checkpoint reject out-of-project paths, sensitive filenames, symlinked changes, and content matching known credential patterns. Turing-managed commit, push, and merge operations suppress repository hooks; commit signing is disabled for these commits. Merge requires an earlier commit stage, an unchanged clean source checkout, and a fast-forward; the approval includes a redacted diff preview. Push requires an earlier commit, a clean run worktree, and approval in all modes. Rollback always requires approval. It resets only the Turing run branch and restores the registered project subtree; ignored files are preserved. Operation, approval, result, and commit/tree IDs are stored in run history.
 
-The workflow editor supports editing, reordering, duplicating, importing, and exporting saved workflows. History supports **Run Again With Same Configuration** and **Duplicate and Edit**; replay stops if the stored provider/model assignment cannot be validated. Exported configuration contains no credentials and should still be reviewed before importing into another installation. See [Phase 3.6 provider, model, and context configuration](phase3.6-provider-model-context.md) for the complete field and precedence reference.
+The workflow editor supports editing, reordering, duplicating, importing, and exporting saved workflows. History supports **Run Again With Same Configuration** and **Duplicate and Edit**; replay stops if the stored provider/model assignment cannot be validated. Exported configuration contains no credentials and should still be reviewed before importing into another installation. See [Phase 3.6 provider, model, and context configuration](history/phase3.6-provider-model-context.md) for the complete field and precedence reference.
 
 See also: [Model configuration](MODEL_CONFIGURATION.md), [Context management](CONTEXT_MANAGEMENT.md), [Decision Layer](DECISION_LAYER.md), [OpenRouter](OPENROUTER.md), [Billing safety](BILLING_SAFETY.md), [Usage accounting](USAGE_ACCOUNTING.md).

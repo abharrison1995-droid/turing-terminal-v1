@@ -273,7 +273,7 @@ export async function pruneRunWorktree(db: Db, runId: string): Promise<PruneResu
 }
 
 /**
- * The persisted "evidence extraction complete" marker. A Stage 4 collector calls this only after every evidence row
+ * The persisted "evidence extraction complete" marker. The run-evidence collector calls this only after every evidence row
  * for the run is durably recorded (zero rows is a valid, recorded outcome). It validates what it can: the run belongs
  * to the cycle and Goal, is terminal, the cycle's definition version is stated truthfully, and the count equals the
  * evidence rows actually stored for the run. It is idempotent (one marker per run). Retention never writes it.

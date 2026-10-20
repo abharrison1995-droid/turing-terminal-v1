@@ -22,8 +22,8 @@ import type { GoalRunPlan, GoalRunPlanProvider, GoalRunPlanRequest } from './run
 import { PLAN_ROUTE_FIELDS, TuringExecutorError, registeredGoalWorkflow } from './turingExecutor.js';
 
 /**
- * The roles a Goal's run purposes draw their route from. Verification is deterministic and route-free, and Stage 6
- * (reviewer runs) is not planned here. Proposal is made by the orchestrator; execution and remediation by the implementer.
+ * The roles a Goal's run purposes draw their route from. Verification is deterministic and route-free, and reviewer
+ * runs are not planned here. Proposal is made by the orchestrator; execution and remediation by the implementer.
  */
 export const PURPOSE_ROLE: Readonly<Record<Exclude<GoalRunPlanRequest['purpose'], 'review'>, GoalRole>> = {
   proposal: 'orchestrator',
@@ -161,9 +161,9 @@ export function stagesCarryRoute(
 }
 
 /**
- * The real Goal run-plan provider: it asks the Stage 5A routing authority which exact route a role uses and returns the
+ * The real Goal run-plan provider: it asks the routing authority which exact route a role uses and returns the
  * registered workflow with exactly that route. It starts nothing, writes only the write-once role resolution of the
- * cycle (through 5A), requests no approval (the supervisor owns gates) and never substitutes a model, lane or member.
+ * cycle (through the routing authority), requests no approval (the supervisor owns gates) and never substitutes a model, lane or member.
  * Every call builds a FRESH environment: current provider snapshot, canonical validations, first-use approvals, the
  * Goal's resolution history, the current time and the approved definition.
  */

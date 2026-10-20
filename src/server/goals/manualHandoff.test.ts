@@ -3697,8 +3697,8 @@ describe('external integration attestation corrections', () => {
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
-describe('version-2 completion characterization (D.3.0C)', () => {
-  // Characterization tests (D.3.0C): they pin observable behaviour and change no production code.
+describe('version-2 completion characterization', () => {
+  // Characterization tests: they pin observable behaviour and change no production code.
   it(
     'refuses a manual handoff for a version-2 amendment that has no fresh final review or acceptance',
     async () => {
@@ -3750,7 +3750,7 @@ describe('version-2 completion characterization (D.3.0C)', () => {
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
-describe('version-2 handoff preparation (D.3.1)', () => {
+describe('version-2 handoff preparation', () => {
   it.each(['sha1', 'sha256'] as const)(
     'prepares a version-2 handoff, verifies a fast-forward integration, and persists an attestation under %s',
     async (objectFormat) => {
@@ -3867,7 +3867,7 @@ describe('version-2 handoff preparation (D.3.1)', () => {
 
 type ClosureFixture = Awaited<ReturnType<typeof acceptedFixture>>['fx'];
 
-describe('version-2 handoff closure (D.3.1 review)', () => {
+describe('version-2 handoff closure', () => {
   const FORMATS = ['sha1', 'sha256'] as const;
 
   async function v2Prepared(objectFormat: 'sha1' | 'sha256') {

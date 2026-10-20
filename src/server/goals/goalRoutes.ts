@@ -93,7 +93,7 @@ import { GoalStateError } from './stateMachine.js';
 import type { GoalSupervisor } from './supervisor.js';
 
 /**
- * Stage 7A Goal HTTP surface. Every route is a thin adapter over an accepted service:
+ * Goal HTTP surface. Every route is a thin adapter over an accepted service:
  *  - status changes only through `transitionGoal` (via `pauseGoal`/`abandonGoal`), the `GoalSupervisor` and the
  *    definition/finding/approval services;
  *  - the actor is the server-fixed `user`; bodies are `z.strictObject`, so a client can never supply an actor,

@@ -2,9 +2,11 @@
 
 Evidence for UI stages. UI approval is for development only; none of this marks V1 release-ready.
 
+Only the UI.7 qualification captures (`evidence/ui7/`) and the latest UI.9 set (`evidence/ui9/`) are still in the tree. The earlier stage captures (UI.1b to UI.6) cited below were removed on 2026-10-20; they remain in Git history, for example at commit `5316527`.
+
 ## UI.1b: dark tokens, fonts, CSS primitive layer, PWA meta
 
-- **Scope and matrix:** [UI1B_SCOPE.md](UI1B_SCOPE.md). See the CI and review record at the end of this section.
+- **Scope and matrix:** [UI1B_SCOPE.md](../history/ui/UI1B_SCOPE.md). See the CI and review record at the end of this section.
 - **What changed:** dark-only token set (`tokens.css`); three unchanged upstream TTFs with their licences under `src/client/assets/fonts/`; `fonts.css`; the display face on five fixed selectors only; colour literals moved into `tokens.css` (8 CSS, 3 chart, icon values); Geist Sans removed (Geist Mono kept); `theme-color` and manifest colours; `color-scheme: dark`; Playwright pinned to dark. No server, shared, migration, Goal-model or Tauri change.
 - **Mascot:** only the four `--tt-mascot-*` tokens and their contrast tests are in this stage. The `Mascot` component and animation are UI.6.
 
@@ -54,7 +56,7 @@ Observed discrepancies (not pixel-perfect claims; no packet mockup is in the rep
 
 ## UI.1c: shell, states and command palette
 
-Scope: `docs/ui/UI1C_SCOPE.md`. Planner: Sonnet 5.5 Medium. RED tests: Haiku 5.5 High (commit `46b94fd`). Implementation and review fixes: Haiku 5.5 High. Independent review: fresh Sonnet 5.5 Medium, verdict APPROVE WITH FIXES; all six findings fixed (Restart Master on first-load error, `<main>` landmark for Loading/ErrorState, palette dialog focus, palette closed on pairing, drawer reset on widen, combobox `aria-expanded`), covered by `src/client/ui/shell/shellReview.test.tsx`.
+Scope: `docs/history/ui/UI1C_SCOPE.md`. Planner: Sonnet 5.5 Medium. RED tests: Haiku 5.5 High (commit `46b94fd`). Implementation and review fixes: Haiku 5.5 High. Independent review: fresh Sonnet 5.5 Medium, verdict APPROVE WITH FIXES; all six findings fixed (Restart Master on first-load error, `<main>` landmark for Loading/ErrorState, palette dialog focus, palette closed on pairing, drawer reset on widen, combobox `aria-expanded`), covered by `src/client/ui/shell/shellReview.test.tsx`.
 
 One RED test was corrected, not weakened: `paletteNoMutations.test.tsx` re-pressed the toggle shortcut on an already-open palette, which closes it. The helper now presses Escape after reading the labels; every assertion is unchanged.
 
@@ -74,7 +76,7 @@ UI.1c CI: run 38830237379, event push, tested exact `ff4dcc546866b69c128d256effb
 
 ## UI.2: Home composer, run preview, read-only run workspace
 
-Scope: `docs/ui/UI2_SCOPE.md`. Planner Sonnet 5.5 Medium; RED tests `7f5863a` (38 tests, 29 RED); implementation and review fixes Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, all findings fixed (invented Details empty states, diff refresh for active runs, "View diff" focus, rename/quoted-path and cap handling in `diffModel`, stale-details alert, compact CSS order tie, preview notice copy, error icon+word) with 22 new tests. No change under `src/server`, `src/shared`, `src/client/goals` or `src/client/api.ts`. No paid-fallback control added; Safeguards is read-only; the pre-existing "Custom metered lanes" billing option is untouched and flagged for the owner.
+Scope: `docs/history/ui/UI2_SCOPE.md`. Planner Sonnet 5.5 Medium; RED tests `7f5863a` (38 tests, 29 RED); implementation and review fixes Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, all findings fixed (invented Details empty states, diff refresh for active runs, "View diff" focus, rename/quoted-path and cap handling in `diffModel`, stale-details alert, compact CSS order tie, preview notice copy, error icon+word) with 22 new tests. No change under `src/server`, `src/shared`, `src/client/goals` or `src/client/api.ts`. No paid-fallback control added; Safeguards is read-only; the pre-existing "Custom metered lanes" billing option is untouched and flagged for the owner.
 
 Captures: `docs/ui/evidence/ui2/after/` (18 PNGs, `SHA256SUMS`) from labelled fixtures. The UI.1c PNGs were deliberately not regenerated; they remain the UI.1c record and differ from a rerun because Home changed.
 
@@ -91,7 +93,7 @@ UI.2 CI: run 38840346275, event push, tested exact `5ba015804f4d8c986aa1a3d26ac2
 
 ## UI.3: Goal cockpit (styling and layout only)
 
-Scope: `docs/ui/UI3_SCOPE.md`. Planner Sonnet 5.5 Medium; RED and guard tests `8ea5fa1` (22 tests: 7 RED, 15 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (compact list-row spacing cascade, a positive control for the phone "no completion controls" test, active-tab hover, comments). The change is CSS only (`goals-cockpit.css` plus one `@import`); `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts` and `src/client/goals`. Pinned `a11yTokens`/QF09 rules are untouched.
+Scope: `docs/history/ui/UI3_SCOPE.md`. Planner Sonnet 5.5 Medium; RED and guard tests `8ea5fa1` (22 tests: 7 RED, 15 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (compact list-row spacing cascade, a positive control for the phone "no completion controls" test, active-tab hover, comments). The change is CSS only (`goals-cockpit.css` plus one `@import`); `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts` and `src/client/goals`. Pinned `a11yTokens`/QF09 rules are untouched.
 
 Captures: `docs/ui/evidence/ui3/after/` (11 PNGs, `SHA256SUMS`) from labelled fixtures (`e2e/fixtures/goals.ts`). Desktop and phone cover the list, active and needs-user cockpits; phone covers contested and legacy standing; desktop covers the Definitions tab, Handoff tab and completion standing. The phone spec asserts that completion, correction, attestation and apply controls are absent from the DOM, with a desktop positive control.
 
@@ -104,9 +106,9 @@ Limitations:
 
 ## UI.4: Settings, device pairing, Machines, Usage
 
-Scope: `docs/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
+Scope: `docs/history/ui/UI4_SCOPE.md`. Planner Sonnet 5.5 Medium; tests `befcb65` (36 tests: 14 RED, 22 GUARD); implementation Haiku 5.5 High; independent review fresh Sonnet 5.5 Medium: APPROVE WITH FIXES, fixed (phone padding cascade, budget meter fill neutral, fixture and spec comments and assertions). The review also caught my own instruction to override the pairing title's display face; that override was removed because `.pairing-panel h1` is an allow-listed static fixed title.
 
-Changes: `pages-ui4.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in `phase36.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
+Changes: `pages-settings.css` (page-scoped, tokens only) plus one `@import`; the only TSX change is presentational, in what was then `phase36.tsx`, now `src/client/pages/usage/UsageExplorer.tsx` (`ProvenanceBadge` and `BudgetMeter`). Provenance words and counts come straight from `tokenProvenance`; a missing metric reads "Unavailable", never 0; the meter renders only when `capUsd` is non-null and always beside its text. `git diff` is empty for `src/server`, `src/shared`, `src/client/api.ts`, `src/client/goals`, `src/client/App.tsx` and `src/client/pages`. No billing, fallback or credential change.
 
 Captures: `docs/ui/evidence/ui4/after/` (18 PNGs, `SHA256SUMS` verified) from labelled fixtures.
 
@@ -121,7 +123,7 @@ Findings and limitations:
 
 ## UI.5: mobile PWA (remote control only)
 
-Scope: `docs/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/ui5Review.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileUi5Css.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-ui5.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/ui5.spec.ts`.
+Scope: `docs/history/ui/UI5_SCOPE.md`. Tests: RED and GUARD in `d32ad79`, unchanged. Review fixes are covered by the new file `src/client/noticeTimeoutRelease.test.tsx` (31 tests); the committed `useNoticeTimeout.test.tsx` and `mobileRemoteCss.test.ts` are not modified and still pass. Changes: `src/client/styles/mobile-remote.css` (compact block, tokens only), `src/client/useNoticeTimeout.ts`, the toast markup in `App.tsx`, and `e2e/mobile.spec.ts`.
 
 Review fixes:
 
@@ -137,17 +139,17 @@ Review fixes:
 - **Home cushion.** A 16px bottom padding on `.home-column`, under the docked composer. Before the cushion, the composer sat at its natural position at the end of the scroll with nothing under it, so the cushion guards the edge rather than fixing an existing overlap. The scrolling element is the window. The cushion moves the Home background behind the drawer scrim; the drawer capture changed for that reason, confirmed by removing the cushion for one run.
 - **Palette `@supports`.** The desktop `dvh` values equal HEAD's `vh` values where the two units match, which is every desktop window. Measured at 1440x900: backdrop padding-top 108px (12vh of 900) and palette max-height 480px (min(480px, 70vh) is 480px at 900px). The phone `80dvh` changes only where browser chrome moves the viewport.
 
-Captures: `docs/ui/evidence/ui5/after/`, 32 PNGs at 375x812 and 390x844: the 14 earlier captures plus `toast-preview` and `home-end`. Three full runs of `e2e/ui5.spec.ts` (30 tests each) produced identical hashes, and `SHA256SUMS` was refreshed from them. Captures use fixtures only. Chromium reports every `env(safe-area-inset-*)` as 0.
+Captures: `docs/ui/evidence/ui5/after/`, 32 PNGs at 375x812 and 390x844: the 14 earlier captures plus `toast-preview` and `home-end`. Three full runs of `e2e/mobile.spec.ts` (30 tests each) produced identical hashes, and `SHA256SUMS` was refreshed from them. Captures use fixtures only. Chromium reports every `env(safe-area-inset-*)` as 0.
 
 Precache (method: `vite build` at HEAD in a scratch export, and in the working tree; `sw.js` reports the total): HEAD 18 entries, 2420.39 KiB; UI.5 18 entries, 2424.71 KiB (+4.32 KiB).
 
 Not verified: physical iPhone (not performed); WebKit; notched or landscape safe areas; CI (GitHub Actions unavailable, so no CI run exists for the UI.3 to UI.5 SHAs).
 
-UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
+UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. The physical-device checklist is in `docs/history/ui/UI5_SCOPE.md` §7 and is NOT PERFORMED. Also known: the UnifiedApprovals banner shows plain "Approve" and "Deny" on the phone (existing, protected behaviour); the phone "no completion controls" assertion covers Goal and cockpit controls only.
 
 ## UI.6: mascot status marks
 
-- Scope `docs/ui/UI6_SCOPE.md`; RED tests `2c8617a`; implementation committed after independent review (APPROVE WITH FIXES, all required fixes applied).
+- Scope `docs/history/ui/UI6_SCOPE.md`; RED tests `2c8617a`; implementation committed after independent review (APPROVE WITH FIXES, all required fixes applied).
 - Shipped: idle, thinking and loading animations only (18 frames, `frames.generated.ts` 16.8 KB, provenance in `docs/ui/MASCOT_PROVENANCE.json`). Wipes and the phase-transition animation are deferred by owner decision (no truthful trigger).
 - Placements, each with adjacent visible text and `aria-hidden` art: Loading (48 px), Home composer preview pending (24 px), run detail while `run.status === 'running'` (24 px), empty Runs state (idle). Not in Sidebar, startup mark, alerts, dialogs, approvals or Goal UI. No success or failure art. Reduced motion shows the static first frame with no timers.
 - Deviation for owner sign-off: the running mark is in the run detail only, not on every Runs list row (avoids many concurrent timers).
@@ -159,7 +161,7 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 
 ## UI.7: qualification
 
-- `e2e/ui7.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
+- `e2e/qualification.spec.ts`: 71 cells (66 route x viewport, 4 palette, 1 drawer) with populated fixtures; two runs identical (hashes and RESULTS.md). Results and allow-listed exceptions (ellipsis truncation, intentional fixture console errors, existing "No metered route may run" policy copy) are in `docs/ui/evidence/ui7/RESULTS.md`. No open findings.
 - Captures: `docs/ui/evidence/ui7/after/` (34 PNGs, 6.6 MB; full six-viewport set was 14 MB so desktop 1440 and 390 cover every route and the other viewports cover Home, run detail and the Goal cockpit).
 - NOT PERFORMED: axe contrast scan (no dependency), drawer scrim close, physical iPhone, native Tauri, screen readers, forced-colors, live data, CI.
 
@@ -200,10 +202,10 @@ UI.5 review: fresh Sonnet 5.5 Medium, APPROVE WITH FIXES, all fixed as above. Th
 
 - Settings cards are native `<details>` disclosures (`SettingsCard`): Machine identity, OpenRouter, Global and project rules and Paired devices open by default, the rest closed; summaries use only loaded data; attention (pairing request awaiting approval or new code, Tailscale or desktop error, push notice, OpenRouter telemetry errors) opens a card; open state is remembered per viewer in `localStorage`. Children stay mounted when closed. The summary's accessible name is the card title with the one-line summary as its description.
 - Overlay hygiene: one `--z-*` scale in `tokens.css` (the toast now sits below the scrim and drawer, the rail one above the topbar); the Run actions menu closes on outside click, Escape, focus loss, item click and when another managed menu opens; the studio nav clears the iOS notch; chart tooltips are clamped inside the viewport; the compact composer is capped to the visible height and scrolls.
-- Evidence: `e2e/ui9.spec.ts` (49 cells at 1440, 390 and 375) and `docs/ui/evidence/ui9/` (24 PNGs, `RESULTS.md`, `SHA256SUMS`). Documented exception: a toast is a transient overlay over page content, so it may cover a scrolled Home Options panel; its Dismiss control is the topmost element and nothing covers the panel once it is dismissed. Two phone run-menu frames differ by 1 to 8 antialiased pixels between runs (Chromium rasterisation), so their checksums may not repeat.
+- Evidence: `e2e/overlays.spec.ts` (49 cells at 1440, 390 and 375) and `docs/ui/evidence/ui9/` (24 PNGs, `RESULTS.md`, `SHA256SUMS`). Documented exception: a toast is a transient overlay over page content, so it may cover a scrolled Home Options panel; its Dismiss control is the topmost element and nothing covers the panel once it is dismissed. Two phone run-menu frames differ by 1 to 8 antialiased pixels between runs (Chromium rasterisation), so their checksums may not repeat.
 - Review: APPROVE WITH FIXES; the accessible-name and rail-versus-topbar fixes were applied. Not applied: Escape propagation in the dismiss hook; a budget attention trigger (the panel shows no live warning status).
 - NOT PERFORMED: physical iPhone, Safari, screen readers.
 
 ## Owner report: pairing and QR (2026-10-20)
 
-- The owner reported, on their own devices, that the new build works and that QR pairing works after the bodyless-JSON and QR-completion-poll fixes (`3bb44aa`). This is an owner-reported result, not a check performed by the implementer, and it does not cover the rest of the physical-device checklist in `docs/ui/UI5_SCOPE.md` §7 (insets, keyboard, landscape, offline, push, install behaviour), which stays NOT PERFORMED until the owner records it. It does not accept any V1 blocker or declare V1 release-ready.
+- The owner reported, on their own devices, that the new build works and that QR pairing works after the bodyless-JSON and QR-completion-poll fixes (`3bb44aa`). This is an owner-reported result, not a check performed by the implementer, and it does not cover the rest of the physical-device checklist in `docs/history/ui/UI5_SCOPE.md` §7 (insets, keyboard, landscape, offline, push, install behaviour), which stays NOT PERFORMED until the owner records it. It does not accept any V1 blocker or declare V1 release-ready.

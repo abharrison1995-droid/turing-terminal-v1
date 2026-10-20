@@ -14,7 +14,7 @@ import { setDraftStatusReason } from './stateMachine.js';
 import { canonicalNonRouteWorkflow, PLAN_ROUTE_FIELDS, registeredGoalWorkflow } from './turingExecutor.js';
 
 /**
- * Asynchronous Goal authoring (Stage 4B.2). A user-triggered, user-pinned route drafts ONE Goal definition through an
+ * Asynchronous Goal authoring. A user-triggered, user-pinned route drafts ONE Goal definition through an
  * ordinary persisted run of the reserved `goal-authoring-v1` workflow. Nothing here waits for the model: the request
  * persists a draft Goal (no definition), an authoring cycle and a queued run in one transaction and returns; the
  * persisted run output is consumed later (by `reconcileAuthoring`) into a PROPOSED version 1 that only the user can

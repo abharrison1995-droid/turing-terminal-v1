@@ -46,6 +46,6 @@ A refused request receives `403` with `{ "error": "Goal completion and correctio
 
 Not claimed:
 
-- A same-user local process on the desktop machine is not distinguished from the desktop UI (S1b, owner decision pending). See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
+- A same-user local process on the desktop machine is not distinguished from the desktop UI (S1b, owner decision pending). See [GOAL_TRUSTED_CALLER_BOUNDARY.md](goals/GOAL_TRUSTED_CALLER_BOUNDARY.md).
 - Live Tailscale Serve header behaviour, including whether `Tailscale-User-Login` can be stripped or injected and how Host is rewritten, is not verified by automated tests and remains pending physical acceptance.
 - No physical-device, live-provider or accessibility result is established by this change.

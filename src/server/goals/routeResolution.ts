@@ -300,7 +300,7 @@ export function loadPriorResolutions(
   return history;
 }
 
-/** Pool first-use approvals recorded for the Goal (read only; creating one is the supervisor's job in Stage 5B). */
+/** Pool first-use approvals recorded for the Goal (read only; creating one is the supervisor's job). */
 export function loadFirstUseApprovals(db: Db, goalId: string): GoalApproval[] {
   const rows = db
     .prepare(

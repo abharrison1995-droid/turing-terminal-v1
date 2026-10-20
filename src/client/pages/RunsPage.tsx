@@ -27,7 +27,7 @@ import { api } from '../api';
 import { approvalSignature, pendingApprovalCounts } from '../goals/dashboard';
 import { UnifiedApprovals } from '../goals/UnifiedApprovals';
 import { billingLaneLabel } from '../../shared/billing';
-import { DecisionResultsPanel } from '../phase36';
+import { DecisionResultsPanel } from './shared/DecisionPanels';
 import type { Page } from './shared/types';
 import { activeStatuses, shortTask, humanStatus, humanize } from './shared/runStatus';
 import { PageHeading, StatusIcon, EmptyState } from './shared/parts';

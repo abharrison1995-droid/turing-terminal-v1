@@ -372,7 +372,7 @@ describe('external completion terminal: T-TX3 the bypass table (transitionGoal c
 });
 
 describe('external completion terminal: T-TX4 an approval that changes inside the transaction', () => {
-  // Slice 2a: a denied decision row is class 5, so the terminal's own identity read refuses before the approval status
+  // A denied decision row is class 5, so the terminal's own identity read refuses before the approval status
   // is checked. The refusal therefore names completion_history_invalid, not approval_status. A snapshot captured after
   // the change cannot be read at all, so both variants consume with the identity captured before the change.
   it.each([
@@ -902,7 +902,7 @@ function moveTip(attested: Awaited<ReturnType<typeof v2DecidedFixture>>): string
   );
 }
 
-describe('external completion terminal: Slice 2c the classifier decides which decision may complete', () => {
+describe('external completion terminal: the classifier decides which decision may complete', () => {
   it(
     'B1 completes with the eligible second decision and one proof when the first decision is corrected',
     async () => {

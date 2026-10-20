@@ -29,7 +29,7 @@ export function reviewerCountFor(
  * The consolidate contract: the reply is ONE JSON object whose top-level `findings` array is exactly what the engine's
  * ordinary parser reads, plus a `goalReviewReport` object (the strict Goal ReviewReport). Every entry of
  * `goalReviewReport.newFindings` must also appear in `findings` with the same description and affectedFiles, because
- * Stage 6 links each new Goal finding to the matching per-run finding of THIS run.
+ * the review cycle links each new Goal finding to the matching per-run finding of THIS run.
  */
 export const REVIEW_STAGE_INSTRUCTIONS = {
   parallelReview: [

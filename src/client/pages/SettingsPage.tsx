@@ -4,7 +4,6 @@ import {
   Bell,
   Check,
   Laptop,
-  LockKeyhole,
   Monitor,
   Plus,
   RefreshCw,
@@ -15,7 +14,7 @@ import {
 import QRCode from 'qrcode';
 import type { DashboardSnapshot, ProjectProfile, StageKind, TuringRule } from '../../shared/types';
 import { api } from '../api';
-import { MeteredBudgetSettingsPanel, OpenRouterSettings } from '../phase36';
+import { MeteredBudgetSettingsPanel, OpenRouterSettings } from './settings/MeteredProviderSettings';
 import { desktop, isDesktopShell, setMasterApiBase, type DesktopRuntime } from '../desktop';
 import { makePairingQrUrl } from '../pairingQr.js';
 import { decodeVapidPublicKey, pushSubscriptionStorageKey } from '../pushNotifications.js';
@@ -24,15 +23,25 @@ import { SettingsCard } from './shared/SettingsCard';
 import { humanize } from './shared/runStatus';
 import { formatDate } from './shared/format';
 import { stageLabels } from './shared/stageMeta';
+import { ProviderSetup } from './settings/ProviderSetup';
+import type { SettingsIntent } from './shared/settingsIntent';
 
 export function SettingsPage({
   snapshot,
   onNotice,
   onChanged,
+  intent,
+  intentSignal,
+  onReturnToWorkflows,
 }: {
   snapshot: DashboardSnapshot;
   onNotice: (message: string) => void;
   onChanged: () => void;
+  /** Set when another page sent the person here to finish a setup step. */
+  intent?: SettingsIntent;
+  /** Bumps for every request, so asking for the same card twice opens it twice. */
+  intentSignal?: number;
+  onReturnToWorkflows?: () => void;
 }) {
   const [name, setName] = useState(snapshot.machine.name);
   const [notifications, setNotifications] = useState(
@@ -140,16 +149,45 @@ export function SettingsPage({
       setPushBusy(false);
     }
   };
+  useEffect(() => {
+    if (!intent || !intentSignal) return;
+    const target =
+      intent.target === 'openrouter' ? '[aria-label="OpenRouter"]' : '#providers-connections-section';
+    window.requestAnimationFrame(() => document.querySelector(target)?.scrollIntoView?.({ block: 'start' }));
+  }, [intent, intentSignal]);
   const notificationSummary = `${notifications ? 'Browser notifications on' : 'Browser notifications off'} · ${pushSubscribed ? 'closed-client push on' : 'closed-client push off'}`;
-  const providerSummary = `${snapshot.providers.filter((provider) => provider.detected).length} of ${snapshot.providers.length} CLIs detected`;
   return (
     <main className="page-content">
       <PageHeading
         title="Settings"
         description="Local master identity, provider health, and safety boundaries."
       />
+      {intent?.returnTo === 'workflows' && onReturnToWorkflows && (
+        <div className="workflow-banner" role="status">
+          <div>
+            <strong>Your workflow draft is kept</strong>
+            <p>
+              Finish this step here, then go back. Nothing was saved, added or enabled in the workflow by
+              coming here.
+            </p>
+            <button type="button" className="secondary-button" onClick={onReturnToWorkflows}>
+              Back to Workflows
+            </button>
+          </div>
+        </div>
+      )}
       <div className="settings-grid">
         <DesktopSettingsCard />
+        <section className="surface-panel settings-section" id="providers-connections-section">
+          <ProviderSetup
+            providers={snapshot.providers}
+            workflows={snapshot.workflows}
+            onNotice={onNotice}
+            onChanged={onChanged}
+            intentServiceId={intent?.target === 'providers' ? intent.serviceId : undefined}
+            openSignal={intent?.target === 'providers' ? intentSignal : undefined}
+          />
+        </section>
         <section className="surface-panel settings-section">
           <SettingsCard
             id="machine-identity"
@@ -181,46 +219,6 @@ export function SettingsPage({
               <span>Operating system</span>
               <strong>{snapshot.machine.os}</strong>
             </div>
-          </SettingsCard>
-        </section>
-        <section className="surface-panel settings-section">
-          <SettingsCard
-            id="provider-integrations"
-            summary={providerSummary}
-            defaultOpen={false}
-            head={
-              <div className="panel-title-row">
-                <div>
-                  <h2>Provider integrations</h2>
-                  <p>Authentication stays in each provider’s official CLI.</p>
-                </div>
-                <LockKeyhole size={17} className="muted-icon" />
-              </div>
-            }
-          >
-            {snapshot.providers.map((provider) => (
-              <div className="settings-provider-row" key={provider.id}>
-                <span className={`provider-mark provider-mark-${provider.id}`}>
-                  {provider.name.slice(0, 1)}
-                </span>
-                <div>
-                  <strong>{provider.name}</strong>
-                  <small>
-                    {provider.detected
-                      ? `${provider.version ?? provider.cli} · auth ${provider.authentication}`
-                      : 'CLI not detected'}
-                  </small>
-                  <p>{provider.note}</p>
-                  <p className="capability-line">
-                    Supports:{' '}
-                    {Object.entries(provider.capabilities)
-                      .filter(([, enabled]) => enabled)
-                      .map(([key]) => humanize(key).toLowerCase())
-                      .join(', ') || 'nothing reported'}
-                  </p>
-                </div>
-              </div>
-            ))}
           </SettingsCard>
         </section>
         <TailscaleReadinessCard />
@@ -257,7 +255,10 @@ export function SettingsPage({
             />
           </SettingsCard>
         </section>
-        <OpenRouterSettings onNotice={onNotice} />
+        <OpenRouterSettings
+          onNotice={onNotice}
+          openSignal={intent?.target === 'openrouter' ? intentSignal : undefined}
+        />
         <MeteredBudgetSettingsPanel onNotice={onNotice} />
         <RulesSettings projects={snapshot.projects} onNotice={onNotice} />
         <PairingSettings onNotice={onNotice} />
