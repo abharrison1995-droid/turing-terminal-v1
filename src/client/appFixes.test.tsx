@@ -43,7 +43,7 @@ import { setMasterApiBase } from './desktop';
 
 const runtimeFixture = (overrides: Partial<DesktopRuntime> = {}): DesktopRuntime => ({
   status: 'Running',
-  version: '1.0.0-rc2',
+  version: '1.0.0-rc3',
   port: 4317,
   masterUrl: 'http://127.0.0.1:4317',
   uptimeSeconds: 10,

@@ -1,6 +1,6 @@
 {
   "name": "turing-terminal",
-  "version": "1.0.0-rc2",
+  "version": "1.0.0-rc3",
   "private": true,
   "type": "module",
   "description": "Local-first orchestration control plane for coding workflows",

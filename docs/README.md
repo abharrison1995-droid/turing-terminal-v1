@@ -26,7 +26,7 @@ Layout:
 | Live acceptance    | [LIVE_PROVIDER_VALIDATION.md](LIVE_PROVIDER_VALIDATION.md), [CLAUDE_VALIDATION.md](CLAUDE_VALIDATION.md), [LIVE_TAILSCALE_ACCEPTANCE.md](LIVE_TAILSCALE_ACCEPTANCE.md), [LIVE_MULTIMACHINE_ACCEPTANCE.md](LIVE_MULTIMACHINE_ACCEPTANCE.md) |
 | UI evidence        | [ui/EVIDENCE.md](ui/EVIDENCE.md), [ui/MASCOT_PROVENANCE.json](ui/MASCOT_PROVENANCE.json), [ui/packet-reference/README.md](ui/packet-reference/README.md)                                                                                   |
 
-`RELEASE_NOTES_1.0.0-rc2.md` and `ui/MASCOT_PROVENANCE.json` stay where they are because scripts and tests read them by path.
+The current release-candidate notes draft is [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md). `RELEASE_NOTES_1.0.0-rc2.md` and `ui/MASCOT_PROVENANCE.json` stay where they are because scripts and tests read them by path. The RC3 notes are preparation only; no RC3 has been cut.
 
 ## Goal Engine
 
