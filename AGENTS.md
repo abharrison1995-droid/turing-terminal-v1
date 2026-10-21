@@ -23,7 +23,7 @@ Turing Terminal is a local-first AI development orchestration control plane. The
 
 ## Shape of the code
 
-- `src/server/`: the Desktop Master (Fastify, SQLite via `better-sqlite3`). `runEngine.ts` drives runs, `app.ts` holds most HTTP routes, `goals/` is the Goal Engine (supervisor, handoff, attestation, completion and correction services, `goalRoutes.ts`).
+- `src/server/`: the Desktop Master (Fastify, SQLite via `better-sqlite3`). `runEngine.ts` drives runs, `app.ts` assembles the HTTP server from the route modules in `routes/`, `goals/` is the Goal Engine (supervisor, handoff, attestation, completion and correction services, `goalRoutes.ts`).
 - `src/client/`: the React UI shared by the desktop shell and the phone PWA. Tokens are in `src/client/styles/tokens.css`.
 - `src/shared/`: types and pure logic used by both sides.
 - `migrations/`: numbered SQL, applied once by filename (`src/server/db.ts`). Never rename or edit an applied migration; add a new one.

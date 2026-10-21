@@ -791,12 +791,14 @@ describe('probe lifecycle and the validation record writer', () => {
           file !== 'routeProbe.ts',
       );
     expect(offenders).toEqual([]);
-    const users = readdirSync(join(import.meta.dirname, '..'))
+    const server = join(import.meta.dirname, '..');
+    const users = ['', 'routes']
+      .flatMap((directory) =>
+        readdirSync(join(server, directory)).map((file) => (directory ? `${directory}/${file}` : file)),
+      )
       .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
-      .filter((file) =>
-        /createRouteProbe\(/.test(readFileSync(join(import.meta.dirname, '..', file), 'utf8')),
-      );
-    expect(users).toEqual(['app.ts']);
+      .filter((file) => /createRouteProbe\(/.test(readFileSync(join(server, file), 'utf8')));
+    expect(users).toEqual(['routes/routeProbeRoutes.ts']);
   });
 });
 
