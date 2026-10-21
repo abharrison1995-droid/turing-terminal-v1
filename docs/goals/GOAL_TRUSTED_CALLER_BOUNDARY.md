@@ -1,6 +1,6 @@
 # Goal trusted-caller boundary (S1)
 
-Status: threat model and design checkpoint, 2026-10-13. S1a is implemented by GH.1. S1b is an open owner decision. The options and recommendation below are for the owner. They are not a decision, and they do not change release status (see [V1_READINESS.md](../V1_READINESS.md)).
+Status: threat model and decision record, 2026-10-13; active decision recorded 2026-10-21. S1a is implemented by GH.1. S1b is not an open owner choice: the owner conditionally accepted O1 for V1 on 2026-10-13, with live Tailscale identity-header/Host behaviour verification as its condition, and O2 may be post-V1. O1 and O2 are recorded decisions, not pending choices. Release status is in [V1_READINESS.md](../V1_READINESS.md).
 
 ## 1. Problem
 
@@ -34,19 +34,17 @@ The server cannot distinguish:
 
 ## 4. Actors
 
-| Actor                                  | Path to the API                                  | Current behaviour                                                                         | Covered by GH.1                                    | Residual                                                                                                                                                                     |
-| -------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Paired phone, same user                | Tailscale Serve, identity header, device cookie  | Ordinary routes allowed; the five routes refused                                          | Yes, the five routes return 403 `desktop_required` | None on the five routes, subject to the unverified Serve items in section 8                                                                                                  |
-| Unpaired tailnet device, same user     | Serve, identity header, no cookie                | 401 from the global check                                                                 | Not needed                                         | None found in code                                                                                                                                                           |
-| Tailnet device of another user         | Serve, other identity, no session for that login | 401; sessions are bound to the login                                                      | Not needed                                         | None found in code                                                                                                                                                           |
-| Public internet or Funnel              | No identity header; Host is not loopback         | Treated as remote; 401                                                                    | Not needed                                         | Funnel is not verified (section 8)                                                                                                                                           |
-| Browser CSRF from a cross-site page    | Cross-origin request to loopback                 | Origin is non-loopback, so remote; 401                                                    | Not needed                                         | Code reading only: the five routes also need an `If-Match` header, which forces a CORS preflight that the server does not grant to non-Tauri origins. Not tested separately. |
-| Browser page on another localhost port | Loopback Origin, different port                  | Treated as local                                                                          | No                                                 | Port is not compared. Cross-origin preflight is still refused as above, so the practical exposure is unproven. Residual.                                                     |
-| DNS rebinding on the desktop           | Host is the attacker name, which is non-loopback | Treated as remote; needs a device cookie for that origin, which the browser does not hold | Not needed                                         | Code reading only. Not tested.                                                                                                                                               |
-| Same-user local process on the desktop | Loopback, no identity header                     | Treated as local; all routes allowed, including the five                                  | No                                                 | Open. This is S1b.                                                                                                                                                           |
-| In-process supervisor and services     | Direct function calls, not HTTP                  | Not affected by the HTTP guard                                                            | Not applicable                                     | The guard is an HTTP-layer check only. Services are trusted code.                                                                                                            |
+- **Paired phone, same user.** Path: Tailscale Serve, identity header, device cookie. Current behaviour: ordinary routes allowed; the five routes refused. Covered by GH.1: yes, the five routes return 403 `desktop_required`. Residual: none on the five routes, subject to the unverified Serve items in section 8.
+- **Unpaired tailnet device, same user.** Path: Serve, identity header, no cookie. Current behaviour: 401 from the global check. Covered by GH.1: not needed. Residual: none found in code.
+- **Tailnet device of another user.** Path: Serve, other identity, no session for that login. Current behaviour: 401; sessions are bound to the login. Covered by GH.1: not needed. Residual: none found in code.
+- **Public internet or Funnel.** Path: no identity header; Host is not loopback. Current behaviour: treated as remote; 401. Covered by GH.1: not needed. Residual: Funnel is not verified (section 8).
+- **Browser CSRF from a cross-site page.** Path: cross-origin request to loopback. Current behaviour: Origin is non-loopback, so remote; 401. Covered by GH.1: not needed. Residual: code reading only: the five routes also need an `If-Match` header, which forces a CORS preflight that the server does not grant to non-Tauri origins. Not tested separately.
+- **Browser page on another localhost port.** Path: loopback Origin, different port. Current behaviour: treated as local. Covered by GH.1: no. Residual: port is not compared. Cross-origin preflight is still refused as above, so the practical exposure is unproven.
+- **DNS rebinding on the desktop.** Path: Host is the attacker name, which is non-loopback. Current behaviour: treated as remote; needs a device cookie for that origin, which the browser does not hold. Covered by GH.1: not needed. Residual: code reading only. Not tested.
+- **Same-user local process on the desktop.** Path: loopback, no identity header. Current behaviour: treated as local; all routes allowed, including the five. Covered by GH.1: no. Residual: accepted conditionally for V1 under O1 on 2026-10-13. Live Tailscale identity-header/Host verification remains the condition; O2 may be post-V1.
+- **In-process supervisor and services.** Path: direct function calls, not HTTP. Current behaviour: not affected by the HTTP guard. Covered by GH.1: not applicable. Residual: the guard is an HTTP-layer check only. Services are trusted code.
 
-The same-user row is the residual that S1a does not close. A same-user process can already read the local database file, which is created with mode `0600` and is still readable by its owner (see `docs/SECURITY.md`).
+The same-user case is the residual that S1a does not close. A same-user process can already read the local database file, which is created with mode `0600` and is still readable by its owner (see `docs/SECURITY.md`).
 
 ## 5. S1a: implemented in GH.1
 
@@ -56,11 +54,13 @@ The same-user row is the residual that S1a does not close. A same-user process c
 
 Limits of S1a:
 
-- It is not S1b. A same-user local process still passes.
+- It is not S1b. A same-user local process still passes; that residual is conditionally accepted for V1 under O1, not closed.
 - It inherits the predicate's properties: loopback is compared by hostname only, and an identity header is trusted because Serve is expected to supply it.
 - It does not change authentication, the global pre-handler, pairing, cookies, sessions or CORS.
 
-## 6. S1b options (owner decision)
+## 6. S1b options (recorded decision)
+
+The options below were evaluated for O1 and O2. The owner conditionally accepted O1 for V1 on 2026-10-13, with live Tailscale identity-header/Host behaviour verification as its condition. O2 may follow after V1. O3 and O4 are not planned.
 
 **O1: accept the residual and disclose it.** No code change. Document that a same-user local process is trusted, as the local database and provider credentials already are.
 
@@ -86,17 +86,17 @@ Limits of S1a:
 - Protects against: same-user processes, if the isolation is enforced by the operating system.
 - Does not protect against: administrator or root, or the same account if the key can be read.
 
-## 7. Recommendation (for the owner; not a decision)
+## 7. Recorded decision and post-V1 direction
 
-- **For V1: O1, with explicit disclosure** in `docs/SECURITY.md` and `docs/V1_READINESS.md`. The desktop is already the trust root for the local database and provider configuration. A same-user process can already read that data, so O1 adds the least marginal exposure.
-- **After V1: O2, as a design with a spike** to measure how the capability is delivered and whether the UI can hold it. O2 closes the browser and unprivileged-process cases, which O1 leaves open.
-- **O3 and O4 are not recommended** for V1. O3 adds friction without a stronger boundary. O4 is a larger change than the residual justifies at this stage.
+- **For V1: O1, conditionally accepted on 2026-10-13, with explicit disclosure** in `docs/SECURITY.md` and `docs/V1_READINESS.md`. The desktop is already the trust root for the local database and provider configuration. A same-user process can already read that data, so O1 adds the least marginal exposure. The condition is live verification of Tailscale identity-header and Host behaviour; a remote request misclassified as local that reaches a desktop-only Goal route is a blocking defect.
+- **After V1: O2 is the intended direction, as a design with a spike** to measure how the capability is delivered and whether the UI can hold it. O2 closes the browser and unprivileged-process cases that O1 leaves open.
+- **O3 and O4 are not planned.** O3 adds friction without a stronger boundary. O4 is a larger change than the residual justifies at this stage.
 
-This recommendation is an analysis for the owner. The owner has not yet chosen an option.
+The remaining live verification is not a reopened O1/O2 choice. It is the condition attached to the accepted O1 decision.
 
 ## 8. Unverified items
 
-These are not verified by the automated tests or by code reading alone. Each needs live acceptance.
+These are not verified by the automated tests or by code reading alone. Each needs live acceptance. The Tailscale identity-header and Host items are the condition on O1.
 
 - **Tailscale Serve header handling.** Whether Serve strips a client-supplied `Tailscale-User-Login` header and whether it always injects the real one. Live acceptance is pending (`docs/LIVE_TAILSCALE_ACCEPTANCE.md`).
 - **Host rewriting.** Whether Serve or any proxy rewrites Host to a loopback name. If a remote request arrives with a loopback Host and no identity header, the predicate classifies it as local, and GH.1 does not refuse it. This is the most important open item.

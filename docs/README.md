@@ -6,7 +6,7 @@ Layout:
 
 - `docs/`: current reference.
 - `docs/goals/`: the Goal Engine overview and the contracts it enforces.
-- `docs/proposals/`: designs awaiting an owner decision. Nothing in them is implemented.
+- `docs/proposals/`: designs and wording proposals. Nothing in them is implemented; each records its own decision status.
 - `docs/history/`: frozen records. Do not read them as current state.
 - `docs/ui/`: UI evidence and design references.
 
@@ -41,10 +41,10 @@ Start with [goals/GOAL_ENGINE.md](goals/GOAL_ENGINE.md): what the Goal Engine is
 
 These were written stage by stage. Their opening status lines ("pending independent review", "PR #3 stays open") describe the moment they were written, not today.
 
-## Proposals awaiting an owner decision
+## Proposals and recorded decisions
 
-- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): refuse merges that discard accepted Goal work.
-- [GOAL_X1_AUTH_WORDING_PROPOSAL.md](proposals/GOAL_X1_AUTH_WORDING_PROPOSAL.md): wording for the authentication boundary.
+- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): awaiting an owner decision on refusing merges that discard accepted Goal work, including whether ancestry-only completion remains available.
+- [GOAL_X1_AUTH_WORDING_PROPOSAL.md](proposals/GOAL_X1_AUTH_WORDING_PROPOSAL.md): wording for the authentication boundary. The underlying O1 decision is recorded: the same-user local-process residual was conditionally accepted for V1 on 2026-10-13, with live Tailscale identity-header/Host verification as its condition; O2 may be post-V1. The exact proposed prose was not separately approved.
 
 ## History
 

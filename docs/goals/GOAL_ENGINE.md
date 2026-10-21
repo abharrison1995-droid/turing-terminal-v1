@@ -1,6 +1,6 @@
 # Goal Engine (Grand Projects)
 
-An overview of the Goal Engine as the code stands, checked on 2026-10-20. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
+An overview of the Goal Engine as the code stands at development HEAD `e6120c1`, checked on 2026-10-21. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
 
 ## What it is
 
@@ -10,11 +10,13 @@ The Goal Engine sits above `RunEngine`. All model work runs as ordinary bounded 
 
 ## Production status
 
-Production constructs `DisabledGoalExecutor` (`src/server/index.ts`). Its route check always reports `route_unavailable`, so starting a Goal fails preflight and no proposal, execution, review, remediation or verification run is ever queued. The real executor, `TuringGoalExecutor`, is used only by tests.
+Production calls `createProductionGoalComposition` (`src/server/index.ts:28`). That composition wires `createGoalSupervisor` to `TuringGoalExecutor` with `ResolvedGoalRunPlanProvider` and `requireResolvedRoutes: true` (`src/server/goals/productionComposition.ts`). The supervisor decides every state transition and starts at most one ordinary queued run at a time through the same `RunEngine`; the exact backend, provider, model and billing lane come from the cycle's write-once persisted role resolution, never from a fallback or a fresh selection. A plan without a matching resolved route is refused.
 
-What does work in production: creating Goals and definition drafts, approving and amending definitions, persistence and restart recovery, and **authoring runs**. An authoring run (`POST /api/goals/authoring`, consumed by `AuthoringReconciler`) is the only Goal path that starts a model run, and it uses the user's exact pinned route.
+Qualification is deterministic only. The accepted development commit `e6120c1` passed 292 tests across nine selected Goal suites plus format, lint and typecheck, covering the exact persisted route, isolated execution, manual handoff, and the user's base staying untouched until the user acts. The provider process boundary is faked: this is not live-provider, physical-device or release qualification.
 
-Because no Goal can execute, no production Goal can reach handoff. Everything under "Delivery and completion" below is exercised by fake-provider end-to-end tests (`src/server/goals/goalE2E.test.ts`) only.
+Creating Goals and definition drafts, approving and amending definitions, persistence and restart recovery, and **authoring runs** also work. An authoring run (`POST /api/goals/authoring`, consumed by `AuthoringReconciler`) uses the user's exact pinned route.
+
+Delivery remains manual-handoff only. Turing never writes the user's base branch; the checked-out-worktree writer `applyApprovedGoalToBase` is quarantined and unreachable because it can overwrite ignored files. Completion after the user integrates proves ancestry at an observed time, not content preservation.
 
 ## Lifecycle
 
@@ -39,7 +41,7 @@ Work happens in cycles (authoring, execution, remediation, review, verification)
   - `POST /api/goals/:goalId/completion`
   - `POST /api/goals/:goalId/attestation-corrections/:approvalId/decision`
   - `POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections`
-- **Local trust.** Loopback callers are trusted. A same-user local process is not distinguished from the desktop UI; the owner accepted this for V1 (O1). See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
+- **Local trust.** Loopback callers are trusted. A same-user local process is not distinguished from the desktop UI; the owner conditionally accepted this residual for V1 on 2026-10-13 (O1), with live Tailscale identity-header/Host behaviour verification as its condition. O2, a verified process boundary, may be post-V1. See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
 - **Phone.** It shows Goal state and completion standing read-only. It has no completion, correction or handoff control.
 - **Approvals.** All Goal approvals use the one approval system (`goal_approvals`). Model output never decides a Goal transition.
 
