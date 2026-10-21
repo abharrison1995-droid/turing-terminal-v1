@@ -53,7 +53,7 @@ Work happens in cycles (authoring, execution, remediation, review, verification)
 | Evidence, reviews, findings  | `evidence.ts`, `runEvidence.ts`, `verification.ts`, `reviews.ts`, `reviewIndependence.ts`, `findings.ts`                            |
 | Handoff and integration      | `manualHandoff.ts`, `externalIntegration.ts`, `externalIntegrationApproval.ts`, `src/server/goalGit.ts`                             |
 | Completion and corrections   | `completionEvaluation.ts`, `completionPolicy.ts`, `externalCompletion*.ts`, `completionStanding.ts`, `completionAuthorityPolicy.ts` |
-| HTTP routes                  | `goalRoutes.ts`; authoring routes are in `src/server/app.ts`                                                                        |
+| HTTP routes                  | `goalRoutes.ts`; authoring routes are in `src/server/routes/goalAuthoringRoutes.ts`                                                 |
 | Desktop and phone UI         | `src/client/goals/`                                                                                                                 |
 
 ## Contracts

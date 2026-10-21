@@ -11,8 +11,9 @@ import { simpleDefinition } from './repoKit.js';
 
 /**
  * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the five
- * user-only Goal authority routes. The only remote signal is the existing predicate in app.ts. Local callers keep today's
- * behaviour. This does NOT distinguish the desktop UI from another same-user local process (S1b, owner decision pending).
+ * user-only Goal authority routes. The only remote signal is the existing predicate, isRemoteRequest in routes/requestIdentity.ts.
+ * Local callers keep today's behaviour. This does NOT distinguish the desktop UI from another same-user local process (S1b, owner
+ * decision pending).
  */
 
 const DESKTOP_REFUSAL = 'desktop_required';

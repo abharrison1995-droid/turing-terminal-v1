@@ -8,13 +8,13 @@ The Goal completion and correction routes record authority: user decisions that 
 
 ## 2. Trust channels as implemented
 
-- **Bind.** The API listens on `TT_HOST`, which defaults to `127.0.0.1` (`src/server/index.ts`). The readiness route reports `unsafe_master_binding` when the bind is not loopback (`src/server/app.ts`, about line 519).
+- **Bind.** The API listens on `TT_HOST`, which defaults to `127.0.0.1` (`src/server/index.ts`). The readiness route reports `unsafe_master_binding` when the bind is not loopback (`src/server/routes/systemRoutes.ts`).
 - **Local.** No `tailscale-user-login` header, and the Host and Origin hostnames are loopback (`localhost`, `127.0.0.1`, `::1`, `tauri.localhost`). Ports are not compared.
 - **Remote.** The identity header is present, or Host or Origin is non-loopback or missing. A remote request needs the `__Host-turing-device` cookie. That cookie must match an unexpired, non-revoked `device_sessions` row bound to the same normalized Tailscale login. Tokens are stored as SHA-256 hashes. Without a valid cookie the global pre-handler answers `401`.
 - **Pairing.** A pairing request is created on the desktop. A claim needs the identity header and the code. The desktop approves it, and completion with the identity sets the cookie. Pairing administration answers `403` to remote callers.
 - **CORS.** The `onRequest` hook reflects only `tauri://localhost` and `http://tauri.localhost`, and allows `content-type, if-match` headers. No other origin receives CORS headers.
 
-The predicate that produces "remote" is `isRemoteRequest` in `src/server/app.ts`. The Goal routes receive it as `requireDesktopCaller`. It is not reimplemented anywhere else.
+The predicate that produces "remote" is `isRemoteRequest` in `src/server/routes/requestIdentity.ts`. The Goal routes receive it as `requireDesktopCaller`. It is not reimplemented anywhere else.
 
 ## 3. What the server can and cannot distinguish
 
