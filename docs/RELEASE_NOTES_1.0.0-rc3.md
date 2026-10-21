@@ -1,15 +1,11 @@
-# Turing Terminal v1.0.0-rc3 (draft)
+# Turing Terminal v1.0.0-rc3
 
-**Draft notes for preparation only.** No RC3 has been cut. There is no `v1.0.0-rc3` tag, no RC3 build, no published release, and no uploaded installer artifact for this version. These notes record what the RC3 code contains so they can be reviewed before any tag is created.
-
-## Planned artifact names
+## Artifacts
 
 - Windows x64 installer: `Turing-Terminal-Setup-x64-1.0.0-rc3.exe`
 - Linux x64 Debian package: `turing-terminal_1.0.0-rc3_amd64.deb`
 - Portable Linux x64 package: `Turing-Terminal-x86_64-1.0.0-rc3.AppImage`
 - `SHA256SUMS.txt` and `RELEASE_NOTES.md` accompany the built packages.
-
-These names are reserved for a future RC3 build. The files do not exist yet and no checksums have been produced.
 
 ## What changed since rc2
 
@@ -19,12 +15,12 @@ These names are reserved for a future RC3 build. The files do not exist yet and 
 
 ## Unchanged
 
-Carried over from rc2: the bundled Desktop Master remains the source of truth and continues serving the mobile PWA through Tailscale Serve. The Windows installer is unsigned, so Windows may show Unknown Publisher or SmartScreen warnings. Git, Tailscale, OpenCode, Codex, Claude Code, and Cline are optional external tools that Turing detects but does not install. Provider independence, the billing modes, the optional OpenRouter and Decision Layer paths, metered budgets, model configuration, usage analytics, and database migration 014 are as shipped in RC2.
+Carried over from rc2: the bundled Desktop Master remains the source of truth and continues serving the mobile PWA through Tailscale Serve. The Windows installer is unsigned, so Windows may show Unknown Publisher or SmartScreen warnings. Git, Tailscale, OpenCode, Codex, Claude Code, and Cline are optional external tools that Turing detects but does not install.
 
 ## Pending
 
-Physical acceptance on Windows and Linux PCs, iPhone pairing and remote-run checks over Tailscale, second-machine isolation, notification checks, and Claude subscription validation after the provider allowance reset. No live provider run has been made since RC2, so no live OpenRouter or Jev request exists for RC3 either; those paths remain covered by deterministic tests with mocked responses. Live-provider, physical-device, Windows, and release qualification for the Goal Engine is not started.
+Physical acceptance on Windows and Linux PCs, iPhone pairing and remote-run checks over Tailscale, second-machine isolation, notification checks, and Claude subscription validation after the provider allowance reset. No live provider run has been made since RC2, so no live OpenRouter or Jev request exists for RC3 either; those paths remain covered by deterministic tests with mocked responses. Live-provider, physical-device, Windows, and release qualification for the Goal Engine is not started. Release state and open gates are tracked in [V1_READINESS.md](V1_READINESS.md).
 
 ## Release state
 
-No RC3 has been cut. Nothing in this document is a tag, a build, a publication, a live-provider validation, or a physical-device qualification. Release state and the open gates are tracked in [V1_READINESS.md](V1_READINESS.md), and the release procedure is in [RELEASING.md](RELEASING.md). The RC2 notes remain in [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md).
+Release state and the open gates are tracked in [V1_READINESS.md](V1_READINESS.md), and the release procedure is in [RELEASING.md](RELEASING.md). The RC2 notes remain in [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md).

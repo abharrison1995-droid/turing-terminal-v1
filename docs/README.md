@@ -22,11 +22,11 @@ Layout:
 | Billing and usage  | [BILLING_SAFETY.md](BILLING_SAFETY.md), [USAGE_ACCOUNTING.md](USAGE_ACCOUNTING.md)                                                                                                                                                         |
 | Security           | [SECURITY.md](SECURITY.md), [goals/GOAL_TRUSTED_CALLER_BOUNDARY.md](goals/GOAL_TRUSTED_CALLER_BOUNDARY.md)                                                                                                                                 |
 | Install and run    | [DESKTOP_MASTER.md](DESKTOP_MASTER.md), [INSTALL_LINUX.md](INSTALL_LINUX.md), [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md), [MOBILE.md](MOBILE.md), [TROUBLESHOOTING.md](TROUBLESHOOTING.md)                                                   |
-| Build and release  | [DEVELOPMENT.md](DEVELOPMENT.md), [PACKAGING.md](PACKAGING.md), [RELEASING.md](RELEASING.md), [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md)                                                                                     |
+| Build and release  | [DEVELOPMENT.md](DEVELOPMENT.md), [PACKAGING.md](PACKAGING.md), [RELEASING.md](RELEASING.md), [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md)                                                                                     |
 | Live acceptance    | [LIVE_PROVIDER_VALIDATION.md](LIVE_PROVIDER_VALIDATION.md), [CLAUDE_VALIDATION.md](CLAUDE_VALIDATION.md), [LIVE_TAILSCALE_ACCEPTANCE.md](LIVE_TAILSCALE_ACCEPTANCE.md), [LIVE_MULTIMACHINE_ACCEPTANCE.md](LIVE_MULTIMACHINE_ACCEPTANCE.md) |
 | UI evidence        | [ui/EVIDENCE.md](ui/EVIDENCE.md), [ui/MASCOT_PROVENANCE.json](ui/MASCOT_PROVENANCE.json), [ui/packet-reference/README.md](ui/packet-reference/README.md)                                                                                   |
 
-The current release-candidate notes draft is [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md). `RELEASE_NOTES_1.0.0-rc2.md` and `ui/MASCOT_PROVENANCE.json` stay where they are because scripts and tests read them by path. The RC3 notes are preparation only; no RC3 has been cut.
+The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
 
 ## Goal Engine
 
