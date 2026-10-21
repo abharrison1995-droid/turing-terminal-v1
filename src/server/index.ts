@@ -4,8 +4,7 @@ import { RunEngine } from './runEngine.js';
 import { assertLoopbackHost } from './networkPolicy.js';
 import { deliverPushNotice } from './webPush.js';
 import { recoverQueuedRunsAfterRestart, startQueuedRun } from './runLauncher.js';
-import { createGoalSupervisor } from './goals/supervisor.js';
-import { DisabledGoalExecutor } from './goals/executor.js';
+import { createProductionGoalComposition } from './goals/productionComposition.js';
 import { AuthoringReconciler } from './goals/authoring.js';
 import { RouteProbeReconciler } from './goals/routeProbe.js';
 import { GoalEventPublisher } from './goalEventPublisher.js';
@@ -23,17 +22,13 @@ const engine = new RunEngine(database, masterEventPublisher.publishRun);
 engine.reconcileInterruptedRuns();
 // HR-Q4: ordinary runs left queued by a crash before start. Goal-owned and probe runs are left to their reconcilers.
 recoverQueuedRunsAfterRestart(database, engine);
-// The Goal supervisor runs with a disabled executor. It can persist, bound and recover Goal state, but no
-// route is ever reported ready and no child run or provider call can be started from a Goal.
-const goalSupervisor = createGoalSupervisor({
-  db: database,
-  executor: new DisabledGoalExecutor(),
-  startRun: (runId) => startQueuedRun(database, engine, runId),
-  resumeRun: (runId) => engine.start(runId, true),
-});
+// The Goal supervisor runs with the persisted-route executor. It decides every state transition and starts at most one
+// ordinary queued run at a time through the same RunEngine; the exact backend, provider, model and billing lane come
+// from the cycle's write-once role resolution, never from a fallback or a new selection.
+const { supervisor: goalSupervisor } = createProductionGoalComposition({ db: database, engine });
 await goalSupervisor.reconcile();
 // User-triggered Goal authoring runs are consumed from persisted state, with or without the HTTP request
-// that started them. This is the only Goal path that starts a model run, and it uses the user's exact pinned route.
+// that started them, and use the user's exact pinned route.
 const authoringReconciler = new AuthoringReconciler(database, (runId) =>
   startQueuedRun(database, engine, runId),
 );

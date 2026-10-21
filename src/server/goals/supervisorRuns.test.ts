@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listCycles } from './cycles.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 
@@ -370,10 +371,14 @@ describe('structured start results', () => {
     );
   });
 
-  it('production startQueuedRun results flow through unchanged (the dependency returns them)', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'server', 'index.ts'), 'utf8');
-    expect(index).toContain('startRun: (runId) => startQueuedRun(database, engine, runId)');
-  });
+  it(
+    'production composes the real persisted-route executor with the queued-run starter',
+    async () => {
+      const h = harness();
+      await expectProductionGoalCompositionEnabled(h.fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('explicit resume ordering', () => {
@@ -651,9 +656,12 @@ describe('static boundary', () => {
     expect(supervisor).toContain('runForPurpose');
   });
 
-  it('keeps production wired to the disabled executor', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'server', 'index.ts'), 'utf8');
-    expect(index).toContain('new DisabledGoalExecutor()');
-    expect(index).not.toMatch(/Fake/);
-  });
+  it(
+    'keeps the production composition free of the fake executor',
+    async () => {
+      const h = harness();
+      await expectProductionGoalCompositionEnabled(h.fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

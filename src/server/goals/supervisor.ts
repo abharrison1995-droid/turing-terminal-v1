@@ -69,7 +69,8 @@ import type { GoalActor, GoalApproval, GoalReasonCode } from '../../shared/goals
 /**
  * The Goal supervisor core (design 8.3, 12). `tickGoal` performs at most one meaningful persisted action for a Goal and
  * returns it; there is no loop and no recursion, so a run of ticks is a run of small, individually recoverable steps.
- * Work itself is delegated to an injected `GoalExecutor`; production wires a disabled one.
+ * Work itself is delegated to an injected `GoalExecutor`; production wires the persisted-route executor and starts
+ * each queued run through the RunEngine exactly once.
  */
 export const TICK_ACTIONS = [
   'not_found',

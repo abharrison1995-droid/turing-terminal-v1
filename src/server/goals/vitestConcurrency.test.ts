@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import config from '../../../vitest.config.js';
+import type { Db } from '../db.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 
 const root = join(import.meta.dirname, '..', '..', '..');
 
@@ -18,9 +20,10 @@ describe('repository test concurrency', () => {
     expect(config.test?.testTimeout).toBeUndefined();
   });
 
-  it('keeps production on the disabled executor, with no resolved-plan wiring', () => {
-    const index = readFileSync(join(root, 'src', 'server', 'index.ts'), 'utf8');
-    expect(index).toContain('new DisabledGoalExecutor()');
-    expect(index).not.toMatch(/ResolvedGoalRunPlanProvider|TuringGoalExecutor/);
+  it('composes production on the resolved-route executor without touching the test concurrency cap', async () => {
+    // No database access is needed to observe the composed executor; its persisted-run fast path reads nothing here.
+    const emptyDb = { prepare: () => ({ get: () => undefined }) } as unknown as Db;
+    await expectProductionGoalCompositionEnabled(emptyDb);
+    expect(config.test?.maxWorkers).toBe(1);
   });
 });

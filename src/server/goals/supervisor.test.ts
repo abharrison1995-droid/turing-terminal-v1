@@ -14,6 +14,7 @@ import {
   simpleDefinition,
   REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 import { GoalSupervisor, TICK_ACTIONS, type TickAction } from './supervisor.js';
 import { listCycles } from './cycles.js';
@@ -467,17 +468,17 @@ describe('start, preflight and scheduling', () => {
   );
 
   it(
-    'never claims readiness in production: the disabled executor blocks every start',
+    'the disabled executor never claims readiness and cannot queue work',
     async () => {
       const h = harness();
-      const production = new GoalSupervisor({
+      const disabled = new GoalSupervisor({
         db: h.fx.db,
         executor: new DisabledGoalExecutor(),
         startRun: h.startRun,
         resumeRun: h.resumeRun,
         activeTime: h.tracker,
       });
-      expect(await production.startGoal(h.fx.goalId)).toEqual({ ok: false, code: 'route_unavailable' });
+      expect(await disabled.startGoal(h.fx.goalId)).toEqual({ ok: false, code: 'route_unavailable' });
       expect(await new DisabledGoalExecutor().readProposal()).toEqual({
         ok: false,
         code: 'executor_disabled',
@@ -1400,7 +1401,6 @@ describe('boundaries', () => {
       'goals/fakeExecutor.ts',
     );
     const index = readFileSync(join(server, 'index.ts'), 'utf8');
-    expect(index).toContain('new DisabledGoalExecutor()');
     expect(index).not.toMatch(/Fake/);
     expect(index.indexOf('engine.reconcileInterruptedRuns()')).toBeLessThan(
       index.indexOf('goalSupervisor.reconcile()'),
@@ -1414,6 +1414,15 @@ describe('boundaries', () => {
       index.indexOf('goalSupervisor.reconcile()'),
     );
   });
+
+  it(
+    'wires production Goal execution through the persisted-route executor at runtime',
+    async () => {
+      const h = harness();
+      await expectProductionGoalCompositionEnabled(h.fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it('keeps the executor interface free of database, Git and status authority', () => {
     const source = readFileSync(join(process.cwd(), 'src', 'server', 'goals', 'executor.ts'), 'utf8');

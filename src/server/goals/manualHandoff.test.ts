@@ -63,6 +63,7 @@ import {
   REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
 import { createCycle } from './cycles.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { GoalStateError, transitionGoal } from './stateMachine.js';
 import {
   acceptedFixture,
@@ -1293,8 +1294,16 @@ describe('manual integration handoff', () => {
     };
     walk(server);
     expect(offenders).toEqual([]);
-    expect(readFileSync(join(server, 'index.ts'), 'utf8')).toContain('new DisabledGoalExecutor()');
   });
+
+  it(
+    'enables goal execution without making the rejected base writer reachable',
+    async () => {
+      const fx = goalRepoFixture();
+      await expectProductionGoalCompositionEnabled(fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('external integration attestation authority', () => {

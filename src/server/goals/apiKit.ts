@@ -23,7 +23,7 @@ export function goalApp(db: Db, goalSupervisor?: GoalSupervisor): FastifyInstanc
   return createApp({ database: db, engine: engineStub, ...(goalSupervisor ? { goalSupervisor } : {}) });
 }
 
-/** The production wiring: a supervisor whose executor is disabled, so no route is ever ready. */
+/** A test-only wiring: a supervisor whose executor is disabled, so no route is ever ready. */
 export function disabledSupervisor(db: Db): GoalSupervisor {
   return createGoalSupervisor({
     db,
