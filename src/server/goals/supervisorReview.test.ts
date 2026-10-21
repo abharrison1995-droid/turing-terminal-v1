@@ -272,6 +272,32 @@ describe('review launch', () => {
   );
 
   it(
+    'defers the pre-listener start, advances the cycle once, and retries the same queued review after restart',
+    async () => {
+      const { h, cycle } = await reviewing('final');
+      await h.until('review_run_queued');
+      const run = reviewRun(h)[0]!;
+      const review = reviewRows(h)[0]!;
+      h.startRun.mockImplementationOnce(() => ({ started: false, reason: 'deferred' }));
+      expect(await h.tick()).toBe('review_run_started');
+      expect(h.cycle()!.status).toBe('running');
+      expect(reviewRun(h).map((row) => row.status)).toEqual(['queued']);
+      expect(reviewRun(h)).toHaveLength(1);
+      expect(reviewRows(h).map((row) => row.id)).toEqual([review.id]);
+
+      const fresh = h.restart();
+      expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe('review_run_started');
+      expect(reviewRun(h).map((row) => [row.id, row.status])).toEqual([[run.id, 'running']]);
+      expect(reviewRows(h).map((row) => row.id)).toEqual([review.id]);
+      expect(h.cycle()!.status).toBe('running');
+      expect(fresh.executor.reviewQueueCalls).toHaveLength(0);
+      expect(h.startRun).toHaveBeenCalledTimes(2);
+      void cycle;
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
     'observes an already active run and consumes a terminal one without restarting it',
     async () => {
       const { h } = await reviewing('final');

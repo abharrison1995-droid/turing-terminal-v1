@@ -309,6 +309,40 @@ describe('structured start results', () => {
     );
 
     it(
+      'defers a pre-listener start without losing the queued row and advances the cycle honestly',
+      async () => {
+        const h = await prepare(phase);
+        h.startRun.mockImplementationOnce(() => ({ started: false, reason: 'deferred' }));
+        expect(await h.tick()).toBe(phase === 'proposal' ? 'proposal_run_started' : 'run_started');
+        expect(h.cycle()!.status).toBe(phase === 'proposal' ? 'proposing' : 'running');
+        expect(queuedRun(h, phase).status).toBe('queued');
+        expect(phase === 'proposal' ? h.proposalRuns() : h.runs()).toHaveLength(1);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'retries a startup-deferred queued run after restart without duplicating it',
+      async () => {
+        const h = await prepare(phase);
+        const run = queuedRun(h, phase);
+        h.startRun.mockImplementationOnce(() => ({ started: false, reason: 'deferred' }));
+        await h.tick();
+        const fresh = h.restart();
+        expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe(
+          phase === 'proposal' ? 'proposal_run_started' : 'run_started',
+        );
+        expect(queuedRun(h, phase).status).not.toBe('queued');
+        expect(queuedRun(h, phase).id).toBe(run.id);
+        expect(phase === 'proposal' ? h.proposalRuns() : h.runs()).toHaveLength(1);
+        expect(h.cycle()!.status).toBe(phase === 'proposal' ? 'proposing' : 'running');
+        expect(fresh.executor.proposalQueueCalls).toHaveLength(0);
+        expect(fresh.executor.queueCalls).toHaveLength(0);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
       're-reads a not-queued run: active means in flight',
       async () => {
         const h = await prepare(phase);

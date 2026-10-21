@@ -1406,13 +1406,11 @@ describe('boundaries', () => {
       index.indexOf('goalSupervisor.reconcile()'),
     );
     // HR-Q4: queued-run recovery is wired at startup, after the engine's own reconcile and before the Goal reconcilers.
-    expect(index).toContain('recoverQueuedRunsAfterRestart(database, engine);');
-    expect(index.indexOf('engine.reconcileInterruptedRuns()')).toBeLessThan(
-      index.indexOf('recoverQueuedRunsAfterRestart(database, engine);'),
-    );
-    expect(index.indexOf('recoverQueuedRunsAfterRestart(database, engine);')).toBeLessThan(
-      index.indexOf('goalSupervisor.reconcile()'),
-    );
+    const recoveryCall =
+      'recoverQueuedRunsAfterRestart(database, engine, (runId) =>\n  startupStarts.defer(`run:${runId}`, () => engine.start(runId)),\n);';
+    expect(index).toContain(recoveryCall);
+    expect(index.indexOf('engine.reconcileInterruptedRuns()')).toBeLessThan(index.indexOf(recoveryCall));
+    expect(index.indexOf(recoveryCall)).toBeLessThan(index.indexOf('goalSupervisor.reconcile()'));
   });
 
   it(

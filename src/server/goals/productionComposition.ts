@@ -3,7 +3,7 @@ import type { RunEngine } from '../runEngine.js';
 import { startQueuedRun } from '../runLauncher.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
 import { observeRouteSnapshot } from './routingSnapshot.js';
-import { createGoalSupervisor, type GoalSupervisor } from './supervisor.js';
+import { createGoalSupervisor, type GoalSupervisor, type StartRunResult } from './supervisor.js';
 import { TuringGoalExecutor } from './turingExecutor.js';
 
 export interface ProductionGoalComposition {
@@ -20,6 +20,10 @@ export interface ProductionGoalComposition {
 export function createProductionGoalComposition(input: {
   db: Db;
   engine: RunEngine;
+  /** Startup seam: production defers this until the listener is bound; tests may inject their own. */
+  startRun?: (runId: string) => StartRunResult;
+  /** Startup seam: production defers this until the listener is bound; tests may inject their own. */
+  resumeRun?: (runId: string) => void | Promise<void>;
 }): ProductionGoalComposition {
   const planner = new ResolvedGoalRunPlanProvider(input.db, {
     observe: () => observeRouteSnapshot(input.db),
@@ -28,8 +32,8 @@ export function createProductionGoalComposition(input: {
   const supervisor = createGoalSupervisor({
     db: input.db,
     executor,
-    startRun: (runId) => startQueuedRun(input.db, input.engine, runId),
-    resumeRun: (runId) => input.engine.start(runId, true),
+    startRun: input.startRun ?? ((runId) => startQueuedRun(input.db, input.engine, runId)),
+    resumeRun: input.resumeRun ?? ((runId) => input.engine.start(runId, true)),
   });
   return { supervisor, executor, planner };
 }

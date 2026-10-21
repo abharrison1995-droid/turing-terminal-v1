@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { RunEngine } from '../runEngine.js';
 import { readStoredResolutions } from './routeResolution.js';
-import { REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import { GOOD_TASK, harness } from './supervisorKit.js';
 import {
   closeLifecycle,
   driveToVerifiedHandoff,
@@ -29,7 +30,10 @@ vi.mock('../providers.js', () => ({
 }));
 
 beforeEach(() => installFakeProviders());
-afterEach(async () => closeLifecycle());
+afterEach(async () => {
+  await closeLifecycle();
+  cleanupRepoFixtures();
+});
 
 const routeOf = (configuration: Record<string, unknown>) => ({
   backendId: configuration.backendId,
@@ -149,6 +153,38 @@ describe('production Goal composition', () => {
       // The role readiness path still reports the persisted routes as ready after the lifecycle.
       expect(await composition.planner.checkRoutes(goalId)).toEqual({ ready: true });
       await serving.close();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'forwards the startup start seam, keeps a deferred run queued, and does not swallow a later not-found result',
+    async () => {
+      const h = harness({ autoAnswer: false });
+      h.model.script.push({ ok: true, proposal: GOOD_TASK });
+      await h.start();
+      await h.until('proposal_queued');
+      const run = h.proposalRuns()[0]!;
+
+      const startRun = vi.fn(() => ({ started: false, reason: 'deferred' as const }));
+      const composition = createProductionGoalComposition({
+        db: h.fx.db,
+        engine: {} as RunEngine,
+        startRun,
+      });
+      expect((await composition.supervisor.tickGoal(h.fx.goalId)).action).toBe('proposal_run_started');
+      expect(startRun).toHaveBeenCalledWith(run.id);
+      expect(h.proposalRuns().map((candidate) => [candidate.id, candidate.status])).toEqual([
+        [run.id, 'queued'],
+      ]);
+
+      // After the flush the same seam returns the real result; not-found is still a truthful cycle failure.
+      startRun.mockImplementationOnce(() => ({ started: false, reason: 'not-found' }));
+      expect(await composition.supervisor.tickGoal(h.fx.goalId)).toMatchObject({
+        action: 'cycle_failed',
+        code: 'run_not_found',
+      });
+      expect(h.cycle()).toMatchObject({ status: 'failed' });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

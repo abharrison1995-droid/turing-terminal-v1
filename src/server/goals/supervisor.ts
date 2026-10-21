@@ -132,9 +132,12 @@ export interface TickResult {
   cleanup?: { runId: string; status: string; reasons: string[] };
 }
 
-/** The structured result of starting a persisted queued run; production returns `startQueuedRun`'s result as is. */
+/**
+ * The structured result of starting a persisted queued run. Production returns `startQueuedRun`'s result as is, except
+ * during startup: before the listener is bound it returns `deferred` and keeps the run queued for the one-time flush.
+ */
 export type StartRunResult =
-  { started: true } | { started: false; reason: 'not-found' | 'not-queued' | 'already-active' };
+  { started: true } | { started: false; reason: 'not-found' | 'not-queued' | 'already-active' | 'deferred' };
 
 export interface GoalSupervisorDeps {
   db: Db;
@@ -1217,7 +1220,8 @@ export class GoalSupervisor {
     run: RunRow,
   ): { kind: 'in_flight' } | { kind: 'finished' } | { kind: 'result'; result: TickResult } {
     const result = this.deps.startRun(run.id);
-    if (result.started || result.reason === 'already-active') return { kind: 'in_flight' };
+    if (result.started || result.reason === 'already-active' || result.reason === 'deferred')
+      return { kind: 'in_flight' };
     const missing = () => ({
       kind: 'result' as const,
       result: this.fail(cycle, 'run_not_found', { runId: run.id }),
@@ -1496,7 +1500,8 @@ export class GoalSupervisor {
           return { action: 'run_queued', goalId, cycleId: cycle.id };
         }
         if (PAUSED_RUN.has(run.status)) return this.interrupt(goalId, cycle);
-        // A queued run is started exactly once: this is the only place a work run is started on the tick path.
+        // The launching tick starts the queued work run exactly once; only a startup-deferred queued row is retried by
+        // the running tick above.
         let started = true;
         if (run.status === 'queued') {
           const blocked = await this.verifyRef(goalId);
@@ -1517,8 +1522,20 @@ export class GoalSupervisor {
         const run = this.runForPurpose(cycle.id, this.workPurpose(cycle));
         if (!run) return this.fail(cycle, 'run_missing');
         if (PAUSED_RUN.has(run.status)) return this.interrupt(goalId, cycle);
-        if (run.status === 'queued' || ACTIVE_RUN.has(run.status))
-          return { action: 'waiting_for_run', goalId, cycleId: cycle.id };
+        if (run.status === 'queued') {
+          // A startup-deferred start left the cycle running while the run stayed queued. Re-prove the same authority as
+          // the launching tick and retry the same row; no cycle transition and no new run are needed.
+          const blocked = await this.verifyRef(goalId);
+          if (blocked) return blocked;
+          const retired = await this.reproveRemediation(goalId, cycle, run);
+          if (retired) return retired;
+          const outcome = this.startQueued(goalId, cycle, run);
+          if (outcome.kind === 'result') return outcome.result;
+          return outcome.kind === 'in_flight'
+            ? { action: 'run_started', goalId, cycleId: cycle.id }
+            : { action: 'waiting_for_run', goalId, cycleId: cycle.id, code: 'run_already_finished' };
+        }
+        if (ACTIVE_RUN.has(run.status)) return { action: 'waiting_for_run', goalId, cycleId: cycle.id };
         next('collecting');
         return { action: 'collection_started', goalId, cycleId: cycle.id };
       }
@@ -1895,7 +1912,7 @@ export class GoalSupervisor {
       case 'launching':
         return this.reviewLaunching(goalId, cycle, plan);
       case 'running':
-        return this.reviewRunning(goalId, cycle);
+        return this.reviewRunning(goalId, cycle, plan);
       case 'collecting':
         return this.reviewCollecting(goalId, cycle);
       default:
@@ -1944,22 +1961,11 @@ export class GoalSupervisor {
       }
       return { action: 'review_run_queued', goalId, cycleId: cycle.id };
     }
-    // A run without its immutable review record cannot arise from the atomic queue+bind; if a historical or corrupt
-    // state holds one, it fails closed: nothing is adopted, started or re-queued.
-    if (!review) return this.reviewInfraFailure(goalId, cycle, 'review_binding_missing');
-    if (
-      review.runId !== run.id ||
-      review.cycleId !== cycle.id ||
-      review.status !== 'pending' ||
-      review.reviewKind !== plan.reviewKind ||
-      review.definitionVersion !== cycle.definitionVersion ||
-      review.reviewedToCommit !== cycle.baseIntegrationCommit ||
-      !reviewMatchesCyclePlan(review, cycle)
-    )
-      return this.reviewInfraFailure(goalId, cycle, 'review_binding_invalid');
+    const binding = this.queuedReviewBinding(cycle, run, plan);
+    if (!binding.ok) return this.reviewInfraFailure(goalId, cycle, binding.code);
     if (PAUSED_RUN.has(run.status)) return this.reviewPause(goalId, cycle, run);
     if (run.status === 'queued') {
-      const problem = await this.reviewRefProblem(goalId, cycle, review.reviewedToTree);
+      const problem = await this.reviewRefProblem(goalId, cycle, binding.reviewedToTree);
       if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
       const started = this.deps.startRun(run.id);
       if (!started.started && started.reason === 'not-found')
@@ -1978,17 +1984,65 @@ export class GoalSupervisor {
     return { action: 'review_run_started', goalId, cycleId: cycle.id };
   }
 
+  /**
+   * The immutable binding a queued review run must still satisfy before any start attempt. Re-read on every attempt so
+   * a restart cannot start a review against a different run, plan, definition or captured commit.
+   */
+  private queuedReviewBinding(
+    cycle: CycleRow,
+    run: RunRow,
+    plan: ReviewPlan,
+  ):
+    | { ok: true; reviewedToTree: string }
+    | { ok: false; code: 'review_binding_missing' | 'review_binding_invalid' } {
+    const review = reviewForCycle(this.db, cycle.id);
+    // A run without its immutable review record cannot arise from the atomic queue+bind; if a historical or corrupt
+    // state holds one, it fails closed: nothing is adopted, started or re-queued.
+    if (!review) return { ok: false, code: 'review_binding_missing' };
+    if (
+      review.runId !== run.id ||
+      review.cycleId !== cycle.id ||
+      review.status !== 'pending' ||
+      review.reviewKind !== plan.reviewKind ||
+      review.definitionVersion !== cycle.definitionVersion ||
+      review.reviewedToCommit !== cycle.baseIntegrationCommit ||
+      !reviewMatchesCyclePlan(review, cycle)
+    )
+      return { ok: false, code: 'review_binding_invalid' };
+    return { ok: true, reviewedToTree: review.reviewedToTree };
+  }
+
   /** A paused review run is the user's decision; the cycle stays active and a resume restores `reviewing`. */
   private reviewPause(goalId: string, cycle: CycleRow, run: RunRow): TickResult {
     return this.reviewDecision(goalId, cycle.id, 'run_paused', { runId: run.id });
   }
 
-  private async reviewRunning(goalId: string, cycle: CycleRow): Promise<TickResult> {
+  private async reviewRunning(goalId: string, cycle: CycleRow, plan: ReviewPlan): Promise<TickResult> {
     const run = this.runForPurpose(cycle.id, 'review');
     if (!run) return this.reviewInfraFailure(goalId, cycle, 'run_missing');
     if (PAUSED_RUN.has(run.status)) return this.reviewPause(goalId, cycle, run);
-    if (run.status === 'queued' || ACTIVE_RUN.has(run.status))
-      return { action: 'review_waiting', goalId, cycleId: cycle.id };
+    if (run.status === 'queued') {
+      // A startup-deferred review start leaves the cycle running with the run still queued. Revalidate the exact
+      // binding and captured ref, then retry the same row; the cycle has already made its one running transition.
+      const binding = this.queuedReviewBinding(cycle, run, plan);
+      if (!binding.ok) return this.reviewInfraFailure(goalId, cycle, binding.code);
+      const problem = await this.reviewRefProblem(goalId, cycle, binding.reviewedToTree);
+      if (problem) return this.reviewInfraFailure(goalId, cycle, problem);
+      const started = this.deps.startRun(run.id);
+      if (!started.started && started.reason === 'not-found')
+        return this.reviewInfraFailure(goalId, cycle, 'run_not_found');
+      if (!started.started && started.reason === 'not-queued') {
+        const current = this.runById(run.id);
+        if (!current) return this.reviewInfraFailure(goalId, cycle, 'run_not_found');
+        if (PAUSED_RUN.has(current.status)) return this.reviewPause(goalId, cycle, current);
+        if (!ACTIVE_RUN.has(current.status) && !TERMINAL_RUN.has(current.status))
+          return this.reviewInfraFailure(goalId, cycle, 'run_state_invalid', {
+            detail: { runStatus: current.status },
+          });
+      }
+      return { action: 'review_run_started', goalId, cycleId: cycle.id };
+    }
+    if (ACTIVE_RUN.has(run.status)) return { action: 'review_waiting', goalId, cycleId: cycle.id };
     transitionCycle(this.db, { cycleId: cycle.id, to: 'collecting', now: this.now() });
     return { action: 'collection_started', goalId, cycleId: cycle.id };
   }

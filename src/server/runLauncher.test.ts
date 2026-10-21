@@ -239,6 +239,44 @@ describe('run launcher', () => {
       expect(secondStart).not.toHaveBeenCalled();
       expect(recoveredEvents(runId)).toBe(1);
     });
+
+    it('claims and records synchronously, then lets the seam defer only the engine start', async () => {
+      const { runId } = queueRun(db, await preview());
+      const restarted = new RunEngine(db, () => undefined);
+      const start = vi.spyOn(restarted, 'start');
+      const seam: Array<{ runId: string; status: string }> = [];
+      expect(
+        recoverQueuedRunsAfterRestart(db, restarted, (id) => {
+          seam.push({ runId: id, status: statusOf(id) });
+        }),
+      ).toEqual([runId]);
+
+      expect(seam).toEqual([{ runId, status: 'preparing' }]);
+      expect(start).not.toHaveBeenCalled();
+      expect(statusOf(runId)).toBe('preparing');
+      expect(recoveredEvents(runId)).toBe(1);
+    });
+
+    it('a bind failure before the deferred start leaves the claim for the next boot to pause for manual resume', async () => {
+      const { runId } = queueRun(db, await preview());
+      const first = new RunEngine(db, () => undefined);
+      // The listener never bound, so the deferred callbacks were never flushed: nothing called engine.start.
+      expect(recoverQueuedRunsAfterRestart(db, first, () => undefined)).toEqual([runId]);
+      expect(statusOf(runId)).toBe('preparing');
+
+      const nextBoot = new RunEngine(db, () => undefined);
+      nextBoot.reconcileInterruptedRuns();
+      expect(statusOf(runId)).toBe('paused');
+      const recoveryStart = vi.spyOn(nextBoot, 'start');
+      expect(recoverQueuedRunsAfterRestart(db, nextBoot)).toEqual([]);
+      expect(recoveryStart).not.toHaveBeenCalled();
+      expect(statusOf(runId)).toBe('paused');
+      expect(recoveredEvents(runId)).toBe(1);
+
+      recoveryStart.mockImplementation(() => {});
+      nextBoot.start(runId, true);
+      expect(recoveryStart).toHaveBeenCalledExactlyOnceWith(runId, true);
+    });
   });
   describe('user cancellation of a queued ordinary run (Stop before start)', () => {
     const statusOf = (runId: string) =>
