@@ -202,8 +202,9 @@ export function milestoneTrigger(
     if (!evaluation || evaluation.state === 'skipped_by_user') continue;
     if (!evaluation.blockers.every((blocker) => CLEARED_BEFORE_REVIEW.has(blocker))) continue;
     if (!spec.dependsOn.every(settled)) continue;
-    if (currentReviewExists(db, goalId, version, tree, 'milestone', evaluation.milestoneId ?? 'none'))
-      continue;
+    // A review is keyed by the milestone row id; without one there is nothing to deduplicate against, so no trigger.
+    if (!evaluation.milestoneId) continue;
+    if (currentReviewExists(db, goalId, version, tree, 'milestone', evaluation.milestoneId)) continue;
     return {
       kind: 'milestone',
       triggerCode: 'milestone_complete',

@@ -36,6 +36,7 @@ sed \
   "$APP_DIR/packaging/linux/turing-terminal.service.in" > "$UNIT_DIR/turing-terminal.service"
 chmod 600 "$UNIT_DIR/turing-terminal.service"
 systemctl --user daemon-reload
-systemctl --user enable --now turing-terminal.service
+systemctl --user enable turing-terminal.service
+systemctl --user restart turing-terminal.service
 printf 'Installed and started the Turing Terminal user service. Local UI/API: http://127.0.0.1:4317\n'
 printf 'Service status: systemctl --user status turing-terminal.service\n'

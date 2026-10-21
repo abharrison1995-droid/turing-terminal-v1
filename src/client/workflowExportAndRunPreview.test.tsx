@@ -77,6 +77,58 @@ describe('workflow export security', () => {
       meteredBudget: { perRunUsd: 0.05 },
     });
   });
+
+  it('keeps numeric context limits in exports while removing apiKey and token keys', () => {
+    const base = DEFAULT_WORKFLOWS[0]!;
+    const workflow = {
+      ...base,
+      createdAt: '',
+      updatedAt: '',
+      stages: [
+        {
+          ...base.stages[0]!,
+          contextPolicy: { ...base.stages[0]!.contextPolicy, maxEstimatedTokens: 12_345 },
+          apiKey: 'plain-api-key-value',
+          token: 'plain-token-value',
+        },
+        ...base.stages.slice(1),
+      ],
+    } as unknown as WorkflowDefinition;
+    const roundTripped = JSON.parse(JSON.stringify(api.exportWorkflows([workflow]))) as {
+      workflows: Array<{ stages: Array<Record<string, unknown>> }>;
+    };
+    const stage = roundTripped.workflows[0]!.stages[0]!;
+    expect(stage.contextPolicy).toMatchObject({ maxEstimatedTokens: 12_345 });
+    expect(stage).not.toHaveProperty('apiKey');
+    expect(stage).not.toHaveProperty('token');
+    expect(JSON.stringify(roundTripped)).not.toContain('plain-api-key-value');
+    expect(JSON.stringify(roundTripped)).not.toContain('plain-token-value');
+  });
+
+  it('drops secret-bearing keys even when the sensitive word is a prefix or infix of the key', () => {
+    const base = DEFAULT_WORKFLOWS[0]!;
+    const workflow = {
+      ...base,
+      createdAt: '',
+      updatedAt: '',
+      stages: [
+        {
+          ...base.stages[0]!,
+          apiKeyRef: 'ref-api-value',
+          passwordHash: 'hash-password-value',
+          cookieJar: 'jar-cookie-value',
+          credentialRef: 'ref-credential-value',
+          accessTokenHint: 'hint-token-value',
+        },
+        ...base.stages.slice(1),
+      ],
+    } as unknown as WorkflowDefinition;
+    const exported = JSON.stringify(api.exportWorkflows([workflow]));
+    for (const key of ['apiKeyRef', 'passwordHash', 'cookieJar', 'credentialRef', 'accessTokenHint']) {
+      expect(exported).not.toContain(key);
+    }
+    expect(exported).not.toContain('hash-password-value');
+  });
 });
 
 describe('mobile-safe run preview', () => {

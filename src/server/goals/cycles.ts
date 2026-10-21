@@ -484,6 +484,7 @@ export function createCycle(db: Db, input: CreateCycleInput): CreateCycleResult 
       liveActiveMs: input.liveActiveMs,
       // A verification cycle is outside the execution and remediation bounds; it still counts toward active time and
       // wall clock (checked above for every creation) and spends nothing.
+      skipExecutionBounds: input.kind === 'verification',
       next:
         input.kind === 'verification' ? undefined : { kind: input.kind, milestoneKey: input.milestoneKey },
     });

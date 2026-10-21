@@ -222,6 +222,8 @@ export async function deliverPushNotice(
   try {
     webPush.setVapidDetails(config.subject!, config.publicKey!, process.env.TT_WEB_PUSH_PRIVATE_KEY!.trim());
   } catch {
+    // Nothing was sent, so the notice must stay deliverable once the configuration is repaired.
+    forgetDeliveryKey(db, notice.key);
     return;
   }
   const payloadText = JSON.stringify({
@@ -230,6 +232,7 @@ export async function deliverPushNotice(
     url: notice.url,
     tag: notice.key,
   });
+  let transientFailure = false;
   await Promise.all(
     subscriptions.map(async (subscription) => {
       try {
@@ -245,7 +248,14 @@ export async function deliverPushNotice(
         const statusCode = (error as { statusCode?: number }).statusCode;
         if (statusCode === 404 || statusCode === 410)
           db.prepare('DELETE FROM push_subscriptions WHERE id = ?').run(subscription.id);
+        else transientFailure = true;
       }
     }),
   );
+  // A transient send failure is not a delivery, so a later attempt for the same notice must be able to deliver it.
+  if (transientFailure) forgetDeliveryKey(db, notice.key);
+}
+
+function forgetDeliveryKey(db: Db, key: string): void {
+  db.prepare('DELETE FROM push_delivery_keys WHERE delivery_key = ?').run(key);
 }

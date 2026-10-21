@@ -12,6 +12,19 @@ describe('milestone scope matching', () => {
     expect(globMatches('**/x.ts', 'x.ts')).toBe(true);
   });
 
+  it('treats a comma outside braces as a literal character, never as an alternation', () => {
+    expect(globMatches('src/a,b.ts', 'src/app/secret.ts')).toBe(false);
+    expect(globMatches('src/a,b.ts', 'src/a,b.ts')).toBe(true);
+    expect(globMatches('src/a,b.ts', 'b.ts')).toBe(false);
+  });
+
+  it('expands commas inside braces into alternatives, each anchored to the whole path', () => {
+    expect(globMatches('src/{a,b}.ts', 'src/a.ts')).toBe(true);
+    expect(globMatches('src/{a,b}.ts', 'src/b.ts')).toBe(true);
+    expect(globMatches('src/{a,b}.ts', 'src/app/secret.ts')).toBe(false);
+    expect(globMatches('src/{a,b}.ts', 'src/a.ts.bak')).toBe(false);
+  });
+
   it('lets an exclude glob veto an include and treats an empty include list as nothing allowed', () => {
     const scope = { includeGlobs: ['src/**'], excludeGlobs: ['src/generated/**'] };
     expect(pathInMilestoneScope('src/a.ts', scope)).toBe(true);

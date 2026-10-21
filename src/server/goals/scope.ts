@@ -9,6 +9,7 @@ const cache = new Map<string, RegExp>();
 
 function expand(glob: string): string {
   let out = '';
+  let depth = 0;
   for (let index = 0; index < glob.length; index++) {
     const ch = glob[index]!;
     if (ch === '*') {
@@ -20,9 +21,13 @@ function expand(glob: string): string {
         } else out += '.*';
       } else out += '[^/]*';
     } else if (ch === '?') out += '[^/]';
-    else if (ch === '{') out += '(?:';
-    else if (ch === '}') out += ')';
-    else if (ch === ',') out += '|';
+    else if (ch === '{') {
+      depth++;
+      out += '(?:';
+    } else if (ch === '}' && depth > 0) {
+      depth--;
+      out += ')';
+    } else if (ch === ',') out += depth > 0 ? '|' : ',';
     else if (ch === '[') {
       const close = glob.indexOf(']', index + 1);
       if (close === -1) out += '\\[';
@@ -39,7 +44,7 @@ export function globMatches(glob: string, path: string): boolean {
   let regex = cache.get(glob);
   if (!regex) {
     try {
-      regex = new RegExp(`^${expand(glob)}$`);
+      regex = new RegExp(`^(?:${expand(glob)})$`);
     } catch {
       return false;
     }

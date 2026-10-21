@@ -53,6 +53,6 @@ for (const artifact of produced) {
   sums.push(`${hash.digest('hex')}  ${basename(artifact)}`);
 }
 await writeFile(join(release, 'SHA256SUMS.txt'), `${sums.join('\n')}\n`);
-const notes = await readFile(join(root, 'docs', 'RELEASE_NOTES_1.0.0-rc2.md'), 'utf8');
+const notes = await readFile(join(root, 'docs', `RELEASE_NOTES_${version}.md`), 'utf8');
 await writeFile(join(release, 'RELEASE_NOTES.md'), notes);
 console.log(`Collected ${produced.length} artifact(s) in ${release}`);

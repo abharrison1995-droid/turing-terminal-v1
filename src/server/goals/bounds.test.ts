@@ -325,4 +325,44 @@ describe('bounds', () => {
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
+
+  it(
+    'a verification cycle skips the execution-cycle bound, while active time and wall clock still apply',
+    async () => {
+      const fx = running((d) => {
+        d.limits.maxExecutionCycles = 1;
+        d.limits.maxConsecutiveFailedCycles = 10;
+        d.limits.maxActiveMinutes = 10;
+        d.limits.maxWallClockDays = 7;
+      });
+      await finishCycle(fx, 'succeeded');
+      expect(check(fx)).toMatchObject({ reason: 'bound_cycles', limit: 1, observed: 1 });
+      expect(check(fx, { skipExecutionBounds: true })).toBeNull();
+      expect(check(fx, { skipExecutionBounds: true, liveActiveMs: 10 * 60_000 })).toMatchObject({
+        reason: 'bound_active_time',
+      });
+      const approved = (
+        fx.db.prepare('SELECT approved_at FROM goals WHERE id = ?').get(fx.goalId) as { approved_at: string }
+      ).approved_at;
+      const eightDaysLater = new Date(Date.parse(approved) + 8 * 86_400_000).toISOString();
+      expect(check(fx, { skipExecutionBounds: true, now: eightDaysLater })).toMatchObject({
+        reason: 'bound_wall_clock',
+      });
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a verification cycle skips the consecutive-failure bound, and other callers still hit it',
+    async () => {
+      const fx = running((d) => {
+        d.limits.maxConsecutiveFailedCycles = 2;
+      });
+      await finishCycle(fx, 'failed');
+      await finishCycle(fx, 'failed');
+      expect(check(fx)).toMatchObject({ reason: 'bound_failures', limit: 2, observed: 2 });
+      expect(check(fx, { skipExecutionBounds: true })).toBeNull();
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

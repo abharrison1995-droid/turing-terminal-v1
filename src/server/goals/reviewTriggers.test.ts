@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { GoalDefinition, GoalReviewKind } from '../../shared/goals.js';
+import type { GoalDefinition, GoalReviewKind, MilestoneEvaluation } from '../../shared/goals.js';
 import { diffLineCount } from '../goalGit.js';
 import { finalizeCycle, reconcileCounters, transitionCycle } from './cycles.js';
 import { listGoalEvents } from './events.js';
 import {
   BUILD,
   cleanupRepoFixtures,
+  goalRepoFixture,
   milestone,
   TESTS,
   passDeterministic,
@@ -14,7 +15,12 @@ import {
   simpleDefinition,
   REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
-import { coveredByExpected, definitionFailureStreak, determineReviewTrigger } from './reviewTriggers.js';
+import {
+  coveredByExpected,
+  definitionFailureStreak,
+  determineReviewTrigger,
+  milestoneTrigger,
+} from './reviewTriggers.js';
 import { completeReview, reviewForCycle } from './reviews.js';
 import { reviewRoleForKind } from './reviewRole.js';
 import { transitionGoal } from './stateMachine.js';
@@ -1005,6 +1011,50 @@ describe('failed review is not auto-recreated', () => {
       await consumeReview(h, { outcome: 'failed' });
       await h.tick();
       expect(reviewCycles(h)).toHaveLength(1);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+});
+
+describe('milestone trigger with no milestone id', () => {
+  it(
+    'skips a milestone whose evaluation has a null milestoneId instead of keying its review on the string none',
+    () => {
+      const definition = simpleDefinition({
+        milestones: [milestone('m1', ['build']), milestone('m2', ['tests'])],
+      });
+      definition.review.onMilestoneComplete = true;
+      const fx = goalRepoFixture({ definition });
+      const version = (
+        fx.db.prepare('SELECT current_definition_version AS v FROM goals WHERE id = ?').get(fx.goalId) as {
+          v: number;
+        }
+      ).v;
+      const evaluations = (m1Id: string | null): MilestoneEvaluation[] => [
+        {
+          key: 'm1',
+          milestoneId: m1Id,
+          state: 'unsatisfied',
+          blockers: ['milestone_review_missing'],
+          skipApprovalId: null,
+          criteria: [],
+        },
+        {
+          key: 'm2',
+          milestoneId: 'm2-id',
+          state: 'unsatisfied',
+          blockers: ['criteria_unsatisfied'],
+          skipApprovalId: null,
+          criteria: [],
+        },
+      ];
+      expect(milestoneTrigger(fx.db, fx.goalId, definition, version, 'tree-a', evaluations(null))).toBeNull();
+      expect(
+        milestoneTrigger(fx.db, fx.goalId, definition, version, 'tree-a', evaluations('m1-id')),
+      ).toMatchObject({
+        triggerCode: 'milestone_complete',
+        milestoneKey: 'm1',
+      });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
