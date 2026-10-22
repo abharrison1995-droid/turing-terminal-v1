@@ -8,6 +8,9 @@ import type { ContentTreeEntry } from './contentTreeComparison.js';
 
 export type ObjectFormat = 'sha1' | 'sha256';
 
+export const CONTENT_TREE_MAX_HISTORY_COMMITS = 100_000;
+export const CONTENT_TREE_LFS_POINTER_MAX_BYTES = 4_096;
+
 export type ContentTreeGitObservationStatus =
   | 'observed'
   | 'too_many_changed_paths'
@@ -19,13 +22,20 @@ export type ContentTreeGitObservationStatus =
   | 'lfs_filter_refused'
   | 'filter_driver_refused'
   | 'unsupported_object_format'
-  | 'invalid_input';
+  | 'invalid_input'
+  | 'base_not_ancestor'
+  | 'source_not_ancestor'
+  | 'comparison_commit_missing'
+  | 'comparison_commit_ambiguous'
+  | 'comparison_history_unbounded'
+  | 'shallow_probe_failed';
 
 export interface ContentTreeGitObservationLimits {
   timeoutMs?: number;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
   maxOutputBytes?: number;
+  maxChangedPaths?: number;
 }
 
 export interface ContentTreeGitCommandResult {
@@ -58,7 +68,7 @@ export interface ContentTreeGitObservationInput {
   repoRoot: string;
   expectedBaseCommit: string;
   acceptedSourceCommit: string;
-  destinationObservationCommit: string;
+  destinationTipCommit: string;
   objectFormat: ObjectFormat;
   runner?: ContentTreeGitCommandRunner;
   limits?: ContentTreeGitObservationLimits;
@@ -66,12 +76,14 @@ export interface ContentTreeGitObservationInput {
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
   maxOutputBytes?: number;
+  maxChangedPaths?: number;
 }
 
 export type ContentTreeGitObservation =
   | {
       ok: true;
       status: 'observed';
+      comparisonCommit: string;
       changedPaths: Uint8Array[];
       sourceEntries: ContentTreeEntry[];
       destinationEntries: ContentTreeEntry[];
@@ -85,6 +97,17 @@ export type ContentTreeGitObservation =
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_STDERR_BYTES = 1024 * 1024;
+
+const BATCH_CHECK_COMMIT_ARGS = ['cat-file', '--batch-check=%(objectname) %(objecttype)'] as const;
+const BATCH_CHECK_SIZE_ARGS = [
+  'cat-file',
+  '--batch-check=%(objectname) %(objecttype) %(objectsize)',
+] as const;
+
+const LFS_POINTER_HEADER = Buffer.from('version https://git-lfs.github.com/spec/v1', 'ascii');
+
+const MISSING_OBJECT_PATTERN =
+  /(bad object|missing object|not a valid object|not a valid commit|not a valid tree|no such object|unable to read|bad tree object|could not read|invalid object|object not found|bad revision|unknown revision|shallow)/;
 
 const OBJECT_ID: Record<ObjectFormat, RegExp> = {
   sha1: /^[0-9a-f]{40}$/,
@@ -312,6 +335,7 @@ function failResult(
 }
 
 function successResult(
+  comparisonCommit: string,
   changedPaths: Uint8Array[],
   sourceEntries: ContentTreeEntry[],
   destinationEntries: ContentTreeEntry[],
@@ -319,6 +343,7 @@ function successResult(
   return {
     ok: true,
     status: 'observed',
+    comparisonCommit,
     changedPaths,
     sourceEntries,
     destinationEntries,
@@ -367,12 +392,21 @@ function normalizeCommandResult(value: ContentTreeGitCommandResult): ContentTree
   };
 }
 
+function hasHighBytes(buffer: Buffer): boolean {
+  for (let i = 0; i < buffer.length; i += 1) {
+    if (buffer[i]! > 127) return true;
+  }
+  return false;
+}
+
 function commandFailureCode(
   result: ContentTreeGitCommandResult,
 ): Exclude<ContentTreeGitObservationStatus, 'observed'> | null {
   if (result.timedOut) return 'git_command_timed_out';
   if (result.truncated) return 'git_output_limit_exceeded';
   if (result.ok) return null;
+  const stderr = result.stderr.toString('latin1').toLowerCase();
+  if (MISSING_OBJECT_PATTERN.test(stderr)) return 'git_object_missing';
   return 'git_command_failed';
 }
 
@@ -429,9 +463,7 @@ function parseLsTree(
     const meta = token.subarray(0, tabIndex);
     const path = token.subarray(tabIndex + 1);
     if (path.length === 0) return { entries: [], malformed: true };
-    for (let i = 0; i < meta.length; i += 1) {
-      if (meta[i]! > 127) return { entries: [], malformed: true };
-    }
+    if (hasHighBytes(meta)) return { entries: [], malformed: true };
     const metaText = meta.toString('ascii');
     const parts = metaText.split(' ');
     if (parts.length !== 3) return { entries: [], malformed: true };
@@ -439,8 +471,8 @@ function parseLsTree(
     if (!VALID_MODE_TYPE.has(`${mode} ${type}`)) return { entries: [], malformed: true };
     if (mode === '160000' && type === 'commit') {
       if (!/^[0-9a-f]{40}$/.test(oid) && !/^[0-9a-f]{64}$/.test(oid)) return { entries: [], malformed: true };
-    } else {
-      if (!oidPattern.test(oid)) return { entries: [], malformed: true };
+    } else if (!oidPattern.test(oid)) {
+      return { entries: [], malformed: true };
     }
     const key = path.toString('latin1');
     if (seen.has(key)) return { entries: [], malformed: true };
@@ -471,18 +503,149 @@ function parseCheckAttr(
     if (!Buffer.from(pathToken).equals(Buffer.from(expectedPaths[i]!))) {
       return { lfs: false, otherFilter: false, malformed: true };
     }
-    for (let j = 0; j < attrToken.length; j += 1) {
-      if (attrToken[j]! > 127) return { lfs: false, otherFilter: false, malformed: true };
-    }
+    if (hasHighBytes(attrToken) || hasHighBytes(valueToken))
+      return { lfs: false, otherFilter: false, malformed: true };
     if (attrToken.toString('ascii') !== 'filter') return { lfs: false, otherFilter: false, malformed: true };
-    for (let j = 0; j < valueToken.length; j += 1) {
-      if (valueToken[j]! > 127) return { lfs: false, otherFilter: false, malformed: true };
-    }
     const value = valueToken.toString('ascii');
     if (value === 'lfs') lfs = true;
     else if (value !== 'unspecified' && value !== 'unset') otherFilter = true;
   }
   return { lfs, otherFilter, malformed: false };
+}
+
+interface HistoryCommit {
+  oid: string;
+  parents: string[];
+}
+
+function parseHistory(buffer: Buffer, format: ObjectFormat): HistoryCommit[] | null {
+  if (buffer.length === 0) return [];
+  if (buffer[buffer.length - 1] !== 0x0a) return null;
+  if (hasHighBytes(buffer)) return null;
+  const lines = buffer.toString('ascii').split('\n');
+  lines.pop();
+  const pattern = oidRegex(format);
+  const seen = new Set<string>();
+  const commits: HistoryCommit[] = [];
+  for (const line of lines) {
+    if (line.length === 0) return null;
+    const fields = line.split(' ');
+    if (fields.length === 0) return null;
+    const oid = fields[0]!;
+    if (!pattern.test(oid) || seen.has(oid)) return null;
+    seen.add(oid);
+    const parents = fields.slice(1);
+    for (const parent of parents) {
+      if (!pattern.test(parent)) return null;
+    }
+    commits.push({ oid, parents });
+  }
+  return commits;
+}
+
+function parseBatchCheckCommit(
+  buffer: Buffer,
+  expectedOid: string,
+  format: ObjectFormat,
+): { status: 'ok' } | { status: 'missing' } | { status: 'malformed' } {
+  if (buffer.length === 0 || buffer[buffer.length - 1] !== 0x0a) return { status: 'malformed' };
+  if (hasHighBytes(buffer)) return { status: 'malformed' };
+  const lines = buffer.toString('ascii').split('\n');
+  if (lines.length !== 2 || lines[1] !== '') return { status: 'malformed' };
+  const fields = lines[0]!.split(' ');
+  if (fields.length < 2 || fields.length > 3 || fields[0] !== expectedOid) return { status: 'malformed' };
+  if (fields[1] === 'missing') {
+    return fields.length === 2 ? { status: 'missing' } : { status: 'malformed' };
+  }
+  if (fields.length !== 2 || fields[1] !== 'commit') return { status: 'malformed' };
+  if (!oidRegex(format).test(fields[0]!)) return { status: 'malformed' };
+  return { status: 'ok' };
+}
+
+function parseBatchCheckSizes(
+  buffer: Buffer,
+  expectedOids: readonly string[],
+): { sizes: Map<string, number> } | { status: 'missing' } | { status: 'malformed' } {
+  if (expectedOids.length === 0) {
+    return buffer.length === 0 ? { sizes: new Map() } : { status: 'malformed' };
+  }
+  if (buffer.length === 0 || buffer[buffer.length - 1] !== 0x0a) return { status: 'malformed' };
+  if (hasHighBytes(buffer)) return { status: 'malformed' };
+  const lines = buffer.toString('ascii').split('\n');
+  lines.pop();
+  if (lines.length !== expectedOids.length) return { status: 'malformed' };
+  const sizes = new Map<string, number>();
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    const fields = line.split(' ');
+    const expected = expectedOids[i]!;
+    if (fields.length === 2 && fields[1] === 'missing' && fields[0] === expected)
+      return { status: 'missing' };
+    if (fields.length !== 3 || fields[0] !== expected || fields[1] !== 'blob') return { status: 'malformed' };
+    if (!/^(0|[1-9][0-9]*)$/.test(fields[2]!)) return { status: 'malformed' };
+    const size = Number(fields[2]);
+    if (!Number.isSafeInteger(size)) return { status: 'malformed' };
+    sizes.set(expected, size);
+  }
+  return { sizes };
+}
+
+function parseCatFileBatch(
+  buffer: Buffer,
+  expectedOids: readonly string[],
+): { contents: Map<string, Buffer> } | { status: 'missing' } | { status: 'malformed' } {
+  const contents = new Map<string, Buffer>();
+  let offset = 0;
+  for (const expected of expectedOids) {
+    const newline = buffer.indexOf(0x0a, offset);
+    if (newline < 0) return { status: 'malformed' };
+    const header = buffer.subarray(offset, newline);
+    if (hasHighBytes(header)) return { status: 'malformed' };
+    const fields = header.toString('ascii').split(' ');
+    if (fields.length === 2 && fields[0] === expected && fields[1] === 'missing')
+      return { status: 'missing' };
+    if (fields.length !== 3 || fields[0] !== expected || fields[1] !== 'blob') return { status: 'malformed' };
+    if (!/^(0|[1-9][0-9]*)$/.test(fields[2]!)) return { status: 'malformed' };
+    const size = Number(fields[2]);
+    if (!Number.isSafeInteger(size)) return { status: 'malformed' };
+    const start = newline + 1;
+    const end = start + size;
+    if (end >= buffer.length) return { status: 'malformed' };
+    const content = buffer.subarray(start, end);
+    if (buffer[end] !== 0x0a) return { status: 'malformed' };
+    contents.set(expected, content);
+    offset = end + 1;
+  }
+  if (offset !== buffer.length) return { status: 'malformed' };
+  return { contents };
+}
+
+function isLfsPointer(content: Buffer): boolean {
+  if (content.length < LFS_POINTER_HEADER.length) return false;
+  if (!content.subarray(0, LFS_POINTER_HEADER.length).equals(LFS_POINTER_HEADER)) return false;
+  if (content.length === LFS_POINTER_HEADER.length) return true;
+  const next = content[LFS_POINTER_HEADER.length];
+  if (next === 0x0a) return true;
+  return next === 0x0d && content[LFS_POINTER_HEADER.length + 1] === 0x0a;
+}
+
+function sourceBlobOids(
+  changedPaths: readonly Uint8Array[],
+  sourceEntries: readonly ContentTreeEntry[],
+): string[] {
+  const byPath = new Map<string, ContentTreeEntry>();
+  for (const entry of sourceEntries) byPath.set(Buffer.from(entry.path).toString('latin1'), entry);
+  const seen = new Set<string>();
+  const oids: string[] = [];
+  for (const path of changedPaths) {
+    const entry = byPath.get(Buffer.from(path).toString('latin1'));
+    if (!entry) continue;
+    if (entry.mode !== '100644' && entry.mode !== '100755') continue;
+    if (seen.has(entry.oid)) continue;
+    seen.add(entry.oid);
+    oids.push(entry.oid);
+  }
+  return oids;
 }
 
 function bufferFromPaths(paths: readonly Uint8Array[]): Buffer {
@@ -494,6 +657,11 @@ function bufferFromPaths(paths: readonly Uint8Array[]): Buffer {
   return Buffer.concat(chunks);
 }
 
+function bufferFromOids(oids: readonly string[]): Buffer {
+  if (oids.length === 0) return Buffer.alloc(0);
+  return Buffer.from(`${oids.join('\n')}\n`, 'ascii');
+}
+
 function canonicalPath(value: string): string | null {
   try {
     return realpathSync(value);
@@ -502,30 +670,41 @@ function canonicalPath(value: string): string | null {
   }
 }
 
+function tightenLimit(value: number | undefined, hardDefault: number): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return hardDefault;
+  return Math.min(Math.floor(value), hardDefault);
+}
+
 export async function observeContentTree(
   input: ContentTreeGitObservationInput,
 ): Promise<ContentTreeGitObservation> {
   const limits = input.limits ?? {};
-  const timeoutMs = limits.timeoutMs ?? input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxStdoutBytes =
-    limits.maxStdoutBytes ??
-    input.maxStdoutBytes ??
-    limits.maxOutputBytes ??
-    input.maxOutputBytes ??
-    DEFAULT_MAX_STDOUT_BYTES;
-  const maxStderrBytes = limits.maxStderrBytes ?? input.maxStderrBytes ?? DEFAULT_MAX_STDERR_BYTES;
+  const timeoutMs = tightenLimit(limits.timeoutMs ?? input.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const maxStdoutBytes = tightenLimit(
+    limits.maxStdoutBytes ?? input.maxStdoutBytes ?? limits.maxOutputBytes ?? input.maxOutputBytes,
+    DEFAULT_MAX_STDOUT_BYTES,
+  );
+  const maxStderrBytes = tightenLimit(
+    limits.maxStderrBytes ?? input.maxStderrBytes,
+    DEFAULT_MAX_STDERR_BYTES,
+  );
+  const maxChangedPaths = tightenLimit(
+    limits.maxChangedPaths ?? input.maxChangedPaths,
+    CONTENT_TREE_MAX_CHANGED_PATHS,
+  );
 
   const repoRoot = input.repoRoot;
   const expectedBaseCommit = input.expectedBaseCommit;
   const acceptedSourceCommit = input.acceptedSourceCommit;
-  const destinationObservationCommit = input.destinationObservationCommit;
+  const destinationTipCommit = input.destinationTipCommit;
   const objectFormat = input.objectFormat;
 
   if (!repoRoot || typeof repoRoot !== 'string') return failResult('invalid_input');
   if (!OBJECT_ID[objectFormat]) return failResult('unsupported_object_format');
-  if (!OBJECT_ID[objectFormat].test(expectedBaseCommit)) return failResult('git_object_missing');
-  if (!OBJECT_ID[objectFormat].test(acceptedSourceCommit)) return failResult('git_object_missing');
-  if (!OBJECT_ID[objectFormat].test(destinationObservationCommit)) return failResult('git_object_missing');
+  const oidPattern = OBJECT_ID[objectFormat];
+  for (const commit of [expectedBaseCommit, acceptedSourceCommit, destinationTipCommit]) {
+    if (typeof commit !== 'string' || !oidPattern.test(commit)) return failResult('invalid_input');
+  }
 
   const runner = input.runner ?? createDefaultRunner();
   const env = cleanEnvironment();
@@ -592,29 +771,107 @@ export async function observeContentTree(
   if (formatResult.timedOut) return failResult('git_command_timed_out');
   if (formatResult.truncated) return failResult('git_output_limit_exceeded');
   if (!formatResult.ok) return failResult('git_command_failed');
-  if (formatResult.stdout.toString('utf8').trim() !== objectFormat)
+  if (hasHighBytes(formatResult.stdout)) return failResult('malformed_git_output');
+  if (formatResult.stdout.toString('ascii').trim() !== objectFormat)
     return failResult('unsupported_object_format');
 
-  for (const commit of [expectedBaseCommit, acceptedSourceCommit, destinationObservationCommit]) {
-    const typeResult = await run(
-      ['cat-file', '--batch-check=%(objectname) %(objecttype)'],
-      Buffer.from(`${commit}\n`),
-    );
+  // A failed shallow probe fails closed; a shallow repository with all required history is not rejected.
+  const shallowResult = await run(['rev-parse', '--is-shallow-repository']);
+  if (shallowResult.timedOut) return failResult('git_command_timed_out');
+  if (shallowResult.truncated) return failResult('git_output_limit_exceeded');
+  if (!shallowResult.ok) return failResult('shallow_probe_failed');
+  if (hasHighBytes(shallowResult.stdout)) return failResult('malformed_git_output');
+  const shallowText = shallowResult.stdout.toString('ascii').trim();
+  if (shallowText !== 'true' && shallowText !== 'false') return failResult('malformed_git_output');
+  const shallow = shallowText === 'true';
+
+  for (const commit of [expectedBaseCommit, acceptedSourceCommit, destinationTipCommit]) {
+    const typeResult = await run(BATCH_CHECK_COMMIT_ARGS, Buffer.from(`${commit}\n`));
     if (typeResult.timedOut) return failResult('git_command_timed_out');
     if (typeResult.truncated) return failResult('git_output_limit_exceeded');
-    if (!typeResult.ok) return failResult('git_command_failed');
-    if (typeResult.stdout.length === 0 || typeResult.stdout[typeResult.stdout.length - 1] !== 0x0a) {
-      return failResult('malformed_git_output');
+    if (!typeResult.ok) {
+      const failure = commandFailureCode(typeResult);
+      return failResult(failure ?? 'git_command_failed');
     }
-    for (let i = 0; i < typeResult.stdout.length; i += 1) {
-      if (typeResult.stdout[i]! > 127) return failResult('malformed_git_output');
+    const parsed = parseBatchCheckCommit(typeResult.stdout, commit, objectFormat);
+    if (parsed.status === 'missing') return failResult('git_object_missing');
+    if (parsed.status === 'malformed') return failResult('malformed_git_output');
+  }
+
+  const checkAncestor = async (
+    ancestor: string,
+    refusal: 'base_not_ancestor' | 'source_not_ancestor',
+  ): Promise<ContentTreeGitObservation | null> => {
+    const result = await run(['merge-base', '--is-ancestor', ancestor, destinationTipCommit]);
+    if (result.timedOut) return failResult('git_command_timed_out');
+    if (result.truncated) return failResult('git_output_limit_exceeded');
+    if (result.ok) return null;
+    if (result.exitCode === 1) {
+      const stderr = result.stderr.toString('latin1').toLowerCase();
+      if (MISSING_OBJECT_PATTERN.test(stderr) || shallow) return failResult('git_object_missing');
+      return failResult(refusal);
     }
-    const lines = typeResult.stdout.toString('ascii').split('\n');
-    if (lines.length !== 2 || lines[1] !== '') return failResult('malformed_git_output');
-    const fields = lines[0].split(' ');
-    if (fields.length !== 2 || fields[0] !== commit) return failResult('malformed_git_output');
-    if (fields[1] === 'missing') return failResult('git_object_missing');
-    if (fields[1] !== 'commit') return failResult('malformed_git_output');
+    const failure = commandFailureCode(result);
+    return failResult(failure ?? 'git_command_failed');
+  };
+
+  const baseAncestorResult = await checkAncestor(expectedBaseCommit, 'base_not_ancestor');
+  if (baseAncestorResult) return baseAncestorResult;
+  const sourceAncestorResult = await checkAncestor(acceptedSourceCommit, 'source_not_ancestor');
+  if (sourceAncestorResult) return sourceAncestorResult;
+
+  const firstParentResult = await run([
+    'rev-list',
+    '--first-parent',
+    `--max-count=${CONTENT_TREE_MAX_HISTORY_COMMITS + 1}`,
+    '--end-of-options',
+    destinationTipCommit,
+  ]);
+  const firstParentFailure = commandFailureCode(firstParentResult);
+  if (firstParentFailure) return failResult(firstParentFailure);
+  const firstParentHistory = parseHistory(firstParentResult.stdout, objectFormat);
+  if (!firstParentHistory) return failResult('malformed_git_output');
+  const sourceOnFirstParent = firstParentHistory.some((commit) => commit.oid === acceptedSourceCommit);
+  if (!sourceOnFirstParent && firstParentHistory.length > CONTENT_TREE_MAX_HISTORY_COMMITS)
+    return failResult('comparison_history_unbounded');
+
+  let comparisonCommit: string;
+  if (sourceOnFirstParent) {
+    comparisonCommit = acceptedSourceCommit;
+  } else {
+    const historyResult = await run([
+      'rev-list',
+      '--ancestry-path',
+      '--parents',
+      '--topo-order',
+      `--max-count=${CONTENT_TREE_MAX_HISTORY_COMMITS + 1}`,
+      '--end-of-options',
+      `${acceptedSourceCommit}..${destinationTipCommit}`,
+    ]);
+    const historyFailure = commandFailureCode(historyResult);
+    if (historyFailure) return failResult(historyFailure);
+    const history = parseHistory(historyResult.stdout, objectFormat);
+    if (!history) return failResult('malformed_git_output');
+    if (history.length > CONTENT_TREE_MAX_HISTORY_COMMITS) return failResult('comparison_history_unbounded');
+    if (history.length === 0) return failResult('comparison_commit_missing');
+
+    history.reverse();
+    const commitsWithMergeAncestor = new Set<string>();
+    const firstMerges: string[] = [];
+    for (const commit of history) {
+      const hasMergeAncestor = commit.parents.some((parent) => commitsWithMergeAncestor.has(parent));
+      if (hasMergeAncestor) {
+        commitsWithMergeAncestor.add(commit.oid);
+        continue;
+      }
+      if (commit.parents.length >= 2) {
+        firstMerges.push(commit.oid);
+        commitsWithMergeAncestor.add(commit.oid);
+      }
+    }
+    if (firstMerges.length === 0) return failResult('comparison_commit_missing');
+    if (firstMerges.length > 1) return failResult('comparison_commit_ambiguous');
+    comparisonCommit = firstMerges[0]!;
   }
 
   const diffResult = await run([
@@ -626,12 +883,13 @@ export async function observeContentTree(
     '--name-only',
     '--no-ext-diff',
     '--no-textconv',
+    '--end-of-options',
     expectedBaseCommit,
     acceptedSourceCommit,
   ]);
   const diffFailure = commandFailureCode(diffResult);
   if (diffFailure) return failResult(diffFailure);
-  const parsedChanged = parseChangedPaths(diffResult.stdout, CONTENT_TREE_MAX_CHANGED_PATHS);
+  const parsedChanged = parseChangedPaths(diffResult.stdout, maxChangedPaths);
   if (parsedChanged.malformed) return failResult('malformed_git_output');
   if (parsedChanged.tooMany) return failResult('too_many_changed_paths');
   const changedPaths = parsedChanged.paths;
@@ -642,14 +900,15 @@ export async function observeContentTree(
   const parsedSource = parseLsTree(sourceResult.stdout, objectFormat);
   if (parsedSource.malformed) return failResult('malformed_git_output');
 
-  const destinationResult = await run(['ls-tree', '-r', '-z', '--full-tree', destinationObservationCommit]);
+  const destinationResult = await run(['ls-tree', '-r', '-z', '--full-tree', comparisonCommit]);
   const destinationFailure = commandFailureCode(destinationResult);
   if (destinationFailure) return failResult(destinationFailure);
   const parsedDestination = parseLsTree(destinationResult.stdout, objectFormat);
   if (parsedDestination.malformed) return failResult('malformed_git_output');
 
   const inputBuffer = bufferFromPaths(changedPaths);
-  for (const commit of [expectedBaseCommit, acceptedSourceCommit, destinationObservationCommit]) {
+  const attrCommits = [...new Set([expectedBaseCommit, acceptedSourceCommit, comparisonCommit])];
+  for (const commit of attrCommits) {
     const attrResult = await run(
       ['check-attr', `--source=${commit}`, '-z', '--stdin', 'filter'],
       inputBuffer,
@@ -662,7 +921,35 @@ export async function observeContentTree(
     if (attrParsed.otherFilter) return failResult('filter_driver_refused');
   }
 
-  return successResult(changedPaths, parsedSource.entries, parsedDestination.entries);
+  const blobOids = sourceBlobOids(changedPaths, parsedSource.entries);
+  if (blobOids.length > 0) {
+    const sizeResult = await run(BATCH_CHECK_SIZE_ARGS, bufferFromOids(blobOids));
+    const sizeFailure = commandFailureCode(sizeResult);
+    if (sizeFailure) return failResult(sizeFailure);
+    const parsedSizes = parseBatchCheckSizes(sizeResult.stdout, blobOids);
+    if ('status' in parsedSizes) {
+      return failResult(parsedSizes.status === 'missing' ? 'git_object_missing' : 'malformed_git_output');
+    }
+    const smallOids = blobOids.filter(
+      (oid) => (parsedSizes.sizes.get(oid) ?? 0) <= CONTENT_TREE_LFS_POINTER_MAX_BYTES,
+    );
+    if (smallOids.length > 0) {
+      const contentResult = await run(['cat-file', '--batch'], bufferFromOids(smallOids));
+      const contentFailure = commandFailureCode(contentResult);
+      if (contentFailure) return failResult(contentFailure);
+      const parsedContents = parseCatFileBatch(contentResult.stdout, smallOids);
+      if ('status' in parsedContents) {
+        return failResult(
+          parsedContents.status === 'missing' ? 'git_object_missing' : 'malformed_git_output',
+        );
+      }
+      for (const oid of smallOids) {
+        if (isLfsPointer(parsedContents.contents.get(oid)!)) return failResult('lfs_filter_refused');
+      }
+    }
+  }
+
+  return successResult(comparisonCommit, changedPaths, parsedSource.entries, parsedDestination.entries);
 }
 
 export const observeContentTrees = observeContentTree;
