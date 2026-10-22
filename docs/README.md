@@ -1,12 +1,12 @@
 # Documentation index
 
-[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins.
+[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins. It is canonical for release state, including the state of work a proposal describes. Release state checked 2026-10-22.
 
 Layout:
 
 - `docs/`: current reference.
 - `docs/goals/`: the Goal Engine overview and the contracts it enforces.
-- `docs/proposals/`: designs and wording proposals. Nothing in them is implemented; each records its own decision status.
+- `docs/proposals/`: designs and wording proposals. They remain design records, not complete behaviour: a proposal can carry an approved decision while its implementation is still partial or absent. Each records its own decision status.
 - `docs/history/`: frozen records. Do not read them as current state.
 - `docs/ui/`: UI evidence and design references.
 
@@ -26,7 +26,7 @@ Layout:
 | Live acceptance    | [LIVE_PROVIDER_VALIDATION.md](LIVE_PROVIDER_VALIDATION.md), [CLAUDE_VALIDATION.md](CLAUDE_VALIDATION.md), [LIVE_TAILSCALE_ACCEPTANCE.md](LIVE_TAILSCALE_ACCEPTANCE.md), [LIVE_MULTIMACHINE_ACCEPTANCE.md](LIVE_MULTIMACHINE_ACCEPTANCE.md) |
 | UI evidence        | [ui/EVIDENCE.md](ui/EVIDENCE.md), [ui/MASCOT_PROVENANCE.json](ui/MASCOT_PROVENANCE.json), [ui/packet-reference/README.md](ui/packet-reference/README.md)                                                                                   |
 
-The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
+The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; no RC3 tag, artifact or release exists yet. Release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
 
 ## Goal Engine
 
@@ -43,7 +43,10 @@ These were written stage by stage. Their opening status lines ("pending independ
 
 ## Proposals and recorded decisions
 
-- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): awaiting an owner decision on refusing merges that discard accepted Goal work, including whether ancestry-only completion remains available.
+A proposal is a design record; the approved decision and the implementation state are separate, and both can change.
+
+- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): the owner decision on refusing merges that discard accepted Goal work was approved on 2026-10-21 (a new content verifier for new completions; ancestry-only records for older completions stay historical and immutable). Implementation is underway: at development HEAD `cdc590a` only the pure comparator `src/server/goals/contentTreeComparison.ts` and its test file exist. The Git collector, LFS enforcement, persistence, completion wiring and API/UI wiring remain pending, so no completion uses the verifier yet.
+- [MODEL_OPPORTUNITY_LAYER_DESIGN.md](proposals/MODEL_OPPORTUNITY_LAYER_DESIGN.md): the retention decision was approved on 2026-10-21 (90 days; references for active admission held through expiry; deletes by an explicit job). Implementation is pending: the observation storage, writer, readers and retention job are unimplemented. The separate question about historical-proof semantics after retention expiry is open and unanswered. A cost-wording correction is pending review and not integrated.
 - [GOAL_X1_AUTH_WORDING_PROPOSAL.md](proposals/GOAL_X1_AUTH_WORDING_PROPOSAL.md): wording for the authentication boundary. The underlying O1 decision is recorded: the same-user local-process residual was conditionally accepted for V1 on 2026-10-13, with live Tailscale identity-header/Host verification as its condition; O2 may be post-V1. The exact proposed prose was not separately approved.
 
 ## History
