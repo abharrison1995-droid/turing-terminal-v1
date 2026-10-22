@@ -747,6 +747,11 @@ export interface UnifiedApproval {
    */
   decidable?: boolean;
   /**
+   * Goal approvals only: set on a pending final-acceptance row projected for a paired remote caller. The row stays in
+   * the pending list so the phone can show it, but only the desktop can decide it; `decidable` is false alongside it.
+   */
+  desktopOnly?: boolean;
+  /**
    * Goal approvals only, set only for a row owned by a dedicated decision: a correction approval (any status), or a
    * completion approval while pending. Such a row is never decidable here; this names the review that decides it.
    */

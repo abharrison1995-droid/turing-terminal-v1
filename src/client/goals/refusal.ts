@@ -29,6 +29,17 @@ export function toRefusal(error: unknown): Refusal {
 export const refusalText = (refusal: Refusal): string =>
   refusal.code ? `${refusal.message} (${humanize(refusal.code)})` : refusal.message;
 
+/**
+ * Fallback for a decision the server refused as desktop-only. It is scoped to final acceptance: only that gate gets the
+ * explanatory product wording, while every other code (and `desktop_required` on another gate) keeps the generic refusal.
+ * This covers an older projection that did not send `desktopOnly`.
+ */
+export function approvalDecisionRefusalText(refusal: Refusal, gate?: string | null): string {
+  if (gate === 'final_acceptance' && refusal.code === 'desktop_required')
+    return 'Final acceptance is decided on the Turing Terminal desktop app. Open Turing Terminal on desktop to decide it.';
+  return refusalText(refusal);
+}
+
 /** Plain wording for the definition-authority refusals whose raw server message is too terse to act on. */
 const DEFINITION_REFUSALS: Record<string, string> = {
   gate_denial_not_settled: 'Turing is still settling the denied gate. Retry shortly.',

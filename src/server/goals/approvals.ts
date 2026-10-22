@@ -121,6 +121,15 @@ export function isDedicatedCompletionApproval(approval: DedicatedApprovalSubject
   );
 }
 
+/**
+ * True only for a stored row that is a pending final-acceptance gate. The desktop-only caller boundary reads the stored
+ * `goal_approvals` row (which is mutable) and applies this exact conjunction before body validation; the projection uses
+ * the same shape to keep the row visible but read-only for a remote caller.
+ */
+export function isPendingFinalAcceptanceRow(row: { gate: string; status: string }): boolean {
+  return row.gate === 'final_acceptance' && row.status === 'pending';
+}
+
 export function pendingGoalApprovals(db: Db, goalId: string): GoalApproval[] {
   return (
     db

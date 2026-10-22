@@ -6,7 +6,7 @@ import { dashboardGoals } from '../goals/readModel.js';
 import { allProviders } from '../modelCatalog.js';
 import { localMachine, toApproval, toProject, toRuns, toWorkflow } from '../serialize.js';
 import { probeTailscale } from '../tailscaleReadiness.js';
-import { getTailscaleLogin } from './requestIdentity.js';
+import { getTailscaleLogin, isRemoteRequest } from './requestIdentity.js';
 import type { RouteContext } from './routeUtils.js';
 
 /** Health, Tailscale readiness, the dashboard and the machine name. */
@@ -65,7 +65,13 @@ export function registerSystemRoutes(app: FastifyInstance, { db }: RouteContext)
     };
   });
 
-  app.get('/api/dashboard', async () => {
+  app.get('/api/dashboard', async (request) => {
+    // The dashboard approval projection uses the same remote predicate as the decision boundary and the unified inbox,
+    // so a paired remote caller sees the same read-only pending final-acceptance row in both places.
+    const remote = isRemoteRequest(
+      request.headers,
+      getTailscaleLogin(request.headers['tailscale-user-login']),
+    );
     const machineRow = localMachine(db);
     const now = new Date().toISOString();
     db.prepare('UPDATE machines SET status = ?, last_seen_at = ? WHERE id = ?').run(
@@ -131,7 +137,7 @@ export function registerSystemRoutes(app: FastifyInstance, { db }: RouteContext)
         outputTokens: usage.output_tokens ?? null,
         provenance: 'Locally observed process events; provider quota unavailable unless explicitly reported.',
       },
-      ...dashboardGoals(db),
+      ...dashboardGoals(db, { remote }),
     };
   });
 

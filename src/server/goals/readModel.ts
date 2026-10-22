@@ -42,6 +42,7 @@ import {
   getGoalApproval,
   isDedicatedCompletionApproval,
   isDedicatedCorrectionApproval,
+  isPendingFinalAcceptanceRow,
   pendingGoalApprovals,
   type DedicatedApprovalSubject,
 } from './approvals.js';
@@ -1104,15 +1105,24 @@ function isManualReconciliationForProjection(db: Db, goalId: string): boolean {
  * Whether the server would accept a user decision on this Goal approval right now: pending, its Goal not terminal, not in
  * manual reconciliation, and not owned by a dedicated decision (see dedicatedDecisionOf). The decision route enforces the
  * same rules; this projection only lets a surface show the row as read-only instead of offering a refused decision. A
- * dedicated row is kept in every history: it is projected, never hidden. An unreadable approval fails closed.
+ * dedicated row is kept in every history: it is projected, never hidden. An unreadable approval fails closed. A pending
+ * final-acceptance row projected for a remote caller additionally carries `desktopOnly: true` and is not decidable.
  */
-function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApproval {
+function goalApprovalToUnified(db: Db, row: Record<string, unknown>, remoteCaller: boolean): UnifiedApproval {
   const goalId = String(row.goal_id);
   const goalStatus = (
     db.prepare('SELECT status FROM goals WHERE id = ?').get(goalId) as { status: GoalStatus } | undefined
   )?.status;
   const approval = readApprovalForProjection(db, String(row.id));
   const dedicatedDecision = approval ? dedicatedDecisionOf(approval) : undefined;
+  // A pending final acceptance is a decision only the desktop may take. The row stays in every projection, but a
+  // paired remote caller sees it read-only. A local caller keeps the ordinary decidable projection.
+  const desktopOnly =
+    remoteCaller &&
+    isPendingFinalAcceptanceRow({
+      gate: String(row.gate),
+      status: String(row.status),
+    });
   const decidable =
     approval !== undefined &&
     row.status === 'pending' &&
@@ -1120,7 +1130,8 @@ function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApp
     goalStatus !== 'completed' &&
     goalStatus !== 'abandoned' &&
     !isManualReconciliationForProjection(db, goalId) &&
-    dedicatedDecision === undefined;
+    dedicatedDecision === undefined &&
+    !desktopOnly;
   return {
     source: 'goal',
     id: String(row.id),
@@ -1135,13 +1146,14 @@ function goalApprovalToUnified(db: Db, row: Record<string, unknown>): UnifiedApp
     createdAt: String(row.created_at),
     respondedAt: (row.responded_at as string | null) ?? null,
     decidable,
+    ...(desktopOnly ? { desktopOnly: true } : {}),
     ...(dedicatedDecision ? { dedicatedDecision } : {}),
   };
 }
 
 export function unifiedApprovals(
   db: Db,
-  options: { status?: string; goalId?: string; limit?: number } = {},
+  options: { status?: string; goalId?: string; limit?: number; remote?: boolean } = {},
 ): UnifiedApprovalsResponse {
   const status = options.status ?? 'pending';
   if (!APPROVAL_STATUS.has(status))
@@ -1154,6 +1166,8 @@ export function unifiedApprovals(
   const goalClause = options.goalId ? 'AND a.goal_id = ?' : '';
   const goalParams = options.goalId ? [options.goalId] : [];
   const goalLive = status === 'pending' ? `AND ${LIVE_PENDING}` : '';
+  // A remote caller gets the same rows, but its pending final-acceptance rows are projected read-only (desktopOnly).
+  const remoteCaller = options.remote === true;
   const goalRows = db
     .prepare(
       `SELECT a.* FROM goal_approvals a WHERE 1 = 1 ${statusClause} ${goalLive} ${goalClause}
@@ -1181,7 +1195,7 @@ export function unifiedApprovals(
         .get(...statusParams, ...goalParams) as { n: number }
     ).n;
   const merged: UnifiedApproval[] = [
-    ...goalRows.map((row) => goalApprovalToUnified(db, row)),
+    ...goalRows.map((row) => goalApprovalToUnified(db, row, remoteCaller)),
     ...runRows.map((row): UnifiedApproval => ({
       source: 'run',
       id: String(row.id),
@@ -1206,10 +1220,14 @@ export function unifiedApprovals(
 
 // --- Dashboard -----------------------------------------------------------------------------------------------------
 
-export function dashboardGoals(db: Db): {
+export function dashboardGoals(
+  db: Db,
+  options: { remote?: boolean } = {},
+): {
   goals: GoalDashboardSummary;
   goalApprovals: GoalDashboardApprovals;
 } {
+  const remoteCaller = options.remote === true;
   const counts = new Map(
     (
       db.prepare('SELECT status, COUNT(*) AS n FROM goals GROUP BY status').all() as Array<{
@@ -1253,7 +1271,7 @@ export function dashboardGoals(db: Db): {
             `SELECT a.* FROM goal_approvals a WHERE ${LIVE_PENDING} ORDER BY a.created_at DESC, a.rowid DESC LIMIT 10`,
           )
           .all() as Array<Record<string, unknown>>
-      ).map((row) => goalApprovalToUnified(db, row)),
+      ).map((row) => goalApprovalToUnified(db, row, remoteCaller)),
     },
   };
 }

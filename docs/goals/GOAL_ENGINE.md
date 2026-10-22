@@ -41,8 +41,10 @@ Work happens in cycles (authoring, execution, remediation, review, verification)
   - `POST /api/goals/:goalId/completion`
   - `POST /api/goals/:goalId/attestation-corrections/:approvalId/decision`
   - `POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections`
+- **Final-acceptance decision.** `POST /api/goal-approvals/:approvalId/decision` has one conditional exception. The handler reads the stored `goal_approvals` row (a mutable row) before app-level body validation and writes, and refuses a paired remote caller only when `row.gate === 'final_acceptance' && row.status === 'pending'` with 403 `desktop_required`. Local callers stay allowed, an unknown remote id stays the ordinary 404, and every other gate stays allowed; an already-decided row keeps its ordinary idempotent 200 or 409 `already_decided`. `final_apply` is deliberately not guarded: `applyApprovedGoalToBase` stays quarantined and unreachable, no Turing API writes the user's base, and the external-integration attestation itself remains desktop-only.
+- **Caller-aware projection.** Both `/api/approvals/unified` and `/api/dashboard` thread the same request identity predicate through the approval projection. A remote caller still receives a pending `final_acceptance` row in the pending list, but with `decidable: false` and `desktopOnly: true`; a local caller sees it as decidable. The row is never dropped from the pending list.
 - **Local trust.** Loopback callers are trusted. A same-user local process is not distinguished from the desktop UI; the owner conditionally accepted this residual for V1 on 2026-10-13 (O1), with live Tailscale identity-header/Host behaviour verification as its condition. O2, a verified process boundary, may be post-V1. See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
-- **Phone.** It shows Goal state and completion standing read-only. It has no completion, correction or handoff control.
+- **Phone.** It shows Goal state and completion standing read-only. A pending final-acceptance approval stays visible in its pending list with an explanatory desktop note and no decision buttons. It has no completion, correction or handoff control.
 - **Approvals.** All Goal approvals use the one approval system (`goal_approvals`). Model output never decides a Goal transition.
 
 ## Where the code is

@@ -21,7 +21,7 @@ import { GOAL_RESUME_REASONS } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
-import { GoalApprovalError } from './approvals.js';
+import { GoalApprovalError, isPendingFinalAcceptanceRow } from './approvals.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import {
   AttestationCorrectionError,
@@ -107,8 +107,11 @@ export interface GoalRouteDeps {
   supervisor?: GoalSupervisor | undefined;
   /**
    * True when the caller is a desktop-local caller (not a paired remote device). Required, so a missing wiring fails to
-   * typecheck. The five user-only completion and correction routes call it first and refuse with 403 desktop_required.
-   * Supplied by app.ts from the existing remote predicate; this module reads no headers for it.
+   * typecheck. It is used in three ways: the five desktop-only completion and correction POST routes call it first and
+   * refuse unconditionally with 403 desktop_required; the generic goal-approval decision route refuses conditionally,
+   * only for a stored pending `final_acceptance` approval row; and the unified approvals inbox uses it to project a
+   * remote caller a read-only row instead of a decidable one. Supplied by app.ts from the existing remote predicate;
+   * this module reads no headers for it.
    */
   requireDesktopCaller: (request: FastifyRequest) => boolean;
   usageFilterFromQuery: (
@@ -1239,7 +1242,9 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     const query = parse(approvalsQuery, request.query, reply);
     if (!query.ok) return reply;
     try {
-      return unifiedApprovals(db, query.data);
+      // The same request identity predicate as the decision boundary; a remote projection is caller-aware, not a
+      // caller-blind default.
+      return unifiedApprovals(db, { ...query.data, remote: !deps.requireDesktopCaller(request) });
     } catch (error) {
       return domainError(error, reply);
     }
@@ -1469,12 +1474,23 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
   });
 
   app.post('/api/goal-approvals/:approvalId/decision', async (request, reply) => {
+    const approvalId = (request.params as { approvalId: string }).approvalId;
+    // Gate and status come from the stored row, read before app-level body validation or any write. The row is mutable,
+    // so this is a decision-time read, not a claim about an immutable record. Only a paired remote caller is refused, and
+    // only for a pending final-acceptance row: local callers and every other gate keep the existing behaviour.
+    const stored = db.prepare('SELECT gate, status FROM goal_approvals WHERE id = ?').get(approvalId) as
+      { gate: string; status: string } | undefined;
+    if (!deps.requireDesktopCaller(request) && stored && isPendingFinalAcceptanceRow(stored))
+      return send(reply, 403, {
+        error: 'Final acceptance can be decided on the Turing Terminal desktop app only.',
+        code: 'desktop_required',
+      });
     const body = parse(goalApprovalDecisionBody, request.body, reply);
     if (!body.ok) return reply;
     try {
       // The decider is fixed to the user: this route is the explicit user action. It never starts or resumes the Goal.
       const decided = await decideGoalApprovalAsUser(db, {
-        approvalId: (request.params as { approvalId: string }).approvalId,
+        approvalId,
         decision: body.data.decision,
         ...(body.data.note ? { note: body.data.note } : {}),
       });
