@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { observeContentTree } from './contentTreeGitObservation.js';
+import { CONTENT_TREE_MAX_HISTORY_COMMITS, observeContentTree } from './contentTreeGitObservation.js';
 import type { ContentTreeGitCommandResult, ContentTreeGitObservation } from './contentTreeGitObservation.js';
 import { compareContentTrees } from './contentTreeComparison.js';
 import { REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
@@ -233,6 +233,16 @@ function makePaths(count: number): Buffer {
   return Buffer.concat(Array.from({ length: count }, (_, i) => Buffer.from(`path-${i}.txt\0`, 'utf8')));
 }
 
+function historyOutput(
+  oids: readonly string[],
+  parentsAt: (index: number) => readonly string[] = () => [],
+): Buffer {
+  return Buffer.from(
+    oids.map((oid, index) => [oid, ...parentsAt(index)].join(' ')).join('\n') + '\n',
+    'ascii',
+  );
+}
+
 async function observe(
   repo: TestRepository,
   base: string,
@@ -285,13 +295,13 @@ function destinationEntryAt(
   return result.destinationEntries.find((entry) => Buffer.from(entry.path).toString('utf8') === path);
 }
 
-function createPreservingMerge(): {
+function createPreservingMerge(format: 'sha1' | 'sha256' = 'sha1'): {
   repo: TestRepository;
   base: string;
   source: string;
   merge: string;
 } {
-  const repo = createRepository();
+  const repo = createRepository(format);
   repo.write('goal.txt', 'v1\n');
   const base = repo.commit('base');
   repo.git('checkout', '--quiet', '-b', 'side', base);
@@ -712,6 +722,47 @@ describe('content tree git observation', () => {
   );
 
   it(
+    'refuses an ambiguous ancestry-path history with more than one first merge',
+    async () => {
+      const { repo, base, source, merge } = createPreservingMerge();
+      const parents = Array.from({ length: 4 }, (_, index) =>
+        (index + 1).toString(16).padStart(40, '0'),
+      );
+      const first = 'a'.repeat(40);
+      const second = 'b'.repeat(40);
+      const runner = strictRunner(repo.path, {
+        'rev-list ancestry-path': () =>
+          okCommandResult(historyOutput([second, first], () => parents.slice(0, 2))),
+      });
+
+      const result = await observe(repo, base, source, merge, { runner });
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe('comparison_commit_ambiguous');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses a history one commit past the bound on either resolver',
+    async () => {
+      const { repo, base, source, merge } = createPreservingMerge();
+      const oids = Array.from({ length: CONTENT_TREE_MAX_HISTORY_COMMITS + 1 }, (_, index) =>
+        index.toString(16).padStart(40, '0'),
+      );
+
+      for (const key of ['rev-list first-parent', 'rev-list ancestry-path']) {
+        const runner = strictRunner(repo.path, {
+          [key]: () => okCommandResult(historyOutput(oids)),
+        });
+        const result = await observe(repo, base, source, merge, { runner });
+        expect(result.ok).toBe(false);
+        expect(result.status).toBe('comparison_history_unbounded');
+      }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
     'accepts exactly 10000 changed paths and refuses 10001 even with a raised caller limit',
     async () => {
       const repo = createRepository();
@@ -801,6 +852,22 @@ describe('content tree git observation', () => {
       if (result.ok) {
         expect(result.sourceEntries[0]?.oid).toMatch(/^[0-9a-f]{64}$/);
       }
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'compares a SHA-256 preserving true merge at the merge commit',
+    async (ctx) => {
+      if (!canInitializeSha256()) ctx.skip();
+      const { repo, base, source, merge } = createPreservingMerge('sha256');
+      const result = await observe(repo, base, source, merge, { objectFormat: 'sha256' });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.comparisonCommit).toBe(merge);
+      expect(result.comparisonCommit).not.toBe(source);
+      expect(compare(result).status).toBe('verified');
+      expect(entryAt(result, 'goal.txt')?.oid).toMatch(/^[0-9a-f]{64}$/);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
@@ -1133,6 +1200,61 @@ describe('content tree git observation', () => {
       });
       const failureResult = await observe(repo, base, source, source, { runner: failureRunner });
       expect(failureResult.status).toBe('git_command_failed');
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'fails closed on missing or malformed blob batch output and on a missing merge-base object',
+    async () => {
+      const { repo, base, source, merge } = createPreservingMerge();
+      const blobOid = repo.git('rev-parse', `${source}:goal.txt`);
+
+      const sizesMissing = strictRunner(repo.path, {
+        'cat-file sizes': () => okCommandResult(Buffer.from(`${blobOid} missing\n`, 'ascii')),
+      });
+      const sizesMissingResult = await observe(repo, base, source, merge, { runner: sizesMissing });
+      expect(sizesMissingResult.ok).toBe(false);
+      expect(sizesMissingResult.status).toBe('git_object_missing');
+
+      const sizesMalformed = strictRunner(repo.path, {
+        'cat-file sizes': () => okCommandResult(Buffer.from(`${blobOid} blob not-a-number\n`, 'ascii')),
+      });
+      const sizesMalformedResult = await observe(repo, base, source, merge, {
+        runner: sizesMalformed,
+      });
+      expect(sizesMalformedResult.ok).toBe(false);
+      expect(sizesMalformedResult.status).toBe('malformed_git_output');
+
+      const contentsMissing = strictRunner(repo.path, {
+        'cat-file sizes': () => okCommandResult(Buffer.from(`${blobOid} blob 2\n`, 'ascii')),
+        'cat-file --batch': () => okCommandResult(Buffer.from(`${blobOid} missing\n`, 'ascii')),
+      });
+      const contentsMissingResult = await observe(repo, base, source, merge, {
+        runner: contentsMissing,
+      });
+      expect(contentsMissingResult.ok).toBe(false);
+      expect(contentsMissingResult.status).toBe('git_object_missing');
+
+      const contentsMalformed = strictRunner(repo.path, {
+        'cat-file sizes': () => okCommandResult(Buffer.from(`${blobOid} blob 2\n`, 'ascii')),
+        'cat-file --batch': () =>
+          okCommandResult(Buffer.from(`${blobOid} blob not-a-number\n`, 'ascii')),
+      });
+      const contentsMalformedResult = await observe(repo, base, source, merge, {
+        runner: contentsMalformed,
+      });
+      expect(contentsMalformedResult.ok).toBe(false);
+      expect(contentsMalformedResult.status).toBe('malformed_git_output');
+
+      const mergeBaseMissing = strictRunner(repo.path, {
+        'merge-base': () => failedCommandResult('fatal: bad object deadbeef', 1),
+      });
+      const mergeBaseMissingResult = await observe(repo, base, source, merge, {
+        runner: mergeBaseMissing,
+      });
+      expect(mergeBaseMissingResult.ok).toBe(false);
+      expect(mergeBaseMissingResult.status).toBe('git_object_missing');
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

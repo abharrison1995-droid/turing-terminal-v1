@@ -66,6 +66,13 @@ const PROOF_WRITE_SQL = new RegExp(
     String.raw`|\bdelete${SQL_GAP}from${SQL_GAP}${SQL_TABLE_PREFIX}goal_external_completion_proofs\b`,
   'i',
 );
+/** `INSERT`, `INSERT OR <conflict>`, `REPLACE` into the content-verification table, or `UPDATE` / `DELETE FROM` it. */
+const CONTENT_VERIFICATION_WRITE_SQL = new RegExp(
+  String.raw`\b(?:insert|replace)${SQL_GAP}(?:or${SQL_GAP}\w+${SQL_GAP})?into${SQL_GAP}${SQL_TABLE_PREFIX}goal_content_verifications\b` +
+    String.raw`|\bupdate${SQL_GAP}(?:or${SQL_GAP}\w+${SQL_GAP})?${SQL_TABLE_PREFIX}goal_content_verifications\b` +
+    String.raw`|\bdelete${SQL_GAP}from${SQL_GAP}${SQL_TABLE_PREFIX}goal_content_verifications\b`,
+  'i',
+);
 /**
  * Any `UPDATE` of the goals table whose SET list assigns `status`, whatever its position in the list. Covers schema
  * qualifiers, quoted names and `OR <conflict>`. The SET list ends at `WHERE`, `;` or a backtick, so a `status` in a
@@ -104,6 +111,14 @@ const RULES: readonly AuthorityRule[] = [
     files: ['goals/externalCompletionTerminal.ts'],
     reason:
       'Only the proof-bound terminal writer may write a completion proof. Its single INSERT is reviewed with the terminal authority.',
+  },
+  {
+    id: 'content_verification_write',
+    pattern: CONTENT_VERIFICATION_WRITE_SQL,
+    mode: 'only_in',
+    files: ['goals/contentVerification.ts'],
+    reason:
+      'Only the designated content-verification persistence writer may INSERT, REPLACE, UPDATE or DELETE content-verification evidence. The table is append-only and every other module reads it.',
   },
   {
     id: 'decision_reader',
@@ -423,6 +438,31 @@ describe('authority static guard: seeded violations and negative controls', () =
       'goals/synthetic.ts',
       "db.prepare('UPDATE main.goal_external_completion_proofs SET id = ?');",
     ],
+    [
+      'content_verification_write',
+      'goals/activeWork.ts',
+      "db.prepare('INSERT INTO goal_content_verifications (id) VALUES (?)');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('INSERT OR REPLACE INTO goal_content_verifications (id) VALUES (?)');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('REPLACE INTO main.goal_content_verifications (id) VALUES (?)');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE goal_content_verifications SET status = ?');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      'db.prepare("DELETE FROM `goal_content_verifications`");',
+    ],
     ['decision_reader', 'goals/synthetic.ts', 'readExternalCompletionDecision(db, goalId, approvalId);'],
     ['decision_reader', 'goals/synthetic.ts', 'const rows = listExternalCompletionDecisions(db, goalId);'],
     ['decision_record', 'goals/synthetic.ts', 'await recordExternalCompletionDecision(db, input);'],
@@ -622,6 +662,26 @@ describe('authority static guard: seeded violations and negative controls', () =
       "db.prepare('SELECT COUNT(*) FROM main.goal_external_completion_proofs');",
     ],
     ['proof_write', 'goals/synthetic.ts', "db.prepare('INSERT INTO main.goal_events (id) VALUES (?)');"],
+    [
+      'content_verification_write',
+      'goals/contentVerification.ts',
+      "db.prepare('INSERT INTO goal_content_verifications (id) VALUES (?)');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('SELECT COUNT(*) FROM goal_content_verifications');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('INSERT INTO goal_content_verifications_archive (id) VALUES (?)');",
+    ],
+    [
+      'content_verification_write',
+      'goals/synthetic.ts',
+      "db.prepare('UPDATE goal_events SET status = ?');",
+    ],
     [
       'decision_reader',
       'goals/externalCompletionDecision.ts',
