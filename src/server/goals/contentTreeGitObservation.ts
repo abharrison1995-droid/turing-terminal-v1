@@ -951,13 +951,3 @@ export async function observeContentTree(
 
   return successResult(comparisonCommit, changedPaths, parsedSource.entries, parsedDestination.entries);
 }
-
-export const observeContentTrees = observeContentTree;
-export default observeContentTree;
-export const observeContentTreeGit = observeContentTree;
-export const gitObserveContentTree = observeContentTree;
-export const observeGitContentTree = observeContentTree;
-
-export { CONTENT_TREE_MAX_CHANGED_PATHS };
-export { compareContentTrees } from './contentTreeComparison.js';
-export type { ContentTreeEntry, ContentTreeComparisonResult } from './contentTreeComparison.js';
