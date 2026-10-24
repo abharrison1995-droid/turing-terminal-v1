@@ -15,7 +15,7 @@ The stage-by-stage record up to 2026-10-20 is frozen in [history/V1_READINESS_LO
 ## Current baseline
 
 - **Date checked:** 2026-10-24.
-- **Development branch:** `codex/v1-release-preparation-2026-10-21`, base HEAD `c8d3bc4` (`fix: block replacement of content verification evidence`). Goal content-verification and Model Opportunity implementation, docs reconciliation and test-fix changes are in the working tree and are not committed yet.
+- **Development branch:** `codex/v1-release-preparation-2026-10-21`, implementation commit `763bf0f` (`feat: complete v1 goal verification and model opportunities`), based on `c8d3bc4` (`fix: block replacement of content verification evidence`). The complete local software gate passed on this implementation; a documentation-only follow-up records final test totals and release blockers.
 - **Public `master`:** `6533844281d2ff9cf688286188ac35596b2bbb22`. `git ls-remote` confirms the remote branch is at this SHA. GitHub CI run [39523812376](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/39523812376) succeeded on this SHA on 2026-10-21. This does not validate the development branch.
 - **Version:** `1.0.0-rc3` is configured in package, Tauri, Cargo and shared version files; the installer workflow is configured for the `v1.0.0-rc3` tag. No RC3 tag, artifact or release exists. The latest tag is `v1.0.0-rc2` (2026-10-04); latest installer success is [run 37232871368](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/37232871368) on `2ae9dfcde9d140dc453f6e423823d0ae9632b240` (RC2).
 - **OpenCode Go catalogue and review:** refreshed 2026-10-24. It lists `opencode-go/beam-free` at catalogue cost $0 and the explicitly requested `opencode-go/glm-5.3-flash` and `opencode-go/deepseek-v4.1-flash`. Two read-only Beam Free reviews completed with no actionable findings. The GLM-5.3-Flash and DeepSeek V4.1 Flash review attempts timed out before returning findings; approximate costs were $0.2234 and $0.0943 respectively. Catalogue availability is not proof of account access or Turing-provider qualification.
@@ -35,9 +35,9 @@ The stage-by-stage record up to 2026-10-20 is frozen in [history/V1_READINESS_LO
 
 - **Public push/PR CI:** Pass on `master` only: [run 39523812376](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/39523812376), SHA `6533844281d2ff9cf688286188ac35596b2bbb22`.
 - **Clean dependency install:** `npm ci` passed on the current working tree (629 packages); it reported zero vulnerabilities after the lockfile remediation.
-- **Formatting, lint, typecheck:** `npm run format:check`, `npm run lint` and `npm run typecheck` passed on the current working tree after the final test-fixture edits on 2026-10-24.
+- **Formatting, lint, typecheck:** `npm run format:check`, `npm run lint` and `npm run typecheck` passed after the final source changes on 2026-10-24. Formatting was rerun after this readiness-record update.
 - **Full tests:** The current-tree `npm test` gate passed on 2026-10-24: 232 test files and 4,118 tests passed in 1,234.59 seconds. This includes the previously stale fixtures/assertions, completion mismatch and proof-binding cases, and Model Opportunity Board tests.
-- **Build, production dependency audit, documentation links and package scan:** `npm run build`, `npm audit --omit=dev`, `npm run docs:links` (92 Markdown files) and `npm run package:scan` passed after the final test-fixture edits. The build reports one non-failing large-chunk warning. No local-state, private-key or recognized credential patterns were found in the package scan.
+- **Build, production dependency audit, documentation links and package scan:** `npm run build`, `npm audit --omit=dev`, `npm run docs:links` (92 Markdown files) and `npm run package:scan` passed after the final source changes. Documentation links were rerun after this readiness-record update. The build reports one non-failing large-chunk warning. No local-state, private-key or recognized credential patterns were found in the package scan.
 - **Native installer CI:** No RC3 run exists. The last success is the RC2 run above; it built and smoke-tested Linux `.deb`/AppImage and Windows NSIS. This is not a physical-install result.
 
 ## Remaining release qualification
@@ -68,7 +68,7 @@ Deterministic tests use mocks or fixtures. They do not prove a real provider cal
 
 ## Blockers for 1.0.0
 
-1. Record the implementation on the development branch and obtain push/PR CI evidence for that commit. The local software gate is green; the passing `master` run does not cover this implementation, and no push is authorized here.
+1. Obtain push/PR CI evidence for implementation commit `763bf0f`. The local software gate is green; the passing `master` run does not cover this implementation, and no push is authorized here.
 2. Run a bounded current-code OpenCode Go subscription-backed validation on the exact free route when available; stop on quota and do not use PAYG fallback. Validate any provider documented as supported or explicitly document it as unvalidated.
 3. Complete pending physical Windows/Linux install, iPhone PWA/Tailscale, live Tailscale identity/Host, two-master and release-build restart/recovery checks.
 4. After those gates and owner approval, run RC3 installer CI, verify package contents and publish checksums. No RC3 tag or publication is authorized by this tracker.
