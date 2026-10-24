@@ -1,7 +1,10 @@
 import type { Db } from '../db.js';
+import { opportunityApprovalDetailSchema } from '../../shared/opportunityContract.js';
+import { hasOpportunityAdmissionProof } from '../opportunityEvidence.js';
 import {
   GOAL_ROLES,
   type GoalApproval,
+  type GoalDefinition,
   type GoalDefinitionVersion,
   type GoalRole,
   type IndependencePolicy,
@@ -29,7 +32,7 @@ import {
   type RoutingEnvironment,
   type RoutingRequest,
 } from './routing.js';
-import type { ProviderStatus } from '../../shared/types.js';
+import type { ModelConfiguration, ProviderStatus } from '../../shared/types.js';
 import { isCycleTerminal, type CycleStatus } from './cycles.js';
 
 /**
@@ -86,6 +89,29 @@ export function readStoredResolutions(raw: string | null): Partial<Record<GoalRo
   return result;
 }
 
+/** True only when a stored opportunity approval binds this exact concrete model route. */
+export function isOpportunityResolutionForRoute(
+  resolutions: Partial<Record<GoalRole, Pick<RoleResolution, 'selected' | 'approval'>>>,
+  configuration: ModelConfiguration,
+): boolean {
+  const fields = [
+    'backendId',
+    'providerId',
+    'billingLane',
+    'modelId',
+    'connectionProfileId',
+    'variantId',
+    'reasoning',
+    'nativeSettings',
+  ] as const;
+  const route = Object.fromEntries(fields.map((field) => [field, configuration[field]]));
+  return Object.values(resolutions).some(
+    (resolution) =>
+      resolution?.approval.admissionKind === 'opportunity' &&
+      canonicalJson(resolution.selected.configuration) === canonicalJson(route),
+  );
+}
+
 /** The current cycle's stored role entries: the proven-shape ones, and the roles whose entry is present but malformed. */
 export function readCycleResolutions(raw: string | null): {
   valid: Partial<Record<GoalRole, RoleResolution>>;
@@ -117,13 +143,29 @@ interface CycleLookup {
  * Proves, from canonical SQLite, the approval and validation records a resolution cites. Returns a finite failure
  * code or null. Reads only: nothing is created, validated or refreshed.
  */
-function proveDurableReferences(db: Db, goalId: string, resolution: RoleResolution): string | null {
+function proveDurableReferences(
+  db: Db,
+  goalId: string,
+  definitionVersion: number,
+  definition: GoalDefinition,
+  resolution: RoleResolution,
+): string | null {
   const { approval, selected } = resolution;
   if (approval.state === 'approved') {
     const row = db
-      .prepare('SELECT goal_id, gate, status, decided_by, detail_json FROM goal_approvals WHERE id = ?')
+      .prepare(
+        'SELECT goal_id, gate, risk, requested_by, status, decided_by, detail_json FROM goal_approvals WHERE id = ?',
+      )
       .get(approval.approvalId) as
-      | { goal_id: string; gate: string; status: string; decided_by: string | null; detail_json: string }
+      | {
+          goal_id: string;
+          gate: string;
+          risk: string;
+          requested_by: string;
+          status: string;
+          decided_by: string | null;
+          detail_json: string;
+        }
       | undefined;
     if (
       !row ||
@@ -133,7 +175,7 @@ function proveDurableReferences(db: Db, goalId: string, resolution: RoleResoluti
       row.decided_by !== 'user'
     )
       return 'approval_reference';
-    let detail: { poolId?: unknown; memberIdentityHash?: unknown };
+    let detail: Record<string, unknown>;
     try {
       detail = JSON.parse(row.detail_json) as typeof detail;
     } catch {
@@ -144,6 +186,38 @@ function proveDurableReferences(db: Db, goalId: string, resolution: RoleResoluti
       typeof detail !== 'object' ||
       detail.poolId !== resolution.poolId ||
       detail.memberIdentityHash !== selected.identityHash
+    )
+      return 'approval_reference';
+    if (detail.admissionKind === 'opportunity') {
+      const parsed = opportunityApprovalDetailSchema.safeParse(detail);
+      const pool = definition.routing.pools.find((candidate) => candidate.id === resolution.poolId);
+      const member = pool?.members[resolution.selectedIndex];
+      if (
+        !parsed.success ||
+        row.risk !== 'medium' ||
+        row.requested_by !== 'user' ||
+        approval.admissionKind !== 'opportunity' ||
+        approval.opportunityDigest !== parsed.data.opportunityDigest ||
+        canonicalJson(approval.observationIds) !== canonicalJson(parsed.data.observationIds) ||
+        !pool ||
+        pool.admission !== 'opportunity' ||
+        !member ||
+        !hasOpportunityAdmissionProof({
+          db,
+          goalId,
+          definitionVersion,
+          poolId: pool.id,
+          memberIndex: resolution.selectedIndex,
+          member,
+          identityHash: selected.identityHash,
+        })
+      )
+        return 'opportunity_admission_reference';
+    } else if (
+      (detail.admissionKind !== undefined && detail.admissionKind !== 'static') ||
+      approval.admissionKind !== undefined ||
+      approval.opportunityDigest !== undefined ||
+      approval.observationIds !== undefined
     )
       return 'approval_reference';
   } else if (approval.approvalId !== null || approval.memberIdentityHash !== null)
@@ -228,7 +302,7 @@ export function persistRoleResolution(
         'resolution_invalid',
         `The resolution is not the approved route (${failure}).`,
       );
-    const reference = proveDurableReferences(db, input.goalId, resolution);
+    const reference = proveDurableReferences(db, input.goalId, stored.version, stored.definition, resolution);
     if (reference)
       throw new RouteResolutionError(
         'resolution_invalid',
@@ -312,6 +386,49 @@ export function loadFirstUseApprovals(db: Db, goalId: string): GoalApproval[] {
     try {
       const detail = JSON.parse(String(row.detail_json)) as unknown;
       if (!detail || typeof detail !== 'object' || Array.isArray(detail)) continue;
+      const detailRecord = detail as Record<string, unknown>;
+      if (detailRecord.admissionKind === 'opportunity') {
+        const parsed = opportunityApprovalDetailSchema.safeParse(detailRecord);
+        if (
+          !parsed.success ||
+          row.status !== 'approved' ||
+          row.decided_by !== 'user' ||
+          row.requested_by !== 'user' ||
+          row.risk !== 'medium'
+        )
+          continue;
+        const current = db
+          .prepare('SELECT current_definition_version FROM goals WHERE id = ?')
+          .get(goalId) as { current_definition_version: number | null } | undefined;
+        const stored =
+          current?.current_definition_version == null
+            ? undefined
+            : loadDefinitionVersion(db, goalId, current.current_definition_version);
+        if (!stored || stored.status !== 'approved' || !verifyDefinitionHash(stored)) continue;
+        const pool = stored.definition.routing.pools.find((candidate) => candidate.id === parsed.data.poolId);
+        const member = pool?.members[parsed.data.memberIndex];
+        if (
+          !pool ||
+          pool.admission !== 'opportunity' ||
+          !member ||
+          !hasOpportunityAdmissionProof({
+            db,
+            goalId,
+            definitionVersion: stored.version,
+            poolId: pool.id,
+            memberIndex: parsed.data.memberIndex,
+            member,
+            identityHash: parsed.data.memberIdentityHash,
+          })
+        )
+          continue;
+      } else if (
+        (detailRecord.admissionKind !== undefined && detailRecord.admissionKind !== 'static') ||
+        typeof detailRecord.poolId !== 'string' ||
+        typeof detailRecord.memberIdentityHash !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(detailRecord.memberIdentityHash)
+      )
+        continue;
       approvals.push({
         id: row.id as string,
         goalId: row.goal_id as string,
@@ -491,7 +608,16 @@ function loadCurrentCycleResolutions(
       'definition_mismatch',
       "The cycle is not on the Goal's current definition.",
     );
-  return readCycleResolutions(cycle.route_resolution_json);
+  const result = readCycleResolutions(cycle.route_resolution_json);
+  for (const role of GOAL_ROLES) {
+    const resolution = result.valid[role];
+    if (!resolution) continue;
+    if (proveDurableReferences(db, goalId, stored.version, stored.definition, resolution)) {
+      delete result.valid[role];
+      result.malformed.push(role);
+    }
+  }
+  return result;
 }
 
 /**

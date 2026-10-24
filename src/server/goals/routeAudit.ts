@@ -6,6 +6,7 @@ import {
   type ValidationProfile,
 } from '../../shared/goals.js';
 import type { ModelConfiguration } from '../../shared/types.js';
+import type { OpportunityBinding } from '../../shared/opportunityContract.js';
 import { INDEPENDENCE_REASONS, type IndependenceReason, type IndependenceResult } from './independence.js';
 import type { ProfileValidationState } from './routeValidation.js';
 import type { EffectiveIdentityKind } from './routeIdentity.js';
@@ -118,6 +119,9 @@ export interface RoleResolution {
     approvalId: string | null;
     poolId: string | null;
     memberIdentityHash: string | null;
+    admissionKind?: 'opportunity';
+    opportunityDigest?: string;
+    observationIds?: string[];
   };
   independence: IndependenceResult | null;
 }
@@ -146,6 +150,7 @@ export interface RoleRefusal {
     memberIndex: number;
     configuration: RouteConfigurationAudit;
     approvalId: string | null;
+    opportunity?: OpportunityBinding;
   };
   independence?: IndependenceResult | null;
 }
@@ -295,6 +300,9 @@ const storedResolution = z
         approvalId: idText.nullable(),
         poolId: idText.nullable(),
         memberIdentityHash: hex64.nullable(),
+        admissionKind: z.literal('opportunity').optional(),
+        opportunityDigest: hex64.optional(),
+        observationIds: z.array(z.string().uuid()).min(1).max(8).optional(),
       })
       .strict(),
     independence: independenceResult.nullable(),

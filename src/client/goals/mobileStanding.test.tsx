@@ -93,7 +93,10 @@ const pill = () => document.querySelector('.goal-mobile-heading [data-goal-statu
 
 /** Text of the region with the allowed negations removed, so the positive-claim scan sees only what is asserted. */
 const positiveText = (element: HTMLElement) =>
-  (element.textContent ?? '').replace(/not proven|could not be verified|not attested|not confirmed/gi, '');
+  (element.textContent ?? '').replace(
+    /not proven|could not be verified|not verified|not attested|not confirmed/gi,
+    '',
+  );
 
 // --- PIN tests: green at HEAD, guard the current compact view ------------------------------------------------------
 
@@ -195,9 +198,7 @@ describe('compact Goal standing: contested, legacy, invalid and trusted copy', (
     await renderGoal(standingDetail(trustedStanding()));
     const section = await screen.findByRole('region', { name: 'Completion standing' });
     expect(
-      within(section).getByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
-      ),
+      within(section).getByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     expect(within(section).getByText('Content preservation: not proven.')).toBeTruthy();
     expect(card().textContent).not.toContain('This Goal is complete.');

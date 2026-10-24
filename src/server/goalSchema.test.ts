@@ -426,7 +426,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -451,7 +451,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     db.close();
   });
 });
@@ -855,7 +855,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db.prepare('SELECT id, status, recovery_json, approval_id FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -1076,7 +1076,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1084,7 +1084,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -1110,7 +1110,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1554,7 +1554,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1562,11 +1562,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     again.close();
   });
 
@@ -1853,7 +1853,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1862,11 +1862,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
       again.close();
     }
   });
@@ -2065,7 +2065,7 @@ describe('migration 022_goal_review_run_identity', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare('SELECT id, cycle_id, run_id, status FROM goal_reviews ORDER BY id').all()).toEqual([
       { id: 'legacy-1', cycle_id: null, run_id: null, status: 'pending' },
       { id: 'legacy-2', cycle_id: null, run_id: null, status: 'pending' },
@@ -2101,7 +2101,7 @@ describe('migration 023_goal_final_apply_authority', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare("SELECT intent_digest FROM goal_approvals WHERE id = 'legacy-final'").get()).toEqual({
       intent_digest: null,
     });
@@ -2347,6 +2347,8 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
         { name: '028_goal_attestation_corrections.sql' },
         { name: '029_goal_content_verifications.sql' },
         { name: '032_goal_content_verification_insert_guard.sql' },
+        { name: '033_goal_completion_content_verification.sql' },
+        { name: '034_model_opportunity_observations.sql' },
       ],
     );
     expect(
@@ -2578,7 +2580,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
     historical.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare('SELECT * FROM goal_external_integration_attestations').all()).toEqual(
       attestationBefore,
     );
@@ -2879,7 +2881,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
     historical.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db
         .prepare(
@@ -2944,6 +2946,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
 
   it('rejects proof insertion without the exact approved v2 completion action', () => {
     const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     project(db, 'p');
     seedGoalWithDefinition(db, 'g', 'p');
     expect(() => insertExternalCompletionProof(db, externalCompletionProofRow())).toThrow(
@@ -2956,6 +2959,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
   it('binds payload columns, bounds object IDs, and makes persisted proofs immutable', () => {
     const db = fresh();
     db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     db.pragma('foreign_keys = OFF');
     const valid = externalCompletionProofRow();
     insertExternalCompletionProof(db, valid);
@@ -3030,6 +3034,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
   it('read-validates stored proof payloads and returns no record across an unknown Goal scope', () => {
     const db = fresh();
     db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     db.pragma('foreign_keys = OFF');
     const malformed = externalCompletionProofRow();
     malformed.payload_json = JSON.stringify({
@@ -3054,9 +3059,7 @@ describe('migration 029 content-verified integration evidence', () => {
   it('creates the additive v2 table with immutable append-only triggers', () => {
     const db = fresh();
     const table = db
-      .prepare(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goal_content_verifications'",
-      )
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goal_content_verifications'")
       .get() as { sql: string } | undefined;
     expect(table?.sql).toContain("verifier = 'content-verified-v1'");
     expect(table?.sql).toContain('verifier_version = 2');
@@ -3067,13 +3070,9 @@ describe('migration 029 content-verified integration evidence', () => {
       'trg_goal_content_verification_no_delete',
     ])
       expect(
-        db
-          .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
-          .get(trigger),
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger),
       ).toBeTruthy();
-    expect(
-      db.prepare("SELECT COUNT(*) AS n FROM goal_content_verifications").get(),
-    ).toEqual({ n: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({ n: 0 });
     db.close();
   });
 
@@ -3093,10 +3092,14 @@ describe('migration 029 content-verified integration evidence', () => {
     historical.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 30 });
-    expect(
-      db.prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ?').all('g'),
-    ).toEqual(before);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
+    expect(db.prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ?').all('g')).toEqual(
+      (before as Array<Record<string, unknown>>).map((row) => ({
+        ...row,
+        content_verification_digest: null,
+        content_verification_status: null,
+      })),
+    );
     expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({ n: 0 });
     expect(() =>
       db
@@ -3115,22 +3118,26 @@ describe('migration 029 content-verified integration evidence', () => {
       suffix: string,
       overrides: Record<string, unknown> = {},
     ): Record<string, string | number> {
-      return contentVerificationRow('20000000-0000-4000-8000-000000000001', suffix, {
-        ...overrides,
-      }, suffix.padStart(40, '0'));
+      return contentVerificationRow(
+        '20000000-0000-4000-8000-000000000001',
+        suffix,
+        {
+          ...overrides,
+        },
+        suffix.padStart(40, '0'),
+      );
     }
 
     const valid = contentVerificationRow();
     insertContentVerification(db, valid);
     expect(() =>
-      db.prepare('UPDATE goal_content_verifications SET status = ? WHERE id = ?').run(
-        'content_not_preserved',
-        valid.id,
-      ),
+      db
+        .prepare('UPDATE goal_content_verifications SET status = ? WHERE id = ?')
+        .run('content_not_preserved', valid.id),
     ).toThrow(/content verifications are immutable/);
-    expect(() =>
-      db.prepare('DELETE FROM goal_content_verifications WHERE id = ?').run(valid.id),
-    ).toThrow(/content verifications cannot be deleted/);
+    expect(() => db.prepare('DELETE FROM goal_content_verifications WHERE id = ?').run(valid.id)).toThrow(
+      /content verifications cannot be deleted/,
+    );
 
     const invalidJson = rowWithUniqueEvidence('2');
     invalidJson.payload_json = '{';
@@ -3145,26 +3152,20 @@ describe('migration 029 content-verified integration evidence', () => {
       mismatchCount: 1,
       mismatchPathDigest: 'f'.repeat(64),
     });
-    expect(() => insertContentVerification(db, verifiedWithMismatch)).toThrow(
-      /CHECK constraint failed/,
-    );
+    expect(() => insertContentVerification(db, verifiedWithMismatch)).toThrow(/CHECK constraint failed/);
 
     const mismatchWithoutCount = rowWithUniqueEvidence('5', {
       status: 'content_not_preserved',
       mismatchCount: 0,
     });
-    expect(() => insertContentVerification(db, mismatchWithoutCount)).toThrow(
-      /CHECK constraint failed/,
-    );
+    expect(() => insertContentVerification(db, mismatchWithoutCount)).toThrow(/CHECK constraint failed/);
 
     const mismatchBeyondChanged = rowWithUniqueEvidence('6', {
       status: 'content_not_preserved',
       changedPathCount: 1,
       mismatchCount: 2,
     });
-    expect(() => insertContentVerification(db, mismatchBeyondChanged)).toThrow(
-      /CHECK constraint failed/,
-    );
+    expect(() => insertContentVerification(db, mismatchBeyondChanged)).toThrow(/CHECK constraint failed/);
 
     const overCap = rowWithUniqueEvidence('7');
     const overCapPayload = payloadOf(overCap);
@@ -3257,6 +3258,7 @@ describe('migration 029 content-verified integration evidence', () => {
   it('keeps verifier version 2 rows out of both v1 evidence tables', () => {
     const db = fresh();
     db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     db.pragma('foreign_keys = OFF');
 
     const v2Version = externalCompletionProofRow('g', '1');
@@ -3343,65 +3345,167 @@ describe('migration 029 content-verified integration evidence', () => {
 });
 
 describe('migration 032 content verification insert guard', () => {
-  it(
-    'rejects duplicate INSERT and INSERT OR REPLACE at both identities while recursive triggers are OFF',
-    () => {
-      const db = fresh();
-      project(db, 'p');
-      seedGoalWithDefinition(db, '20000000-0000-4000-8000-000000000001', 'p');
-      db.pragma('recursive_triggers = OFF');
-      expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
+  it('rejects duplicate INSERT and INSERT OR REPLACE at both identities while recursive triggers are OFF', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, '20000000-0000-4000-8000-000000000001', 'p');
+    db.pragma('recursive_triggers = OFF');
+    expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
 
-      const valid = contentVerificationRow();
-      insertContentVerification(db, valid);
-      const original = db
-        .prepare('SELECT * FROM goal_content_verifications WHERE id = ?')
-        .get(valid.id) as Record<string, unknown>;
-      expect(original.payload_json).toBe(valid.payload_json);
-      expect(
-        db
-          .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
-          .get('trg_goal_content_verification_insert_guard'),
-      ).toBeTruthy();
+    const valid = contentVerificationRow();
+    insertContentVerification(db, valid);
+    const original = db
+      .prepare('SELECT * FROM goal_content_verifications WHERE id = ?')
+      .get(valid.id) as Record<string, unknown>;
+    expect(original.payload_json).toBe(valid.payload_json);
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get('trg_goal_content_verification_insert_guard'),
+    ).toBeTruthy();
 
-      // An ordinary duplicate INSERT is rejected by the guard, before the UNIQUE constraint is reached.
-      expect(() => insertContentVerification(db, valid)).toThrow(
-        /content verification identity already exists/,
-      );
+    // An ordinary duplicate INSERT is rejected by the guard, before the UNIQUE constraint is reached.
+    expect(() => insertContentVerification(db, valid)).toThrow(
+      /content verification identity already exists/,
+    );
 
-      // Duplicate id with altered evidence: REPLACE would otherwise silently remove the old row.
-      const duplicateId = contentVerificationRow(
-        '20000000-0000-4000-8000-000000000001',
-        '1',
-        { status: 'content_not_preserved', mismatchCount: 1 },
-      );
-      expect(duplicateId.id).toBe(valid.id);
-      expect(duplicateId.verification_digest).not.toBe(valid.verification_digest);
-      expect(() => replaceContentVerification(db, duplicateId)).toThrow(
-        /content verification identity already exists/,
-      );
+    // Duplicate id with altered evidence: REPLACE would otherwise silently remove the old row.
+    const duplicateId = contentVerificationRow('20000000-0000-4000-8000-000000000001', '1', {
+      status: 'content_not_preserved',
+      mismatchCount: 1,
+    });
+    expect(duplicateId.id).toBe(valid.id);
+    expect(duplicateId.verification_digest).not.toBe(valid.verification_digest);
+    expect(() => replaceContentVerification(db, duplicateId)).toThrow(
+      /content verification identity already exists/,
+    );
 
-      // Duplicate (goal_id, verification_digest) with a different id and payload.
-      const duplicateDigest = contentVerificationRow(
-        '20000000-0000-4000-8000-000000000001',
-        '2',
-        { observedAt: '2026-01-02T00:00:00.000Z' },
-      );
-      expect(duplicateDigest.id).not.toBe(valid.id);
-      expect(duplicateDigest.verification_digest).toBe(valid.verification_digest);
-      expect(duplicateDigest.payload_json).not.toBe(valid.payload_json);
-      expect(() => replaceContentVerification(db, duplicateDigest)).toThrow(
-        /content verification identity already exists/,
-      );
+    // Duplicate (goal_id, verification_digest) with a different id and payload.
+    const duplicateDigest = contentVerificationRow('20000000-0000-4000-8000-000000000001', '2', {
+      observedAt: '2026-01-02T00:00:00.000Z',
+    });
+    expect(duplicateDigest.id).not.toBe(valid.id);
+    expect(duplicateDigest.verification_digest).toBe(valid.verification_digest);
+    expect(duplicateDigest.payload_json).not.toBe(valid.payload_json);
+    expect(() => replaceContentVerification(db, duplicateDigest)).toThrow(
+      /content verification identity already exists/,
+    );
 
-      expect(
-        db.prepare('SELECT * FROM goal_content_verifications WHERE id = ?').get(valid.id),
-      ).toEqual(original);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({
-        n: 1,
-      });
-      expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
-      db.close();
-    },
-  );
+    expect(db.prepare('SELECT * FROM goal_content_verifications WHERE id = ?').get(valid.id)).toEqual(
+      original,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({
+      n: 1,
+    });
+    expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
+    db.close();
+  });
+});
+
+describe('migration 033 completion content-verification authority', () => {
+  it('rejects a new proof without content evidence and one whose digest differs from the approved action', () => {
+    const db = fresh();
+    const projectId = '10000000-0000-4000-8000-000000000121';
+    const goalId = '20000000-0000-4000-8000-000000000121';
+    project(db, projectId);
+    seedGoalWithDefinition(db, goalId, projectId);
+    db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+
+    const missingEvidence = externalCompletionProofRow(goalId, '121');
+    expect(() => insertExternalCompletionProof(db, missingEvidence)).toThrow(
+      /external completion requires matching content verification evidence/,
+    );
+
+    const proofRow = externalCompletionProofRow(goalId, '122');
+    const proof = JSON.parse(proofRow.payload_json as string) as {
+      goalId: string;
+      definition: unknown;
+      evaluation: {
+        finalReviewId: string;
+        finalAcceptanceApprovalId: string;
+        verificationEvidenceDigest: string;
+        milestoneIdentityDigest: string;
+        findingIdentityDigest: string;
+      };
+      handoff: unknown;
+      attestation: unknown;
+      repository: { objectFormat: 'sha1' | 'sha256' };
+      source: { commit: string };
+      destination: {
+        ref: string;
+        recordedBaseCommit: string;
+        observedCommit: string;
+      };
+      gitProof: { observedAt: string; [key: string]: unknown };
+      proofLimitations: unknown;
+      userReviewedPreflightDigest: string;
+      correctionChain: unknown;
+      decision: { approvalId: string; actionDigest: string };
+      contentVerificationDigest?: string;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
+    };
+    const evidence = contentVerificationRow(goalId, '121', {
+      repository: { objectFormat: proof.repository.objectFormat },
+      source: { commit: proof.source.commit },
+      destination: {
+        ref: proof.destination.ref,
+        expectedBaseCommit: proof.destination.recordedBaseCommit,
+        tipCommit: proof.destination.observedCommit,
+        comparisonCommit: SHA,
+      },
+    });
+    insertContentVerification(db, evidence);
+
+    const wrongActionDigest = 'f'.repeat(64);
+    const { observedAt: _observedAt, ...proofForAction } = proof.gitProof;
+    void _observedAt;
+    const actionDetail = {
+      schemaVersion: 1,
+      action: 'complete_goal_external_integration_v2',
+      completionContractVersion: 2,
+      goalId,
+      definition: proof.definition,
+      integrationMode: 'external_user_attested',
+      handoff: proof.handoff,
+      attestation: proof.attestation,
+      review: {
+        finalReviewId: proof.evaluation.finalReviewId,
+        acceptanceApprovalId: proof.evaluation.finalAcceptanceApprovalId,
+      },
+      verificationEvidenceDigest: proof.evaluation.verificationEvidenceDigest,
+      contentVerificationDigest: wrongActionDigest,
+      contentVerificationStatus: 'verified',
+      contentOutcomeAcknowledged: true,
+      milestoneIdentityDigest: proof.evaluation.milestoneIdentityDigest,
+      findingIdentityDigest: proof.evaluation.findingIdentityDigest,
+      repository: proof.repository,
+      source: proof.source,
+      destination: proof.destination,
+      proof: proofForAction,
+      proofLimitations: proof.proofLimitations,
+      userReviewedPreflightDigest: proof.userReviewedPreflightDigest,
+      correctionChain: proof.correctionChain,
+      actionDigest: proof.decision.actionDigest,
+    };
+    db.prepare(
+      `INSERT INTO goal_approvals (
+         id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
+         external_completion_action_digest
+       ) VALUES (?, ?, 'user_confirmation', 'high', 'test', 'user', ?, 'pending', ?, ?)`,
+    ).run(proof.decision.approvalId, goalId, JSON.stringify(actionDetail), NOW, proof.decision.actionDigest);
+
+    const mismatchedEvidenceProof = {
+      ...proofRow,
+      content_verification_digest: evidence.verification_digest,
+      content_verification_status: 'verified',
+    };
+    proof.contentVerificationDigest = evidence.verification_digest;
+    proof.contentVerificationStatus = 'verified';
+    mismatchedEvidenceProof.payload_json = JSON.stringify(proof);
+    expect(() => insertExternalCompletionProof(db, mismatchedEvidenceProof)).toThrow(
+      /external completion requires matching content verification evidence/,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
+    db.close();
+  });
 });

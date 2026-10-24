@@ -67,6 +67,44 @@ export interface NumericRange {
   max: number;
 }
 
+/** Whether a price field was supplied by a catalog and whether its value was usable. */
+export interface PriceEvidence {
+  present: boolean;
+  valid: boolean;
+  value: number | null;
+}
+
+export interface PricingOverrideFieldEvidence {
+  present: boolean;
+  validCount: number;
+  invalidCount: number;
+  maxValidValue: number | null;
+  allValidEqualBase: boolean | null;
+  complete: boolean;
+}
+
+export interface PricingOverrideEvidence {
+  count: number;
+  complete: boolean;
+  overflow: boolean;
+  prompt: PricingOverrideFieldEvidence;
+  completion: PricingOverrideFieldEvidence;
+  request: PricingOverrideFieldEvidence;
+  cacheRead: PricingOverrideFieldEvidence;
+}
+
+/** Bounded evidence about the base prices and conditional pricing rows published by a model catalog. */
+export interface ModelPricingEvidence {
+  schemaVersion: 1;
+  base: {
+    prompt: PriceEvidence;
+    completion: PriceEvidence;
+    request: PriceEvidence;
+    cacheRead: PriceEvidence;
+  };
+  overrides: PricingOverrideEvidence;
+}
+
 /** Per-token USD prices reported by a metered provider catalog. Null means unknown, never zero. */
 export interface ModelPricingSnapshot {
   promptUsdPerToken: number | null;
@@ -76,8 +114,29 @@ export interface ModelPricingSnapshot {
   /** Highest conditional/override price seen; used for conservative reservations. */
   maxPromptUsdPerToken: number | null;
   maxCompletionUsdPerToken: number | null;
+  /** Additive, bounded evidence for conservative opportunity classification. Legacy estimators ignore this field. */
+  pricingEvidence?: ModelPricingEvidence;
   source: string;
   observedAt: string;
+}
+
+/** A bounded, read-only projection of one immutable Model Opportunity observation. */
+export interface ModelOpportunityObservation {
+  id: string;
+  refreshId: string;
+  backendId: string;
+  providerId: string;
+  modelId: string;
+  claimKind: 'provider-advertised' | 'locally-discovered';
+  sourceClass: 'live' | 'cache' | 'adapter';
+  refreshOutcome: 'success' | 'empty' | 'failed';
+  observedAt: string;
+  checkedAt: string;
+  payloadDigest: string;
+  displayName: string;
+  adapterVersion: string | null;
+  costClass: 'free' | 'metered' | 'unknown';
+  valid: boolean;
 }
 
 export interface ModelOption {
@@ -163,6 +222,8 @@ export interface ProviderStatus {
   models: ModelOption[];
   /** live = refreshed from the provider now; cache = last-known catalog after a failed refresh. */
   catalogSource?: 'live' | 'cache' | 'adapter' | 'none';
+  /** The result of the most recent discovery attempt; kept separate from Last Known catalog rows. */
+  catalogOutcome?: 'success' | 'empty' | 'failed';
   catalogRefreshedAt?: string | null;
   spendTelemetry?: ProviderSpendTelemetry[];
 }

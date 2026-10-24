@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,6 +18,7 @@ import {
   recordExternalCompletionDecision,
 } from './externalCompletionDecision.js';
 import { readExternalCompletionProof } from './externalCompletionProof.js';
+import { readExternalCompletionStatus } from './externalCompletionApi.js';
 import { computeExternalCompletionPreflight } from './externalCompletionPreflight.js';
 import { readStoredCompletion } from './externalCompletionTerminal.js';
 import { persistExternalIntegrationAttestation } from './externalIntegration.js';
@@ -74,6 +74,7 @@ interface Snapshot {
 /** Tables whose rows a completion is allowed to change. Every other table must keep its digest. */
 const TABLES_A_COMPLETION_CHANGES = new Set([
   'goals',
+  'goal_content_verifications',
   'goal_events',
   'goal_external_completion_proofs',
   'goal_runtime',
@@ -109,21 +110,6 @@ function snapshotOf(fx: GoalFixture, approvalId: string | null): Snapshot {
     events: goalEvents(fx.db, fx.goalId),
     approval: approvalId === null ? null : getGoalApproval(fx.db, approvalId),
   };
-}
-
-/** Nothing was written: database snapshot, events, proofs, repository state, no open transaction. */
-function expectNothingWritten(fx: GoalFixture, before: Snapshot): void {
-  expect(databaseSnapshot(fx.db)).toEqual(before.db);
-  expect(goalEvents(fx.db, fx.goalId)).toEqual(before.events);
-  expect(proofRows(fx.db, fx.goalId)).toEqual([]);
-  expect(repositoryState(fx.repo)).toEqual(before.repo);
-  expect(fx.db.inTransaction).toBe(false);
-}
-
-/** A refused completion of a running Goal: nothing written, and the Goal is still running and not completed. */
-function expectNoCompletion(fx: GoalFixture, before: Snapshot): void {
-  expectNothingWritten(fx, before);
-  expect(goalRow(fx.db, fx.goalId)).toMatchObject({ status: 'running', completed_at: null });
 }
 
 /** Exactly one proof and exactly two new events, in order; the rest of the Goal's state is unchanged. */
@@ -365,89 +351,47 @@ describe('external completion lifecycle: normal merge (Q3)', () => {
       expect(standing).toMatchObject({
         kind: 'v2',
         standing: 'uncontested',
-        claim: { contentPreservation: 'not_proven' },
+        claim: { contentPreservation: 'verified' },
       });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
 });
 
-describe('external completion lifecycle: merge -s ours disclosure (Q2)', () => {
-  it(
-    'records the merge -s ours completion with content not proven: refused without the acknowledgement with nothing written, completed with it (sha1)',
-    async () => {
-      const attested = await runningAttested('sha1', 'ours');
+describe('external completion lifecycle: merge -s ours content mismatch (Q2)', () => {
+  it.each(FORMATS)(
+    'records a disclosed Policy B mismatch without granting delivery trust (%s)',
+    async (format) => {
+      const attested = await runningAttested(format, 'ours');
       const { fx } = attested;
-      const digest = await readyDigest(attested);
-      const decisionRequest = {
-        goalId: fx.goalId,
+      const report = await computeExternalCompletionPreflight(fx.db, fx.goalId, {
         attestationId: attested.attestationId,
-        reviewedPreflightDigest: digest,
-      };
-
-      // The decision itself is refused without the disclosure, and nothing is written.
-      const beforeDecision = snapshotOf(fx, null);
-      expect(
-        await refusal(
-          recordExternalCompletionDecision(fx.db, { ...decisionRequest, acknowledgeContentNotProven: false }),
-        ),
-      ).toEqual({ code: 'acknowledgement_required', detail: null });
-      expectNothingWritten(fx, beforeDecision);
-
-      const decision = await recordExternalCompletionDecision(fx.db, {
-        ...decisionRequest,
-        acknowledgeContentNotProven: true,
       });
-      const before = snapshotOf(fx, decision.approvalId);
-
-      // The completion is refused without the disclosure, and the whole state is unchanged.
-      expect(
-        await refusal(
-          completeGoalFromExternalDecision(fx.db, {
-            ...decisionRequest,
-            acknowledgeContentNotProven: false,
-          }),
-        ),
-      ).toEqual({ code: 'acknowledgement_required', detail: null });
-      expectNoCompletion(fx, before);
-
-      const result = await completeGoalFromExternalDecision(fx.db, {
-        ...decisionRequest,
-        acknowledgeContentNotProven: true,
-      });
-      expect(result.reused).toBe(false);
-      expectCompleted(fx, before, decision.approvalId);
-
-      const [row] = proofRows(fx.db, fx.goalId);
-      const read = readExternalCompletionProof(fx.db, fx.goalId, row!.id);
-      expect(read.state).toBe('valid');
-      if (read.state !== 'valid') return;
-      expect(read.proof.proofLimitations.contentPreservation).toBe('not_proven');
-
-      // The standing reader reports the completion as uncontested, with the content-preservation dimension unproven.
-      const standing = readGoalCompletionStanding(fx.db, fx.goalId);
-      expect(standing).toMatchObject({
+      expect(report.outcome).toBe('ready');
+      expect(report.reasons).toEqual([]);
+      expect(report.contentVerification).toMatchObject({ status: 'content_not_preserved' });
+      const repoBefore = repositoryState(fx.repo);
+      const { completed } = await decideAndComplete(attested);
+      expect(completed.completion.state).toBe('completed');
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
         kind: 'v2',
         standing: 'uncontested',
-        status: { goalStatus: 'completed' },
         claim: {
-          // Observed value, pending an owner decision on whether a not_proven content-preservation completion may read as
-          // unqualified success. Do not treat as intended behaviour.
-          unqualifiedSuccessAllowed: true,
-          trustedForDownstream: true,
-          qualifier: 'none',
-          contentPreservation: 'not_proven',
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'content_mismatch_disclosed',
+          contentPreservation: 'mismatch',
         },
       });
-
-      // The accepted result was discarded: the merged main tree has no src/result.txt and matches the attested tree.
-      const files = git(fx.repo, 'ls-tree', '-r', '--name-only', 'main').split('\n');
-      expect(files).not.toContain('src/result.txt');
-      expect(git(fx.repo, 'rev-parse', 'main^{tree}')).toBe(read.proof.destination.observedTree);
-      // `git cat-file -e` exits 128 for a path that does not exist in the commit (not a generic failure).
-      const probe = spawnSync('git', ['-C', fx.repo, 'cat-file', '-e', 'main:src/result.txt']);
-      expect(probe.status).toBe(128);
-      expect(String(probe.stderr)).toContain("path 'src/result.txt' does not exist in 'main'");
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
+        kind: 'v2',
+        claim: { trustedForDownstream: false, contentPreservation: 'mismatch' },
+      });
+      expect(readExternalCompletionStatus(fx.db, fx.goalId, null).state).toBe('content_mismatch');
+      expect(
+        fx.db.prepare('SELECT status FROM goal_content_verifications WHERE goal_id = ?').get(fx.goalId),
+      ).toEqual({ status: 'content_not_preserved' });
+      expect(repositoryState(fx.repo)).toEqual(repoBefore);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );

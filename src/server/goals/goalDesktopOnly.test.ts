@@ -11,7 +11,7 @@ import { approveDefinition, createGoalDraft } from './definitions.js';
 import { simpleDefinition } from './repoKit.js';
 
 /**
- * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the five
+ * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the six
  * user-only Goal authority routes. The only remote signal is the existing predicate, isRemoteRequest in routes/requestIdentity.ts.
  * Local callers keep today's behaviour. This does NOT distinguish the desktop UI from another same-user local process (S1b, owner
  * decision pending).
@@ -56,7 +56,7 @@ interface Call {
   payload: unknown;
 }
 
-/** The five guarded routes, addressed by ids that do not exist: the guard must answer before any lookup. */
+/** The six guarded routes, addressed by ids that do not exist: the guard must answer before any lookup. */
 function desktopOnlyCalls(goalId: string): Call[] {
   return [
     {
@@ -71,6 +71,11 @@ function desktopOnlyCalls(goalId: string): Call[] {
     },
     { method: 'POST', url: `/api/goals/${goalId}/completion-decision`, payload: {} },
     { method: 'POST', url: `/api/goals/${goalId}/completion`, payload: {} },
+    {
+      method: 'POST',
+      url: `/api/goals/${goalId}/definitions/1/opportunity-admissions`,
+      payload: { poolId: 'reviewers', memberIndex: 0 },
+    },
     {
       method: 'POST',
       url: `/api/goals/${goalId}/attestation-corrections/approval-missing/decision`,
@@ -206,6 +211,9 @@ describe('desktop-only Goal authority routes', () => {
     });
     expect(pause.statusCode).not.toBe(403);
     expect(JSON.parse(pause.body).code).not.toBe(DESKTOP_REFUSAL);
+
+    const refresh = await app.inject({ method: 'POST', url: '/api/providers/refresh', headers });
+    expect(refresh.statusCode).toBe(403);
   });
 
   it('(d) an identity header without the device cookie is still 401, not 403', async () => {
@@ -459,12 +467,13 @@ describe('final-acceptance desktop-only decision boundary', () => {
 describe('desktop-only drift guard over goalRoutes.ts', () => {
   const source = readFileSync(new URL('./goalRoutes.ts', import.meta.url), 'utf8');
 
-  // Keyed "METHOD path". Exactly these five may call requireDesktopCaller, and each must call it before any body or reply use.
+  // Keyed "METHOD path". Exactly these six may call requireDesktopCaller, and each must call it before any body or reply use.
   const DESKTOP_ONLY = new Set([
     'POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections',
     'POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attest',
     'POST /api/goals/:goalId/completion-decision',
     'POST /api/goals/:goalId/completion',
+    'POST /api/goals/:goalId/definitions/:version/opportunity-admissions',
     'POST /api/goals/:goalId/attestation-corrections/:approvalId/decision',
   ]);
 
@@ -553,14 +562,15 @@ describe('desktop-only drift guard over goalRoutes.ts', () => {
       /import\s*\{[^}]*\bisPendingFinalAcceptanceRow\b[^}]*\}\s*from\s*'\.\/approvals\.js'/,
     );
     expect(body).toContain('isPendingFinalAcceptanceRow(stored)');
-    expect(body).toMatch(
-      /!deps\.requireDesktopCaller\(request\) && stored && isPendingFinalAcceptanceRow\(stored\)/,
-    );
+    expect(body).toContain('isPendingOpportunityAdmissionRow(stored)');
     expect(body).toContain("code: 'desktop_required'");
+    const callerGuard = body.indexOf('!deps.requireDesktopCaller(request)');
     const guard = body.indexOf('isPendingFinalAcceptanceRow(stored)');
     const refusal = body.indexOf("code: 'desktop_required'");
     const validation = body.indexOf('parse(goalApprovalDecisionBody');
+    expect(callerGuard).toBeGreaterThan(-1);
     expect(guard).toBeGreaterThan(-1);
+    expect(callerGuard).toBeLessThan(guard);
     expect(refusal).toBeGreaterThan(guard);
     expect(validation).toBeGreaterThan(refusal);
   });
@@ -570,6 +580,34 @@ describe('desktop-only drift guard over goalRoutes.ts', () => {
     expect(approvals).toMatch(
       /return\s+row\.gate\s*===\s*'final_acceptance'\s*&&\s*row\.status\s*===\s*'pending';/,
     );
+  });
+
+  it('refuses paired remote decisions on pending opportunity admissions', async () => {
+    const approval = requestGoalApproval(db, {
+      goalId: seededGoalId,
+      gate: 'pool_route_first_use',
+      risk: 'medium',
+      reason: 'Admit the exact opportunity route',
+      requestedBy: 'user',
+      detail: {
+        schemaVersion: 1,
+        admissionKind: 'opportunity',
+        poolId: 'reviewers',
+        memberIndex: 0,
+        memberIdentityHash: 'a'.repeat(64),
+        opportunityDigest: 'b'.repeat(64),
+        observationIds: [randomUUID()],
+      },
+    });
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/goal-approvals/${approval.id}/decision`,
+      headers: { 'tailscale-user-login': TAILSCALE_LOGIN, cookie },
+      payload: { decision: 'approved' },
+    });
+    expectDesktopRefusal(response);
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending' });
   });
 
   it('the file calls requireDesktopCaller once per guarded route and once for the unified projection', () => {

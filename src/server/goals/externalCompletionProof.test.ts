@@ -14,7 +14,10 @@ const uuid = (tail: string) => `20000000-0000-4000-8000-${tail.padStart(12, '0')
 const hash = (letter: string) => letter.repeat(64);
 const sha = (letter: string) => letter.repeat(40);
 
-function actionBody(objectFormat: 'sha1' | 'sha256' = 'sha1'): ExternalCompletionActionBodyV1 {
+function actionBody(
+  objectFormat: 'sha1' | 'sha256' = 'sha1',
+  contentVerificationStatus: 'verified' | 'content_not_preserved' = 'verified',
+): ExternalCompletionActionBodyV1 {
   const objectId = (letter: string) => letter.repeat(objectFormat === 'sha1' ? 40 : 64);
   return {
     schemaVersion: 1,
@@ -27,6 +30,9 @@ function actionBody(objectFormat: 'sha1' | 'sha256' = 'sha1'): ExternalCompletio
     attestation: { id: uuid('4'), actionDigest: hash('d'), recordDigest: hash('e'), approvalId: uuid('5') },
     review: { finalReviewId: uuid('6'), acceptanceApprovalId: uuid('7') },
     verificationEvidenceDigest: hash('f'),
+    contentVerificationDigest: hash('7'),
+    contentVerificationStatus,
+    contentOutcomeAcknowledged: true,
     milestoneIdentityDigest: hash('1'),
     findingIdentityDigest: hash('2'),
     repository: { projectId: uuid('8'), identity: hash('3'), scope: 'src/', objectFormat },
@@ -58,8 +64,11 @@ function actionBody(objectFormat: 'sha1' | 'sha256' = 'sha1'): ExternalCompletio
   };
 }
 
-function proofBody(objectFormat: 'sha1' | 'sha256' = 'sha1'): ExternalCompletionProofBodyV1 {
-  const action = actionBody(objectFormat);
+function proofBody(
+  objectFormat: 'sha1' | 'sha256' = 'sha1',
+  contentVerificationStatus: 'verified' | 'content_not_preserved' = 'verified',
+): ExternalCompletionProofBodyV1 {
+  const action = actionBody(objectFormat, contentVerificationStatus);
   return {
     schemaVersion: 1,
     kind: 'turing_goal_external_completion_proof',
@@ -81,6 +90,8 @@ function proofBody(objectFormat: 'sha1' | 'sha256' = 'sha1'): ExternalCompletion
     source: action.source,
     destination: action.destination,
     gitProof: { ...action.proof, observedAt: '2026-10-10T12:00:00.000Z' },
+    contentVerificationDigest: action.contentVerificationDigest,
+    contentVerificationStatus: action.contentVerificationStatus,
     decision: {
       approvalId: uuid('9'),
       actionDigest: computeExternalCompletionActionDigest(action),
@@ -119,6 +130,17 @@ describe('versioned external-completion action and proof contracts', () => {
     const sha256Action = buildExternalCompletionAction(actionBody('sha256'));
     expect(sha256Action?.repository.objectFormat).toBe('sha256');
     expect(parseExternalCompletionAction(sha256Action)).toMatchObject({ valid: true });
+
+    const mismatchAction = buildExternalCompletionAction(actionBody('sha1', 'content_not_preserved'));
+    expect(mismatchAction).toMatchObject({
+      contentVerificationStatus: 'content_not_preserved',
+      contentVerificationDigest: body.contentVerificationDigest,
+      contentOutcomeAcknowledged: true,
+    });
+    expect(mismatchAction?.actionDigest).not.toBe(first?.actionDigest);
+    expect(parseExternalCompletionAction(mismatchAction)).toMatchObject({ valid: true });
+    const changedEvidence = buildExternalCompletionAction({ ...body, contentVerificationDigest: hash('8') });
+    expect(changedEvidence?.actionDigest).not.toBe(first?.actionDigest);
   });
 
   it('rejects an action digest changed after review and enforces object format', () => {
@@ -148,6 +170,9 @@ describe('versioned external-completion action and proof contracts', () => {
     const changedTime = structuredClone(body);
     changedTime.gitProof.observedAt = '2026-10-10T12:02:00.000Z';
     expect(buildExternalCompletionProof(changedTime)?.proofDigest).not.toBe(first?.proofDigest);
+    const changedContentDigest = structuredClone(body);
+    changedContentDigest.contentVerificationDigest = hash('8');
+    expect(buildExternalCompletionProof(changedContentDigest)?.proofDigest).not.toBe(first?.proofDigest);
     expect(
       parseExternalCompletionProof({
         ...first!,
@@ -165,5 +190,10 @@ describe('versioned external-completion action and proof contracts', () => {
     const sha256Proof = buildExternalCompletionProof(proofBody('sha256'));
     expect(sha256Proof?.repository.objectFormat).toBe('sha256');
     expect(parseExternalCompletionProof(sha256Proof)).toMatchObject({ valid: true });
+
+    const mismatchProof = buildExternalCompletionProof(proofBody('sha1', 'content_not_preserved'));
+    expect(mismatchProof).toMatchObject({ contentVerificationStatus: 'content_not_preserved' });
+    expect(mismatchProof?.proofDigest).not.toBe(first?.proofDigest);
+    expect(parseExternalCompletionProof(mismatchProof)).toMatchObject({ valid: true });
   });
 });

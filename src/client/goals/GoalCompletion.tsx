@@ -278,7 +278,10 @@ export function GoalCompletion({
           decidedActionDigest: decidedActionDigest(next.status, attestationId),
           preflight: next.preflight,
           preflightError: next.preflightError,
-          completed: next.status.state === 'completed' || next.status.state === 'contested',
+          completed:
+            next.status.state === 'completed' ||
+            next.status.state === 'content_mismatch' ||
+            next.status.state === 'contested',
         });
       },
       () => {
@@ -500,7 +503,10 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
   const presentation = standingPresentation(status);
   const decision = status.decisions.find((row) => row.valid && row.attestationId === attestationId) ?? null;
   const limitationSource =
-    preflight?.proofLimitations.contentPreservation ?? status.completionStanding.claim.contentPreservation;
+    preflight?.contentVerification?.status ??
+    decision?.contentVerificationStatus ??
+    preflight?.proofLimitations.contentPreservation ??
+    status.completionStanding.claim.contentPreservation;
   const relationNote = isSettledState(status) ? null : relationCopy(view.relation);
   const stateId = useId();
   const qualifierId = useId();
@@ -545,6 +551,11 @@ function CompletionDetails({ attestationId, view }: { attestationId: string; vie
           <Identity label="Proof digest">{hash(status.completion.proofDigest)}</Identity>
           <Identity label="Approval">{hash(status.completion.approvalId)}</Identity>
           <Identity label="Action digest">{hash(status.completion.actionDigest)}</Identity>
+          {status.completion.contentVerificationDigest && (
+            <Identity label="Content verification digest">
+              {hash(status.completion.contentVerificationDigest)}
+            </Identity>
+          )}
           <Identity label="Observed at">
             <time dateTime={status.completion.observedAt}>{formatTime(status.completion.observedAt)}</time>
           </Identity>
@@ -591,6 +602,18 @@ function PreflightSummary({ preflight }: { preflight: GoalExternalCompletionPref
         <Identity label="Attested tree">{hash(facts.attestedTree)}</Identity>
         <Identity label="Current destination commit">{hash(facts.freshCommit)}</Identity>
         <Identity label="Current destination tree">{hash(facts.freshTree)}</Identity>
+        <Identity label="Content check">
+          {preflight.contentVerification
+            ? `${preflight.contentVerification.verifier} v${preflight.contentVerification.verifierVersion}`
+            : 'Not available'}
+        </Identity>
+        <Identity label="Changed paths">
+          {preflight.contentVerification?.changedPathCount ?? 'Not available'}
+        </Identity>
+        <Identity label="Comparison commit">{hash(preflight.contentVerification?.comparisonCommit)}</Identity>
+        <Identity label="Content verification digest">
+          {hash(preflight.contentVerification?.verificationDigest)}
+        </Identity>
         <Identity label="Review digest">{hash(preflight.digest)}</Identity>
       </dl>
     </>

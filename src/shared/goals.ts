@@ -1,4 +1,5 @@
 import type { BillingMode, ModelConfiguration } from './types.js';
+import type { OpportunityBinding } from './opportunityContract.js';
 
 /**
  * Canonical Goal domain types (design sections 5, 6 and 11). Pure data: no I/O and no behaviour beyond constants and
@@ -145,6 +146,8 @@ export interface RouteMember {
   configuration: ModelConfiguration;
   identityKind?: 'pinned' | 'floating' | 'unknown';
   freshnessClass: FreshnessClass;
+  /** Exact immutable observation evidence for members admitted through the Model Opportunity Layer. */
+  opportunity?: OpportunityBinding;
 }
 
 export type GoalRoute =

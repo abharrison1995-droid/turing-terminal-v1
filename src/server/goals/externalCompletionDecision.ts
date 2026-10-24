@@ -53,7 +53,8 @@ export type ExternalCompletionDecisionErrorCode = (typeof EXTERNAL_COMPLETION_DE
 
 const MESSAGES: Record<ExternalCompletionDecisionErrorCode, string> = {
   decision_input_invalid: 'The completion decision input is invalid.',
-  acknowledgement_required: 'The completion decision requires acknowledging that content is not proven.',
+  acknowledgement_required:
+    'The completion decision requires acknowledging that content preservation was checked at one observed merge.',
   manual_reconciliation_required:
     'This Goal needs manual reconciliation; no completion decision can be recorded.',
   preflight_refused: 'The external completion preflight refused this attestation.',
@@ -203,6 +204,7 @@ async function recordLocked(
     throw new ExternalCompletionDecisionError('reviewed_preflight_changed', null);
   const action = buildExternalCompletionAction({
     ...report.actionFields,
+    contentOutcomeAcknowledged: input.acknowledgeContentNotProven,
     userReviewedPreflightDigest: report.digest,
   });
   if (action === null)

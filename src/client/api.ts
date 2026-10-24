@@ -5,6 +5,7 @@ import type {
   DecisionGateConfig,
   DecisionResult,
   MeteredBudgetSettings,
+  ModelOpportunityObservation,
   ProviderSpendTelemetry,
   ExecutionOperation,
   GitOperation,
@@ -18,6 +19,8 @@ import type {
   WorkflowDefinition,
 } from '../shared/types';
 import { masterApiUrl } from './desktop';
+import type { GoalOpportunityAdmissionTarget } from '../shared/goalApi';
+import type { GoalRole } from '../shared/goals';
 
 /**
  * A failed API response. `message` is unchanged (`error` from the body, else the status), so existing callers that read
@@ -130,6 +133,26 @@ export const api = {
   dashboard: () => call<DashboardSnapshot>('/api/dashboard'),
   providers: () => call<{ providers: ProviderStatus[] }>('/api/providers'),
   refreshProviders: () => call<{ providers: ProviderStatus[] }>('/api/providers/refresh', json('POST')),
+  modelOpportunities: () =>
+    call<{ observations: ModelOpportunityObservation[]; retentionDays: number; refreshRequired: boolean }>(
+      '/api/opportunities',
+    ),
+  opportunityAdmissionTargets: () =>
+    call<{ targets: GoalOpportunityAdmissionTarget[] }>('/api/opportunities/admission-targets'),
+  requestOpportunityAdmission: (
+    goalId: string,
+    version: number,
+    body: { poolId: string; memberIndex: number },
+  ) =>
+    call<{ approvalId: string; status: 'pending'; definitionVersion: number; verifiedPath: string }>(
+      `/api/goals/${encodeURIComponent(goalId)}/definitions/${version}/opportunity-admissions`,
+      json('POST', body),
+    ),
+  startRouteValidation: (member: GoalOpportunityAdmissionTarget['member'], roles: GoalRole[]) =>
+    call<{ probeId: string; runId: string; identityHash: string; profiles: string[] }>(
+      '/api/route-validations',
+      json('POST', { member, roles }),
+    ),
   openRouterTelemetry: () =>
     call<{ telemetry: ProviderSpendTelemetry[]; errors: string[]; provenance: string }>(
       '/api/providers/openrouter/telemetry',

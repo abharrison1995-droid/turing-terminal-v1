@@ -38,6 +38,9 @@ export interface FirstUseRequest {
   memberIdentityHash: string;
   role: GoalRole;
   memberIndex: number;
+  admissionKind?: 'opportunity';
+  opportunityDigest?: string;
+  observationIds?: string[];
   /** The existing pending approval, when there already is one. */
   approvalId?: string;
 }

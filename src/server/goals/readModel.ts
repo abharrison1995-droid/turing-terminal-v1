@@ -43,6 +43,7 @@ import {
   isDedicatedCompletionApproval,
   isDedicatedCorrectionApproval,
   isPendingFinalAcceptanceRow,
+  isPendingOpportunityAdmissionRow,
   pendingGoalApprovals,
   type DedicatedApprovalSubject,
 } from './approvals.js';
@@ -1115,14 +1116,16 @@ function goalApprovalToUnified(db: Db, row: Record<string, unknown>, remoteCalle
   )?.status;
   const approval = readApprovalForProjection(db, String(row.id));
   const dedicatedDecision = approval ? dedicatedDecisionOf(approval) : undefined;
-  // A pending final acceptance is a decision only the desktop may take. The row stays in every projection, but a
-  // paired remote caller sees it read-only. A local caller keeps the ordinary decidable projection.
+  // Pending final acceptance and opportunity admissions are decisions only the desktop may take. Each row stays in
+  // every projection, but a paired remote caller sees it read-only. A local caller keeps the ordinary projection.
   const desktopOnly =
     remoteCaller &&
-    isPendingFinalAcceptanceRow({
-      gate: String(row.gate),
-      status: String(row.status),
-    });
+    (isPendingFinalAcceptanceRow({ gate: String(row.gate), status: String(row.status) }) ||
+      isPendingOpportunityAdmissionRow({
+        gate: String(row.gate),
+        status: String(row.status),
+        detail_json: String(row.detail_json),
+      }));
   const decidable =
     approval !== undefined &&
     row.status === 'pending' &&
@@ -1166,7 +1169,7 @@ export function unifiedApprovals(
   const goalClause = options.goalId ? 'AND a.goal_id = ?' : '';
   const goalParams = options.goalId ? [options.goalId] : [];
   const goalLive = status === 'pending' ? `AND ${LIVE_PENDING}` : '';
-  // A remote caller gets the same rows, but its pending final-acceptance rows are projected read-only (desktopOnly).
+  // A remote caller gets the same rows, but pending final-acceptance and opportunity-admission rows are read-only.
   const remoteCaller = options.remote === true;
   const goalRows = db
     .prepare(

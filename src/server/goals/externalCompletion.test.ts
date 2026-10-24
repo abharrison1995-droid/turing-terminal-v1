@@ -137,6 +137,7 @@ function expectNoCompletion(fx: GoalFixture, before: Snapshot): void {
 /** Tables whose rows a completion is allowed to change. Every other table must keep its digest. */
 const TABLES_A_COMPLETION_CHANGES = new Set([
   'goals',
+  'goal_content_verifications',
   'goal_events',
   'goal_external_completion_proofs',
   'goal_runtime',
@@ -144,7 +145,20 @@ const TABLES_A_COMPLETION_CHANGES = new Set([
 
 /** Exactly one proof and exactly two new events, in order; the rest of the Goal's state is unchanged. */
 function expectCompleted(fx: GoalFixture, before: Snapshot, approvalId: string): void {
-  expect(proofRows(fx.db, fx.goalId)).toHaveLength(1);
+  const proofs = proofRows(fx.db, fx.goalId);
+  expect(proofs).toHaveLength(1);
+  const storedProof = readExternalCompletionProof(fx.db, fx.goalId, proofs[0]!.id);
+  expect(storedProof.state).toBe('valid');
+  if (storedProof.state !== 'valid') throw new Error(`completion proof is ${storedProof.state}`);
+  expect(storedProof.proof.contentVerificationDigest).toMatch(/^[0-9a-f]{64}$/);
+  expect(
+    fx.db
+      .prepare('SELECT content_verification_digest FROM goal_external_completion_proofs WHERE id = ?')
+      .get(proofs[0]!.id),
+  ).toEqual({ content_verification_digest: storedProof.proof.contentVerificationDigest });
+  expect(
+    fx.db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications WHERE goal_id = ?').get(fx.goalId),
+  ).toEqual({ n: 1 });
 
   const after = goalEvents(fx.db, fx.goalId);
   expect(after.slice(0, before.events.length)).toEqual(before.events);
@@ -1043,7 +1057,12 @@ describe('external completion service: adversarial matrix', () => {
     const declared = new Set<string>(EXTERNAL_COMPLETION_ERROR_CODES);
     expect(thrown.length).toBeGreaterThan(0);
     expect(thrown.filter((code) => !declared.has(code))).toEqual([]);
-    const messageKeys = [...source.matchAll(/^ {2}([a-z_]+): '/gm)].map((match) => match[1]!);
+    const messageMapStart = source.indexOf('const MESSAGES:');
+    const messageMapEnd = source.indexOf('\n};', messageMapStart);
+    expect(messageMapStart).toBeGreaterThan(-1);
+    expect(messageMapEnd).toBeGreaterThan(messageMapStart);
+    const messageMap = source.slice(messageMapStart, messageMapEnd);
+    const messageKeys = [...messageMap.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1]!);
     expect(EXTERNAL_COMPLETION_ERROR_CODES.filter((code) => !messageKeys.includes(code))).toEqual([]);
   });
 });

@@ -258,28 +258,50 @@ export function invalidateProviderCache(): void {
 export async function discoverProviders(): Promise<ProviderStatus[]> {
   if (providerCache && Date.now() < providerCacheExpires) return structuredClone(providerCache);
   if (providerDiscovery) return structuredClone(await providerDiscovery);
-  const checkedAt = new Date().toISOString();
   providerDiscovery = Promise.all(
     adapters.map(async (adapter) => {
-      const result = await adapter.discover();
-      return {
-        id: adapter.id,
-        name: adapter.name,
-        cli: adapter.cli,
-        detected: result.detected,
-        version: result.version,
-        authentication: result.authentication,
-        subscriptionAuthenticated: result.subscriptionAuthenticated ?? null,
-        authMechanism: adapter.authMechanism,
-        note: result.note,
-        checkedAt,
-        capabilities: { ...adapter.capabilities, ...result.capabilities },
-        models: result.models.map((model) => ({
+      try {
+        const result = await adapter.discover();
+        // Each provider gets the time its own discovery result was captured, not the fan-out start time.
+        const checkedAt = new Date().toISOString();
+        const models = result.models.map((model) => ({
           ...model,
           discoveredAt: checkedAt,
           adapterVersion: result.version,
-        })),
-      };
+        }));
+        return {
+          id: adapter.id,
+          name: adapter.name,
+          cli: adapter.cli,
+          detected: result.detected,
+          version: result.version,
+          authentication: result.authentication,
+          subscriptionAuthenticated: result.subscriptionAuthenticated ?? null,
+          authMechanism: adapter.authMechanism,
+          note: result.note,
+          checkedAt,
+          capabilities: { ...adapter.capabilities, ...result.capabilities },
+          models,
+          catalogOutcome: models.length ? ('success' as const) : ('empty' as const),
+        };
+      } catch {
+        const checkedAt = new Date().toISOString();
+        return {
+          id: adapter.id,
+          name: adapter.name,
+          cli: adapter.cli,
+          detected: false,
+          version: null,
+          authentication: 'unknown' as const,
+          subscriptionAuthenticated: null,
+          authMechanism: adapter.authMechanism,
+          note: 'Provider discovery failed. Retry the explicit refresh to check again.',
+          checkedAt,
+          capabilities: { ...adapter.capabilities },
+          models: [],
+          catalogOutcome: 'failed' as const,
+        };
+      }
     }),
   );
   try {

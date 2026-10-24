@@ -47,6 +47,9 @@ function toDecisionView(
       invalidReason: null,
       eligibility: entry.eligible ? 'eligible' : 'ineligible',
       correctionStanding: entry.standing,
+      ...(row.action.contentVerificationStatus === undefined
+        ? {}
+        : { contentVerificationStatus: row.action.contentVerificationStatus }),
     };
   if (row.state === 'valid')
     return {
@@ -87,6 +90,12 @@ function toCompletionRecord(standing: GoalCompletionStanding): GoalExternalCompl
     proofDigest: standing.proof.proofDigest,
     approvalId: standing.proof.approvalId,
     actionDigest: standing.proof.actionDigest,
+    ...(standing.proof.contentVerificationDigest === undefined
+      ? {}
+      : { contentVerificationDigest: standing.proof.contentVerificationDigest }),
+    ...(standing.proof.contentVerificationStatus === undefined
+      ? {}
+      : { contentVerificationStatus: standing.proof.contentVerificationStatus }),
     attestationId: standing.proof.attestationId,
     observedAt: standing.proof.observedAt,
     completedAt: standing.status.completedAt,
@@ -118,15 +127,17 @@ export function readExternalCompletionStatus(
   const state: GoalExternalCompletionStatus['state'] =
     hasInvalidDecision || standing.kind === 'invalid' || authority.class === 5
       ? 'invalid'
-      : standing.kind === 'v2' && standing.standing === 'uncontested'
-        ? 'completed'
-        : standing.kind === 'v2'
-          ? 'contested'
-          : standing.kind === 'legacy'
-            ? 'legacy'
-            : hasEligibleDecision
-              ? 'decided'
-              : 'not_completed';
+      : standing.kind === 'v2' && standing.claim.contentPreservation === 'mismatch'
+        ? 'content_mismatch'
+        : standing.kind === 'v2' && standing.standing === 'uncontested'
+          ? 'completed'
+          : standing.kind === 'v2'
+            ? 'contested'
+            : standing.kind === 'legacy'
+              ? 'legacy'
+              : hasEligibleDecision
+                ? 'decided'
+                : 'not_completed';
 
   const completion = toCompletionRecord(standing);
 

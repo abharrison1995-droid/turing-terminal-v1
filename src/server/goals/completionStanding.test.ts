@@ -287,6 +287,14 @@ describe('completion standing: content invariants of the producer (D3-2 option 1
   const INPUTS: { name: string; facts: CompletionStandingFacts }[] = [
     ...ROWS.map((row) => ({ name: row.name, facts: row.facts })),
     {
+      name: 'uncontested with disclosed mismatch',
+      facts: {
+        kind: 'v2',
+        standing: 'uncontested',
+        contentVerificationStatus: 'content_not_preserved',
+      },
+    },
+    {
       name: 'cast: legacy with uncontested',
       facts: { kind: 'legacy', standing: 'uncontested' } as unknown as CompletionStandingFacts,
     },
@@ -302,22 +310,52 @@ describe('completion standing: content invariants of the producer (D3-2 option 1
       input.facts.kind === 'v2' ? [input.facts.standing] : [],
     ).sort();
     expect(v2Standings).toEqual(
-      ['uncontested', 'disputed', 'withdrawn', 'superseded', 'reconciliation_required'].sort(),
+      ['uncontested', 'disputed', 'withdrawn', 'superseded', 'reconciliation_required', 'uncontested'].sort(),
     );
     expect(new Set(INPUTS.map((input) => input.facts.kind))).toEqual(
       new Set(['v2', 'legacy', 'invalid', 'not_completed']),
     );
-    expect(INPUTS).toHaveLength(10);
+    expect(INPUTS).toHaveLength(11);
   });
 
-  it('contentPreservation is not_proven for every v2 input, uncontested or not', () => {
+  it('ancestry-only v2 facts stay not_proven when no content verifier is attached', () => {
     for (const input of INPUTS) {
-      if (input.facts.kind !== 'v2') continue;
+      if (input.facts.kind !== 'v2' || input.facts.contentVerificationStatus !== undefined) continue;
       expect(claimOf(input.facts).contentPreservation, input.name).toBe('not_proven');
     }
   });
 
-  it('contentPreservation follows the producer table exactly: not_proven for v2, not_applicable for every other input', () => {
+  it('only a v2 fact with attached verifier evidence is classified as content verified', () => {
+    expect(
+      classifyCompletionStanding({ kind: 'v2', standing: 'uncontested', contentVerified: true }),
+    ).toMatchObject({ contentPreservation: 'verified' });
+    expect(
+      classifyCompletionStanding({ kind: 'v2', standing: 'disputed', contentVerified: true }),
+    ).toMatchObject({ contentPreservation: 'verified' });
+    expect(
+      classifyCompletionStanding({
+        kind: 'legacy',
+        standing: 'historical_legacy',
+      } as CompletionStandingFacts),
+    ).toMatchObject({ contentPreservation: 'not_applicable' });
+  });
+
+  it('a disclosed mismatch cannot be trusted as successful delivery', () => {
+    expect(
+      classifyCompletionStanding({
+        kind: 'v2',
+        standing: 'uncontested',
+        contentVerificationStatus: 'content_not_preserved',
+      }),
+    ).toEqual({
+      unqualifiedSuccessAllowed: false,
+      trustedForDownstream: false,
+      qualifier: 'content_mismatch_disclosed',
+      contentPreservation: 'mismatch',
+    });
+  });
+
+  it('contentPreservation follows the producer table, including the disclosed mismatch state', () => {
     const table = Object.fromEntries(
       INPUTS.map((input) => [input.name, claimOf(input.facts).contentPreservation]),
     );
@@ -327,6 +365,7 @@ describe('completion standing: content invariants of the producer (D3-2 option 1
       'withdrawn (v2)': 'not_proven',
       'superseded (v2)': 'not_proven',
       'reconciliation_required (v2)': 'not_proven',
+      'uncontested with disclosed mismatch': 'mismatch',
       'invalid_unverified (invalid)': 'not_applicable',
       'historical_legacy (legacy)': 'not_applicable',
       not_completed: 'not_applicable',
@@ -335,28 +374,44 @@ describe('completion standing: content invariants of the producer (D3-2 option 1
     });
   });
 
-  it('a trusted claim is only ever v2 uncontested, and it always carries not_proven', () => {
+  it('a trusted claim is only ever an uncontested v2 without a known mismatch', () => {
     for (const input of INPUTS) {
       const claim = claimOf(input.facts);
       expect(claim.unqualifiedSuccessAllowed, input.name).toBe(claim.trustedForDownstream);
       if (claim.trustedForDownstream) {
         expect(input.facts, input.name).toEqual({ kind: 'v2', standing: 'uncontested' });
-        expect(claim.contentPreservation, input.name).toBe('not_proven');
+        expect(claim.contentPreservation, input.name).not.toBe('mismatch');
       }
     }
   });
 
-  it('completionStandingIsContentVerified is false for every input, and the proof-bound helper is true only for v2 uncontested', () => {
+  it('content verification follows the explicit evidence fact, and disclosed mismatches cannot be proof-bound success', () => {
     for (const input of INPUTS) {
       const model = { claim: claimOf(input.facts) };
       expect(completionStandingIsContentVerified(model), input.name).toBe(false);
       expect(completionStandingHasProofBoundDecision(model), input.name).toBe(
-        input.facts.kind === 'v2' && input.facts.standing === 'uncontested',
+        input.facts.kind === 'v2' &&
+          input.facts.standing === 'uncontested' &&
+          input.facts.contentVerificationStatus !== 'content_not_preserved',
       );
+      if (input.name === 'uncontested with disclosed mismatch') {
+        expect(model.claim).toMatchObject({
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'content_mismatch_disclosed',
+          contentPreservation: 'mismatch',
+        });
+        expect(completionStandingHasProofBoundDecision(model)).toBe(false);
+      }
     }
+    const verified = {
+      claim: classifyCompletionStanding({ kind: 'v2', standing: 'uncontested', contentVerified: true }),
+    };
+    expect(completionStandingIsContentVerified(verified)).toBe(true);
+    expect(completionStandingHasProofBoundDecision(verified)).toBe(true);
   });
 
-  it('a Boolean pair alone never implies a proof-bound decision: the helper also requires qualifier none and not_proven', () => {
+  it('a Boolean pair alone never implies a proof-bound decision: the helper also requires an applicable preservation status', () => {
     const booleansOnly = {
       claim: {
         unqualifiedSuccessAllowed: true,

@@ -1,6 +1,8 @@
-# Model Opportunity Layer — design (draft)
+# Model Opportunity Layer — approved design and implementation record
 
-**Status.** Prior revision was accepted by job `2a1f800fc3f0470cbc324afd2b6efc6a` (`opencode-go/glm-5.2`). Correction patch job `d86d409d59d841949ba581ebb163534f` (`opencode-go/beam-free`) was independently reviewed ACCEPT by job `d71b755ad25049b19eef37174bdf545b` (`opencode-go/minimax-m3.1-flash-free`). This is design review only, not owner approval; the retention decision remains open. Implementation has not started. No observation migration, table, or writer before the retention decision.
+**Current status (2026-10-24).** The owner approved 90-day raw observation retention on 2026-10-21, with temporary references retained through admission expiry and cleanup performed only by an explicit job. The owner also decided that an approved admission proof remains valid for its exact definition until that definition is superseded; new admission and revalidation require fresh raw observations. Implementation is present on development branch `codex/v1-release-preparation-2026-10-21`: additive observation and proof migrations, bounded observation writer/readers/retention, exact user admission, a production reservation estimator for admitted OpenRouter Goal routes, and the Opportunity Board. The full release gate and release qualification remain pending. The original rollout and change-log sections below are design history; release state is tracked in [V1_READINESS.md](../V1_READINESS.md).
+
+**Design review.** Prior revision was accepted by job `2a1f800fc3f0470cbc324afd2b6efc6a` (`opencode-go/glm-5.2`). Correction patch job `d86d409d59d841949ba581ebb163534f` (`opencode-go/beam-free`) was independently reviewed ACCEPT by job `d71b755ad25049b19eef37174bdf545b` (`opencode-go/minimax-m3.1-flash-free`).
 
 **Design author.** Job/model: `2e8be4f50f2b4bfd9a73d83af7f18b12` / `opencode-go/deepseek-v4.1-flash`.
 
@@ -16,9 +18,9 @@
 
 **Docs reconciliation.** Commit `67f94b8` on implementation baseline `e6120c1`; worker/reviewer evidence: `88a8d04af0054df5a574f3cbd79232a9`, `8b88289051974397b80af107d2713833`, `926d8ab9570e4f54bfcbfd42615e536e`, `6a8195dbb54f4a6aa5563894838983fb`. Root checks passed: docs:links, format:check, git diff --check.
 
-**Retention decision.** Open owner decision; not recorded. Until answered, the observation-table storage design/migration (rollout row 6) and any deletion mechanism are blocked. No silent deletes or retention changes via `UPDATE`/`DELETE`; append-only triggers remain unless a separately approved retention policy is provided. Non-observation design work is independent. Observation-reading, Path B or other observation-dependent reproof and durable-reference proof, observation-backed admission, and observation-dependent definition acceptance are blocked until row 6. Exact approval-kind/pool/member binding and non-observation reproof work can proceed before retention.
+**Retention decision.** Owner-approved on 2026-10-21: raw observations are retained for 90 days; references for active admissions remain through expiry; the explicit retention job performs deletion. Completed admission proof remains valid for its exact unchanged definition until superseded, while new admission and revalidation require fresh observations.
 
-**Scope note.** Retention is the only pending Model Opportunity Layer owner decision. The Goal completion-policy ancestry-versus-content decision remains a separate open decision, unchanged and outside Model Opportunity Layer scope. Nothing in this document is implemented.
+**Scope note.** The Goal completion-policy ancestry-versus-content decision is tracked separately in [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md). Neither decision changes existing active Goal or run snapshots.
 
 ---
 
@@ -37,9 +39,9 @@
 
 ## 2. Domain model
 
-### 2.1 Observation history — designed, migration BLOCKED on retention
+### 2.1 Observation history — implemented with approved retention
 
-**Do not create these tables or any writer until the owner answers retention.** The following is the proposed shape only.
+The following is the implemented shape; the migration and writer were added after the owner approved retention.
 
 #### Provenance vocabulary
 
@@ -421,14 +423,14 @@ Required cases:
 
 ### 5.2 Reservation consistency
 
-The cost class must never be more optimistic than the reservation. Update `estimateReservationUsd` (`src/server/openrouter.ts:266-283`) to use the same effective values:
+The cost class must never be more optimistic than the reservation. The owner chose to preserve the legacy estimator and Decision Layer behavior, so Model Opportunity uses a separate estimator in `src/shared/opportunityCost.ts`:
 
 - require effective prompt, effective completion, request and cache-read;
 - use `inputRate = max(effectivePrompt, effectiveCacheRead)` conservatively;
 - return `null` when an applicable field is missing; the existing unknown-cost policy then applies;
 - return `0` only when the same evidence yields `costClass = free`.
 
-This removes the current `requestUsd ?? 0` fallback from the decision path for opportunity evidence. `maxPriceFor` remains prompt/completion only because the provider ceiling supports those fields (`src/server/openrouter.ts:285-292`); the design makes no claim about a provider-side cache-read ceiling.
+The estimator is selected only when a stored Goal route resolution proves an exact Model Opportunity admission for the OpenRouter route. It uses the provider's current bounded catalog evidence and the request's conservative input-token estimate and output-token limit. Missing or invalid price evidence returns `null`, allowing the existing unknown-cost policy to block or request explicit approval. Ordinary routes and Decision Layer outputs keep the legacy estimator unchanged. `maxPriceFor` remains prompt/completion only because the provider ceiling supports those fields; the design makes no claim about a provider-side cache-read ceiling.
 
 A `free` catalog class never changes the billing lane, bypasses `evaluateBillingLane`, or authorizes spend. It is a catalog-price label only.
 
@@ -519,10 +521,9 @@ Tests:
 
 ---
 
-## 7. Opportunity Board proposal (not implemented)
+## 7. Opportunity Board
 
-The Board remains **read-only** over observations, approvals and catalog projections. It never refreshes discovery, validates, admits or writes.
-No Board implementation exists; this section is design only.
+The Board is **read-only** over saved observations, admissions and catalog projections, apart from explicit user actions to refresh provider catalogs, queue route validation, or request a bounded admission. Refresh sends no generation request. The Board never auto-admits or rewrites a definition.
 
 User actions:
 
@@ -547,41 +548,45 @@ Display requirements:
 - A locally-discovered row without exact fresh validation shows `validation required`, `validation expired`, `validation failed` or `validation identity changed` as applicable; Admit stays disabled until the existing Validate path records a fresh pass.
 - No auto-admit, bulk admit, silent model substitution, or free-to-metered transition.
 
-Retention gate for the Board:
+Retention behavior:
 
-- The Board shell and read-only inspection of existing Last Known catalog data may ship independently.
-- Observation-backed fields and **Admit** remain disabled until the observation migration/writer is authorized after the retention answer.
-- Until then the Board must show `provenance unavailable` rather than inventing source/time. This applies to adapter-local rows as well; they become visible only when the observation writer is authorized.
+- Raw observations and temporary admission references are retained for 90 days, then deleted by the explicit retention job.
+- A completed admission proof retains its exact observation IDs and digest for the approved definition until that definition is superseded.
+- The Board reports invalid or missing evidence as unavailable; it never presents cache or stale evidence as live or admissible.
 
 Notifications:
 
 - Reuse `push_subscriptions` / existing configuration. `migrations/011_phase3_notifications.sql:3-11`, `src/server/routes/notificationRoutes.ts:18-27,50-68`.
-- Optional, off by default, per existing subscription/device, generic copy. No new notification store or automatic refresh notification.
+- Closed-client notifications remain opt-in through the existing subscription/device control and are off by default. An admission approval uses the existing generic Goal approval notice. No MOP-specific store or automatic refresh notification is added.
 
 ---
 
 ## 8. Rollout dependencies
 
-| Order | Dependency                                                                                                                                                                                             | Can proceed before retention answer?                                        |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
-| 1     | Shared `opportunityContract.ts`: bounds, schemas, digest, cost helper.                                                                                                                                 | Yes                                                                         |
-| 2     | Cost classifier, reservation changes and producer aggregation.                                                                                                                                         | Yes                                                                         |
-| 3     | Approval detail parser/insertion guard and SQL trigger migration; no new table.                                                                                                                        | Yes                                                                         |
-| 4     | Routing environment/evaluator changes that do not read observations.                                                                                                                                   | Yes                                                                         |
-| 5     | Reproof and `proveDurableReferences`: binding-only proof sites that do not read observation tables (exact approval-kind/pool/member binding, non-observation reproof) can proceed before retention; DB-backed observation-dependent reproof and durable-reference proof that read observation tables are retention-gated (row 6). | Partial                                                                     |
-| 6     | Observation tables, writer/readers, indices and retention mechanism.                                                                                                                                   | **No — blocked on retention decision**                                      |
-| 7     | Opportunity admission service and observation-dependent definition acceptance.                                                                                                                         | **No — blocked until row 6**                                                |
-| 8     | Opportunity Board UI shell and notification hooks.                                                                                                                                                     | Shell may proceed; observation-backed fields and Admit are blocked on row 6 |
-| 9     | Acceptance tests for independent contract, kind, bounds, cost, approval and evaluator rules.                                                                                                           | Yes                                                                         |
-| 10    | Observation-backed acceptance tests and full gate.                                                                                                                                                     | After rows 6–9                                                              |
+This table records the original dependency order before the owner approved retention. It is retained as design history; the current implementation and gate state are summarized at the top of this document and in [V1_READINESS.md](../V1_READINESS.md).
 
-The retention answer blocks the observation migration/writer, observation-reading, Path B or other observation-dependent reproof and durable-reference proof, observation-backed admission, and observation-dependent definition acceptance. It does not block the approval model, cost model, bounds contract, evaluator purity, exact approval-kind/pool/member binding, non-observation reproof, or non-observation parts of definition acceptance.
+| Order | Dependency                                                                                                                                         | Historical dependency state                                             |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 1     | Shared `opportunityContract.ts`: bounds, schemas, digest, cost helper.                                                                             | Yes                                                                     |
+| 2     | Cost classifier, reservation changes and producer aggregation.                                                                                     | Yes                                                                     |
+| 3     | Approval detail parser/insertion guard and SQL trigger migration; no new table.                                                                    | Yes                                                                     |
+| 4     | Routing environment/evaluator changes that do not read observations.                                                                               | Yes                                                                     |
+| 5     | Reproof and `proveDurableReferences`: exact approval-kind/pool/member binding and DB-backed observation-dependent reproof/durable-reference proof. | Implemented                                                             |
+| 6     | Observation tables, writer/readers, indices and retention mechanism.                                                                               | Implemented after retention approval                                    |
+| 7     | Opportunity admission service and observation-dependent definition acceptance.                                                                     | Implemented                                                             |
+| 8     | Opportunity Board UI shell and notification hooks.                                                                                                 | Implemented; notifications use the existing opt-in Goal approval notice |
+| 9     | Acceptance tests for independent contract, kind, bounds, cost, approval and evaluator rules.                                                       | Yes                                                                     |
+| 10    | Observation-backed acceptance tests and full gate.                                                                                                 | Tests implemented; full gate pending                                    |
+
+At the time this dependency order was written, observation-dependent work awaited a retention decision. The owner approved 90-day raw observation retention on 2026-10-21, and those observation-dependent pieces are now implemented. Completed admission proofs retain their ID and digest for the exact definition until it is superseded; a new admission or revalidation requires fresh observations.
 
 ---
 
-## 9. Acceptance tests to add
+## 9. Acceptance tests
 
-Tests in items 1–5, 7 and 9, plus existing-rule checks in item 8, can proceed before the retention answer. Item 6, observation-backed parts of item 8, and item 10 are blocked until rollout row 6.
+These cases remain the acceptance contract. Current test and gate evidence is listed in [V1_READINESS.md](../V1_READINESS.md).
+
+The following is the acceptance contract used by implementation tests. The observation-backed cases are implemented; full gate evidence is tracked in [V1_READINESS.md](../V1_READINESS.md).
 
 1. **Approval regardless of flag**
    - opportunity pool with `poolRouteFirstUse=false` refuses without the admission approval;
@@ -614,7 +619,7 @@ Tests in items 1–5, 7 and 9, plus existing-rule checks in item 8, can proceed 
    - positive request or cache-read → metered;
    - missing request/cache-read → unknown;
    - reservation null/zero agrees with the class.
-6. **Observation identity (blocked pending retention)**
+6. **Observation identity and retention**
    - replay same digest idempotent;
    - different digest typed collision aborts whole refresh;
    - `UPDATE`/`DELETE` abort;
@@ -629,26 +634,26 @@ Tests in items 1–5, 7 and 9, plus existing-rule checks in item 8, can proceed 
    - Board labels advertised/discovered/validated/Last Known distinctly;
    - `storedProviders` source behavior covered;
    - no automatic discovery/probe/validation/admission.
-   - observation-backed Board display fields remain blocked pending rollout row 6.
+   - observation-backed Board fields show provenance, freshness and cache/live status from the bounded observation store.
 9. **Notifications (retention-independent)**
    - absent/off by default; enabled only for an existing subscription/device; generic content.
 
-10. **Observation-backed coverage (blocked pending retention)**
-   - per-provider provenance and observation-backed Board fields;
-   - replay, collision, update/delete and observation payload caps;
-   - observation identity and cross-model binding.
+10. **Observation-backed coverage**
+
+- per-provider provenance and observation-backed Board fields;
+- replay, collision, update/delete, observation payload caps, retention expiry and admission-proof preservation;
+- observation identity and cross-model binding.
 
 Existing `routeAuditBounds.test.ts:27-71` encodes the superseded 64,000 field/count assumptions and must be replaced with the shared-bound tests.
 
 ---
 
-## 10. Remaining owner decision
+## 10. Owner decisions
 
-**Model Opportunity Layer:** retention is the only pending owner decision. The owner has been asked whether V1 accepts unbounded append-only observation history or requires a retention window. No approval is claimed.
+**Model Opportunity Layer:** retention was approved on 2026-10-21: raw observations are retained for 90 days; references used by active admissions remain until those admissions expire; deletion runs only through the explicit retention job. The owner further decided that a completed admission's ID and digest remain valid for that exact definition until the next exam cycle or the definition is superseded. New admission and revalidation require fresh raw observations.
 
-- Until answered, the observation-table storage design/migration (row 6 above) and any deletion mechanism are blocked.
-- Do not add silent deletes or update retention through `UPDATE`/`DELETE`; append-only triggers remain unless a separately approved retention policy is provided.
-- Non-observation design work is independent. Observation-reading, Path B or other observation-dependent reproof and durable-reference proof, observation-backed admission, and observation-dependent definition acceptance remain blocked until row 6. Exact approval-kind/pool/member binding and non-observation reproof work can proceed before retention.
+- Raw observation deletion is performed by the explicit retention job. The evidence tables remain immutable to ordinary update/delete operations.
+- New admissions and revalidation reject observations older than 90 days, even if the retention job has not removed them yet. Existing completed admission proof remains valid for the exact, unchanged definition; it does not authorize a new admission or revalidation.
 
 ---
 
@@ -661,7 +666,7 @@ Existing `routeAuditBounds.test.ts:27-71` encodes the superseded 64,000 field/co
 5. **Retained collision-proof append-only observation identity:** refresh-scoped unique key, payload digest replay, typed collision, `UPDATE`/`DELETE` abort, payload cap, one observation per model per refresh.
 6. **Retained evaluator purity:** bounded immutable environment plus DB-backed reference proof.
 7. **Corrected the stored-provider source claim:** `storedProviders` is memory-plus-DB with no network/write, not a persisted-history reader; corrected the live/cache labeling consequence.
-8. **Kept retention as the sole pending Model Opportunity Layer owner decision.** No retention approval is implied; the separate Goal completion-policy decision remains open and unchanged.
+8. **Applied the approved retention policy.** Raw observations expire after 90 days; active admission references remain through admission expiry; an explicit job performs deletion. Completed admission proof remains valid for its exact definition until superseded, while new admission and revalidation require fresh raw observations.
 9. **Preserved all requested architecture:** `evaluateBillingLane` only, no parallel stores/ledgers/approvals/billing, no automatic discovery/probing/validation/admission, Last Known not executable, active snapshots unchanged, manual admission, fixed nav, optional/off/generic notifications, completion policy unchanged.
 10. **Resolved remaining technical choices:** reuse `pool_route_first_use` with `admissionKind`, no new gate; unknown identity fails closed; notification scope stays per existing subscription/device and off by default; no Codex pagination claim.
 11. **Replaced acceptance coverage** with the cases in section 9, including approval despite `poolRouteFirstUse=false`, proof-site kind binding, bounds, size cap, base-positive/override-zero cost, replay/collision/update/delete, evaluator immutability and cache/live labeling.
@@ -670,4 +675,4 @@ Existing `routeAuditBounds.test.ts:27-71` encodes the superseded 64,000 field/co
 
 ## Appendix: growth risk preserved
 
-Observation history is append-only and, absent a retention decision, unbounded. Growth is `models observed × refresh events × payload size`, with payload per row capped at 16,384 bytes (the column cap), plus refresh metadata. User-initiated refresh limits growth versus a background poll, but long-lived installations can still accumulate history. No retention or compaction is assumed in V1 until the owner answers.
+Raw observation history is retained for 90 days and deleted by the explicit retention job. Payloads are capped at 16,384 bytes per row, with a lower operational writer cap. Completed admission proofs retain only their bounded identity/digest evidence for the exact definition until superseded; they do not keep raw observation payloads alive beyond the active admission window.

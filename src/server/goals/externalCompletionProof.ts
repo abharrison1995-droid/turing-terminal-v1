@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '../db.js';
+import { readContentVerificationByDigest } from './contentVerification.js';
 import { canonicalJson, hashGoalDefinition } from './definitionHash.js';
 import { parseCompletionPolicy, validateApprovedCompletionPolicyLineage } from './completionPolicy.js';
 import { parseExternalIntegrationAttestation } from './externalIntegration.js';
@@ -70,6 +71,9 @@ const actionBodySchema = z
     attestation: attestationIdentity,
     review: reviewIdentity,
     verificationEvidenceDigest: DIGEST,
+    contentVerificationDigest: DIGEST.optional(),
+    contentVerificationStatus: z.enum(['verified', 'content_not_preserved']).optional(),
+    contentOutcomeAcknowledged: z.boolean().optional(),
     milestoneIdentityDigest: DIGEST,
     findingIdentityDigest: DIGEST,
     repository: repositoryIdentity,
@@ -102,6 +106,12 @@ const actionBodySchema = z
         code: 'custom',
         path: ['correctionChain', 'attestationId'],
         message: 'Correction chain belongs to another attestation.',
+      });
+    if ((action.contentVerificationDigest === undefined) !== (action.contentVerificationStatus === undefined))
+      context.addIssue({
+        code: 'custom',
+        path: ['contentVerificationStatus'],
+        message: 'Content verification digest and status must appear together.',
       });
   });
 
@@ -162,6 +172,8 @@ const completionProofBodySchema = z
     source: sourceIdentity,
     destination: destinationIdentity,
     gitProof: gitProofIdentity.extend({ observedAt: z.string().datetime() }).strict(),
+    contentVerificationDigest: DIGEST.optional(),
+    contentVerificationStatus: z.enum(['verified', 'content_not_preserved']).optional(),
     decision: z.strictObject({
       approvalId: UUID,
       actionDigest: DIGEST,
@@ -208,6 +220,12 @@ const completionProofBodySchema = z
         code: 'custom',
         path: ['correctionChain', 'attestationId'],
         message: 'Correction chain belongs to another attestation.',
+      });
+    if ((proof.contentVerificationDigest === undefined) !== (proof.contentVerificationStatus === undefined))
+      context.addIssue({
+        code: 'custom',
+        path: ['contentVerificationStatus'],
+        message: 'Content verification digest and status must appear together.',
       });
   });
 
@@ -277,6 +295,8 @@ interface CompletionProofRow {
   observed_destination_commit: string;
   observed_destination_tree: string;
   verification_evidence_digest: string;
+  content_verification_digest: string | null;
+  content_verification_status: 'verified' | 'content_not_preserved' | null;
   milestone_identity_digest: string;
   finding_identity_digest: string;
   git_evidence_digest: string;
@@ -342,6 +362,8 @@ export function readExternalCompletionProof(
       proof.destination.observedCommit !== row.observed_destination_commit ||
       proof.destination.observedTree !== row.observed_destination_tree ||
       proof.evaluation.verificationEvidenceDigest !== row.verification_evidence_digest ||
+      (proof.contentVerificationDigest ?? null) !== row.content_verification_digest ||
+      (proof.contentVerificationStatus ?? null) !== row.content_verification_status ||
       proof.evaluation.milestoneIdentityDigest !== row.milestone_identity_digest ||
       proof.evaluation.findingIdentityDigest !== row.finding_identity_digest ||
       proof.gitProof.evidenceDigest !== row.git_evidence_digest ||
@@ -353,6 +375,23 @@ export function readExternalCompletionProof(
       proof.decision.decidedAt !== row.decided_at
     )
       return { state: 'invalid', reason: 'indexed_identity_mismatch' };
+
+    if (row.content_verification_digest !== null) {
+      const content = readContentVerificationByDigest(db, goalId, row.content_verification_digest);
+      if (
+        content.state !== 'valid' ||
+        content.record.status !== proof.contentVerificationStatus ||
+        content.record.verificationDigest !== proof.contentVerificationDigest ||
+        content.record.repository.objectFormat !== proof.repository.objectFormat ||
+        content.record.source.commit !== proof.source.commit ||
+        content.record.destination.expectedBaseCommit !== proof.destination.recordedBaseCommit ||
+        content.record.destination.ref !== proof.destination.ref ||
+        content.record.destination.tipCommit !== proof.destination.observedCommit
+      )
+        return { state: 'invalid', reason: 'content_verification_mismatch' };
+    } else if (proof.contentVerificationDigest !== undefined) {
+      return { state: 'invalid', reason: 'content_verification_mismatch' };
+    }
 
     const definition = db
       .prepare(
@@ -587,6 +626,8 @@ export function readExternalCompletionProof(
       action.action.review.finalReviewId !== proof.evaluation.finalReviewId ||
       action.action.review.acceptanceApprovalId !== proof.evaluation.finalAcceptanceApprovalId ||
       action.action.verificationEvidenceDigest !== proof.evaluation.verificationEvidenceDigest ||
+      action.action.contentVerificationStatus !== proof.contentVerificationStatus ||
+      (proof.contentVerificationDigest !== undefined && action.action.contentOutcomeAcknowledged !== true) ||
       action.action.milestoneIdentityDigest !== proof.evaluation.milestoneIdentityDigest ||
       action.action.findingIdentityDigest !== proof.evaluation.findingIdentityDigest ||
       action.action.repository.projectId !== proof.repository.projectId ||

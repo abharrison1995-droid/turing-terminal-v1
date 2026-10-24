@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { EXTERNAL_COMPLETION_REASON, type GoalApproval, type GoalStatus } from '../../shared/goals.js';
 import type { Db } from '../db.js';
+import { readContentVerificationByDigest } from './contentVerification.js';
 import { activeWorkBlocker } from './activeWork.js';
 import { getGoalApproval } from './approvals.js';
 import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
@@ -43,6 +44,7 @@ export const EXTERNAL_COMPLETION_TERMINAL_ERROR_CODES = [
   'decision_conflict',
   'proof_invalid',
   'proof_action_mismatch',
+  'content_verification_required',
   'authority_changed_during_completion',
   'goal_work_in_flight',
   'completion_persistence_failed',
@@ -105,6 +107,8 @@ export type StoredCompletion =
       proofDigest: string;
       approvalId: string;
       actionDigest: string;
+      contentVerificationDigest?: string;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
       preflightDigest: string;
       observedAt: string;
       completedAt: string;
@@ -219,6 +223,33 @@ export function consumeExternalCompletionDecision(
     throw new ExternalCompletionTerminalError('proof_action_mismatch', 'decision');
   if (validProof.userReviewedPreflightDigest !== action.userReviewedPreflightDigest)
     throw new ExternalCompletionTerminalError('proof_action_mismatch', 'preflight_digest');
+  if (
+    validProof.contentVerificationDigest === undefined ||
+    action.contentVerificationDigest === undefined ||
+    validProof.contentVerificationStatus === undefined ||
+    action.contentVerificationStatus === undefined ||
+    action.contentOutcomeAcknowledged !== true ||
+    validProof.contentVerificationDigest !== action.contentVerificationDigest
+  )
+    throw new ExternalCompletionTerminalError('proof_action_mismatch', 'content_verification');
+  const contentVerification = readContentVerificationByDigest(
+    db,
+    goalId,
+    validProof.contentVerificationDigest,
+  );
+  if (
+    contentVerification.state !== 'valid' ||
+    contentVerification.record.status !== validProof.contentVerificationStatus ||
+    validProof.contentVerificationStatus !== action.contentVerificationStatus ||
+    contentVerification.record.verifier !== 'content-verified-v1' ||
+    contentVerification.record.verifierVersion !== 2 ||
+    contentVerification.record.repository.objectFormat !== action.repository.objectFormat ||
+    contentVerification.record.source.commit !== action.source.commit ||
+    contentVerification.record.destination.expectedBaseCommit !== action.destination.recordedBaseCommit ||
+    contentVerification.record.destination.ref !== action.destination.ref ||
+    contentVerification.record.destination.tipCommit !== action.destination.observedCommit
+  )
+    throw new ExternalCompletionTerminalError('content_verification_required', null);
   if (!sameDestination(validProof.destination, action.destination))
     throw new ExternalCompletionTerminalError('proof_action_mismatch', 'destination');
 
@@ -297,6 +328,7 @@ function applyExternalCompletionTerminal(db: Db, authority: TerminalAuthority, n
           approvalId: proof.decision.approvalId,
           actionDigest: proof.decision.actionDigest,
           preflightDigest: proof.userReviewedPreflightDigest,
+          contentVerificationDigest: proof.contentVerificationDigest,
           attestationId: proof.attestation.id,
           observedCommit: proof.destination.observedCommit,
           observedTree: proof.destination.observedTree,
@@ -319,6 +351,7 @@ function applyExternalCompletionTerminal(db: Db, authority: TerminalAuthority, n
             proofDigest: proof.proofDigest,
             approvalId: proof.decision.approvalId,
             actionDigest: proof.decision.actionDigest,
+            contentVerificationDigest: proof.contentVerificationDigest,
           }),
           now,
           goalId,
@@ -367,6 +400,8 @@ function insertProofRow(db: Db, proofId: string, proof: ExternalCompletionProofV
     final_review_id: proof.evaluation.finalReviewId,
     final_acceptance_approval_id: proof.evaluation.finalAcceptanceApprovalId,
     verification_evidence_digest: proof.evaluation.verificationEvidenceDigest,
+    content_verification_digest: proof.contentVerificationDigest,
+    content_verification_status: proof.contentVerificationStatus,
     milestone_identity_digest: proof.evaluation.milestoneIdentityDigest,
     finding_identity_digest: proof.evaluation.findingIdentityDigest,
     repository_project_id: proof.repository.projectId,
@@ -468,7 +503,8 @@ function readStored(db: Db, goalId: string): StoredCompletion {
     (detail as Record<string, unknown>).proofId !== proofId ||
     (detail as Record<string, unknown>).proofDigest !== proof.proofDigest ||
     (detail as Record<string, unknown>).approvalId !== proof.decision.approvalId ||
-    (detail as Record<string, unknown>).actionDigest !== proof.decision.actionDigest
+    (detail as Record<string, unknown>).actionDigest !== proof.decision.actionDigest ||
+    (detail as Record<string, unknown>).contentVerificationDigest !== proof.contentVerificationDigest
   )
     return { state: 'invalid', reason: 'status_detail_mismatch' };
 
@@ -495,6 +531,9 @@ function readStored(db: Db, goalId: string): StoredCompletion {
     approvalId: proof.decision.approvalId,
     actionDigest: proof.decision.actionDigest,
     preflightDigest: proof.userReviewedPreflightDigest,
+    ...(proof.contentVerificationDigest === undefined
+      ? {}
+      : { contentVerificationDigest: proof.contentVerificationDigest }),
     attestationId: proof.attestation.id,
     observedCommit: proof.destination.observedCommit,
     observedTree: proof.destination.observedTree,
@@ -531,6 +570,12 @@ function readStored(db: Db, goalId: string): StoredCompletion {
     proofDigest: proof.proofDigest,
     approvalId: proof.decision.approvalId,
     actionDigest: proof.decision.actionDigest,
+    ...(proof.contentVerificationDigest === undefined
+      ? {}
+      : { contentVerificationDigest: proof.contentVerificationDigest }),
+    ...(proof.contentVerificationStatus === undefined
+      ? {}
+      : { contentVerificationStatus: proof.contentVerificationStatus }),
     preflightDigest: proof.userReviewedPreflightDigest,
     observedAt: proof.gitProof.observedAt,
     completedAt: goal.completed_at,

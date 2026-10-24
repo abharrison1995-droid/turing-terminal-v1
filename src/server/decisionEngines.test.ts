@@ -88,6 +88,67 @@ describe('OpenRouter catalog and usage contract', () => {
     expect(maxPriceFor(model)).toEqual({ prompt: 0.6, completion: 2.4 });
   });
 
+  it('retains bounded base and override evidence without changing legacy price aggregates', () => {
+    const [model] = parseOpenRouterModels({
+      data: [
+        {
+          id: 'openai/gpt-4o-mini',
+          pricing: {
+            prompt: '0.001',
+            completion: '0.002',
+            request: '0.01',
+            input_cache_read: '0.0005',
+            overrides: [
+              { prompt: '0', request: '-1', input_cache_read: '0.001' },
+              { prompt: '0.001', input_cache_read: '0.002' },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(model?.pricing).toMatchObject({
+      promptUsdPerToken: 0.001,
+      completionUsdPerToken: 0.002,
+      requestUsd: 0.01,
+      cacheReadUsdPerToken: 0.0005,
+      maxPromptUsdPerToken: 0.001,
+      maxCompletionUsdPerToken: 0.002,
+      pricingEvidence: {
+        schemaVersion: 1,
+        base: {
+          prompt: { present: true, valid: true, value: 0.001 },
+          completion: { present: true, valid: true, value: 0.002 },
+          request: { present: true, valid: true, value: 0.01 },
+          cacheRead: { present: true, valid: true, value: 0.0005 },
+        },
+        overrides: {
+          count: 2,
+          complete: true,
+          overflow: false,
+          prompt: { present: true, validCount: 2, invalidCount: 0, allValidEqualBase: false },
+          request: { present: true, validCount: 0, invalidCount: 1, maxValidValue: null },
+          cacheRead: { present: true, validCount: 2, maxValidValue: 0.002, complete: true },
+        },
+      },
+    });
+    expect(JSON.stringify(model?.pricing?.pricingEvidence)).not.toContain('"overrides":[');
+  });
+
+  it('keeps malformed override rows conservative without crashing catalog parsing', () => {
+    const [model] = parseOpenRouterModels({
+      data: [
+        {
+          id: 'example/model',
+          pricing: { prompt: 0, completion: 0, request: 0, input_cache_read: 0, overrides: [null] },
+        },
+      ],
+    });
+    expect(model?.pricing?.pricingEvidence?.overrides.complete).toBe(false);
+    expect(model?.pricing?.pricingEvidence?.overrides.cacheRead.maxValidValue).toBeNull();
+    expect(model?.pricing?.maxPromptUsdPerToken).toBe(0);
+  });
+
   it('preserves every reported token dimension, actual cost, and upstream routing', () => {
     expect(
       usageObservationFrom({
@@ -200,6 +261,7 @@ describe('OpenRouter catalog and usage contract', () => {
       error: 'This workflow role is read-only and cannot execute project changes or commands.',
     }));
     const { hooks, calls } = recordingMeter();
+    const opportunityEstimate = vi.fn(() => 0.000123);
     const result = await runOpenRouterAgent({
       key: 'sk-or-v1-test',
       model,
@@ -208,7 +270,7 @@ describe('OpenRouter catalog and usage contract', () => {
       readOnly: true,
       signal: new AbortController().signal,
       onLog: () => undefined,
-      metering: hooks,
+      metering: { ...hooks, estimateReservationUsd: opportunityEstimate },
       brokerTool,
       fetchImpl,
     });
@@ -224,6 +286,8 @@ describe('OpenRouter catalog and usage contract', () => {
       'begin:OpenRouter turn 2:bounded',
       'complete:0.0002',
     ]);
+    expect(opportunityEstimate).toHaveBeenCalledTimes(2);
+    expect(opportunityEstimate.mock.calls[0]?.[0]).toBe(model);
     // Read-only roles are only offered read tools; a write request is refused without reaching the broker.
     expect(
       (bodies[0]!.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name),

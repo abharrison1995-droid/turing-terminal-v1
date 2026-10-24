@@ -677,11 +677,7 @@ describe('authority static guard: seeded violations and negative controls', () =
       'goals/synthetic.ts',
       "db.prepare('INSERT INTO goal_content_verifications_archive (id) VALUES (?)');",
     ],
-    [
-      'content_verification_write',
-      'goals/synthetic.ts',
-      "db.prepare('UPDATE goal_events SET status = ?');",
-    ],
+    ['content_verification_write', 'goals/synthetic.ts', "db.prepare('UPDATE goal_events SET status = ?');"],
     [
       'decision_reader',
       'goals/externalCompletionDecision.ts',

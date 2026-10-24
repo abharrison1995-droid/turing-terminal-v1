@@ -21,7 +21,13 @@ import { GOAL_RESUME_REASONS } from '../../shared/goalApi.js';
 import type { Db } from '../db.js';
 import { GoalGitError, preflightFinalApply } from '../goalGit.js';
 import { queryUsageAnalytics, type UsageFilter } from '../usageAnalytics.js';
-import { GoalApprovalError, isPendingFinalAcceptanceRow } from './approvals.js';
+import {
+  GoalApprovalError,
+  isPendingFinalAcceptanceRow,
+  isPendingOpportunityAdmissionRow,
+} from './approvals.js';
+import { GoalOpportunityAdmissionError, requestOpportunityAdmission } from './opportunityAdmission.js';
+import { observeRouteSnapshot } from './routingSnapshot.js';
 import { readGoalCompletionStanding } from './completionStanding.js';
 import {
   AttestationCorrectionError,
@@ -179,6 +185,15 @@ function domainError(error: unknown, reply: FastifyReply) {
     const status = NOT_FOUND.has(error.code) ? 404 : error.code === 'invalid_gate' ? 400 : 409;
     return send(reply, status, { error: error.message, code: error.code });
   }
+  if (error instanceof GoalOpportunityAdmissionError) {
+    const status =
+      error.code === 'goal_not_found' || error.code === 'definition_not_found'
+        ? 404
+        : error.code === 'opportunity_member_not_found'
+          ? 422
+          : 409;
+    return send(reply, status, { error: error.message, code: error.code });
+  }
   if (error instanceof GoalGitError)
     return send(reply, error.code === 'goal_not_found' ? 404 : 409, {
       error: error.message,
@@ -262,6 +277,7 @@ const EXTERNAL_COMPLETION_STATUS: Record<ExternalCompletionCode, number> = {
   completion_corrupt: 422,
   proof_invalid: 422,
   completion_proof_required: 422,
+  content_verification_required: 422,
   completion_busy: 429,
   decision_persistence_failed: 503,
   completion_persistence_failed: 503,
@@ -288,6 +304,8 @@ const PREFLIGHT_REFUSED_STATUS: ReadonlyMap<string, number> = new Map([
   ['verification_busy', 429],
   ['git_unavailable', 503],
   ['preflight_unavailable', 503],
+  ['content_verification_failed', 503],
+  ['content_not_preserved', 422],
   ['attestation_invalid', 422],
 ]);
 
@@ -417,6 +435,10 @@ const findingDecisionBody = z.strictObject({
 });
 const goalApprovalDecisionBody = z.strictObject({ decision: z.enum(['approved', 'denied']), note });
 const empty = z.strictObject({});
+const opportunityAdmissionBody = z.strictObject({
+  poolId: z.string().min(1).max(64),
+  memberIndex: z.number().int().min(0).max(15),
+});
 
 const number = z.coerce.number().int();
 const limitQuery = number.min(1).max(200).optional();
@@ -1113,6 +1135,7 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
         acknowledgeContentNotProven: body.data.acknowledgeContentNotProven,
       });
       const { completion } = result;
+      const completionStanding = readGoalCompletionStanding(db, goalId);
       const response: GoalExternalCompletionCompleted = {
         reused: result.reused,
         completion: {
@@ -1120,11 +1143,19 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
           proofDigest: completion.proofDigest,
           approvalId: completion.approvalId,
           actionDigest: completion.actionDigest,
+          ...(completionStanding.kind === 'v2' &&
+          completionStanding.proof.contentVerificationDigest !== undefined
+            ? { contentVerificationDigest: completionStanding.proof.contentVerificationDigest }
+            : {}),
+          ...(completionStanding.kind === 'v2' &&
+          completionStanding.proof.contentVerificationStatus !== undefined
+            ? { contentVerificationStatus: completionStanding.proof.contentVerificationStatus }
+            : {}),
           preflightDigest: completion.preflightDigest,
           observedAt: completion.observedAt,
           completedAt: completion.completedAt,
         },
-        completionStanding: readGoalCompletionStanding(db, goalId),
+        completionStanding,
       };
       return reply.code(result.reused ? 200 : 201).send(response);
     } catch (error) {
@@ -1318,6 +1349,37 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     }
   });
 
+  app.post('/api/goals/:goalId/definitions/:version/opportunity-admissions', async (request, reply) => {
+    if (!deps.requireDesktopCaller(request))
+      return send(reply, 403, {
+        error: 'Model Opportunity admission is available on the Turing Terminal desktop app only.',
+        code: 'desktop_required',
+      });
+    const version = versionParam.safeParse((request.params as { version: string }).version);
+    if (!version.success)
+      return send(reply, 400, { error: 'The version must be a positive integer.', code: 'invalid_request' });
+    const body = parse(opportunityAdmissionBody, request.body, reply);
+    if (!body.ok) return reply;
+    try {
+      const goalId = goalIdOf(request);
+      const result = await requestOpportunityAdmission(db, {
+        goalId,
+        definitionVersion: version.data,
+        poolId: body.data.poolId,
+        memberIndex: body.data.memberIndex,
+        snapshot: await observeRouteSnapshot(db),
+      });
+      return reply.code(201).send({
+        approvalId: result.approval.id,
+        status: result.approval.status,
+        definitionVersion: result.definitionVersion,
+        verifiedPath: result.verifiedPath,
+      });
+    } catch (error) {
+      return domainError(error, reply);
+    }
+  });
+
   app.post('/api/goals/:goalId/definitions/:version/approve', async (request, reply) => {
     const version = versionParam.safeParse((request.params as { version: string }).version);
     if (!version.success)
@@ -1478,11 +1540,16 @@ export function registerGoalRoutes(app: FastifyInstance, deps: GoalRouteDeps): v
     // Gate and status come from the stored row, read before app-level body validation or any write. The row is mutable,
     // so this is a decision-time read, not a claim about an immutable record. Only a paired remote caller is refused, and
     // only for a pending final-acceptance row: local callers and every other gate keep the existing behaviour.
-    const stored = db.prepare('SELECT gate, status FROM goal_approvals WHERE id = ?').get(approvalId) as
-      { gate: string; status: string } | undefined;
-    if (!deps.requireDesktopCaller(request) && stored && isPendingFinalAcceptanceRow(stored))
+    const stored = db
+      .prepare('SELECT gate, status, detail_json FROM goal_approvals WHERE id = ?')
+      .get(approvalId) as { gate: string; status: string; detail_json: string } | undefined;
+    if (
+      !deps.requireDesktopCaller(request) &&
+      stored &&
+      (isPendingFinalAcceptanceRow(stored) || isPendingOpportunityAdmissionRow(stored))
+    )
       return send(reply, 403, {
-        error: 'Final acceptance can be decided on the Turing Terminal desktop app only.',
+        error: 'This Goal approval can be decided on the Turing Terminal desktop app only.',
         code: 'desktop_required',
       });
     const body = parse(goalApprovalDecisionBody, request.body, reply);

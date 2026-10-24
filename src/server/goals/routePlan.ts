@@ -62,6 +62,13 @@ function firstUseOf(refusal: RoleRefusal): FirstUseRequest | null {
     memberIdentityHash: candidate.memberIdentityHash,
     role: refusal.role,
     memberIndex: candidate.memberIndex,
+    ...(candidate.opportunity
+      ? {
+          admissionKind: 'opportunity' as const,
+          opportunityDigest: candidate.opportunity.opportunityDigest,
+          observationIds: candidate.opportunity.observationIds,
+        }
+      : {}),
     ...(candidate.approvalId ? { approvalId: candidate.approvalId } : {}),
   };
 }
@@ -69,10 +76,17 @@ function firstUseOf(refusal: RoleRefusal): FirstUseRequest | null {
 /**
  * The finite mapping of a routing refusal into what the supervisor understands. A corrupt persisted resolution, an
  * unproven independence and a missing route all stop the work (route_unavailable) with the refusal code kept in the
- * message; only a first-use requirement becomes a gate, and nothing is ever substituted. `provider_exhausted` is never
+ * message; only a valid first-use request becomes a gate, and nothing is ever substituted. An opportunity without its
+ * explicit user request remains unavailable until admission is requested in the Board. `provider_exhausted` is never
  * produced here: no authoritative quota signal exists in the provider observation.
  */
 export function mapRefusal(refusal: RoleRefusal): Unready {
+  if (refusal.candidate?.opportunity && !refusal.candidate.approvalId)
+    return {
+      ready: false,
+      code: 'route_unavailable',
+      message: `${refusal.role}: this opportunity needs an explicit admission request in the Model opportunities board.`,
+    };
   if (refusal.code === 'approval_required' || refusal.code === 'approval_pending') {
     const approval = firstUseOf(refusal);
     if (approval)

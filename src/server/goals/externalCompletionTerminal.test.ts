@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { activeWorkBlocker } from './activeWork.js';
+import { persistContentVerification } from './contentVerification.js';
 import { getGoalApproval } from './approvals.js';
 import { evaluateCompletion } from './completionEvaluation.js';
 import { createCycle, finalizeCycle } from './cycles.js';
@@ -40,6 +41,7 @@ import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS, simpleDefinition } from 
 import { createReview } from './reviews.js';
 import { GoalStateError, transitionGoal, type TransitionRequest } from './stateMachine.js';
 import { EXTERNAL_COMPLETION_REASON } from '../../shared/goals.js';
+import { observeContentTree } from './contentTreeGitObservation.js';
 
 /**
  * Tests of the proof-bound terminal authority. Every fixture is real SQLite with the production migrations; the only
@@ -64,6 +66,7 @@ async function decided(objectFormat: 'sha1' | 'sha256' = 'sha1') {
   const attested = await v2DecidedFixture(objectFormat);
   const { db, goalId } = attested.fx;
   const decision = selectCompletionDecision(db, goalId, attested.recorded.approvalId);
+  const contentVerification = await persistContentForDecision(db, attested.fx.repo, decision);
   const proof = completionProofForDecision(decision, OBSERVED_AT);
   const expected = readPreflightSnapshotIdentity(db, goalId, attested.attestationId, {
     allowRecordedDecision: true,
@@ -75,9 +78,31 @@ async function decided(objectFormat: 'sha1' | 'sha256' = 'sha1') {
     attestationId: attested.attestationId,
     approvalId: attested.recorded.approvalId,
     decision,
+    contentVerification,
     proof,
     expected,
   };
+}
+
+async function persistContentForDecision(db: Db, repoRoot: string, decision: ValidatedCompletionDecision) {
+  const action = decision.action;
+  const observation = await observeContentTree({
+    repoRoot,
+    expectedBaseCommit: action.destination.recordedBaseCommit,
+    acceptedSourceCommit: action.source.commit,
+    destinationTipCommit: action.destination.observedCommit,
+    objectFormat: action.repository.objectFormat,
+  });
+  if (!observation.ok) throw new Error(`content observation failed: ${observation.status}`);
+  return persistContentVerification(db, {
+    goalId: action.goalId,
+    expectedBaseCommit: action.destination.recordedBaseCommit,
+    acceptedSourceCommit: action.source.commit,
+    destinationTipCommit: action.destination.observedCommit,
+    destinationRef: action.destination.ref,
+    objectFormat: action.repository.objectFormat,
+    observation,
+  });
 }
 
 /** Consumes inside the production shape: the caller owns one BEGIN IMMEDIATE transaction around the consumer. */
@@ -165,6 +190,7 @@ describe('external completion terminal: the accepted terminal write', () => {
       'decision_conflict',
       'proof_invalid',
       'proof_action_mismatch',
+      'content_verification_required',
       'authority_changed_during_completion',
       'goal_work_in_flight',
       'completion_persistence_failed',
@@ -174,7 +200,7 @@ describe('external completion terminal: the accepted terminal write', () => {
   it.each(FORMATS)(
     'writes one proof, the recorded event and the completed status, once, under %s',
     async (objectFormat) => {
-      const { db, goalId, decision, proof, expected } = await decided(objectFormat);
+      const { db, goalId, decision, proof, expected, contentVerification } = await decided(objectFormat);
       const result = consumeInTransaction(db, decision, proof, expected);
 
       expect(result).toEqual({ from: 'running', to: 'completed', proofId: expect.any(String) });
@@ -184,6 +210,8 @@ describe('external completion terminal: the accepted terminal write', () => {
         proofDigest: proof.proofDigest,
         approvalId: decision.approval.id,
         actionDigest: decision.action.actionDigest,
+        contentVerificationDigest: contentVerification.record.verificationDigest,
+        contentVerificationStatus: 'verified',
         preflightDigest: proof.userReviewedPreflightDigest,
         observedAt: OBSERVED_AT,
         completedAt: NOW,
@@ -921,6 +949,7 @@ describe('external completion terminal: the classifier decides which decision ma
         acknowledgeContentNotProven: true,
       });
       const decision = selectCompletionDecision(db, goalId, recorded.approvalId);
+      const contentVerification = await persistContentForDecision(db, fx.repo, decision);
       const proof = completionProofForDecision(decision, OBSERVED_AT);
       const expected = readPreflightSnapshotIdentity(db, goalId, second.attestationId, {
         allowRecordedDecision: true,
@@ -935,6 +964,7 @@ describe('external completion terminal: the classifier decides which decision ma
         state: 'completed',
         approvalId: recorded.approvalId,
         actionDigest: decision.action.actionDigest,
+        contentVerificationDigest: contentVerification.record.verificationDigest,
       });
       expect(externalCompletionProofRowCount(db, goalId)).toBe(1);
 

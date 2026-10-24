@@ -19,6 +19,7 @@ import {
 import { writeGoalEvent } from './events.js';
 import { transitionGoal } from './stateMachine.js';
 import { validateCompletionPolicyTransition } from './completionPolicy.js';
+import { assertOpportunityDefinitionAdmissions, OpportunityEvidenceError } from '../opportunityEvidence.js';
 
 export type GoalDefinitionErrorCode =
   | 'project_not_found'
@@ -39,7 +40,8 @@ export type GoalDefinitionErrorCode =
   | 'definition_precondition_required'
   | 'definition_precondition_failed'
   | 'completion_policy_downgrade'
-  | 'completion_policy_lineage_invalid';
+  | 'completion_policy_lineage_invalid'
+  | 'opportunity_admission_invalid';
 
 function assertCompletionPolicyTransition(
   db: Db,
@@ -643,6 +645,16 @@ export function approveDefinition(
         `The definition has ${validation.errors.length} error(s).`,
         validation.errors,
       );
+
+    try {
+      assertOpportunityDefinitionAdmissions(db, input.goalId, input.version, proposed.definition);
+    } catch (error) {
+      if (!(error instanceof OpportunityEvidenceError)) throw error;
+      throw new GoalDefinitionError(
+        'opportunity_admission_invalid',
+        'Every opportunity pool member needs a current, exact user admission before this definition can be approved.',
+      );
+    }
 
     const gate = amendment ? 'amendment' : 'definition';
     let approvalId = input.approvalId;

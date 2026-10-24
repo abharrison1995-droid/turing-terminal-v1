@@ -73,9 +73,7 @@ function observed(input: {
     ok: true,
     status: 'observed',
     comparisonCommit: input.comparisonCommit ?? COMPARISON,
-    changedPaths: (input.changedPaths ?? ['goal.txt']).map(
-      (path) => new Uint8Array(Buffer.from(path)),
-    ),
+    changedPaths: (input.changedPaths ?? ['goal.txt']).map((path) => new Uint8Array(Buffer.from(path))),
     sourceEntries: input.sourceEntries ?? [entry('goal.txt', 'a'.repeat(40))],
     destinationEntries: input.destinationEntries ?? [entry('goal.txt', 'a'.repeat(40))],
   };

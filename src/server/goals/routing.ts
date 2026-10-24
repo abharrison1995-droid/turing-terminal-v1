@@ -39,6 +39,7 @@ import {
 import { ROLE_VALIDATION_PROFILES, freshValidationSet } from './routeValidation.js';
 import type { ProviderStatus } from '../../shared/types.js';
 import { canonicalJson } from './definitionHash.js';
+import type { OpportunityBinding } from '../../shared/opportunityContract.js';
 
 /**
  * Deterministic routing authority (design sections 12 and 13). `resolveRoutes` is a pure function of its inputs:
@@ -97,6 +98,7 @@ interface MemberInput {
   member: RouteMember;
   index: number;
   poolId: string | null;
+  poolAdmission?: RoutePool['admission'];
   laneClass: RoutePool['laneClass'] | null;
   terms: RouteTerms;
 }
@@ -129,12 +131,18 @@ function firstUseOf(
   approvals: readonly GoalApproval[],
   poolId: string,
   memberIdentityHash: string,
+  opportunity?: OpportunityBinding,
 ): { state: FirstUseState; approvalId: string | null } {
   const matching = approvals.filter(
     (approval) =>
       approval.gate === 'pool_route_first_use' &&
       approval.detail.poolId === poolId &&
       approval.detail.memberIdentityHash === memberIdentityHash &&
+      (opportunity
+        ? approval.detail.admissionKind === 'opportunity' &&
+          approval.detail.opportunityDigest === opportunity.opportunityDigest &&
+          sameJson(approval.detail.observationIds, opportunity.observationIds)
+        : approval.detail.admissionKind !== 'opportunity') &&
       // Only an explicit user approval qualifies; an approved row not decided by the user is not an approval.
       (approval.status !== 'approved' || approval.decidedBy === 'user'),
   );
@@ -296,8 +304,11 @@ function evaluateMember(
 
   // --- First use (pool members only, bound to pool id + exact member identity) ---
   let firstUse: MemberEvaluation['firstUse'] = { state: 'not_required', approvalId: null };
-  if (poolId !== null && request.limits.humanGates.poolRouteFirstUse)
-    firstUse = firstUseOf(environment.firstUseApprovals, poolId, resolved.identityHash);
+  if (
+    poolId !== null &&
+    (input.poolAdmission === 'opportunity' || request.limits.humanGates.poolRouteFirstUse)
+  )
+    firstUse = firstUseOf(environment.firstUseApprovals, poolId, resolved.identityHash, member.opportunity);
 
   const unique = [...new Set(reasons)];
   const technicallyEligible = unique.length === 0 && firstUse.state !== 'denied';
@@ -399,6 +410,7 @@ function routeMembersOf(
       member,
       index,
       poolId: pool.id,
+      poolAdmission: pool.admission,
       laneClass: pool.laneClass,
       terms: { availability: pool.availability, requireRoleValidation: pool.requireRoleValidation },
     })),
@@ -503,17 +515,30 @@ export function reproveRoleResolution(
       return 'validation_ids';
   } else if (resolution.validationRecordIds.length > 0) return 'validation_ids';
 
-  // First-use approval: required exactly for pool members under the gate, and bound to this pool and member.
-  const gated = route.kind === 'pool' && context.limits.humanGates.poolRouteFirstUse;
+  // Opportunity admission is always a separate user decision; static pools retain the existing configurable gate.
+  const opportunityAdmission = route.kind === 'pool' && route.pool.admission === 'opportunity';
+  const gated =
+    route.kind === 'pool' && (context.limits.humanGates.poolRouteFirstUse || opportunityAdmission);
   const { approval } = resolution;
   if (approval.poolId !== resolution.poolId) return 'approval';
+  const opportunity =
+    route.kind === 'pool' ? route.members[resolution.selectedIndex]!.member.opportunity : undefined;
   if (gated) {
     if (
       approval.state !== 'approved' ||
       !approval.approvalId ||
       approval.memberIdentityHash !== selected.identityHash ||
       entry.firstUse.state !== 'approved' ||
-      entry.firstUse.approvalId !== approval.approvalId
+      entry.firstUse.approvalId !== approval.approvalId ||
+      (opportunityAdmission &&
+        (!opportunity ||
+          approval.admissionKind !== 'opportunity' ||
+          approval.opportunityDigest !== opportunity.opportunityDigest ||
+          !sameJson(approval.observationIds, opportunity.observationIds))) ||
+      (!opportunityAdmission &&
+        (approval.admissionKind !== undefined ||
+          approval.opportunityDigest !== undefined ||
+          approval.observationIds !== undefined))
     )
       return 'approval';
   } else if (
@@ -665,6 +690,9 @@ function resolveRole(request: RoutingRequest, role: GoalRole): RoleOutcome {
           memberIndex: candidateIndex,
           configuration: candidate.configuration,
           approvalId: candidate.firstUse.approvalId,
+          ...(route.members[candidateIndex]!.member.opportunity
+            ? { opportunity: route.members[candidateIndex]!.member.opportunity }
+            : {}),
         },
       },
     );
@@ -696,6 +724,16 @@ function resolveRole(request: RoutingRequest, role: GoalRole): RoleOutcome {
         approvalId: candidate.firstUse.approvalId,
         poolId: common.poolId,
         memberIdentityHash: candidate.firstUse.state === 'approved' ? candidate.identityHash : null,
+        ...(route.kind === 'pool' &&
+        route.pool.admission === 'opportunity' &&
+        route.members[candidateIndex]!.member.opportunity &&
+        candidate.firstUse.state === 'approved'
+          ? {
+              admissionKind: 'opportunity' as const,
+              opportunityDigest: route.members[candidateIndex]!.member.opportunity.opportunityDigest,
+              observationIds: route.members[candidateIndex]!.member.opportunity.observationIds,
+            }
+          : {}),
       },
       independence,
     },

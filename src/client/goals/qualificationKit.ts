@@ -226,11 +226,12 @@ export function attestationProjection(attestationId: string): GoalExternalIntegr
 export const claim = (
   qualifier: GoalCompletionStandingClaim['qualifier'] = 'none',
   trusted = false,
+  contentPreservation: GoalCompletionStandingClaim['contentPreservation'] = 'not_proven',
 ): GoalCompletionStandingClaim => ({
   unqualifiedSuccessAllowed: trusted,
   trustedForDownstream: trusted,
   qualifier,
-  contentPreservation: 'not_proven',
+  contentPreservation,
 });
 
 export function completionStatus(
@@ -241,13 +242,20 @@ export function completionStatus(
     completion?: GoalExternalCompletionStatus['completion'];
   } = {},
 ): GoalExternalCompletionStatus {
+  const completion = options.completion ?? null;
   return {
     goalId: GOAL,
     state,
     decisions: options.decisions ?? [],
-    completion: options.completion ?? null,
+    completion,
     // Only the claim is read by the desktop panel; the rest of the standing is not needed here.
-    completionStanding: { claim: claim(options.qualifier) } as unknown as GoalCompletionStanding,
+    completionStanding: {
+      claim: claim(
+        options.qualifier,
+        false,
+        completion?.contentVerificationDigest ? 'verified' : 'not_proven',
+      ),
+    } as unknown as GoalCompletionStanding,
   };
 }
 
@@ -275,6 +283,7 @@ export function completedRecord(attestationId: string): GoalExternalCompletionSt
     proofDigest: '9'.repeat(64),
     approvalId: `approval-${attestationId}`,
     actionDigest: actionFor(attestationId),
+    contentVerificationDigest: 'b'.repeat(64),
     attestationId,
     observedAt: '2026-10-09T12:30:00.000Z',
     completedAt: '2026-10-09T12:40:00.000Z',
@@ -310,9 +319,19 @@ export function preflight(attestationId: string): GoalExternalCompletionPrefligh
       freshTree: TREE,
       objectFormat: 'sha1',
     },
+    contentVerification: {
+      verifier: 'content-verified-v1',
+      verifierVersion: 2,
+      status: 'verified',
+      verificationDigest: '9'.repeat(64),
+      changedPathCount: 1,
+      mismatchCount: 0,
+      mismatchPathDigest: '8'.repeat(64),
+      comparisonCommit: SOURCE,
+    },
     actionFields: null,
     proofLimitations: {
-      contentPreservation: 'not_proven',
+      contentPreservation: 'verified',
       goalCompletion: 'not_completed_by_preflight',
       destinationPolicy: 'exact_attested_tip',
     },
@@ -450,7 +469,7 @@ export function standing(kind: string, value: string | null, standingClaim: Goal
   } as unknown as GoalCompletionStanding;
 }
 
-export const trustedClaim = (): GoalCompletionStandingClaim => claim('none', true);
+export const trustedClaim = (): GoalCompletionStandingClaim => claim('none', true, 'verified');
 
 export const standingDetail = (completionStanding?: GoalCompletionStanding): GoalDetail =>
   detail({ status: 'completed', nextAction: { kind: 'completed' }, completionStanding });

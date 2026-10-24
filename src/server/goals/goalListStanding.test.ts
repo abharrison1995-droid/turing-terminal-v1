@@ -115,7 +115,7 @@ async function completedAndSuperseded() {
 
 describe('GET /api/goals carries the completion standing brief on completed rows', () => {
   it(
-    'L1: a completed Goal whose standing is uncontested carries a ready, trusted brief with content not proven',
+    'L1: a completed Goal whose standing is uncontested carries a ready, trusted brief with verified content',
     async () => {
       const decided = await v2DecidedFixture('sha1');
       const { db, goalId } = decided.fx;
@@ -131,7 +131,7 @@ describe('GET /api/goals carries the completion standing brief on completed rows
         standing: 'uncontested',
         qualifier: 'none',
         trusted: true,
-        contentPreservation: 'not_proven',
+        contentPreservation: 'verified',
       });
     },
     REAL_GIT_TEST_TIMEOUT_MS,
@@ -157,7 +157,7 @@ describe('GET /api/goals carries the completion standing brief on completed rows
         standing,
         qualifier,
         trusted: false,
-        contentPreservation: 'not_proven',
+        contentPreservation: 'verified',
       });
     },
     REAL_GIT_TEST_TIMEOUT_MS,

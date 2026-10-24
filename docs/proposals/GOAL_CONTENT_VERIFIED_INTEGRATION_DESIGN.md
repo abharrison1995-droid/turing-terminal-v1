@@ -1,6 +1,6 @@
-# Content-verified integration: approved design (not implemented)
+# Content-verified integration: approved design and implementation record
 
-Status: **Approved design. Not implemented.** The owner recorded decisions on 2026-10-21 and they are recorded in section 6. Approval of the design is not implementation: no source code, schema, migration, test, UI or active completion behaviour in this repository implements any policy below, and every implementation step described in this document remains pending. Nothing in this document changes the accepted v2 historical contract, existing attestations, existing completion proofs or any Git writer.
+Status (2026-10-24): **Implemented on the development branch; release qualification remains open.** The owner decisions from 2026-10-21 are recorded in section 6. Migration 033, the read-only Git collector and comparator, immutable evidence persistence, completion preflight/decision binding, API/UI standing and regression coverage are present. New completions require verified content evidence; a mismatch is not successful delivery through Policy B. Existing ancestry-only proofs remain immutable and historical. The verifier performs no Git writes. See [V1_READINESS.md](../V1_READINESS.md) for the current gate and release state.
 
 Owner rule (decision d3e4, 2026-10-17): a merge that demonstrably discards accepted Goal work must not count as successful delivery. Ancestry alone is not proof that content was preserved.
 
@@ -33,11 +33,11 @@ Review traceability: independent review job `ddbbb3b680d747b48f3011f19bff4783` r
 
 Known content loss cannot be proved to be absent until the content check exists, so today every ancestry-verified integration is "unverified preservation", including ones that discarded content.
 
-The "Today" column describes the repository as it stands. The approved policy in section 3 changes it for **new** completions only, and only once that policy is implemented. Existing records stay exactly as they are.
+The "Today" column describes the legacy ancestry observation. The policy in section 3 applies to **new** completions. Existing ancestry-only records stay exactly as they are.
 
 ## 3. Approved design: a new versioned verifier, `content-verified-v1`
 
-Add a separate verifier, leave v1 alone, and select it explicitly for new completions. This is the approved shape (owner, 2026-10-21); it is not implemented. In this document, "verifier version 2" means `proof.verifierVersion = 2` for the `content-verified-v1` verifier; it is not `completionContractVersion: 2`.
+Add a separate verifier, leave v1 alone, and select it explicitly for new completions. This approved design is implemented. In this document, "verifier version 2" means `proof.verifierVersion = 2` for the `content-verified-v1` verifier; it is not `completionContractVersion: 2`.
 
 **Verification rule.**
 
@@ -56,7 +56,7 @@ Add a separate verifier, leave v1 alone, and select it explicitly for new comple
    - Bounded work: if the changed-path set exceeds **10,000** paths, fail closed as `content_observation_too_large`. **No sampling**: the verifier never verifies a subset and reports it as the whole.
    - Unreadable Git object: fail closed as `content_unreadable`.
 
-**Conflict resolutions.** A merge where the user changed content to resolve a conflict will report `content_not_preserved` under verifier version 2, because the destination intentionally differs. That refusal applies to the verifier version 2 path only (distinct from completionContractVersion 2). **Decided 2026-10-21:** Policy B — the explicit user-accountable historical path — remains available for such a merge, and the Policy B record discloses the content mismatch. Policy B must never treat a content mismatch as successful delivery (section 6, decision 2).
+**Conflict resolutions.** A merge where the user changed content to resolve a conflict will report `content_not_preserved` under verifier version 2, because the destination intentionally differs. That mismatch classification applies to the verifier version 2 path only (distinct from completionContractVersion 2). **Decided 2026-10-21:** Policy B — the explicit user-accountable path — remains available for such a merge only after user acknowledgement, and its record discloses the content mismatch. Policy B must never treat a content mismatch as successful delivery (section 6, decision 2).
 
 **Later destination edits.** A commit that changes a Goal path after the merge would also report `content_not_preserved` if the check compares the branch tip. That is a false refusal on active repositories. Options were (a) compare at the observed comparison commit, the first destination-history commit containing the accepted source, rather than at the tip; or (b) keep the tip check and accept the refusal. **Decided 2026-10-21: option (a).** The destination is compared at the first destination-history commit containing the accepted source (see section 3, rules 4–5), never at the current tip (section 6, decision 6).
 
@@ -79,22 +79,22 @@ Add a separate verifier, leave v1 alone, and select it explicitly for new comple
 **Exceptions to additivity, which must be stated and tested.**
 
 - The `goal_approvals` insert guards in migration 026 (around lines 17–33) and migration 027 (around lines 20–38) pin the approval action types and digests. A verifier version 2 confirmation needs its own action type, so those guards must be extended. The change must leave v1 approval acceptance and rejection exactly as they are. A regression test is required.
-- The read-side literal `contentPreservation: 'not_proven'` is a closed type in `src/shared/goalApi.ts` (around lines 190, 199, 210, 446, 883) and is required by a 027 insert trigger (around line 225). A verifier version 2 record needs a `verified` value. Consumers of the new verified result must be updated and must fail closed on any value they do not recognise: the shared types, the standing claim (`completionStanding`), the UI, and `src/server/goals/retention.ts` (around lines 221–230), which keys on ancestry. The two trusted classifiers are `src/client/goals/completionStandingCopy.ts` and `src/server/goals/completionStanding.ts`. The client classifier must fail closed at runtime on any value it does not recognise, and the server enum/schema must reject unknown values. The client classifier reads untrusted string payloads at runtime; the TypeScript compiler does not guarantee exhaustiveness for those string payloads.
+- Migration 027 pins `contentPreservation: 'not_proven'` for historical ancestry proofs. Migration 033 adds a separate immutable content-evidence digest to new proofs without altering those constraints. Shared types, standing projections, client/server classifiers, retention logic and UI now recognize verified evidence and fail closed on unknown values. The original v1 proof representation remains unchanged.
 
 Otherwise:
 
 - Migration guards (compatibility): migration 026's approval guard requires exactly 27 keys in `detail_json` (`(SELECT COUNT(*) FROM json_each(NEW.detail_json)) <> 27`); migration 027's approval guard requires exactly 20 keys. Migration 027 pins `contentPreservation: 'not_proven'` in three places: the approval guard (`$.proofLimitations.contentPreservation IS NOT 'not_proven'`), the table CHECK (`$.proofLimitations.contentPreservation IS 'not_proven'`), and the insert trigger (`$.proofLimitations.contentPreservation = 'not_proven'`). v1 rows keep these constraints; a verifier version 2 value needs its own guards.
 - **Do not alter `goal_external_integration_attestations` or `goal_external_completion_proofs`.** Migrations 026 and 027 keep their `CHECK` constraints and their triggers for v1 rows. This is unchanged by the 2026-10-21 decisions: v1 keeps its existing proof and schema constraints.
-- Add new tables for v2 evidence, for example `goal_content_verifications` (identity, verifier version 2, changed-path count, mismatch digest, observed destination tree) and a verifier version 2 completion record, each with its own digest and append-only triggers.
+- Migration 033 adds `goal_content_verifications` (identity, verifier version 2, changed-path count, mismatch digest, and observed destination identities) with an immutable digest and triggers. It adds a nullable content-verification digest to the existing completion-proof table; new proof insert guards require matching verified evidence, while historical rows remain null.
 
 - Existing v1 completions stay historical. They are not re-verified and not rewritten. Their completion proofs keep their current digests, and they stay `not_proven`. **Confirmed by the owner decision of 2026-10-21:** existing ancestry-only records stay immutable and historical — no rewrite, no re-verification.
-- New completions can use verifier version 2 only after the migration and verifier are shipped and tested. Until then, v1 remains the only path. The 2026-10-21 decisions do not change this gate.
+- New completions use verifier version 2 after migration 033 and its acceptance coverage. Existing ancestry-only records stay historical and unchanged. The 2026-10-21 decisions remain the governing policy.
 
 - The action digest for a verifier version 2 confirmation uses a new domain string, so a verifier version 2 digest can never collide with a v1 digest.
 
-## 5. Test plan (still pending; the approved decisions fix the expected outcomes)
+## 5. Acceptance coverage and qualification
 
-Fixtures in a temporary repository, each asserting the state, not just the HTTP status. No fixture below exists yet; the whole plan is pending implementation.
+The implementation uses disposable Git repositories and service-backed tests that assert evidence and terminal state, not just HTTP status. The cases below describe the acceptance contract; the full release gate and platform qualification remain tracked in [V1_READINESS.md](../V1_READINESS.md).
 
 1. Fast-forward with the Goal's content: verified.
 2. True merge where the destination kept the source's content: verified.
@@ -117,7 +117,7 @@ Fixtures in a temporary repository, each asserting the state, not just the HTTP 
 
 ## 6. Owner decisions (recorded 2026-10-21)
 
-The owner recorded the following decisions on 2026-10-21. They close every question this proposal left open. They are policy, not implementation: nothing below is in the source code, the schema, the migrations, the tests or the UI yet, and every implementation item in sections 3–5 remains pending.
+The owner recorded the following decisions on 2026-10-21. They close every question this proposal left open. The implementation status is summarized at the top of this document; the decision record remains unchanged.
 
 1. **Approved.** New Goal completions use the new versioned content verifier (`content-verified-v1`, verifier version 2), with the additive table-based migration and the fail-closed reasons in section 3.
 2. **Approved, with the constraint recorded in section 3.** Policy B — the explicit user-accountable historical path — stays available, including for conflict-resolved merges and for content mismatches. It must never treat a content mismatch as successful delivery: a mismatch stays a mismatch, is disclosed, and never becomes a delivery claim. Goals already completed under v1 stay as they are.
@@ -131,4 +131,4 @@ Two further constraints come from the same decision record:
 - **Existing ancestry-only records stay immutable and historical.** They are not rewritten and not re-verified; they keep their digests and their `not_proven` standing.
 - **v1 keeps its existing proof and schema constraints.** Migrations 026 and 027 keep their `CHECK` constraints and triggers for v1 rows, and the v1 completion path is unchanged.
 
-Every question this proposal raised is now decided. Implementation of the approved policy has not started and remains pending; this document records approved design only.
+Every question this proposal raised is decided. The approved policy is implemented on the current development branch; release qualification is tracked separately.

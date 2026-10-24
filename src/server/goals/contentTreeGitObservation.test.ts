@@ -725,9 +725,7 @@ describe('content tree git observation', () => {
     'refuses an ambiguous ancestry-path history with more than one first merge',
     async () => {
       const { repo, base, source, merge } = createPreservingMerge();
-      const parents = Array.from({ length: 4 }, (_, index) =>
-        (index + 1).toString(16).padStart(40, '0'),
-      );
+      const parents = Array.from({ length: 4 }, (_, index) => (index + 1).toString(16).padStart(40, '0'));
       const first = 'a'.repeat(40);
       const second = 'b'.repeat(40);
       const runner = strictRunner(repo.path, {
@@ -1238,8 +1236,7 @@ describe('content tree git observation', () => {
 
       const contentsMalformed = strictRunner(repo.path, {
         'cat-file sizes': () => okCommandResult(Buffer.from(`${blobOid} blob 2\n`, 'ascii')),
-        'cat-file --batch': () =>
-          okCommandResult(Buffer.from(`${blobOid} blob not-a-number\n`, 'ascii')),
+        'cat-file --batch': () => okCommandResult(Buffer.from(`${blobOid} blob not-a-number\n`, 'ascii')),
       });
       const contentsMalformedResult = await observe(repo, base, source, merge, {
         runner: contentsMalformed,

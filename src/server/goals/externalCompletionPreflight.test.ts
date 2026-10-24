@@ -82,8 +82,8 @@ function startGoal(db: GoalFixture['db'], goalId: string): void {
 
 const EMPTY_GOAL_ID = '22222222-2222-4222-8222-222222222222';
 const EMPTY_ATTESTATION_ID = '33333333-3333-4333-8333-333333333333';
-/** The report digest of a refused preflight on an empty database, pinned at HEAD before the D.3E service was added. */
-const EMPTY_DATABASE_REFUSAL_DIGEST = 'e11d1f8c6639e48b4bf033400a8bdfdcc9aee926e3eff75cdd19b38fc7f8023d';
+/** The report digest of a refused preflight on an empty database, pinned at the content-verifier checkpoint. */
+const EMPTY_DATABASE_REFUSAL_DIGEST = '041c93629d098c34b89dc9eb695aaeece75efde37f649c3380786da90fd6329e';
 
 /** Runs `run` against a fresh, empty database in its own directory, and removes the directory afterwards. */
 async function withEmptyDatabase<T>(run: (db: GoalFixture['db']) => Promise<T>): Promise<T> {
@@ -137,7 +137,7 @@ describe('external completion preflight: ready outcome', () => {
         objectFormat,
       });
       expect(report.proofLimitations).toEqual({
-        contentPreservation: 'not_proven',
+        contentPreservation: 'verified',
         goalCompletion: 'not_completed_by_preflight',
         destinationPolicy: 'exact_attested_tip',
       });
@@ -172,12 +172,19 @@ describe('external completion preflight: ready outcome', () => {
   );
 
   it(
-    'T2 is still ready when the observation discarded the accepted content',
+    'T2 discloses when the merge discarded the accepted content',
     async () => {
       const attested = await v2RunningAttestedFixture('sha1', { strategy: 'ours' });
       const report = await compute(attested.fx, attested.attestationId);
       expect(report.outcome).toBe('ready');
+      expect(report.reasons).toEqual([]);
+      expect(report.contentVerification).toMatchObject({ status: 'content_not_preserved' });
+      expect(report.actionFields).toMatchObject({
+        contentVerificationStatus: 'content_not_preserved',
+        contentOutcomeAcknowledged: false,
+      });
       expect(report.proofLimitations.contentPreservation).toBe('not_proven');
+      expect(report.contentVerification?.mismatchCount).toBeGreaterThan(0);
     },
     REAL_GIT_TEST_TIMEOUT_MS,
   );
@@ -305,6 +312,7 @@ describe('external completion preflight: input and state refusals', () => {
       // The row only occupies the table; its referenced rows are not part of this check, so FK checks are off for the insert.
       attested.fx.db.pragma('foreign_keys = OFF');
       attested.fx.db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+      attested.fx.db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
       const columns = Object.keys(row);
       attested.fx.db
         .prepare(
@@ -752,7 +760,7 @@ describe('external completion preflight: golden identities', () => {
 
 describe('external completion preflight: observation and identity returns', () => {
   it.each(FORMATS)(
-    'T14 returns the observation beside an unchanged report body under %s',
+    'T14 returns the content observation beside the reviewed report under %s',
     async (objectFormat) => {
       const attested = await v2RunningAttestedFixture(objectFormat);
       const plain = await compute(attested.fx, attested.attestationId);
@@ -776,6 +784,12 @@ describe('external completion preflight: observation and identity returns', () =
         objectFormat,
         evidenceDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
         observedAt: expect.any(String),
+        contentVerification: expect.objectContaining({
+          verifier: 'content-verified-v1',
+          verifierVersion: 2,
+          status: 'verified',
+          verificationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        }),
       });
       expect(result.identity).not.toBeNull();
       expect(result.postGitIdentity).toEqual(result.identity);
@@ -794,6 +808,7 @@ describe('external completion preflight: observation and identity returns', () =
         identity: null,
         observation: null,
         postGitIdentity: null,
+        contentVerificationInput: null,
       });
     });
   });

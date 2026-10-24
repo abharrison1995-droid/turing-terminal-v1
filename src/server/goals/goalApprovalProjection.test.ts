@@ -55,6 +55,7 @@ async function requestPendingCompletion(
     throw new Error('requestPendingCompletion: the preflight is not ready');
   const action = buildExternalCompletionAction({
     ...observed.report.actionFields,
+    contentOutcomeAcknowledged: true,
     userReviewedPreflightDigest: observed.report.digest,
   });
   if (action === null) throw new Error('requestPendingCompletion: the action did not build');

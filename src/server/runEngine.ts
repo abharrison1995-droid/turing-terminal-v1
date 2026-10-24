@@ -1150,6 +1150,16 @@ export class RunEngine {
         workflow,
         {
           workload,
+          configuration: {
+            backendId: stage.backendId,
+            providerId: stage.providerId,
+            billingLane: stage.billingLane,
+            modelId: stage.modelId,
+            connectionProfileId: stage.connectionProfileId,
+            variantId: stage.variantId,
+            reasoning: stage.reasoning,
+            nativeSettings: stage.nativeSettings,
+          },
           connectionProfileId: stage.connectionProfileId ?? null,
           role: request.role,
           modelId: stage.modelId!,
@@ -1204,6 +1214,7 @@ export class RunEngine {
       contextStrategy: string | null;
       decisionEngine: string | null;
       decisionType: string | null;
+      configuration?: ModelConfiguration;
     },
     signal?: AbortSignal,
   ): MeteringHooks {

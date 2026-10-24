@@ -1,6 +1,6 @@
 # Documentation index
 
-[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins. It is canonical for release state, including the state of work a proposal describes. Release state checked 2026-10-22.
+[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins. It is canonical for release state, including the state of work a proposal describes. Release state checked 2026-10-24.
 
 Layout:
 
@@ -45,8 +45,8 @@ These were written stage by stage. Their opening status lines ("pending independ
 
 A proposal is a design record; the approved decision and the implementation state are separate, and both can change.
 
-- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): the owner decision on refusing merges that discard accepted Goal work was approved on 2026-10-21 (a new content verifier for new completions; ancestry-only records for older completions stay historical and immutable). Implementation is underway: at development HEAD `cdc590a` only the pure comparator `src/server/goals/contentTreeComparison.ts` and its test file exist. The Git collector, LFS enforcement, persistence, completion wiring and API/UI wiring remain pending, so no completion uses the verifier yet.
-- [MODEL_OPPORTUNITY_LAYER_DESIGN.md](proposals/MODEL_OPPORTUNITY_LAYER_DESIGN.md): the retention decision was approved on 2026-10-21 (90 days; references for active admission held through expiry; deletes by an explicit job). Implementation is pending: the observation storage, writer, readers and retention job are unimplemented. The separate question about historical-proof semantics after retention expiry is open and unanswered. A cost-wording correction is pending review and not integrated.
+- [GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md): the owner decision on refusing merges that discard accepted Goal work was approved on 2026-10-21 (a new content verifier for new completions; ancestry-only records for older completions stay historical and immutable). The collector, LFS refusal, persistence, completion wiring and API/UI standing are implemented on the current development branch. Full release qualification remains open; see [V1_READINESS.md](V1_READINESS.md).
+- [MODEL_OPPORTUNITY_LAYER_DESIGN.md](proposals/MODEL_OPPORTUNITY_LAYER_DESIGN.md): the retention decision was approved on 2026-10-21 (90 days; references for active admission held through expiry; deletes by an explicit job). The bounded observation store, admission proof, explicit retention job, conservative MOP-only OpenRouter reservation estimate and Board are implemented on the current development branch. Full release qualification remains open; see [V1_READINESS.md](V1_READINESS.md).
 - [GOAL_X1_AUTH_WORDING_PROPOSAL.md](proposals/GOAL_X1_AUTH_WORDING_PROPOSAL.md): wording for the authentication boundary. The underlying O1 decision is recorded: the same-user local-process residual was conditionally accepted for V1 on 2026-10-13, with live Tailscale identity-header/Host verification as its condition; O2 may be post-V1. The exact proposed prose was not separately approved.
 
 ## History

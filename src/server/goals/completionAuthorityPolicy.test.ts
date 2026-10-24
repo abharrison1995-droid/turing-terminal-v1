@@ -104,7 +104,11 @@ async function completionBody(attested: Attested): Promise<Record<string, unknow
     { allowRecordedDecision: true },
   );
   if (!report.actionFields) throw new Error('completionBody: the preflight reports no action fields');
-  return { ...report.actionFields, userReviewedPreflightDigest: report.digest };
+  return {
+    ...report.actionFields,
+    contentOutcomeAcknowledged: true,
+    userReviewedPreflightDigest: report.digest,
+  };
 }
 
 /** A second decision row for the same attestation: only the reviewed digest differs, so its action digest is new. */
@@ -156,6 +160,7 @@ function insertProofRow(db: Db, goalId: string): string {
   const row = proofRow(goalId);
   db.pragma('foreign_keys = OFF');
   db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+  db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
   const columns = Object.keys(row);
   db.prepare(
     `INSERT INTO goal_external_completion_proofs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
@@ -1346,6 +1351,16 @@ const CLOSURE: Record<string, Classified> = {
   'goals/completionAuthorityPolicy.ts': { kind: 'read-only' },
   'goals/completionEvaluation.ts': { kind: 'read-only' },
   'goals/completionPolicy.ts': { kind: 'read-only' },
+  'goals/contentTreeComparison.ts': { kind: 'read-only' },
+  'goals/contentTreeGitObservation.ts': {
+    kind: 'read-only',
+    process: 'imports node:child_process (spawn runs bounded read-only Git object queries)',
+  },
+  'goals/contentVerification.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason: 'INSERT goal_content_verifications (persistContentVerification)',
+    chain: `${VIA_EXTERNAL} -> externalCompletionProof.ts -> contentVerification.ts`,
+  },
   'goals/cycles.ts': {
     kind: 'WRITE-CAPABLE',
     reason: 'INSERT and UPDATE goal_cycles, UPDATE goal_runtime',
@@ -1406,6 +1421,20 @@ const CLOSURE: Record<string, Classified> = {
     reason: 'UPDATE goal_milestones (satisfy and reopen)',
     chain: `${VIA_HANDOFF} -> completionEvaluation.ts -> milestones.ts`,
   },
+  'modelOpportunity.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason:
+      'INSERT model_observation_refreshes and model_observations; retention job INSERT plus bounded DELETEs and UPDATE',
+    chain:
+      'completionAuthorityPolicy.ts -> attestationCorrection.ts -> approvals.ts -> opportunityEvidence.ts -> modelOpportunity.ts',
+  },
+  'opportunityEvidence.ts': {
+    kind: 'WRITE-CAPABLE',
+    reason:
+      'INSERT model_opportunity_admission_proofs after rechecking the approved binding and observations',
+    chain:
+      'completionAuthorityPolicy.ts -> attestationCorrection.ts -> approvals.ts -> opportunityEvidence.ts',
+  },
   'goals/modelFamily.ts': { kind: 'read-only' },
   'goals/readModel.ts': { kind: 'read-only' },
   'goals/remediationPlan.ts': { kind: 'read-only' },
@@ -1446,6 +1475,7 @@ const WRITE_CAPABLE = [
   'goals/approvals.ts',
   'goals/attestationCorrection.ts',
   'goals/bounds.ts',
+  'goals/contentVerification.ts',
   'goals/cycles.ts',
   'goals/definitions.ts',
   'goals/events.ts',
@@ -1457,6 +1487,8 @@ const WRITE_CAPABLE = [
   'goals/reviews.ts',
   'goals/routeResolution.ts',
   'goals/stateMachine.ts',
+  'modelOpportunity.ts',
+  'opportunityEvidence.ts',
 ];
 
 describe('completion authority classifier: static import closure ratchet (residual)', () => {

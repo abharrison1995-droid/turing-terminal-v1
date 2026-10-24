@@ -65,10 +65,7 @@ const evidenceBodyObject = z.strictObject({
   }),
 });
 
-function refineEvidence(
-  evidence: z.infer<typeof evidenceBodyObject>,
-  context: z.RefinementCtx,
-): void {
+function refineEvidence(evidence: z.infer<typeof evidenceBodyObject>, context: z.RefinementCtx): void {
   const oid = OBJECT_ID[evidence.repository.objectFormat];
   const objectIds = [
     ['source.commit', evidence.source.commit],
@@ -158,8 +155,7 @@ const MESSAGES: Record<ContentVerificationErrorCode, string> = {
   content_observation_failed: 'The content observation failed, so no verification was recorded.',
   content_observation_too_large:
     'The changed-path set exceeds the 10,000-path cap, so nothing was verified or recorded.',
-  content_verification_conflict:
-    'Stored content-verification evidence conflicts with the observation.',
+  content_verification_conflict: 'Stored content-verification evidence conflicts with the observation.',
   content_verification_persistence_failed:
     'The content verification could not be recorded, so nothing changed.',
 };
@@ -196,9 +192,7 @@ function evidenceOf(
   return evidence;
 }
 
-export function computeContentVerificationEvidenceDigest(
-  input: ContentVerificationEvidenceBody,
-): string {
+export function computeContentVerificationEvidenceDigest(input: ContentVerificationEvidenceBody): string {
   return domainDigest(CONTENT_VERIFICATION_EVIDENCE_DOMAIN, evidenceBodySchema.parse(input));
 }
 
@@ -224,17 +218,14 @@ export type ParsedContentVerificationRecord =
   | { valid: true; record: ContentVerificationRecord; digest: string }
   | { valid: false; reason: 'schema_invalid' | 'digest_mismatch' };
 
-export function parseContentVerificationRecord(
-  input: unknown,
-): ParsedContentVerificationRecord {
+export function parseContentVerificationRecord(input: unknown): ParsedContentVerificationRecord {
   const parsed = recordSchema.safeParse(input);
   if (!parsed.success) return { valid: false, reason: 'schema_invalid' };
   const { recordDigest, ...body } = parsed.data;
   const digest = computeContentVerificationRecordDigest(body);
   if (digest !== recordDigest) return { valid: false, reason: 'digest_mismatch' };
   const evidenceDigest = computeContentVerificationEvidenceDigest(evidenceOf(body));
-  if (evidenceDigest !== parsed.data.verificationDigest)
-    return { valid: false, reason: 'digest_mismatch' };
+  if (evidenceDigest !== parsed.data.verificationDigest) return { valid: false, reason: 'digest_mismatch' };
   return { valid: true, record: parsed.data, digest };
 }
 
@@ -308,8 +299,7 @@ function parseStoredRow(
   if (!parsed.valid) return { valid: false, reason: parsed.reason };
   if (contentVerificationPayloadJson(parsed.record) !== row.payload_json)
     return { valid: false, reason: 'payload_not_canonical' };
-  if (!recordMatchesRow(row, parsed.record))
-    return { valid: false, reason: 'indexed_identity_mismatch' };
+  if (!recordMatchesRow(row, parsed.record)) return { valid: false, reason: 'indexed_identity_mismatch' };
   return { valid: true, record: parsed.record };
 }
 
@@ -329,9 +319,7 @@ function getContentVerificationByDigest(
   verificationDigest: string,
 ): ContentVerificationRow | undefined {
   return db
-    .prepare(
-      'SELECT * FROM goal_content_verifications WHERE goal_id = ? AND verification_digest = ?',
-    )
+    .prepare('SELECT * FROM goal_content_verifications WHERE goal_id = ? AND verification_digest = ?')
     .get(goalId, verificationDigest) as ContentVerificationRow | undefined;
 }
 
@@ -342,6 +330,22 @@ export function readContentVerification(
 ): ContentVerificationRead {
   try {
     const row = getContentVerificationRow(db, goalId, verificationId);
+    if (!row) return { state: 'not_found' };
+    const parsed = parseStoredRow(row);
+    if (!parsed.valid) return { state: 'invalid', reason: parsed.reason };
+    return { state: 'valid', id: row.id, goalId, record: parsed.record };
+  } catch {
+    return { state: 'invalid', reason: 'integrity_check_failed' };
+  }
+}
+
+export function readContentVerificationByDigest(
+  db: Db,
+  goalId: string,
+  verificationDigest: string,
+): ContentVerificationRead {
+  try {
+    const row = getContentVerificationByDigest(db, goalId, verificationDigest);
     if (!row) return { state: 'not_found' };
     const parsed = parseStoredRow(row);
     if (!parsed.valid) return { state: 'invalid', reason: parsed.reason };
@@ -369,10 +373,9 @@ function observationStatus(observation: unknown): string | null {
   return typeof status === 'string' && DETAIL.test(status) ? status : null;
 }
 
-function isSuccessfulObservation(observation: unknown): observation is Extract<
-  ContentTreeGitObservation,
-  { ok: true }
-> {
+function isSuccessfulObservation(
+  observation: unknown,
+): observation is Extract<ContentTreeGitObservation, { ok: true }> {
   if (!observation || typeof observation !== 'object') return false;
   const candidate = observation as Record<string, unknown>;
   return (
@@ -438,21 +441,15 @@ export interface PersistedContentVerification {
   reused: boolean;
 }
 
-/**
- * Persists one successful observation under `content-verified-v1`. The comparison is computed here from the observed
- * changed paths and tree listings; a caller cannot supply a status. A failed observation, an oversized changed-path
- * set, a malformed observation or an object-ID width that disagrees with the object format is refused before any write.
- */
-export function persistContentVerification(
-  db: Db,
-  input: ContentVerificationInput,
-): PersistedContentVerification {
+export interface EvaluatedContentVerification {
+  evidence: ContentVerificationEvidenceBody;
+  verificationDigest: string;
+}
+
+/** Evaluates an observed tree comparison without writing evidence or completing a Goal. */
+export function evaluateContentVerification(input: ContentVerificationInput): EvaluatedContentVerification {
   const observation = (input as { observation?: unknown }).observation;
-  if (
-    !observation ||
-    typeof observation !== 'object' ||
-    (observation as { ok?: unknown }).ok !== true
-  )
+  if (!observation || typeof observation !== 'object' || (observation as { ok?: unknown }).ok !== true)
     throw new ContentVerificationError('content_observation_failed', observationStatus(observation));
   if (!isSuccessfulObservation(observation))
     throw new ContentVerificationError('content_verification_input_invalid', 'observation_shape');
@@ -473,8 +470,7 @@ export function persistContentVerification(
   const counted = countChangedPaths(observation.changedPaths);
   if ('malformed' in counted)
     throw new ContentVerificationError('content_verification_input_invalid', 'changed_paths');
-  if ('tooMany' in counted)
-    throw new ContentVerificationError('content_observation_too_large');
+  if ('tooMany' in counted) throw new ContentVerificationError('content_observation_too_large');
 
   let comparison: ContentTreeComparisonResult;
   try {
@@ -509,7 +505,24 @@ export function persistContentVerification(
       comparisonCommit: observation.comparisonCommit,
     },
   };
-  const verificationDigest = computeContentVerificationEvidenceDigest(evidence);
+  return {
+    evidence,
+    verificationDigest: computeContentVerificationEvidenceDigest(evidence),
+  };
+}
+
+/**
+ * Persists one successful observation under `content-verified-v1`. The comparison is computed here from the observed
+ * changed paths and tree listings; a caller cannot supply a status. A failed observation, an oversized changed-path
+ * set, a malformed observation or an object-ID width that disagrees with the object format is refused before any write.
+ */
+export function persistContentVerification(
+  db: Db,
+  input: ContentVerificationInput,
+): PersistedContentVerification {
+  const context = asContext(input);
+  if (!context) throw new ContentVerificationError('content_verification_input_invalid');
+  const { evidence, verificationDigest } = evaluateContentVerification(input);
 
   const persist = db.transaction((): PersistedContentVerification => {
     const existing = getContentVerificationByDigest(db, context.goalId, verificationDigest);
@@ -525,20 +538,14 @@ export function persistContentVerification(
 
     const now = new Date().toISOString();
     if (new Date(now).toISOString() !== now)
-      throw new ContentVerificationError(
-        'content_verification_persistence_failed',
-        'clock_not_canonical',
-      );
+      throw new ContentVerificationError('content_verification_persistence_failed', 'clock_not_canonical');
     const record = buildContentVerificationRecord({
       ...evidence,
       verificationId: randomUUID(),
       observedAt: now,
     });
     if (!record)
-      throw new ContentVerificationError(
-        'content_verification_persistence_failed',
-        'record_build_invalid',
-      );
+      throw new ContentVerificationError('content_verification_persistence_failed', 'record_build_invalid');
 
     db.prepare(
       `INSERT INTO goal_content_verifications (

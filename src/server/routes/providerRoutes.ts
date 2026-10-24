@@ -6,6 +6,13 @@ import { isValidTimeZone, systemTimeZone } from '../../shared/timezone.js';
 import type { Db } from '../db.js';
 import { budgetStatus, getBudgetSettings, saveBudgetSettings } from '../meteredBudget.js';
 import { allProviders, openRouterTelemetry } from '../modelCatalog.js';
+import { listOpportunityAdmissionTargets } from '../goals/opportunityAdmission.js';
+import {
+  listModelOpportunityObservations,
+  modelObservationRefreshesFromProviders,
+  persistModelObservationRefreshes,
+  runModelObservationRetention,
+} from '../modelOpportunity.js';
 import { SecretStore, secretRef } from '../secretStore.js';
 import { toConnectionProfile, toModelPreset } from '../serialize.js';
 import { redactSecrets } from '../security.js';
@@ -31,8 +38,34 @@ const modelPresetSchema = z.object({
 /** Provider catalogs, connection profiles and their credentials, model presets and metered budgets. */
 export function registerProviderRoutes(app: FastifyInstance, { db }: RouteContext): void {
   app.get('/api/providers', async () => ({ providers: await allProviders(db) }));
+  app.get('/api/opportunities', async (request) => {
+    const { limit } = request.query as { limit?: string };
+    const parsedLimit = limit === undefined ? 200 : Number(limit);
+    return {
+      observations: listModelOpportunityObservations(db, Number.isFinite(parsedLimit) ? parsedLimit : 200),
+      retentionDays: 90,
+      refreshRequired: true,
+    };
+  });
+  app.get('/api/opportunities/admission-targets', async () => ({
+    targets: await listOpportunityAdmissionTargets(db),
+  }));
   // Refresh live catalogs (or adapter metadata). No generation request is sent.
-  app.post('/api/providers/refresh', async () => ({ providers: await allProviders(db, { refresh: true }) }));
+  app.post('/api/providers/refresh', async (request, reply) => {
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply
+        .code(403)
+        .send({ error: 'Provider discovery and observation refresh are available on the desktop only.' });
+    const startedAt = new Date().toISOString();
+    const providers = await allProviders(db, { refresh: true });
+    persistModelObservationRefreshes(db, modelObservationRefreshesFromProviders(providers, startedAt));
+    return { providers };
+  });
+  app.post('/api/opportunities/retention', async (request, reply) => {
+    if (isRemoteRequest(request.headers, getTailscaleLogin(request.headers['tailscale-user-login'])))
+      return reply.code(403).send({ error: 'Observation retention runs are available on the desktop only.' });
+    return { retention: runModelObservationRetention(db) };
+  });
   app.get('/api/providers/openrouter/telemetry', async () => {
     const result = await openRouterTelemetry(db);
     return { ...result, provenance: 'provider_measured' };

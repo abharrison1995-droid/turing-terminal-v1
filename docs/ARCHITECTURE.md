@@ -51,7 +51,7 @@ Each stage has an independent state and an event trail. Workflow JSON is copied 
 
 The Goal Engine (shown as Grand Projects) sits above the run engine. A Goal has a versioned, user-approved definition, and the supervisor advances it one persisted step at a time. Its model work runs as ordinary bounded runs; it never rewrites `RunEngine`. Work happens on the Goal's own ref, `refs/heads/turing/goal/<goal-id>`, which is never checked out, and Turing never writes the user's base branch: a finished Goal is delivered as a manual handoff for the user to integrate. Completion, attestation and correction decisions are desktop-only.
 
-Production constructs a disabled Goal executor, so starting a Goal fails preflight and only authoring runs reach a model today. See [Goal Engine](goals/GOAL_ENGINE.md).
+Production calls `createProductionGoalComposition` and starts Goal work through `TuringGoalExecutor`, `ResolvedGoalRunPlanProvider` and ordinary bounded runs on the exact persisted route. The deterministic supervisor remains authoritative. See [Goal Engine](goals/GOAL_ENGINE.md) and the [Goal content-verification design](proposals/GOAL_CONTENT_VERIFIED_INTEGRATION_DESIGN.md).
 
 ## Desktop and PWA boundary
 

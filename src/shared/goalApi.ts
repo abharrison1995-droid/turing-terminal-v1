@@ -13,10 +13,35 @@ import type {
   GoalReviewKind,
   GoalReviewStatus,
   GoalStatus,
+  GoalRole,
+  RouteMember,
   ReviewIndependence,
   ReviewReport,
   ReviewVerdict,
 } from './goals.js';
+
+/** Read-only target and status projection for explicit Model Opportunity admission. */
+export interface GoalOpportunityAdmissionTarget {
+  goalId: string;
+  goalTitle: string;
+  definitionVersion: number;
+  definitionHash: string;
+  poolId: string;
+  poolLabel: string;
+  memberIndex: number;
+  modelId: string;
+  backendId: string;
+  providerId: string;
+  billingLane: string;
+  costClass: 'free' | 'metered' | 'unknown';
+  displayName: string;
+  observationIds: string[];
+  roles: GoalRole[];
+  member: RouteMember;
+  evidencePath: 'provider-advertised' | 'locally-discovered' | null;
+  eligibility: 'ready' | 'validation_required' | 'identity_unavailable' | 'evidence_invalid';
+  admissionStatus: 'none' | 'pending' | 'approved' | 'denied';
+}
 
 /**
  * The typed Goal HTTP surface. Pure data. Every shape here is a bounded, JSON-safe projection built by the
@@ -441,9 +466,10 @@ export interface GoalCompletionStandingClaim {
     | 'superseded_by_user'
     | 'replacement_failed'
     | 'proof_unverified'
+    | 'content_mismatch_disclosed'
     | 'legacy_not_v2_attested'
     | 'not_completed';
-  contentPreservation: 'not_proven' | 'not_applicable';
+  contentPreservation: 'verified' | 'mismatch' | 'not_proven' | 'not_applicable';
 }
 
 export type GoalCompletionStandingProof =
@@ -456,6 +482,8 @@ export type GoalCompletionStandingProof =
       approvalId: string;
       actionDigest: string;
       observedAt: string;
+      contentVerificationDigest?: string;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
       chainAtProof: { sequence: 0; digest: string; standing: 'active_uncontested' };
     }
   | { state: 'invalid'; reason: string }
@@ -849,6 +877,7 @@ export type GoalExternalCompletionPreflightCheckName =
   | 'snapshot_before'
   | 'completion_evaluation'
   | 'git_observation'
+  | 'content_verification'
   | 'snapshot_after'
   | 'assemble';
 
@@ -883,9 +912,19 @@ export interface GoalExternalCompletionPreflightReport {
     freshTree: string | null;
     objectFormat: 'sha1' | 'sha256' | null;
   };
+  contentVerification: {
+    verifier: 'content-verified-v1';
+    verifierVersion: 2;
+    status: 'verified' | 'content_not_preserved';
+    verificationDigest: string;
+    changedPathCount: number;
+    mismatchCount: number;
+    mismatchPathDigest: string;
+    comparisonCommit: string;
+  } | null;
   actionFields: Record<string, unknown> | null;
   proofLimitations: {
-    contentPreservation: 'not_proven';
+    contentPreservation: 'verified' | 'not_proven';
     goalCompletion: 'not_completed_by_preflight';
     destinationPolicy: 'exact_attested_tip';
   };
@@ -914,6 +953,8 @@ export interface GoalExternalCompletionDecisionView {
   eligibility: GoalExternalCompletionDecisionEligibility;
   /** The correction standing of the decision's attestation; null when the row is not intact. */
   correctionStanding: 'active_uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'invalid' | null;
+  /** The reviewed content outcome attached to an intact decision. */
+  contentVerificationStatus?: 'verified' | 'content_not_preserved';
 }
 
 /** The stored proof identity of a completed version-2 Goal. Historical identity: consult `completionStanding`. */
@@ -922,6 +963,8 @@ export interface GoalExternalCompletionRecord {
   proofDigest: string;
   approvalId: string;
   actionDigest: string;
+  contentVerificationDigest?: string;
+  contentVerificationStatus?: 'verified' | 'content_not_preserved';
   preflightDigest: string;
   observedAt: string;
   completedAt: string;
@@ -936,6 +979,8 @@ export interface GoalExternalCompletionStatusRecord {
   proofDigest: string;
   approvalId: string;
   actionDigest: string;
+  contentVerificationDigest?: string;
+  contentVerificationStatus?: 'verified' | 'content_not_preserved';
   attestationId: string;
   observedAt: string;
   completedAt: string;
@@ -952,7 +997,7 @@ export interface GoalExternalCompletionStatusRecord {
  */
 export interface GoalExternalCompletionStatus {
   goalId: string;
-  state: 'not_completed' | 'decided' | 'completed' | 'contested' | 'legacy' | 'invalid';
+  state: 'not_completed' | 'decided' | 'completed' | 'content_mismatch' | 'contested' | 'legacy' | 'invalid';
   decisions: GoalExternalCompletionDecisionView[];
   completion: GoalExternalCompletionStatusRecord | null;
   completionStanding: GoalCompletionStanding;

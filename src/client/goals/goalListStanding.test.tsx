@@ -18,6 +18,7 @@ import { calls, detail, detailRoutes, item, openGoal, posts, serve } from './tes
  */
 
 const NOW = '2026-01-01T00:00:00.000Z';
+const VERIFIED_SUMMARY = 'Changed content matched at the observed merge.';
 const NOT_PROVEN = 'Turing has not proven content preservation.';
 const BARE_DONE = 'This Goal is complete.';
 
@@ -31,7 +32,7 @@ const TRUSTED: CompletionStandingBrief = {
   standing: 'uncontested',
   qualifier: 'none',
   trusted: true,
-  contentPreservation: 'not_proven',
+  contentPreservation: 'verified',
 };
 type ReadyBrief = Extract<CompletionStandingBrief, { state: 'ready' }>;
 const contested = (
@@ -42,7 +43,7 @@ const contested = (
   standing,
   qualifier,
   trusted: false,
-  contentPreservation: 'not_proven',
+  contentPreservation: 'verified',
 });
 
 const completedItem = (id: string, brief?: CompletionStandingBrief | 'absent'): GoalListItem => {
@@ -62,11 +63,11 @@ const pillOf = (row: HTMLElement) => row.querySelector('[data-goal-status]') as 
 const nextOf = (row: HTMLElement) => row.querySelector('.goal-row-next') as HTMLElement;
 
 describe('Goal list: a completed row never reads as a bare Completed unless its standing is trusted', () => {
-  it('L-1 a trusted brief shows Completed with the content-not-proven detail', async () => {
+  it('L-1 a trusted brief shows Completed with the verified content detail', async () => {
     const [row] = await renderList([completedItem('goal-1', TRUSTED)]);
     expect(pillOf(row!).textContent).toBe('Completed');
     expect(nextOf(row!).textContent).toContain('Completed');
-    expect(nextOf(row!).textContent).toContain(NOT_PROVEN);
+    expect(nextOf(row!).textContent).toContain(VERIFIED_SUMMARY);
     expect(row!.textContent).not.toContain(BARE_DONE);
   });
 
@@ -89,6 +90,7 @@ describe('Goal list: a completed row never reads as a bare Completed unless its 
       expect(pillOf(row!).textContent).toBe('Completion contested');
       expect(nextOf(row!).textContent).toContain('Completion contested');
       expect(nextOf(row!).textContent).toContain(qualifierCopy);
+      expect(nextOf(row!).textContent).not.toContain(VERIFIED_SUMMARY);
       expect(nextOf(row!).textContent).not.toContain(NOT_PROVEN);
       expect(row!.textContent).not.toContain(BARE_DONE);
       expect(pillOf(row!).textContent).not.toBe('Completed');
@@ -165,13 +167,13 @@ const TRUSTED_CLAIM: GoalCompletionStandingClaim = {
   unqualifiedSuccessAllowed: true,
   trustedForDownstream: true,
   qualifier: 'none',
-  contentPreservation: 'not_proven',
+  contentPreservation: 'verified',
 };
 const DISPUTED_CLAIM: GoalCompletionStandingClaim = {
   unqualifiedSuccessAllowed: false,
   trustedForDownstream: false,
   qualifier: 'disputed_by_user',
-  contentPreservation: 'not_proven',
+  contentPreservation: 'verified',
 };
 
 async function openCompleted(completionStanding?: GoalCompletionStanding) {
@@ -183,10 +185,10 @@ async function openCompleted(completionStanding?: GoalCompletionStanding) {
 }
 
 describe('Goal Overview and cockpit header: a completed Goal uses its saved standing', () => {
-  it('L-8 the Overview card of a trusted completed Goal says Completed with the not-proven summary', async () => {
+  it('L-8 the Overview card of a trusted completed Goal says Completed with the verified content summary', async () => {
     const card = await openCompleted(standing('uncontested', TRUSTED_CLAIM));
     expect(card.querySelector('strong')?.textContent).toBe('Completed');
-    expect(card.textContent).toContain(NOT_PROVEN);
+    expect(card.textContent).toContain(VERIFIED_SUMMARY);
     expect(card.textContent).not.toContain(BARE_DONE);
   });
 

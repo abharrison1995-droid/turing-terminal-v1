@@ -520,8 +520,21 @@ export class GoalSupervisor {
         (approval) =>
           approval.gate === 'pool_route_first_use' &&
           approval.detail.poolId === request.poolId &&
-          approval.detail.memberIdentityHash === request.memberIdentityHash,
+          approval.detail.memberIdentityHash === request.memberIdentityHash &&
+          (request.admissionKind === 'opportunity'
+            ? approval.detail.admissionKind === 'opportunity' &&
+              approval.detail.memberIndex === request.memberIndex &&
+              approval.requestedBy === 'user' &&
+              approval.risk === 'medium' &&
+              approval.detail.opportunityDigest === request.opportunityDigest &&
+              JSON.stringify(approval.detail.observationIds) === JSON.stringify(request.observationIds)
+            : approval.detail.admissionKind !== 'opportunity'),
       );
+      if (request.admissionKind === 'opportunity') {
+        if (!existing)
+          throw new Error('Opportunity route requires a matching user-requested admission approval.');
+        return existing;
+      }
       return (
         existing ??
         requestGoalApproval(this.db, {
@@ -534,12 +547,23 @@ export class GoalSupervisor {
               300,
             ),
           requestedBy: 'supervisor',
-          detail: {
-            poolId: request.poolId,
-            memberIdentityHash: request.memberIdentityHash,
-            role: request.role,
-            memberIndex: request.memberIndex,
-          },
+          detail:
+            request.admissionKind === 'opportunity'
+              ? {
+                  schemaVersion: 1,
+                  admissionKind: 'opportunity',
+                  poolId: request.poolId,
+                  memberIndex: request.memberIndex,
+                  memberIdentityHash: request.memberIdentityHash,
+                  opportunityDigest: request.opportunityDigest,
+                  observationIds: request.observationIds,
+                }
+              : {
+                  poolId: request.poolId,
+                  memberIdentityHash: request.memberIdentityHash,
+                  role: request.role,
+                  memberIndex: request.memberIndex,
+                },
           now: this.now(),
         })
       );
