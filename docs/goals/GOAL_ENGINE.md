@@ -1,6 +1,6 @@
 # Goal Engine (Grand Projects)
 
-An overview of the Goal Engine as implemented on the current development branch, checked on 2026-10-24. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
+An overview of the Goal Engine as merged into master through PR #15, checked on 2026-10-25. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
 
 ## What it is
 

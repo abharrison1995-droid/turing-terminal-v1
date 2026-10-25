@@ -1,0 +1,304 @@
+{
+  "schema": "turing-v1-live-qualification-evidence-v1",
+  "source": "Locally observed real production API/RunEngine/adapter workflow; not a provider invoice or physical-device test",
+  "commit": "6e5119f7e59220f8a825cefecf9b28b578e8bbb0",
+  "backendVersion": "OpenCode 1.19.3",
+  "route": {
+    "backendId": "opencode",
+    "providerId": "opencode-go",
+    "modelId": "opencode-go/beam-free",
+    "billingLane": "opencode-go-subscription"
+  },
+  "billingMode": "subscriptions-only",
+  "billingEvaluator": {
+    "allowed": true,
+    "metered": false,
+    "reason": null
+  },
+  "providerSideFallbackStatus": "unverifiable",
+  "providerAllowance": "unavailable",
+  "startedAt": "2026-10-25T20:11:38.320Z",
+  "finishedAt": "2026-10-25T20:12:09.820Z",
+  "runId": "3f428feb-c029-485f-912b-8832387da4ce",
+  "runStatus": "completed",
+  "summary": "Workflow completed across 3 stages with 0 recorded review findings.",
+  "stages": [
+    {
+      "id": "41e262df-7aa4-420d-86ca-174a2c6298aa",
+      "stageKey": "plan",
+      "kind": "planner",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "billingLane": "opencode-go-subscription",
+      "variantId": null,
+      "modelSnapshot": {
+        "providerId": "opencode-go",
+        "modelId": "opencode-go/beam-free",
+        "displayName": "Beam Free",
+        "connectionProfileName": null,
+        "billingLane": "opencode-go-subscription",
+        "capabilities": {
+          "input": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "output": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "variants": ["low", "medium", "high", "xhigh", "max"],
+          "supportsTools": null
+        },
+        "discoveredAt": "2026-10-25T20:11:41.739Z",
+        "adapterVersion": "1.19.3",
+        "status": "current",
+        "identity": "pinned",
+        "reasoningControl": "variant"
+      },
+      "status": "passed",
+      "startedAt": "2026-10-25T20:11:41.757Z",
+      "finishedAt": "2026-10-25T20:11:49.511Z",
+      "output": {
+        "text": "Create broker-smoke.txt with the exact content \"Turing Go subscription broker handoff passed.\\n\" through the Turing broker and verify the file matches byte-for-byte.",
+        "inputTokens": null,
+        "outputTokens": null,
+        "usageProvenance": "unavailable"
+      },
+      "error": null
+    },
+    {
+      "id": "b968d324-f566-4cca-9f94-87f9c6d4e630",
+      "stageKey": "implement",
+      "kind": "implementer",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "billingLane": "opencode-go-subscription",
+      "variantId": null,
+      "modelSnapshot": {
+        "providerId": "opencode-go",
+        "modelId": "opencode-go/beam-free",
+        "displayName": "Beam Free",
+        "connectionProfileName": null,
+        "billingLane": "opencode-go-subscription",
+        "capabilities": {
+          "input": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "output": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "variants": ["low", "medium", "high", "xhigh", "max"],
+          "supportsTools": null
+        },
+        "discoveredAt": "2026-10-25T20:11:41.739Z",
+        "adapterVersion": "1.19.3",
+        "status": "current",
+        "identity": "pinned",
+        "reasoningControl": "variant"
+      },
+      "status": "passed",
+      "startedAt": "2026-10-25T20:11:49.511Z",
+      "finishedAt": "2026-10-25T20:12:00.130Z",
+      "output": {
+        "text": "broker-smoke.txt created and verified with exact content.",
+        "inputTokens": null,
+        "outputTokens": null,
+        "usageProvenance": "unavailable"
+      },
+      "error": null
+    },
+    {
+      "id": "fc98473e-e894-49a5-8664-aac2239146a1",
+      "stageKey": "review",
+      "kind": "reviewer",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "billingLane": "opencode-go-subscription",
+      "variantId": null,
+      "modelSnapshot": {
+        "providerId": "opencode-go",
+        "modelId": "opencode-go/beam-free",
+        "displayName": "Beam Free",
+        "connectionProfileName": null,
+        "billingLane": "opencode-go-subscription",
+        "capabilities": {
+          "input": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "output": {
+            "text": true,
+            "audio": false,
+            "image": false,
+            "video": false,
+            "pdf": false
+          },
+          "variants": ["low", "medium", "high", "xhigh", "max"],
+          "supportsTools": null
+        },
+        "discoveredAt": "2026-10-25T20:11:41.739Z",
+        "adapterVersion": "1.19.3",
+        "status": "current",
+        "identity": "pinned",
+        "reasoningControl": "variant"
+      },
+      "status": "passed",
+      "startedAt": "2026-10-25T20:12:00.131Z",
+      "finishedAt": "2026-10-25T20:12:08.908Z",
+      "output": {
+        "text": "{\"findings\":[]}",
+        "inputTokens": null,
+        "outputTokens": null,
+        "usageProvenance": "unavailable",
+        "findings": [],
+        "findingCount": 0
+      },
+      "error": null
+    }
+  ],
+  "operations": [
+    {
+      "id": "f5aa2733-b678-40ea-889d-dbbc525c4a2d",
+      "stageId": "b968d324-f566-4cca-9f94-87f9c6d4e630",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "role": "implementer",
+      "operationType": "file_write",
+      "action": {
+        "content": "[omitted 46 characters]",
+        "path": "broker-smoke.txt"
+      },
+      "classification": "routine",
+      "approvalRequired": false,
+      "status": "completed",
+      "createdAt": "2026-10-25T20:11:58.267Z",
+      "finishedAt": "2026-10-25T20:11:58.268Z",
+      "exitCode": 0
+    },
+    {
+      "id": "51f28d77-df48-458d-8bee-bb578581a752",
+      "stageId": "b968d324-f566-4cca-9f94-87f9c6d4e630",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "role": "implementer",
+      "operationType": "file_read",
+      "action": {
+        "path": "broker-smoke.txt"
+      },
+      "classification": "routine",
+      "approvalRequired": false,
+      "status": "completed",
+      "createdAt": "2026-10-25T20:11:59.002Z",
+      "finishedAt": "2026-10-25T20:11:59.003Z",
+      "exitCode": 0
+    },
+    {
+      "id": "dadea1a3-36b9-4a06-a6e4-ba829bf6dfaf",
+      "stageId": "fc98473e-e894-49a5-8664-aac2239146a1",
+      "backendId": "opencode",
+      "providerId": "opencode-go",
+      "modelId": "opencode-go/beam-free",
+      "role": "reviewer",
+      "operationType": "file_read",
+      "action": {
+        "path": "broker-smoke.txt"
+      },
+      "classification": "routine",
+      "approvalRequired": false,
+      "status": "completed",
+      "createdAt": "2026-10-25T20:12:08.109Z",
+      "finishedAt": "2026-10-25T20:12:08.109Z",
+      "exitCode": 0
+    }
+  ],
+  "usage": [
+    {
+      "id": "49f469c6-101e-4cf4-9b86-f6b20cab1dfc",
+      "stage_id": "41e262df-7aa4-420d-86ca-174a2c6298aa",
+      "request_id": "53daa376-1d26-4f15-9d59-f450f9e9b0bf",
+      "backend": "opencode",
+      "provider_id": "opencode-go",
+      "model_id": "opencode-go/beam-free",
+      "billing_lane": "opencode-go-subscription",
+      "request_count": 1,
+      "status": "succeeded",
+      "input_tokens": 268,
+      "output_tokens": null,
+      "provenance": "estimated",
+      "actual_cost_usd": null,
+      "actual_cost_provenance": "unavailable",
+      "reconciliation_state": "locally_estimated",
+      "estimated_input_tokens": 268,
+      "estimated_output_tokens": null,
+      "observations_json": "[{\"source\":\"turing-preflight-estimate\",\"provenance\":\"estimated\",\"inputTokens\":268,\"outputTokens\":null,\"actualCostUsd\":null,\"estimatedCostUsd\":null,\"observedAt\":\"2026-10-25T20:11:41.767Z\"},{\"source\":\"opencode-adapter\",\"provenance\":\"unavailable\",\"inputTokens\":null,\"cachedInputTokens\":null,\"cacheWriteTokens\":null,\"reasoningTokens\":null,\"outputTokens\":null,\"actualCostUsd\":null,\"observedAt\":\"2026-10-25T20:11:49.510Z\"}]"
+    },
+    {
+      "id": "dbc60c16-dd57-4480-9910-a82406dcbebb",
+      "stage_id": "b968d324-f566-4cca-9f94-87f9c6d4e630",
+      "request_id": "a8daa067-8bcb-4bd4-98bd-b1c90f7d5c48",
+      "backend": "opencode",
+      "provider_id": "opencode-go",
+      "model_id": "opencode-go/beam-free",
+      "billing_lane": "opencode-go-subscription",
+      "request_count": 1,
+      "status": "succeeded",
+      "input_tokens": 391,
+      "output_tokens": null,
+      "provenance": "estimated",
+      "actual_cost_usd": null,
+      "actual_cost_provenance": "unavailable",
+      "reconciliation_state": "locally_estimated",
+      "estimated_input_tokens": 391,
+      "estimated_output_tokens": null,
+      "observations_json": "[{\"source\":\"turing-preflight-estimate\",\"provenance\":\"estimated\",\"inputTokens\":391,\"outputTokens\":null,\"actualCostUsd\":null,\"estimatedCostUsd\":null,\"observedAt\":\"2026-10-25T20:11:49.519Z\"},{\"source\":\"opencode-adapter\",\"provenance\":\"unavailable\",\"inputTokens\":null,\"cachedInputTokens\":null,\"cacheWriteTokens\":null,\"reasoningTokens\":null,\"outputTokens\":null,\"actualCostUsd\":null,\"observedAt\":\"2026-10-25T20:12:00.121Z\"}]"
+    },
+    {
+      "id": "bdb4b350-c7ed-4fe1-b058-05c9cf98ad18",
+      "stage_id": "fc98473e-e894-49a5-8664-aac2239146a1",
+      "request_id": "d2f5ae4a-6db8-42a2-8e1c-73b374b28a0f",
+      "backend": "opencode",
+      "provider_id": "opencode-go",
+      "model_id": "opencode-go/beam-free",
+      "billing_lane": "opencode-go-subscription",
+      "request_count": 1,
+      "status": "succeeded",
+      "input_tokens": 432,
+      "output_tokens": null,
+      "provenance": "estimated",
+      "actual_cost_usd": null,
+      "actual_cost_provenance": "unavailable",
+      "reconciliation_state": "locally_estimated",
+      "estimated_input_tokens": 432,
+      "estimated_output_tokens": null,
+      "observations_json": "[{\"source\":\"turing-preflight-estimate\",\"provenance\":\"estimated\",\"inputTokens\":432,\"outputTokens\":null,\"actualCostUsd\":null,\"estimatedCostUsd\":null,\"observedAt\":\"2026-10-25T20:12:00.148Z\"},{\"source\":\"opencode-adapter\",\"provenance\":\"unavailable\",\"inputTokens\":null,\"cachedInputTokens\":null,\"cacheWriteTokens\":null,\"reasoningTokens\":null,\"outputTokens\":null,\"actualCostUsd\":null,\"observedAt\":\"2026-10-25T20:12:08.908Z\"}]"
+    }
+  ],
+  "file": {
+    "path": "broker-smoke.txt",
+    "content": "Turing Go subscription broker handoff passed.\n",
+    "bytes": 46,
+    "sha256": "4f20d1496862c120d9acc5ac4485ef050bf8d47ae879226d550d9a2b8961ee67"
+  }
+}

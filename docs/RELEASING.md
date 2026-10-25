@@ -8,7 +8,7 @@ The `Desktop installers` workflow runs on `workflow_dispatch` and on the tags li
 
 To prepare the RC tag after those checks pass:
 
-The tag `v1.0.0-rc3` is listed in the workflow configuration only. No RC3 has been cut: the tag does not exist, no desktop-installer run has happened for it, and the version metadata in the repository is preparation rather than a published release.
+The tag `v1.0.0-rc3` is listed in the workflow configuration only. The tag and GitHub Release do not exist. A manual qualification build on merged master is recorded in [V1_READINESS.md](V1_READINESS.md); `workflow_dispatch` builds artifacts without creating a tag or publishing a release.
 
 ```sh
 git status --short

@@ -1,6 +1,6 @@
 # Turing Terminal v1.0.0-rc3
 
-Draft release notes only. No RC3 tag, installer artifact, or release has been published. Current qualification status is in [V1_READINESS.md](V1_READINESS.md).
+Draft release notes only. No RC3 tag or GitHub Release has been published. Manual installer qualification artifacts are tracked in [V1_READINESS.md](V1_READINESS.md). Current qualification status is in [V1_READINESS.md](V1_READINESS.md).
 
 ## Artifacts
 
@@ -22,7 +22,7 @@ Carried over from rc2: the bundled Desktop Master remains the source of truth an
 
 ## Pending
 
-Physical acceptance on Windows and Linux PCs, iPhone pairing and remote-run checks over Tailscale, second-machine isolation, notification checks, and Claude subscription validation after the provider allowance reset. No live provider run has been made since RC2, so no live OpenRouter or Jev request exists for RC3 either; those paths remain covered by deterministic tests with mocked responses. Live-provider, physical-device, Windows, restart and release qualification for the current development branch remain open. Release state and open gates are tracked in [V1_READINESS.md](V1_READINESS.md).
+Physical acceptance on Windows and Linux PCs, iPhone pairing and remote-run checks over Tailscale, second-machine isolation, notification checks, and Claude subscription validation after the provider allowance reset. A current-master OpenCode Go Beam Free subscription-lane Planner → Implementer → Reviewer workflow passed on 2026-10-25 with three successful broker operations. Codex current-code, Claude post-reset and ClinePass live validation remain unvalidated. No live OpenRouter or Jev request is recorded; those optional paths remain covered by mocked deterministic tests. Physical-device, Windows, restart and release qualification remain open. Release state and open gates are tracked in [V1_READINESS.md](V1_READINESS.md).
 
 ## Release state
 

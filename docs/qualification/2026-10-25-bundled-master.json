@@ -1,0 +1,75 @@
+{
+  "commit": "6e5119f7e59220f8a825cefecf9b28b578e8bbb0",
+  "kind": "Fresh desktop resource build and bundled Master subprocess restart; not a native installer or physical GUI test",
+  "commands": [
+    "git archive HEAD | tar -x -C <disposable-source>",
+    "npm ci",
+    "npm run desktop:prepare",
+    "node /tmp/turing-v1-qualification-20261025/recovery.mjs"
+  ],
+  "inventory": {
+    "version": "1.0.0-rc3",
+    "migrationCount": 32,
+    "runtimeBytes": 124835376,
+    "runtimeSha256": "93956de2e59480474a7b46571da1651180b1a050cdf32641ebec4ce6e478e068",
+    "sqlitePrebuilds": ["linux-x64.node"],
+    "devPackagesPresent": [],
+    "symlinks": [],
+    "compiledVersion": "export const APP_VERSION = '1.0.0-rc3';\n//# sourceMappingURL=version.js.map",
+    "fileCount": 8721
+  },
+  "recovery": {
+    "runId": "ae44ff28-da62-4a0e-8e03-4b46a24d1496",
+    "startedAt": "2026-10-25T20:16:55.163Z",
+    "finishedAt": "2026-10-25T20:16:56.134Z",
+    "before": {
+      "status": "queued"
+    },
+    "health": {
+      "ok": true,
+      "service": "turing-terminal",
+      "version": "1.0.0-rc3",
+      "localOnly": true
+    },
+    "afterFirstStart": "waiting_for_approval",
+    "afterApproval": "completed",
+    "afterRestart": "completed",
+    "events": [
+      {
+        "type": "approval_decided",
+        "count": 1
+      },
+      {
+        "type": "approval_requested",
+        "count": 1
+      },
+      {
+        "type": "run_completed",
+        "count": 1
+      },
+      {
+        "type": "run_queued",
+        "count": 1
+      },
+      {
+        "type": "run_recovered_after_restart",
+        "count": 1
+      },
+      {
+        "type": "stage_completed",
+        "count": 1
+      },
+      {
+        "type": "stage_started",
+        "count": 1
+      },
+      {
+        "type": "working_copy_ready",
+        "count": 1
+      }
+    ],
+    "usageRows": 0,
+    "brokerOperations": 0,
+    "fixture": "Persisted ordinary queued humanApproval workflow before starting the fresh bundled production Master; approved, completed, stopped and started a second time"
+  }
+}

@@ -1,6 +1,6 @@
 # Content-verified integration: approved design and implementation record
 
-Status (2026-10-24): **Implemented on the development branch; release qualification remains open.** The owner decisions from 2026-10-21 are recorded in section 6. Migration 033, the read-only Git collector and comparator, immutable evidence persistence, completion preflight/decision binding, API/UI standing and regression coverage are present. New completions require verified content evidence; a mismatch is not successful delivery through Policy B. Existing ancestry-only proofs remain immutable and historical. The verifier performs no Git writes. See [V1_READINESS.md](../V1_READINESS.md) for the current gate and release state.
+Status (2026-10-25): **Merged into master through PR #15; release qualification remains open.** The owner decisions from 2026-10-21 are recorded in section 6. Migration 033, the read-only Git collector and comparator, immutable evidence persistence, completion preflight/decision binding, API/UI standing and regression coverage are present. New completions require verified content evidence; a mismatch is not successful delivery through Policy B. Existing ancestry-only proofs remain immutable and historical. The verifier performs no Git writes. See [V1_READINESS.md](../V1_READINESS.md) for the current gate and release state.
 
 Owner rule (decision d3e4, 2026-10-17): a merge that demonstrably discards accepted Goal work must not count as successful delivery. Ancestry alone is not proof that content was preserved.
 
@@ -131,4 +131,4 @@ Two further constraints come from the same decision record:
 - **Existing ancestry-only records stay immutable and historical.** They are not rewritten and not re-verified; they keep their digests and their `not_proven` standing.
 - **v1 keeps its existing proof and schema constraints.** Migrations 026 and 027 keep their `CHECK` constraints and triggers for v1 rows, and the v1 completion path is unchanged.
 
-Every question this proposal raised is decided. The approved policy is implemented on the current development branch; release qualification is tracked separately.
+Every question this proposal raised is decided. The approved policy is merged into master through PR #15; release qualification is tracked separately.
