@@ -34,7 +34,7 @@ The stage-by-stage record up to 2026-10-20 is frozen in [history/V1_READINESS_LO
 ## Software gates
 
 - **Public push/PR CI:** Pass on `master` only: [run 39523812376](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/39523812376), SHA `6533844281d2ff9cf688286188ac35596b2bbb22`.
-- **Development PR CI:** PR #15's required CI passed on initial PR head `e7aa9a5`: [run 40208316817](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40208316817). A readiness-record-only update is being validated on the current PR head.
+- **Development PR CI:** PR #15's required CI passed on initial PR head `e7aa9a5`: [run 40208316817](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40208316817), and on the readiness-update head `31672e4`: [run 40210473113](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40210473113).
 - **Clean dependency install:** `npm ci` passed on the current working tree (629 packages); it reported zero vulnerabilities after the lockfile remediation.
 - **Formatting, lint, typecheck:** `npm run format:check`, `npm run lint` and `npm run typecheck` passed after the final source changes on 2026-10-24. Formatting was rerun after this readiness-record update.
 - **Full tests:** The current-tree `npm test` gate passed on 2026-10-24: 232 test files and 4,118 tests passed in 1,234.59 seconds. This includes the previously stale fixtures/assertions, completion mismatch and proof-binding cases, and Model Opportunity Board tests.
