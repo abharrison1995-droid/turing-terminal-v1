@@ -6,11 +6,12 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
 import { goalApp } from './apiKit.js';
+import { decideGoalApproval, getGoalApproval, requestGoalApproval } from './approvals.js';
 import { approveDefinition, createGoalDraft } from './definitions.js';
 import { simpleDefinition } from './repoKit.js';
 
 /**
- * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the five
+ * Desktop-only authority: the server refuses PAIRED REMOTE callers (Tailscale identity header plus a paired device cookie) on the six
  * user-only Goal authority routes. The only remote signal is the existing predicate, isRemoteRequest in routes/requestIdentity.ts.
  * Local callers keep today's behaviour. This does NOT distinguish the desktop UI from another same-user local process (S1b, owner
  * decision pending).
@@ -55,7 +56,7 @@ interface Call {
   payload: unknown;
 }
 
-/** The five guarded routes, addressed by ids that do not exist: the guard must answer before any lookup. */
+/** The six guarded routes, addressed by ids that do not exist: the guard must answer before any lookup. */
 function desktopOnlyCalls(goalId: string): Call[] {
   return [
     {
@@ -70,6 +71,11 @@ function desktopOnlyCalls(goalId: string): Call[] {
     },
     { method: 'POST', url: `/api/goals/${goalId}/completion-decision`, payload: {} },
     { method: 'POST', url: `/api/goals/${goalId}/completion`, payload: {} },
+    {
+      method: 'POST',
+      url: `/api/goals/${goalId}/definitions/1/opportunity-admissions`,
+      payload: { poolId: 'reviewers', memberIndex: 0 },
+    },
     {
       method: 'POST',
       url: `/api/goals/${goalId}/attestation-corrections/approval-missing/decision`,
@@ -205,6 +211,9 @@ describe('desktop-only Goal authority routes', () => {
     });
     expect(pause.statusCode).not.toBe(403);
     expect(JSON.parse(pause.body).code).not.toBe(DESKTOP_REFUSAL);
+
+    const refresh = await app.inject({ method: 'POST', url: '/api/providers/refresh', headers });
+    expect(refresh.statusCode).toBe(403);
   });
 
   it('(d) an identity header without the device cookie is still 401, not 403', async () => {
@@ -255,6 +264,201 @@ describe('desktop-only Goal authority routes', () => {
   });
 });
 
+describe('final-acceptance desktop-only decision boundary', () => {
+  const pendingFinalAcceptance = (reason = 'Accept the result') =>
+    requestGoalApproval(db, {
+      goalId: seededGoalId,
+      gate: 'final_acceptance',
+      risk: 'medium',
+      reason,
+      requestedBy: 'system',
+    });
+
+  const storedRow = (approvalId: string) =>
+    db.prepare('SELECT status, decided_by, responded_at FROM goal_approvals WHERE id = ?').get(approvalId);
+
+  async function postDecision(approvalId: string, payload: unknown, headers?: Record<string, string>) {
+    return app.inject({
+      method: 'POST',
+      url: `/api/goal-approvals/${approvalId}/decision`,
+      payload: payload as object,
+      ...(headers ? { headers } : {}),
+    });
+  }
+
+  it('refuses a paired remote pending final_acceptance row before body validation and writes nothing', async () => {
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const headers = { 'tailscale-user-login': TAILSCALE_LOGIN, cookie };
+    const approval = pendingFinalAcceptance();
+    const before = snapshot();
+    const rowBefore = storedRow(approval.id);
+
+    // An invalid body cannot change the order: the stored-row refusal is answered first.
+    expectDesktopRefusal(
+      await postDecision(approval.id, { decision: 'approved', unexpected: true }, headers),
+    );
+    expectDesktopRefusal(await postDecision(approval.id, { decision: 'approved' }, headers));
+
+    expect(storedRow(approval.id)).toEqual(rowBefore);
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending', decidedBy: null });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('keeps a local final_acceptance decision allowed', async () => {
+    const approval = pendingFinalAcceptance();
+    const response = await postDecision(approval.id, { decision: 'approved' });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      approvalId: approval.id,
+      status: 'approved',
+      changed: true,
+    });
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'approved', decidedBy: 'user' });
+  });
+
+  it('keeps ordinary body validation for a local final_acceptance row', async () => {
+    const approval = pendingFinalAcceptance();
+    const response = await postDecision(approval.id, { decision: 'maybe' });
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({ code: 'invalid_request' });
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending' });
+  });
+
+  it('keeps an unknown remote approval id as the ordinary 404', async () => {
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const response = await postDecision(
+      'approval-does-not-exist',
+      { decision: 'approved' },
+      {
+        'tailscale-user-login': TAILSCALE_LOGIN,
+        cookie,
+      },
+    );
+    expect(response.statusCode).toBe(404);
+    expect(JSON.parse(response.body)).toMatchObject({ code: 'approval_not_found' });
+  });
+
+  it.each(['each_cycle', 'final_apply'] as const)(
+    'keeps a remote %s gate allowed: the guard is not widened beyond final_acceptance',
+    async (gate) => {
+      const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+      const approval = requestGoalApproval(db, {
+        goalId: seededGoalId,
+        gate,
+        risk: gate === 'final_apply' ? 'high' : 'medium',
+        reason: `Remote ${gate} decision`,
+        requestedBy: 'system',
+      });
+      const response = await postDecision(
+        approval.id,
+        { decision: 'approved' },
+        {
+          'tailscale-user-login': TAILSCALE_LOGIN,
+          cookie,
+        },
+      );
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toMatchObject({
+        approvalId: approval.id,
+        status: 'approved',
+        changed: true,
+      });
+    },
+  );
+
+  it('returns an idempotent 200 with changed=false for an already-approved remote final_acceptance row', async () => {
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const approval = pendingFinalAcceptance();
+    decideGoalApproval(db, {
+      goalId: seededGoalId,
+      approvalId: approval.id,
+      decision: 'approved',
+      decidedBy: 'user',
+    });
+    const before = snapshot();
+
+    const response = await postDecision(
+      approval.id,
+      { decision: 'approved' },
+      {
+        'tailscale-user-login': TAILSCALE_LOGIN,
+        cookie,
+      },
+    );
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      approvalId: approval.id,
+      status: 'approved',
+      changed: false,
+    });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('returns 409 already_decided for an already-denied remote final_acceptance row', async () => {
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const approval = pendingFinalAcceptance();
+    decideGoalApproval(db, {
+      goalId: seededGoalId,
+      approvalId: approval.id,
+      decision: 'denied',
+      decidedBy: 'user',
+    });
+    const before = snapshot();
+
+    const response = await postDecision(
+      approval.id,
+      { decision: 'approved' },
+      {
+        'tailscale-user-login': TAILSCALE_LOGIN,
+        cookie,
+      },
+    );
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toMatchObject({ code: 'already_decided' });
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'denied' });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('projects a pending final_acceptance row identically in unified and dashboard, read-only only for remote', async () => {
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const remoteHeaders = { 'tailscale-user-login': TAILSCALE_LOGIN, cookie };
+    const approval = pendingFinalAcceptance();
+
+    const localUnified = await app.inject({ method: 'GET', url: '/api/approvals/unified?status=pending' });
+    const remoteUnified = await app.inject({
+      method: 'GET',
+      url: '/api/approvals/unified?status=pending',
+      headers: remoteHeaders,
+    });
+    const localDashboard = await app.inject({ method: 'GET', url: '/api/dashboard' });
+    const remoteDashboard = await app.inject({
+      method: 'GET',
+      url: '/api/dashboard',
+      headers: remoteHeaders,
+    });
+
+    const find = (body: string, key: 'approvals') =>
+      (JSON.parse(body)[key] as Array<Record<string, unknown>>).find((row) => row.id === approval.id);
+    const unifiedLocal = find(localUnified.body, 'approvals');
+    const unifiedRemote = find(remoteUnified.body, 'approvals');
+    const dashboardLocal = (
+      JSON.parse(localDashboard.body).goalApprovals.approvals as Array<Record<string, unknown>>
+    ).find((row) => row.id === approval.id);
+    const dashboardRemote = (
+      JSON.parse(remoteDashboard.body).goalApprovals.approvals as Array<Record<string, unknown>>
+    ).find((row) => row.id === approval.id);
+
+    expect(unifiedLocal).toMatchObject({ status: 'pending', decidable: true });
+    expect(dashboardLocal).toMatchObject({ status: 'pending', decidable: true });
+    expect(unifiedLocal).not.toHaveProperty('desktopOnly');
+    expect(dashboardLocal).not.toHaveProperty('desktopOnly');
+
+    expect(unifiedRemote).toMatchObject({ status: 'pending', decidable: false, desktopOnly: true });
+    expect(dashboardRemote).toMatchObject({ status: 'pending', decidable: false, desktopOnly: true });
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending' });
+  });
+});
+
 /**
  * Drift guard (static, text-based). Route registrations are found with a regular expression over the source text, not by
  * running the router. Each handler body is the text from its registration to the next registration. The check is
@@ -263,14 +467,19 @@ describe('desktop-only Goal authority routes', () => {
 describe('desktop-only drift guard over goalRoutes.ts', () => {
   const source = readFileSync(new URL('./goalRoutes.ts', import.meta.url), 'utf8');
 
-  // Keyed "METHOD path". Exactly these five may call requireDesktopCaller, and each must call it before any body or reply use.
+  // Keyed "METHOD path". Exactly these six may call requireDesktopCaller, and each must call it before any body or reply use.
   const DESKTOP_ONLY = new Set([
     'POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections',
     'POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attest',
     'POST /api/goals/:goalId/completion-decision',
     'POST /api/goals/:goalId/completion',
+    'POST /api/goals/:goalId/definitions/:version/opportunity-admissions',
     'POST /api/goals/:goalId/attestation-corrections/:approvalId/decision',
   ]);
+
+  // One conditional exception: a paired remote caller is refused only for a stored pending final_acceptance row. Every
+  // other gate, a local caller and an unknown id keep the ordinary decision behaviour.
+  const CONDITIONAL_DESKTOP_ONLY = new Set(['POST /api/goal-approvals/:approvalId/decision']);
 
   // Every other non-GET route, which must NOT call requireDesktopCaller.
   const MOBILE_OR_LOCAL = new Set([
@@ -285,7 +494,6 @@ describe('desktop-only drift guard over goalRoutes.ts', () => {
     'POST /api/goals/:goalId/pause',
     'POST /api/goals/:goalId/abandon',
     'POST /api/goals/:goalId/findings/:findingId/decision',
-    'POST /api/goal-approvals/:approvalId/decision',
   ]);
 
   const registrations = [...source.matchAll(/app\.(get|post|put|patch|delete)\(\s*'([^']+)'/g)].map(
@@ -308,15 +516,26 @@ describe('desktop-only drift guard over goalRoutes.ts', () => {
     expect(nonGet.length).toBeGreaterThan(0);
   });
 
+  const classified = (key: string) =>
+    DESKTOP_ONLY.has(key) || CONDITIONAL_DESKTOP_ONLY.has(key) || MOBILE_OR_LOCAL.has(key);
+
   it('classifies every non-GET route in exactly one list, with no stale entries', () => {
     const keys = nonGet.map((route) => route.key);
-    const unclassified = keys.filter((key) => !DESKTOP_ONLY.has(key) && !MOBILE_OR_LOCAL.has(key));
-    const overlapping = keys.filter((key) => DESKTOP_ONLY.has(key) && MOBILE_OR_LOCAL.has(key));
-    const stale = [...DESKTOP_ONLY, ...MOBILE_OR_LOCAL].filter((key) => !keys.includes(key));
+    const unclassified = keys.filter((key) => !classified(key));
+    const overlapping = keys.filter(
+      (key) =>
+        Number(DESKTOP_ONLY.has(key)) +
+          Number(CONDITIONAL_DESKTOP_ONLY.has(key)) +
+          Number(MOBILE_OR_LOCAL.has(key)) >
+        1,
+    );
+    const stale = [...DESKTOP_ONLY, ...CONDITIONAL_DESKTOP_ONLY, ...MOBILE_OR_LOCAL].filter(
+      (key) => !keys.includes(key),
+    );
     expect(unclassified).toEqual([]);
     expect(overlapping).toEqual([]);
     expect(stale).toEqual([]);
-    expect(DESKTOP_ONLY.size + MOBILE_OR_LOCAL.size).toBe(nonGet.length);
+    expect(DESKTOP_ONLY.size + CONDITIONAL_DESKTOP_ONLY.size + MOBILE_OR_LOCAL.size).toBe(nonGet.length);
   });
 
   it('every DESKTOP_ONLY handler calls requireDesktopCaller(request) before any body parse or reply use', () => {
@@ -335,7 +554,65 @@ describe('desktop-only drift guard over goalRoutes.ts', () => {
     }
   });
 
-  it('the file calls requireDesktopCaller exactly five times (one per DESKTOP_ONLY route)', () => {
-    expect(source.split('requireDesktopCaller(').length - 1).toBe(DESKTOP_ONLY.size);
+  it('the conditional decision handler checks the stored pending final_acceptance row before body validation and 403', () => {
+    const route = nonGet.find((r) => CONDITIONAL_DESKTOP_ONLY.has(r.key));
+    expect(route).toBeDefined();
+    const body = handlerBody(route!.index);
+    expect(source).toMatch(
+      /import\s*\{[^}]*\bisPendingFinalAcceptanceRow\b[^}]*\}\s*from\s*'\.\/approvals\.js'/,
+    );
+    expect(body).toContain('isPendingFinalAcceptanceRow(stored)');
+    expect(body).toContain('isPendingOpportunityAdmissionRow(stored)');
+    expect(body).toContain("code: 'desktop_required'");
+    const callerGuard = body.indexOf('!deps.requireDesktopCaller(request)');
+    const guard = body.indexOf('isPendingFinalAcceptanceRow(stored)');
+    const refusal = body.indexOf("code: 'desktop_required'");
+    const validation = body.indexOf('parse(goalApprovalDecisionBody');
+    expect(callerGuard).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(-1);
+    expect(callerGuard).toBeLessThan(guard);
+    expect(refusal).toBeGreaterThan(guard);
+    expect(validation).toBeGreaterThan(refusal);
+  });
+
+  it('the helper is the exact stored-row gate/status conjunction', () => {
+    const approvals = readFileSync(new URL('./approvals.ts', import.meta.url), 'utf8');
+    expect(approvals).toMatch(
+      /return\s+row\.gate\s*===\s*'final_acceptance'\s*&&\s*row\.status\s*===\s*'pending';/,
+    );
+  });
+
+  it('refuses paired remote decisions on pending opportunity admissions', async () => {
+    const approval = requestGoalApproval(db, {
+      goalId: seededGoalId,
+      gate: 'pool_route_first_use',
+      risk: 'medium',
+      reason: 'Admit the exact opportunity route',
+      requestedBy: 'user',
+      detail: {
+        schemaVersion: 1,
+        admissionKind: 'opportunity',
+        poolId: 'reviewers',
+        memberIndex: 0,
+        memberIdentityHash: 'a'.repeat(64),
+        opportunityDigest: 'b'.repeat(64),
+        observationIds: [randomUUID()],
+      },
+    });
+    const cookie = await pairRemoteDevice(TAILSCALE_LOGIN);
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/goal-approvals/${approval.id}/decision`,
+      headers: { 'tailscale-user-login': TAILSCALE_LOGIN, cookie },
+      payload: { decision: 'approved' },
+    });
+    expectDesktopRefusal(response);
+    expect(getGoalApproval(db, approval.id)).toMatchObject({ status: 'pending' });
+  });
+
+  it('the file calls requireDesktopCaller once per guarded route and once for the unified projection', () => {
+    expect(source.split('requireDesktopCaller(').length - 1).toBe(
+      DESKTOP_ONLY.size + CONDITIONAL_DESKTOP_ONLY.size + 1,
+    );
   });
 });

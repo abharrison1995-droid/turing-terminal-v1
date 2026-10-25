@@ -69,6 +69,103 @@
   padding-inline: var(--s-3);
 }
 
+.model-opportunity-board {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.model-opportunity-board .panel-title-row {
+  align-items: flex-start;
+}
+
+.model-opportunity-board .panel-title-row > div {
+  min-width: 0;
+}
+
+.model-opportunity-retention,
+.model-opportunity-footnote {
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+  line-height: var(--lh-body);
+}
+
+.model-opportunity-error {
+  color: var(--red);
+}
+
+.model-opportunity-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.model-opportunity-table {
+  min-width: 760px;
+}
+
+.model-opportunity-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(150px, 1fr) minmax(110px, 0.55fr) minmax(185px, 0.9fr);
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 760px;
+  padding: var(--s-3) 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: var(--fs-meta);
+}
+
+.model-opportunity-head {
+  color: var(--ink-3);
+  border-bottom-color: var(--line);
+  font-weight: var(--fw-medium);
+}
+
+.model-opportunity-row:last-child {
+  border-bottom: 0;
+}
+
+.model-opportunity-row > span,
+.model-opportunity-model {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-opportunity-row small {
+  display: block;
+  margin-top: var(--s-1);
+  color: var(--ink-3);
+  font-size: var(--fs-micro);
+  line-height: var(--lh-body);
+  overflow-wrap: anywhere;
+}
+
+.model-opportunity-model strong {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-medium);
+}
+
+.model-opportunity-cost {
+  text-transform: capitalize;
+}
+
+.model-opportunity-cost.cost-free {
+  color: var(--green);
+}
+
+.model-opportunity-cost.cost-metered {
+  color: var(--amber);
+}
+
+.model-opportunity-cost.cost-unknown {
+  color: var(--ink-3);
+}
+
+.model-opportunity-time {
+  font-variant-numeric: tabular-nums;
+}
+
 /* The OpenRouter connection row is a name field beside its add button. The shared three-column field grid gave the
    button a third of the width, so its label ran past the border; the button now takes its own content width. */
 .settings-section .field-row {

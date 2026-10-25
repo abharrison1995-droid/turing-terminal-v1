@@ -319,6 +319,39 @@ describe('ResolvedGoalRunPlanProvider: pinned routes', () => {
 });
 
 describe('first use of a pool member', () => {
+  it('does not let the supervisor manufacture an opportunity admission approval', () => {
+    const refusal = mapRefusal({
+      status: 'refused',
+      role: 'routine_reviewer',
+      code: 'approval_required',
+      definitionVersion: 1,
+      definitionHash: 'a'.repeat(64),
+      routeKind: 'pool',
+      poolId: 'reviewers',
+      evaluatedMembers: [],
+      candidate: {
+        poolId: 'reviewers',
+        memberIdentityHash: 'b'.repeat(64),
+        memberIndex: 0,
+        configuration: {
+          backendId: 'openrouter',
+          providerId: 'openrouter',
+          billingLane: 'openrouter-metered',
+          modelId: 'example/model',
+        },
+        approvalId: null,
+        opportunity: {
+          schemaVersion: 1,
+          opportunityDigest: 'c'.repeat(64),
+          observationIds: [randomUUID()],
+        },
+      },
+    });
+    expect(refusal).toMatchObject({ ready: false, code: 'route_unavailable' });
+    expect(refusal.message).toContain('explicit admission request');
+    expect('approval' in refusal).toBe(false);
+  });
+
   it('reports approval_required with the exact member, creates no approval and persists nothing', async () => {
     const f = fx({ pooled: 'ordered' });
     const before = (f.db.prepare('SELECT COUNT(*) AS n FROM goal_approvals').get() as { n: number }).n;

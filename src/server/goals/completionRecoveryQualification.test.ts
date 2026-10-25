@@ -41,7 +41,7 @@ import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
  * preflight. No production code is changed and no hook is exported.
  *
  * Refusals are asserted by exact code and detail, and every refusal path asserts whole-database and repository equality.
- * `contentPreservation` is asserted only as `not_proven`.
+ * New completed proofs retain the ancestry subproof's legacy `not_proven` limitation and bind separate verified content evidence.
  */
 
 const seam = vi.hoisted(() => ({
@@ -111,6 +111,7 @@ interface GoalEventRow {
 const TABLES_A_COMPLETION_CHANGES = new Set([
   'goals',
   'goal_events',
+  'goal_content_verifications',
   'goal_external_completion_proofs',
   'goal_runtime',
 ]);
@@ -421,7 +422,7 @@ describe('completion recovery: B after a corrected or decided A, real services a
 
   // Case 20 (cannot be waived): the valid B completion gives exactly one proof and one transition, with its details.
   it.each(FORMATS)(
-    'QR20 B after a corrected, decided A completes with exactly one proof, one event pair and not-proven content (%s)',
+    'QR20 B after a corrected, decided A completes with exactly one proof, one event pair and verified content evidence (%s)',
     async (objectFormat) => {
       const { fx, bId, digest, recorded } = await disputedAThenDecidedB(objectFormat);
       const before = wholeState(fx);
@@ -439,10 +440,15 @@ describe('completion recovery: B after a corrected or decided A, real services a
         .get(fx.goalId) as { payload_json: string };
       const body = JSON.parse(proof.payload_json) as {
         decision: { approvalId: string };
+        contentVerificationDigest: string;
         proofLimitations: { contentPreservation: string };
       };
       expect(body.decision.approvalId).toBe(recorded.approvalId);
+      expect(body.contentVerificationDigest).toMatch(/^[0-9a-f]{64}$/);
       expect(body.proofLimitations.contentPreservation).toBe('not_proven');
+      expect(readGoalCompletionStanding(fx.db, fx.goalId)).toMatchObject({
+        claim: { contentPreservation: 'verified' },
+      });
       expect(completed.completion.proofId).toBeTruthy();
     },
     REAL_GIT_TEST_TIMEOUT_MS,
@@ -648,6 +654,7 @@ describe('completion recovery: B refused by eligible, corrupt, or invalid author
             ...fields,
             attestation: { ...fields.attestation, id: foreign },
             correctionChain: { ...fields.correctionChain, attestationId: foreign },
+            contentOutcomeAcknowledged: true,
             userReviewedPreflightDigest: 'e'.repeat(64),
           })!;
           seedApprovedCompletion(fx.db, fx.goalId, foreignAction);
@@ -1157,6 +1164,7 @@ describe('completion recovery: B refused by eligible, corrupt, or invalid author
       expect(cReport.outcome).toBe('ready');
       const cAction = buildExternalCompletionAction({
         ...cReport.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: cReport.digest,
       })!;
       git(fx.repo, 'update-ref', a.handoff.target.baseRef, tipOne);
@@ -1244,6 +1252,7 @@ describe('completion recovery: B refused by eligible, corrupt, or invalid author
       expect(bReport.outcome).toBe('ready');
       const bAction = buildExternalCompletionAction({
         ...bReport.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: bReport.digest,
       })!;
       git(fx.repo, 'update-ref', a.handoff.target.baseRef, tipOne);

@@ -16,7 +16,11 @@ const COMPLETION_ROWS_WHERE = `goal_id = ?
 
 /** Why a stored completion approval is not a valid decision. Each value is a snake_case detail. */
 export type ExternalCompletionDecisionInvalidReason =
-  'not_completion_approval' | 'schema_invalid' | 'digest_mismatch' | 'approval_fields_invalid';
+  | 'not_completion_approval'
+  | 'schema_invalid'
+  | 'digest_mismatch'
+  | 'approval_fields_invalid'
+  | 'content_outcome_unacknowledged';
 
 export type ExternalCompletionDecisionRead =
   | { state: 'not_found' }
@@ -68,6 +72,11 @@ export function validateCompletionApproval(approval: GoalApproval | null): Valid
   if (!parsed.valid) return { valid: false, reason: parsed.reason };
   if (parsed.digest !== approval.externalCompletionActionDigest)
     return { valid: false, reason: 'digest_mismatch' };
+  if (
+    parsed.action.contentVerificationDigest !== undefined &&
+    parsed.action.contentOutcomeAcknowledged !== true
+  )
+    return { valid: false, reason: 'content_outcome_unacknowledged' };
   if (
     approval.gate !== 'user_confirmation' ||
     approval.risk !== 'high' ||

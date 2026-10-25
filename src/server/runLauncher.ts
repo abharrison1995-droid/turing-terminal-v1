@@ -263,9 +263,14 @@ export function startQueuedRun(db: Db, engine: RunEngine, runId: string): StartQ
  * - Route-probe runs (route_validation_probes). startProbe re-verifies the pinned fixture and the persisted identity
  *   before it starts them; only probe runs carry that proof.
  * Each run is claimed by a compare-and-set `queued` -> `preparing` update, and the claim commits with its event before
- * `start` is called. Returns the ids this call started.
+ * `start` is called. The optional `start` seam lets the caller defer only the actual engine start (for example until the
+ * HTTP listener is bound); the claim and its event stay synchronous. Returns the ids this call claimed.
  */
-export function recoverQueuedRunsAfterRestart(db: Db, engine: RunEngine): string[] {
+export function recoverQueuedRunsAfterRestart(
+  db: Db,
+  engine: RunEngine,
+  start: (runId: string) => void = (runId) => engine.start(runId),
+): string[] {
   const queued = db
     .prepare(
       `SELECT id FROM runs
@@ -295,7 +300,7 @@ export function recoverQueuedRunsAfterRestart(db: Db, engine: RunEngine): string
       return true;
     })();
     if (!claimed) continue;
-    engine.start(id);
+    start(id);
     started.push(id);
   }
   return started;

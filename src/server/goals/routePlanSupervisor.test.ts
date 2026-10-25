@@ -9,7 +9,6 @@ vi.mock('../providers.js', () => ({
   invalidateProviderCache: vi.fn(),
 }));
 
-import { readFileSync } from 'node:fs';
 import { discoverProviders, executeProvider, type ProviderRunRequest } from '../providers.js';
 import type { GoalDefinition } from '../../shared/goals.js';
 import { decideGoalApproval, requestGoalApproval } from './approvals.js';
@@ -17,7 +16,14 @@ import { passRecords } from './routingKit.js';
 import { readStoredResolutions } from './routeResolution.js';
 import { ResolvedGoalRunPlanProvider } from './routePlan.js';
 import { observeRouteSnapshot } from './routingSnapshot.js';
-import { cleanupRepoFixtures, milestone, simpleDefinition, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import {
+  cleanupRepoFixtures,
+  goalRepoFixture,
+  milestone,
+  simpleDefinition,
+  REAL_GIT_TEST_TIMEOUT_MS,
+} from './repoKit.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { GOOD_TASK } from './supervisorKit.js';
 import { realRunHarness, type RealRunHarness } from './turingRunKit.js';
 import type { GoalRunPlanProvider } from './runPlan.js';
@@ -456,10 +462,12 @@ describe('resume preflight keeps a persisted current-cycle route', () => {
 });
 
 describe('production wiring', () => {
-  it('still wires the DisabledGoalExecutor in src/server/index.ts', () => {
-    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-    expect(source).toMatch(/executor:\s*new DisabledGoalExecutor\(\)/);
-    expect(source).not.toMatch(/ResolvedGoalRunPlanProvider|TuringGoalExecutor/);
-    expect(source).not.toMatch(/createRouteProbe/);
-  });
+  it(
+    'enables the resolved-route planner and Turing executor in the production composition',
+    async () => {
+      const fx = goalRepoFixture();
+      await expectProductionGoalCompositionEnabled(fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

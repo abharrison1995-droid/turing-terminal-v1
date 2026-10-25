@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listCycles } from './cycles.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
 import { GOOD_TASK, harness, type Harness } from './supervisorKit.js';
 
@@ -308,6 +309,40 @@ describe('structured start results', () => {
     );
 
     it(
+      'defers a pre-listener start without losing the queued row and advances the cycle honestly',
+      async () => {
+        const h = await prepare(phase);
+        h.startRun.mockImplementationOnce(() => ({ started: false, reason: 'deferred' }));
+        expect(await h.tick()).toBe(phase === 'proposal' ? 'proposal_run_started' : 'run_started');
+        expect(h.cycle()!.status).toBe(phase === 'proposal' ? 'proposing' : 'running');
+        expect(queuedRun(h, phase).status).toBe('queued');
+        expect(phase === 'proposal' ? h.proposalRuns() : h.runs()).toHaveLength(1);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
+      'retries a startup-deferred queued run after restart without duplicating it',
+      async () => {
+        const h = await prepare(phase);
+        const run = queuedRun(h, phase);
+        h.startRun.mockImplementationOnce(() => ({ started: false, reason: 'deferred' }));
+        await h.tick();
+        const fresh = h.restart();
+        expect((await fresh.supervisor.tickGoal(h.fx.goalId)).action).toBe(
+          phase === 'proposal' ? 'proposal_run_started' : 'run_started',
+        );
+        expect(queuedRun(h, phase).status).not.toBe('queued');
+        expect(queuedRun(h, phase).id).toBe(run.id);
+        expect(phase === 'proposal' ? h.proposalRuns() : h.runs()).toHaveLength(1);
+        expect(h.cycle()!.status).toBe(phase === 'proposal' ? 'proposing' : 'running');
+        expect(fresh.executor.proposalQueueCalls).toHaveLength(0);
+        expect(fresh.executor.queueCalls).toHaveLength(0);
+      },
+      REAL_GIT_TEST_TIMEOUT_MS,
+    );
+
+    it(
       're-reads a not-queued run: active means in flight',
       async () => {
         const h = await prepare(phase);
@@ -370,10 +405,14 @@ describe('structured start results', () => {
     );
   });
 
-  it('production startQueuedRun results flow through unchanged (the dependency returns them)', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'server', 'index.ts'), 'utf8');
-    expect(index).toContain('startRun: (runId) => startQueuedRun(database, engine, runId)');
-  });
+  it(
+    'production composes the real persisted-route executor with the queued-run starter',
+    async () => {
+      const h = harness();
+      await expectProductionGoalCompositionEnabled(h.fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('explicit resume ordering', () => {
@@ -651,9 +690,12 @@ describe('static boundary', () => {
     expect(supervisor).toContain('runForPurpose');
   });
 
-  it('keeps production wired to the disabled executor', () => {
-    const index = readFileSync(join(process.cwd(), 'src', 'server', 'index.ts'), 'utf8');
-    expect(index).toContain('new DisabledGoalExecutor()');
-    expect(index).not.toMatch(/Fake/);
-  });
+  it(
+    'keeps the production composition free of the fake executor',
+    async () => {
+      const h = harness();
+      await expectProductionGoalCompositionEnabled(h.fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

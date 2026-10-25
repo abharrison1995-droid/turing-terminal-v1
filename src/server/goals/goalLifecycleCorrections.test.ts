@@ -22,7 +22,6 @@ import {
   decideAndComplete,
   DEFAULT_INTEGRATION,
   driveToVerifiedHandoff,
-  expectCompleted,
   FORMATS,
   goalRow,
   goalScopedDigests,
@@ -32,7 +31,6 @@ import {
   proofRows,
   proofRowsJson,
   runFor,
-  snapshotOf,
   type Target,
   untilGoal,
   wholeDatabase,
@@ -126,7 +124,7 @@ describe('withdraw and supersede after a real completion', () => {
           trustedForDownstream: false,
           unqualifiedSuccessAllowed: false,
           qualifier: 'withdrawn_by_user',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         correction: { attestationId, standing: 'withdrawn', correctionCount: 1, tip: { kind: 'withdraw' } },
       });
@@ -207,11 +205,11 @@ describe('withdraw and supersede after a real completion', () => {
   );
 });
 
-describe('merge -s ours characterization', () => {
+describe('merge -s ours is disclosed and cannot count as successful delivery', () => {
   it.each(FORMATS)(
-    'R4 CHARACTERIZATION, NOT a correctness proof (%s): a merge -s ours destination completes as trusted with content not proven, and the acknowledgement refusals write nothing',
+    'R4 (%s): a merge -s ours destination can be recorded only with explicit mismatch disclosure',
     async (objectFormat) => {
-      const { harness, db, repo, goalId, target, externalPath, observation, integratedHead } =
+      const { harness, db, repo, goalId, externalPath, observation, integratedHead } =
         await driveToVerifiedHandoff(await openGoal('gpt-5.5', objectFormat), 'ours');
 
       // The merge discarded the content: the Goal's source has the file, the destination does not.
@@ -219,63 +217,42 @@ describe('merge -s ours characterization', () => {
       expect(() => harness.fx.git('cat-file', '-e', 'main:src/add.js')).toThrow();
 
       const attestationId = await attestObservation(externalPath, observation.actionDigest);
-      const preflight = await computeExternalCompletionPreflight(db, goalId, { attestationId });
-      expect(preflight.outcome).toBe('ready');
-
-      // The decision refuses without the acknowledgement, before any write.
-      const beforeDecisionRefusal = wholeDatabase(db);
-      const repoBeforeDecisionRefusal = repositoryState(repo);
-      await expect(
-        recordExternalCompletionDecision(db, {
-          goalId,
-          attestationId,
-          reviewedPreflightDigest: preflight.digest,
-          acknowledgeContentNotProven: false,
-        }),
-      ).rejects.toMatchObject({ code: 'acknowledgement_required' });
-      expect(wholeDatabase(db)).toEqual(beforeDecisionRefusal);
-      expect(repositoryState(repo)).toEqual(repoBeforeDecisionRefusal);
-
-      const decision = await recordExternalCompletionDecision(db, {
-        goalId,
-        attestationId,
-        reviewedPreflightDigest: preflight.digest,
-        acknowledgeContentNotProven: true,
+      const repoBefore = repositoryState(repo);
+      const target: Target = { db, goalId, repo };
+      const { preflight, completed } = await decideAndComplete(target, attestationId);
+      expect(preflight).toMatchObject({
+        outcome: 'ready',
+        reasons: [],
+        contentVerification: { status: 'content_not_preserved' },
+        actionFields: { contentVerificationStatus: 'content_not_preserved' },
       });
-      expect(decision).toMatchObject({ status: 'approved', reused: false });
-
-      // The completion refuses without the acknowledgement too, before any write.
-      const request = {
-        goalId,
-        attestationId,
-        reviewedPreflightDigest: preflight.digest,
-        acknowledgeContentNotProven: true as const,
-      };
-      const beforeCompletionRefusal = wholeDatabase(db);
-      const repoBeforeCompletionRefusal = repositoryState(repo);
-      await expect(
-        completeGoalFromExternalDecision(db, { ...request, acknowledgeContentNotProven: false }),
-      ).rejects.toMatchObject({ code: 'acknowledgement_required' });
-      expect(wholeDatabase(db)).toEqual(beforeCompletionRefusal);
-      expect(repositoryState(repo)).toEqual(repoBeforeCompletionRefusal);
-
-      // With the acknowledgement, the Goal completes with the whole-state effect Q1 checks, and the standing is trusted
-      // with content not proven.
-      const before = snapshotOf(target, decision.approvalId);
-      const completed = await completeGoalFromExternalDecision(db, request);
-      expect(completed.completion).toMatchObject({ state: 'completed', approvalId: decision.approvalId });
-      expectCompleted(target, before, decision.approvalId);
+      expect(completed.completion.state).toBe('completed');
       expect(readGoalCompletionStanding(db, goalId)).toMatchObject({
-        kind: 'v2',
-        standing: 'uncontested',
         claim: {
-          trustedForDownstream: true,
-          unqualifiedSuccessAllowed: true,
-          qualifier: 'none',
-          contentPreservation: 'not_proven',
+          unqualifiedSuccessAllowed: false,
+          trustedForDownstream: false,
+          qualifier: 'content_mismatch_disclosed',
+          contentPreservation: 'mismatch',
         },
       });
-      // The destination still lacks the file after completion: the completion did not and could not restore it.
+      const proofRow = db
+        .prepare('SELECT payload_json FROM goal_external_completion_proofs WHERE goal_id = ?')
+        .get(goalId) as { payload_json: string };
+      const proof = JSON.parse(proofRow.payload_json) as {
+        contentVerificationDigest: string;
+        contentVerificationStatus: string;
+      };
+      expect(proof).toMatchObject({
+        contentVerificationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        contentVerificationStatus: 'content_not_preserved',
+      });
+      expect(completed.completion).toMatchObject({
+        contentVerificationDigest: proof.contentVerificationDigest,
+        contentVerificationStatus: proof.contentVerificationStatus,
+      });
+      expect(repositoryState(repo)).toEqual(repoBefore);
+
+      // The observed destination still lacks the accepted file; verification never writes Git to repair it.
       expect(() => harness.fx.git('cat-file', '-e', 'main:src/add.js')).toThrow();
     },
     REAL_GIT_TEST_TIMEOUT_MS,

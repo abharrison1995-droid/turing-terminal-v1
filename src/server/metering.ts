@@ -1,5 +1,14 @@
-import type { BillingLane, BillingMode, UnknownCostPolicy, WorkloadType } from '../shared/types.js';
+import type {
+  BillingLane,
+  BillingMode,
+  ModelOption,
+  ModelConfiguration,
+  UnknownCostPolicy,
+  WorkloadType,
+} from '../shared/types.js';
 import { evaluateBillingLane } from '../shared/billing.js';
+import { estimateOpportunityReservationUsd } from '../shared/opportunityCost.js';
+import { isOpportunityResolutionForRoute, readStoredResolutions } from './goals/routeResolution.js';
 import type { Db } from './db.js';
 import {
   attachReservationUsage,
@@ -24,6 +33,8 @@ export interface MeteringOptions {
   customAllowedLanes?: BillingLane[];
   perRunUsd: number | null;
   unknownCostPolicy: UnknownCostPolicy;
+  /** Concrete stage route. Opportunity pricing is selected only from a matching durable admission. */
+  configuration?: ModelConfiguration;
   workload: WorkloadType;
   connectionProfileId: string | null;
   role: string;
@@ -45,7 +56,30 @@ export interface MeteringOptions {
  */
 export function createMeteringHooks(db: Db, options: MeteringOptions): MeteringHooks {
   const lane: BillingLane = 'openrouter-metered';
+  const opportunityReservation = (() => {
+    const configuration = options.configuration;
+    if (!configuration || configuration.billingLane !== lane || options.usageRunId === null) return false;
+    const cycle = db
+      .prepare(
+        `SELECT c.route_resolution_json FROM runs r
+        JOIN goal_cycles c ON c.id = r.goal_cycle_id WHERE r.id = ?`,
+      )
+      .get(options.usageRunId) as { route_resolution_json: string | null } | undefined;
+    return (
+      cycle !== undefined &&
+      isOpportunityResolutionForRoute(readStoredResolutions(cycle.route_resolution_json), configuration)
+    );
+  })();
   return {
+    ...(opportunityReservation
+      ? {
+          estimateReservationUsd: (
+            model: ModelOption | undefined,
+            inputTokens: number,
+            maxOutputTokens: number | null,
+          ) => estimateOpportunityReservationUsd(model?.pricing, inputTokens, maxOutputTokens),
+        }
+      : {}),
     begin: async (estimate) => {
       const billing = evaluateBillingLane({
         mode: options.billingMode,

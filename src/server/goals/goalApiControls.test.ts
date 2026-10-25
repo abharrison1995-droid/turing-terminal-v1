@@ -78,7 +78,7 @@ describe('start over HTTP', () => {
   );
 
   it(
-    'with the production executor (disabled) the start is refused as route_unavailable and changes nothing',
+    'with an injected disabled supervisor the start is refused as route_unavailable and changes nothing',
     async () => {
       const h = harness();
       app = goalApp(h.fx.db, disabledSupervisor(h.fx.db));

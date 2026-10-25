@@ -15,7 +15,7 @@ describe('local database', () => {
     const root = mkdtempSync(join(tmpdir(), 'turing-db-'));
     folders.push(root);
     let db = openDatabase(root);
-    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(28);
+    expect(db.prepare('SELECT name FROM schema_migrations ORDER BY name').all()).toHaveLength(32);
     expect(
       db.prepare("SELECT name FROM schema_migrations WHERE name = '009_stage_attempts.sql'").get(),
     ).toBeTruthy();
@@ -33,6 +33,11 @@ describe('local database', () => {
       'decision_results',
       'model_catalog_cache',
       'external_data_consents',
+      'model_observation_refreshes',
+      'model_observations',
+      'model_observation_admission_refs',
+      'model_opportunity_admission_proofs',
+      'model_observation_retention_jobs',
     ])
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),

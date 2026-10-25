@@ -853,7 +853,7 @@ describe('QF07 recovery through the UI', () => {
     await user.click(within(region).getByRole('button', { name: COMPLETION_COPY.completeLabel }));
     expect(
       await within(region).findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
+        'Completed on a recorded decision. Changed content matched at the observed merge.',
       ),
     ).toBeTruthy();
 
@@ -938,7 +938,7 @@ const STANDING_ROWS = [
   {
     label: 'a completed Goal',
     state: 'completed',
-    heading: 'Completed on a recorded decision. Turing has not proven content preservation.',
+    heading: 'Completed on a recorded decision. Changed content matched at the observed merge.',
     desktop: () => completionStatus('completed', { completion: completedRecord(ATT_A) }),
     phone: (): GoalCompletionStanding => standing('v2', 'uncontested', trustedClaim()),
     phoneClass: null,
@@ -1119,7 +1119,7 @@ describe('QF11 a late phone response cannot reach another Goal', () => {
     await user.click(await screen.findByRole('button', { name: /Second goal/ }));
     expect(
       await screen.findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
+        'Completed on a recorded decision. Changed content matched at the observed merge.',
       ),
     ).toBeTruthy();
 

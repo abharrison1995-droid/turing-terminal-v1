@@ -16,6 +16,7 @@ import {
   simpleDefinition,
   REAL_GIT_TEST_TIMEOUT_MS,
 } from './repoKit.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { GOOD_TASK } from './supervisorKit.js';
 import { materializeVerifierStage } from './verificationCommands.js';
 
@@ -210,11 +211,14 @@ describe('verification command materialisation', () => {
 });
 
 describe('production enablement and reserved workflows', () => {
-  it('keeps production on the DisabledGoalExecutor with no real executor or plan provider wired', () => {
-    const source = readFileSync(new URL('../index.ts', import.meta.url), 'utf8');
-    expect(source).toContain('new DisabledGoalExecutor()');
-    expect(source).not.toMatch(/TuringGoalExecutor|FixedGoalRunPlanProvider|turingExecutor|testPlanProvider/);
-  });
+  it(
+    'wires production through the persisted-route executor and planner',
+    async () => {
+      const fx = goalRepoFixture();
+      await expectProductionGoalCompositionEnabled(fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 
   it('forbids Goal-specific bypasses in the broker classifier and executor', () => {
     const engine = readFileSync(new URL('../runEngine.ts', import.meta.url), 'utf8');

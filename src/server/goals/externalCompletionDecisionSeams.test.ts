@@ -298,6 +298,7 @@ describe('external completion decision: authority race between Git and commit', 
       );
       const firstAction = buildExternalCompletionAction({
         ...first.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: first.digest,
       })!;
       git(attested.fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
@@ -349,6 +350,7 @@ describe('external completion decision: authority race between Git and commit', 
         ...fields,
         attestation: { ...fields.attestation, id: foreign },
         correctionChain: { ...fields.correctionChain, attestationId: foreign },
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'e'.repeat(64),
       })!;
 
@@ -393,6 +395,7 @@ describe('external completion decision: UNIQUE-violation path inside the decisio
       );
       const action = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: report.digest,
       })!;
       const before = databaseSnapshot(db);
@@ -446,6 +449,7 @@ describe('external completion decision: UNIQUE-violation path inside the decisio
       );
       const firstAction = buildExternalCompletionAction({
         ...first.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: first.digest,
       })!;
       git(attested.fx.repo, 'update-ref', attested.handoff.target.baseRef, moveTip(attested));
@@ -459,6 +463,7 @@ describe('external completion decision: UNIQUE-violation path inside the decisio
       );
       const action = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: report.digest,
       })!;
       const before = databaseSnapshot(db);
@@ -504,6 +509,7 @@ describe('external completion decision: UNIQUE-violation path inside the decisio
       );
       const action = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: report.digest,
       })!;
       const before = databaseSnapshot(db);

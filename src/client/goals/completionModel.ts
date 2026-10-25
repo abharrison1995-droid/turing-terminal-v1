@@ -18,13 +18,15 @@ import { toRefusal } from './refusal';
 // --- Copy -------------------------------------------------------------------------------------------------------------
 
 const CONTENT_NOT_PROVEN = 'Content preservation: not proven.';
+const CONTENT_VERIFIED = 'Content preservation verified at the observed merge.';
+const CONTENT_MISMATCH = 'Content mismatch disclosed. This is not a successful-delivery claim.';
 
 export const COMPLETION_COPY = {
   panelTitle: 'Completion review',
   intro:
-    'Reviewing completion checks the saved attestation against current Git history. Reviewing does not complete the Goal.',
-  limitation: `${CONTENT_NOT_PROVEN} Turing observed Git history at the time shown; it did not check that your changes are in the destination files.`,
-  limitationPointInTime: 'Point-in-time history check, not a lasting guarantee.',
+    'Reviewing completion checks the saved attestation, merge history and changed file contents. Reviewing does not complete the Goal.',
+  limitation: `${CONTENT_VERIFIED} The check compares changed paths at the first merge containing the accepted source commit. It cannot guarantee later commits keep them unchanged.`,
+  limitationPointInTime: 'Point-in-time content check, not a lasting guarantee.',
   loading: 'Checking the completion review. This is read-only.',
   statusUnavailable: 'The saved completion state could not be read.',
   reviewUnreadable:
@@ -32,12 +34,12 @@ export const COMPLETION_COPY = {
   noBlockers: 'No blockers in this review.',
   recordLabel: 'Record completion decision',
   recordAcknowledgement:
-    'I understand that Turing checked Git history only and has not proven that the content of my changes is in the destination.',
+    'I understand this is a point-in-time check; a mismatch will be disclosed as Policy B and will not count as successful delivery.',
   recordHelp:
     'Recording your decision completes nothing. It saves your decision for this exact review; the Goal changes only when you press Complete Goal.',
   completeLabel: 'Complete Goal',
   completeAcknowledgement:
-    'I understand that Turing checked Git history only and has not proven that the content of my changes is in the destination.',
+    'I understand this is a point-in-time check; a mismatch will be disclosed as Policy B and will not count as successful delivery.',
   completeHelp: 'Completing the Goal uses the decision recorded above. Nothing else is changed.',
   reviewChanged: 'The review changed; read it again before recording a decision.',
   refreshReview: 'Refresh review',
@@ -88,6 +90,8 @@ const UNRECOGNISED_CONTENT_PRESERVATION = 'Content preservation: unrecognised va
 
 /** The content-preservation line for a claim or review. Anything other than the two known values is never invented. */
 export function contentPreservationCopy(value: unknown): string {
+  if (value === 'verified') return CONTENT_VERIFIED;
+  if (value === 'mismatch') return CONTENT_MISMATCH;
   if (value === 'not_proven') return CONTENT_NOT_PROVEN;
   if (value === 'not_applicable') return 'Content preservation: not applicable.';
   return UNRECOGNISED_CONTENT_PRESERVATION;
@@ -100,6 +104,8 @@ const QUALIFIER_COPY: Record<GoalCompletionStandingClaim['qualifier'], string | 
   superseded_by_user: 'The attestation this completion relies on was replaced by another.',
   replacement_failed: 'The replacement attestation did not restore this completion.',
   proof_unverified: 'The stored completion proof could not be checked.',
+  content_mismatch_disclosed:
+    'A content mismatch was explicitly disclosed. This is not a successful-delivery claim.',
   legacy_not_v2_attested: 'This completion was recorded before external attestation existed.',
   not_completed: 'No completion is recorded for this Goal.',
 };
@@ -145,6 +151,10 @@ const PREFLIGHT_REASON_COPY: Record<string, string> = {
     'The destination branch moved after the attestation. Refresh the review.',
   destination_not_integrated:
     'The attested commit is no longer in the destination history. Refresh the review.',
+  content_not_preserved:
+    'The changed content does not match at the first merge containing the accepted source commit. This Goal cannot be completed from this observation.',
+  content_verification_failed:
+    'Turing could not safely verify the changed content. Refresh the review and check the repository.',
   attestation_stale: 'The attested handoff or authority is stale.',
   git_unavailable: 'Git could not be read. Try again.',
   preflight_unavailable: 'Git could not be read. Try again.',
@@ -213,7 +223,18 @@ export function standingPresentation(status: GoalExternalCompletionStatus): Stan
   switch (status.state) {
     case 'completed':
       return {
-        heading: 'Completed on a recorded decision. Turing has not proven content preservation.',
+        heading:
+          claim.contentPreservation === 'verified'
+            ? 'Completed on a recorded decision. Changed content matched at the observed merge.'
+            : claim.contentPreservation === 'mismatch'
+              ? 'A content mismatch was disclosed. This is not a successful-delivery claim.'
+              : 'Historical completion on a recorded decision. Content was not verified.',
+        qualifier: qualifierCopy(claim.qualifier),
+        contentPreservation: contentPreservationCopy(claim.contentPreservation),
+      };
+    case 'content_mismatch':
+      return {
+        heading: 'A content mismatch was disclosed. This is not a successful-delivery claim.',
         qualifier: qualifierCopy(claim.qualifier),
         contentPreservation: contentPreservationCopy(claim.contentPreservation),
       };
@@ -267,13 +288,19 @@ export function correctionStandingCopy(value: string | null): string {
  * unrecognised, never repaired into a success.
  */
 export function limitationCopy(value: unknown): string {
-  return value === 'not_proven' ? COMPLETION_COPY.limitation : contentPreservationCopy(value);
+  if (value === 'verified') return COMPLETION_COPY.limitation;
+  if (value === 'content_not_preserved')
+    return 'The content check found a mismatch at the observed merge. A disclosed Policy B record can be saved, but it will not count as successful delivery.';
+  if (value === 'not_proven')
+    return `${CONTENT_NOT_PROVEN} This historical completion records Git ancestry only; changed file contents were not checked.`;
+  return contentPreservationCopy(value);
 }
 
 /** True when the Goal's own state is settled, so no completion control belongs in the panel any more. */
 export function isSettledState(status: GoalExternalCompletionStatus): boolean {
   return (
     status.state === 'completed' ||
+    status.state === 'content_mismatch' ||
     status.state === 'contested' ||
     status.state === 'legacy' ||
     status.state === 'invalid'

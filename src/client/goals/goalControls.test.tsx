@@ -378,6 +378,70 @@ describe('Unified approvals in the cockpit', () => {
     expect(refused.getAttribute('data-decision-outcome')).toBe('refused');
   });
 
+  it('falls back to the final-acceptance desktop note when an older projection offers the decision', async () => {
+    const user = await open(goal('running', { kind: 'final_acceptance', approvalId: 'fa-1' }), {
+      '/api/approvals/unified': listOf(
+        approval({
+          id: 'fa-1',
+          gate: 'final_acceptance',
+          title: 'final_acceptance',
+          reason: 'Accept the result',
+          decidable: true,
+        }),
+      ),
+      'POST /api/goal-approvals/fa-1/decision': () =>
+        refuse(
+          403,
+          'Final acceptance can be decided on the Turing Terminal desktop app only.',
+          'desktop_required',
+        ),
+    });
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    const refused = await screen.findByText(/Not recorded:/);
+    expect(refused.textContent).toContain(
+      'Final acceptance is decided on the Turing Terminal desktop app. Open Turing Terminal on desktop to decide it.',
+    );
+    expect(refused.textContent).not.toContain('Desktop Required');
+  });
+
+  it('keeps the generic refusal for desktop_required on another gate', async () => {
+    const user = await open(
+      goal('needs_user', { kind: 'review_approval', approvalId: 'ga-1' }, 'gate_pending'),
+      {
+        '/api/approvals/unified': listOf(approval({ decidable: true })),
+        'POST /api/goal-approvals/ga-1/decision': () =>
+          refuse(403, 'Decide this on the desktop.', 'desktop_required'),
+      },
+    );
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    const refused = await screen.findByText(/Not recorded:/);
+    expect(refused.textContent).toContain('Decide this on the desktop.');
+    expect(refused.textContent).toContain('Desktop required');
+    expect(refused.textContent).not.toContain('Final acceptance is decided');
+  });
+
+  it('keeps generic refusal handling for another code on final_acceptance', async () => {
+    const user = await open(goal('running', { kind: 'final_acceptance', approvalId: 'fa-1' }), {
+      '/api/approvals/unified': listOf(
+        approval({
+          id: 'fa-1',
+          gate: 'final_acceptance',
+          title: 'final_acceptance',
+          reason: 'Accept the result',
+          decidable: true,
+        }),
+      ),
+      'POST /api/goal-approvals/fa-1/decision': () => refuse(409, 'Already decided.', 'already_decided'),
+    });
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
+    const refused = await screen.findByText(/Not recorded:/);
+    expect(refused.textContent).toContain('Already decided.');
+    expect(refused.textContent).toContain('Already decided');
+    expect(refused.textContent).not.toContain(
+      'Final acceptance is decided on the Turing Terminal desktop app.',
+    );
+  });
+
   it('handles final acceptance as a Goal approval that applies nothing', async () => {
     const user = await open(goal('running', { kind: 'final_acceptance', approvalId: 'fa-1' }), {
       '/api/approvals/unified': listOf(

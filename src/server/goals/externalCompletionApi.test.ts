@@ -207,6 +207,8 @@ describe('external completion status GET (read-only)', () => {
               proofDigest: stored.proofDigest,
               approvalId: stored.approvalId,
               actionDigest: stored.actionDigest,
+              contentVerificationDigest: stored.contentVerificationDigest,
+              contentVerificationStatus: stored.contentVerificationStatus,
               attestationId,
               observedAt: stored.observedAt,
               completedAt: stored.completedAt,
@@ -568,6 +570,7 @@ describe('external completion decision (R2)', () => {
       );
       const conflicting = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'f'.repeat(64),
       })!;
       const seeded = requestGoalApproval(fx.db, {
@@ -618,6 +621,7 @@ describe('external completion decision (R2)', () => {
       );
       const action = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: digest,
       })!;
       const pending = requestGoalApproval(fx.db, {
@@ -674,6 +678,7 @@ describe('external completion error mapping (T15)', () => {
       completion_corrupt: 422,
       proof_invalid: 422,
       completion_proof_required: 422,
+      content_verification_required: 422,
       completion_busy: 429,
       decision_persistence_failed: 503,
       completion_persistence_failed: 503,
@@ -707,6 +712,8 @@ describe('external completion error mapping (T15)', () => {
       verification_busy: 429,
       git_unavailable: 503,
       preflight_unavailable: 503,
+      content_verification_failed: 503,
+      content_not_preserved: 422,
       attestation_invalid: 422,
       observation_changed: 409,
     };
@@ -867,6 +874,8 @@ describe('external completion (R3)', () => {
           proofDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
           approvalId: decided.approvalId,
           actionDigest: decided.actionDigest,
+          contentVerificationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+          contentVerificationStatus: 'verified',
           preflightDigest: digest,
           observedAt: expect.any(String),
           completedAt: expect.any(String),
@@ -879,6 +888,8 @@ describe('external completion (R3)', () => {
         proofDigest: stored.proofDigest,
         approvalId: stored.approvalId,
         actionDigest: stored.actionDigest,
+        contentVerificationDigest: stored.contentVerificationDigest,
+        contentVerificationStatus: stored.contentVerificationStatus,
         preflightDigest: stored.preflightDigest,
         observedAt: stored.observedAt,
         completedAt: stored.completedAt,
@@ -936,6 +947,8 @@ describe('external completion (R3)', () => {
         proofDigest: first.body.completion.proofDigest,
         approvalId: first.body.completion.approvalId,
         actionDigest: first.body.completion.actionDigest,
+        contentVerificationDigest: first.body.completion.contentVerificationDigest,
+        contentVerificationStatus: first.body.completion.contentVerificationStatus,
         attestationId: attested.attestationId,
         observedAt: first.body.completion.observedAt,
         completedAt: first.body.completion.completedAt,
@@ -965,6 +978,7 @@ describe('external completion (R3)', () => {
       );
       const otherAction = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'f'.repeat(64),
       })!;
       const seededA = requestGoalApproval(fx.db, {
@@ -1239,6 +1253,7 @@ describe('external completion status after a correction and for a legacy complet
             approvalId: decided.approvalId,
             actionDigest: decided.actionDigest,
             attestationId,
+            contentVerificationStatus: 'verified',
             status: 'approved',
             valid: true,
             invalidReason: null,
@@ -1251,6 +1266,8 @@ describe('external completion status after a correction and for a legacy complet
           proofDigest: completion.proofDigest,
           approvalId: completion.approvalId,
           actionDigest: completion.actionDigest,
+          contentVerificationDigest: completion.contentVerificationDigest,
+          contentVerificationStatus: 'verified',
           attestationId,
           observedAt: completion.observedAt,
           completedAt: completion.completedAt,
@@ -1316,6 +1333,8 @@ describe('external completion status after a correction and for a legacy complet
         'approvalId',
         'attestationId',
         'completedAt',
+        'contentVerificationDigest',
+        'contentVerificationStatus',
         'observedAt',
         'proofDigest',
         'proofId',
@@ -1343,7 +1362,11 @@ async function actionBody(fx: GoalFixture, attestationId: string): Promise<Recor
     { allowRecordedDecision: true },
   );
   if (!report.actionFields) throw new Error('actionBody: the preflight reports no action fields');
-  return { ...report.actionFields, userReviewedPreflightDigest: report.digest };
+  return {
+    ...report.actionFields,
+    contentOutcomeAcknowledged: true,
+    userReviewedPreflightDigest: report.digest,
+  };
 }
 
 /** Writes one completion decision row for an action body and approves it as the user. Test-only seed. */

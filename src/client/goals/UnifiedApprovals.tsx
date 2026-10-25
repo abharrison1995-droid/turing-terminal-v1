@@ -5,7 +5,7 @@ import { api } from '../api';
 import { goalsApi } from './api';
 import { Resource } from './parts';
 import { humanize, shortHash } from './presentation';
-import { refusalText, toRefusal } from './refusal';
+import { approvalDecisionRefusalText, toRefusal } from './refusal';
 import { useLoad } from './useLoad';
 
 const rowKey = (approval: UnifiedApproval) => `${approval.source}:${approval.id}`;
@@ -15,6 +15,10 @@ const DEDICATED_DECISION_TEXT: Record<NonNullable<UnifiedApproval['dedicatedDeci
   correction: 'Decided in the correction review on the desktop.',
   completion: 'Decided in the completion review on the desktop.',
 };
+
+/** Kept with the row, because the phone must still show that the decision is waiting. */
+const DESKTOP_ONLY_FINAL_ACCEPTANCE_TEXT =
+  'Final acceptance is decided on the Turing Terminal desktop app. This approval stays in the pending list until it is decided there.';
 
 /**
  * One approval surface for run and Goal approvals. Presentation is unified; authority is not: the `source`
@@ -88,7 +92,11 @@ export function UnifiedApprovals({
             : `Decision recorded (${decision}).`,
       });
     } catch (error) {
-      setOutcome({ key, ok: false, text: `Not recorded: ${refusalText(toRefusal(error))}` });
+      setOutcome({
+        key,
+        ok: false,
+        text: `Not recorded: ${approvalDecisionRefusalText(toRefusal(error), approval.gate)}`,
+      });
     } finally {
       setBusy(null);
       reload();
@@ -141,9 +149,11 @@ export function UnifiedApprovals({
                 {data.approvals.map((approval) => {
                   const key = rowKey(approval);
                   const expected = approval.source === 'goal' && approval.id === expectedGoalApprovalId;
+                  const desktopOnly = approval.source === 'goal' && approval.desktopOnly === true;
                   const readOnly =
                     readOnlyAll ||
-                    (approval.source === 'goal' && (!decisionsEnabled || approval.decidable === false));
+                    (approval.source === 'goal' &&
+                      (!decisionsEnabled || approval.decidable === false || desktopOnly));
                   // Set only on a row the server does not let the inbox decide (decidable is false for it).
                   const dedicated =
                     approval.source === 'goal' && approval.decidable === false
@@ -186,7 +196,15 @@ export function UnifiedApprovals({
                           <small>Approving final acceptance does not apply anything to your branch.</small>
                         )}
                       </div>
-                      {dedicated ? (
+                      {desktopOnly ? (
+                        <p
+                          className="goal-note"
+                          data-approval-readonly="true"
+                          data-approval-desktop-only="true"
+                        >
+                          {DESKTOP_ONLY_FINAL_ACCEPTANCE_TEXT}
+                        </p>
+                      ) : dedicated ? (
                         <p
                           className="goal-note"
                           data-approval-readonly="true"

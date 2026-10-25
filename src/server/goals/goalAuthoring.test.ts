@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderCapabilities, ProviderStatus } from '../../shared/types.js';
 
@@ -24,7 +22,13 @@ import {
   startGoalAuthoring,
 } from './authoring.js';
 import { transitionCycle } from './cycles.js';
-import { simpleDefinition, cleanupRepoFixtures, REAL_GIT_TEST_TIMEOUT_MS } from './repoKit.js';
+import {
+  goalRepoFixture,
+  simpleDefinition,
+  cleanupRepoFixtures,
+  REAL_GIT_TEST_TIMEOUT_MS,
+} from './repoKit.js';
+import { expectProductionGoalCompositionEnabled } from './productionCompositionKit.js';
 import { inspectRunRetention } from './retention.js';
 import { transitionGoal } from './stateMachine.js';
 import { METERED_TEST_ROUTE, SUBSCRIPTION_TEST_ROUTE } from './testPlanProvider.js';
@@ -846,10 +850,12 @@ describe('Goal authoring: usage and retention', () => {
 });
 
 describe('Goal authoring: production wiring', () => {
-  it('keeps autonomous Goals on the DisabledGoalExecutor and uses the exact-route authoring service only', () => {
-    const index = readFileSync(join(process.cwd(), 'src/server/index.ts'), 'utf8');
-    expect(index).toContain('executor: new DisabledGoalExecutor()');
-    expect(index).not.toContain('TuringGoalExecutor');
-    expect(index).not.toContain('FixedGoalRunPlanProvider');
-  });
+  it(
+    'enables the persisted-route Goal composition alongside the exact-route authoring service',
+    async () => {
+      const fx = goalRepoFixture();
+      await expectProductionGoalCompositionEnabled(fx.db);
+    },
+    REAL_GIT_TEST_TIMEOUT_MS,
+  );
 });

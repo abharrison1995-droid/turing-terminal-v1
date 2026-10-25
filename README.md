@@ -13,13 +13,13 @@ The master, project files, provider sign-ins, and run history stay on your compu
 
 ## Install on Windows
 
-Download `Turing-Terminal-Setup-x64-1.0.0-rc2.exe` from a successful **Desktop installers** workflow run in this repository. Double-click the installer, then launch **Turing Terminal** from the Start Menu. This release candidate is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning. See [Windows installation](docs/INSTALL_WINDOWS.md).
+Download `Turing-Terminal-Setup-x64-1.0.0-rc3.exe` from a successful **Desktop installers** workflow run in this repository. Double-click the installer, then launch **Turing Terminal** from the Start Menu. This release candidate is unsigned, so Windows may show an Unknown Publisher or SmartScreen warning. See [Windows installation](docs/INSTALL_WINDOWS.md).
 
 ## Install on Linux
 
-Download `turing-terminal_1.0.0-rc2_amd64.deb` and open it with your distribution's software installer, or use the portable `Turing-Terminal-x86_64-1.0.0-rc2.AppImage`. The app appears in your application menu after the `.deb` install. See [Linux installation](docs/INSTALL_LINUX.md).
+Download `turing-terminal_1.0.0-rc3_amd64.deb` and open it with your distribution's software installer, or use the portable `Turing-Terminal-x86_64-1.0.0-rc3.AppImage`. The app appears in your application menu after the `.deb` install. See [Linux installation](docs/INSTALL_LINUX.md).
 
-Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. Downloading GitHub Actions artifacts requires signing in to GitHub. RC2 is for acceptance testing. Its installers were built before the Goal Engine and the dark interface reached `master`, so build from source to try the current app. Release state and the remaining physical checks are in [V1 readiness](docs/V1_READINESS.md).
+Both desktop packages bundle Node.js for Turing Terminal itself. You do not need Node, npm, a terminal setup, or a source checkout. Git, Tailscale, and provider tools remain optional separate installs. Downloading GitHub Actions artifacts requires signing in to GitHub. RC3 is for acceptance testing. The Goal Engine and the dark interface were merged after RC2, so an RC3 build carries them; no `v1.0.0-rc3` tag has been cut and no RC3 installer build exists yet, so build from source to try the current app. Release state and the remaining physical checks are in [V1 readiness](docs/V1_READINESS.md).
 
 ## How to use Turing Terminal
 
@@ -71,6 +71,7 @@ The full index is [docs/README.md](docs/README.md). Start with:
 - [Install on Linux](docs/INSTALL_LINUX.md)
 - [Packaging details](docs/PACKAGING.md)
 - [Release process](docs/RELEASING.md)
+- [RC3 release notes (draft, not cut)](docs/RELEASE_NOTES_1.0.0-rc3.md)
 - [Provider setup](docs/PROVIDERS.md)
 - [Provider capability matrix](docs/PROVIDER_CAPABILITY_MATRIX.md)
 - [Model configuration](docs/MODEL_CONFIGURATION.md), [context management](docs/CONTEXT_MANAGEMENT.md) and [billing safety](docs/BILLING_SAFETY.md)

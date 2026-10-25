@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '../db.js';
+import { loadContext } from '../goalGit.js';
 import { canonicalJson } from './definitionHash.js';
+import {
+  evaluateContentVerification,
+  ContentVerificationError,
+  type ContentVerificationInput,
+} from './contentVerification.js';
+import { observeContentTree } from './contentTreeGitObservation.js';
+import type { ContentTreeGitObservationStatus } from './contentTreeGitObservation.js';
 import { readApprovedCompletionAuthority } from './approvedCompletionAuthority.js';
 import { classifyCompletionAuthority } from './completionAuthorityPolicy.js';
 import { evaluateCompletion } from './completionEvaluation.js';
@@ -51,6 +59,7 @@ export const PREFLIGHT_CHECK_NAMES = [
   'snapshot_before',
   'completion_evaluation',
   'git_observation',
+  'content_verification',
   'snapshot_after',
   'assemble',
 ] as const;
@@ -75,6 +84,8 @@ export const PREFLIGHT_REASON_CODES = [
   'completion_not_ready',
   'destination_advanced_after_observation',
   'destination_not_integrated',
+  'content_not_preserved',
+  'content_verification_failed',
   'attestation_stale',
   'git_unavailable',
   'verification_busy',
@@ -97,8 +108,9 @@ const CHECK = {
   snapshot_before: 6,
   completion_evaluation: 7,
   git_observation: 8,
-  snapshot_after: 9,
-  assemble: 10,
+  content_verification: 9,
+  snapshot_after: 10,
+  assemble: 11,
 } as const satisfies Record<PreflightCheckName, number>;
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -109,6 +121,19 @@ const UUID = z.string().uuid();
 const hexDigest = z.string().regex(HEX64);
 const objectIdSchema = z.string().regex(OBJECT_ID);
 const boundedText = (max: number) => z.string().min(1).max(max);
+
+const contentVerificationSchema = z.strictObject({
+  verifier: z.literal('content-verified-v1'),
+  verifierVersion: z.literal(2),
+  status: z.enum(['verified', 'content_not_preserved']),
+  verificationDigest: hexDigest,
+  changedPathCount: z.number().int().min(0).max(10_000),
+  mismatchCount: z.number().int().min(0).max(10_000),
+  mismatchPathDigest: hexDigest,
+  comparisonCommit: objectIdSchema,
+});
+
+export type PreflightContentVerification = z.infer<typeof contentVerificationSchema>;
 
 const checkSchema = z.strictObject({
   name: z.enum(PREFLIGHT_CHECK_NAMES),
@@ -151,9 +176,10 @@ const reportBodySchema = z.strictObject({
   reasons: z.array(reasonSchema).max(1),
   checks: z.array(checkSchema).length(PREFLIGHT_CHECK_NAMES.length),
   facts: factsSchema,
+  contentVerification: contentVerificationSchema.nullable(),
   actionFields: z.record(z.string(), z.unknown()).nullable(),
   proofLimitations: z.strictObject({
-    contentPreservation: z.literal('not_proven'),
+    contentPreservation: z.enum(['verified', 'not_proven']),
     goalCompletion: z.literal('not_completed_by_preflight'),
     destinationPolicy: z.literal('exact_attested_tip'),
   }),
@@ -552,6 +578,7 @@ function refusedBody(
   code: PreflightReasonCode,
   detail: string | null,
   facts: Facts,
+  contentVerification: PreflightContentVerification | null,
 ): ExternalCompletionPreflightBody {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -562,6 +589,7 @@ function refusedBody(
     reasons: [{ code, detail }],
     checks: checksFor(index),
     facts: { ...facts },
+    contentVerification,
     actionFields: null,
     proofLimitations: { ...PROOF_LIMITATIONS },
     authority: { ...AUTHORITY },
@@ -573,7 +601,7 @@ function refusedBody(
  * no fallback can become `ready`. The fallbacks drop only diagnostic detail, in the order they are listed.
  */
 const SAFE_REFUSAL: ExternalCompletionPreflightReport = finish(
-  refusedBody('[invalid]', '[invalid]', 0, 'preflight_internal_invalid', null, emptyFacts()),
+  refusedBody('[invalid]', '[invalid]', 0, 'preflight_internal_invalid', null, emptyFacts(), null),
   0,
 );
 
@@ -584,17 +612,29 @@ function refused(
   code: PreflightReasonCode,
   detail: string | null,
   facts: Facts,
+  contentVerification: PreflightContentVerification | null = null,
 ): ExternalCompletionPreflightReport {
   const at = Math.min(Math.max(Math.trunc(index), 0), PREFLIGHT_CHECK_NAMES.length - 1);
-  const attempts: [PreflightReasonCode, string | null, Facts][] = [
-    [code, detail, facts],
-    [code, null, facts],
-    ['preflight_internal_invalid', null, facts],
-    ['preflight_internal_invalid', null, emptyFacts()],
+  const attempts: [PreflightReasonCode, string | null, Facts, PreflightContentVerification | null][] = [
+    [code, detail, facts, contentVerification],
+    [code, null, facts, contentVerification],
+    ['preflight_internal_invalid', null, facts, contentVerification],
+    ['preflight_internal_invalid', null, emptyFacts(), null],
   ];
-  for (const [attemptCode, attemptDetail, attemptFacts] of attempts) {
+  for (const [attemptCode, attemptDetail, attemptFacts, attemptContentVerification] of attempts) {
     try {
-      return finish(refusedBody(goalId, attestationId, at, attemptCode, attemptDetail, attemptFacts), at);
+      return finish(
+        refusedBody(
+          goalId,
+          attestationId,
+          at,
+          attemptCode,
+          attemptDetail,
+          attemptFacts,
+          attemptContentVerification,
+        ),
+        at,
+      );
     } catch {
       // Any failure, including a non-refusal error from the digest, moves to the next attempt.
     }
@@ -627,9 +667,13 @@ export interface PreflightObservationSummary {
   objectFormat: 'sha1' | 'sha256';
   evidenceDigest: string;
   observedAt: string;
+  contentVerification: PreflightContentVerification;
 }
 
-function summarizeObservation(observation: ExternalIntegrationObservationV1): PreflightObservationSummary {
+function summarizeObservation(
+  observation: ExternalIntegrationObservationV1,
+  contentVerification: PreflightContentVerification,
+): PreflightObservationSummary {
   return {
     ref: observation.destination.ref,
     commit: observation.destination.observedCommit,
@@ -637,6 +681,7 @@ function summarizeObservation(observation: ExternalIntegrationObservationV1): Pr
     objectFormat: observation.repository.objectFormat,
     evidenceDigest: observation.proof.evidenceDigest,
     observedAt: observation.observedAt,
+    contentVerification,
   };
 }
 
@@ -657,10 +702,13 @@ export async function computeExternalCompletionPreflightWithIdentity(
   identity: SnapshotIdentity | null;
   observation: PreflightObservationSummary | null;
   postGitIdentity: SnapshotIdentity | null;
+  contentVerificationInput: ContentVerificationInput | null;
 }> {
   const facts = emptyFacts();
   const progress: Progress = { index: CHECK.input };
   let identity: SnapshotIdentity | null = null;
+  let contentVerification: PreflightContentVerification | null = null;
+  let contentVerificationInput: ContentVerificationInput | null = null;
   try {
     const first = readSnapshot(db, goalId, input.attestationId, progress, facts, options);
     identity = first.identity;
@@ -723,6 +771,67 @@ export async function computeExternalCompletionPreflightWithIdentity(
     facts.freshCommit = observation.destination.observedCommit;
     facts.freshTree = observation.destination.observedTree;
 
+    progress.index = CHECK.content_verification;
+    let context: ReturnType<typeof loadContext>;
+    try {
+      context = loadContext(db, goalId);
+    } catch {
+      throw new PreflightRefusal(
+        CHECK.content_verification,
+        'content_verification_failed',
+        'repository_unavailable',
+      );
+    }
+    if (context.projectId !== record.repository.projectId || context.scope !== record.repository.scope)
+      throw new PreflightRefusal(
+        CHECK.content_verification,
+        'content_verification_failed',
+        'repository_changed',
+      );
+    const treeObservation = await observeContentTree({
+      repoRoot: context.repoRoot,
+      expectedBaseCommit: record.destination.expectedBaseCommit,
+      acceptedSourceCommit: record.source.commit,
+      destinationTipCommit: observation.destination.observedCommit,
+      objectFormat: record.repository.objectFormat,
+    });
+    if (!treeObservation.ok)
+      throw new PreflightRefusal(
+        CHECK.content_verification,
+        'content_verification_failed',
+        treeObservation.status as ContentTreeGitObservationStatus,
+      );
+    contentVerificationInput = {
+      goalId,
+      expectedBaseCommit: record.destination.expectedBaseCommit,
+      acceptedSourceCommit: record.source.commit,
+      destinationTipCommit: observation.destination.observedCommit,
+      destinationRef: record.destination.ref,
+      objectFormat: record.repository.objectFormat,
+      observation: treeObservation,
+    };
+    let evaluatedContentVerification: ReturnType<typeof evaluateContentVerification>;
+    try {
+      evaluatedContentVerification = evaluateContentVerification(contentVerificationInput);
+    } catch (error) {
+      if (error instanceof ContentVerificationError)
+        throw new PreflightRefusal(
+          CHECK.content_verification,
+          'content_verification_failed',
+          error.detail ?? error.code,
+        );
+      throw error;
+    }
+    contentVerification = {
+      verifier: evaluatedContentVerification.evidence.verifier,
+      verifierVersion: evaluatedContentVerification.evidence.verifierVersion,
+      status: evaluatedContentVerification.evidence.status,
+      verificationDigest: evaluatedContentVerification.verificationDigest,
+      changedPathCount: evaluatedContentVerification.evidence.changedPathCount,
+      mismatchCount: evaluatedContentVerification.evidence.mismatchCount,
+      mismatchPathDigest: evaluatedContentVerification.evidence.mismatchPathDigest,
+      comparisonCommit: evaluatedContentVerification.evidence.destination.comparisonCommit,
+    };
     progress.index = CHECK.snapshot_after;
     let second: Snapshot;
     try {
@@ -767,6 +876,9 @@ export async function computeExternalCompletionPreflightWithIdentity(
         acceptanceApprovalId: record.review.acceptanceApprovalId,
       },
       verificationEvidenceDigest: record.review.evidenceIdentityDigest,
+      contentVerificationDigest: contentVerification.verificationDigest,
+      contentVerificationStatus: contentVerification.status,
+      contentOutcomeAcknowledged: false,
       milestoneIdentityDigest,
       findingIdentityDigest: first.handoff.completion.findingsIdentityDigest,
       repository: {
@@ -812,22 +924,49 @@ export async function computeExternalCompletionPreflightWithIdentity(
           reasons: [],
           checks: checksFor(null),
           facts,
+          contentVerification,
           actionFields,
-          proofLimitations: { ...PROOF_LIMITATIONS },
+          proofLimitations: {
+            ...PROOF_LIMITATIONS,
+            contentPreservation: contentVerification.status === 'verified' ? 'verified' : 'not_proven',
+          },
           authority: { ...AUTHORITY },
         },
         CHECK.assemble,
       ),
       identity,
-      observation: summarizeObservation(observation),
+      observation: summarizeObservation(observation, contentVerification),
       postGitIdentity: second.identity,
+      contentVerificationInput,
     };
   } catch (error) {
     // A refused report carries no identity: the caller must not treat it as a reviewed state.
     const report =
       error instanceof PreflightRefusal
-        ? refused(goalId, input.attestationId, error.index, error.code, error.detail, facts)
-        : refused(goalId, input.attestationId, progress.index, 'preflight_unavailable', null, facts);
-    return { report, identity: null, observation: null, postGitIdentity: null };
+        ? refused(
+            goalId,
+            input.attestationId,
+            error.index,
+            error.code,
+            error.detail,
+            facts,
+            contentVerification,
+          )
+        : refused(
+            goalId,
+            input.attestationId,
+            progress.index,
+            'preflight_unavailable',
+            null,
+            facts,
+            contentVerification,
+          );
+    return {
+      report,
+      identity: null,
+      observation: null,
+      postGitIdentity: null,
+      contentVerificationInput: null,
+    };
   }
 }

@@ -61,7 +61,7 @@ describe('Goal detail route carries the completion standing', () => {
           unqualifiedSuccessAllowed: true,
           trustedForDownstream: true,
           qualifier: 'none',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
       });
 
@@ -84,7 +84,7 @@ describe('Goal detail route carries the completion standing', () => {
           unqualifiedSuccessAllowed: false,
           trustedForDownstream: false,
           qualifier: 'withdrawn_by_user',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         correction: { standing: 'withdrawn', correctionCount: 1, correctedAfterCompletion: true },
       });

@@ -1,6 +1,6 @@
 # Goal Engine (Grand Projects)
 
-An overview of the Goal Engine as the code stands, checked on 2026-10-20. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
+An overview of the Goal Engine as implemented on the current development branch, checked on 2026-10-24. The contracts listed at the end define each boundary in detail. Release state is in [V1_READINESS.md](../V1_READINESS.md).
 
 ## What it is
 
@@ -10,11 +10,13 @@ The Goal Engine sits above `RunEngine`. All model work runs as ordinary bounded 
 
 ## Production status
 
-Production constructs `DisabledGoalExecutor` (`src/server/index.ts`). Its route check always reports `route_unavailable`, so starting a Goal fails preflight and no proposal, execution, review, remediation or verification run is ever queued. The real executor, `TuringGoalExecutor`, is used only by tests.
+Production calls `createProductionGoalComposition` (`src/server/index.ts:28`). That composition wires `createGoalSupervisor` to `TuringGoalExecutor` with `ResolvedGoalRunPlanProvider` and `requireResolvedRoutes: true` (`src/server/goals/productionComposition.ts`). The supervisor decides every state transition and starts at most one ordinary queued run at a time through the same `RunEngine`; the exact backend, provider, model and billing lane come from the cycle's write-once persisted role resolution, never from a fallback or a fresh selection. A plan without a matching resolved route is refused.
 
-What does work in production: creating Goals and definition drafts, approving and amending definitions, persistence and restart recovery, and **authoring runs**. An authoring run (`POST /api/goals/authoring`, consumed by `AuthoringReconciler`) is the only Goal path that starts a model run, and it uses the user's exact pinned route.
+The Goal composition has deterministic acceptance coverage for the exact persisted route, isolated execution, manual handoff and the user's base staying untouched until the user acts. The provider process boundary is faked: this is not live-provider, physical-device or release qualification. Current full-gate and platform status is in [V1_READINESS.md](../V1_READINESS.md).
 
-Because no Goal can execute, no production Goal can reach handoff. Everything under "Delivery and completion" below is exercised by fake-provider end-to-end tests (`src/server/goals/goalE2E.test.ts`) only.
+Creating Goals and definition drafts, approving and amending definitions, persistence and restart recovery, and **authoring runs** also work. An authoring run (`POST /api/goals/authoring`, consumed by `AuthoringReconciler`) uses the user's exact pinned route.
+
+Delivery remains manual-handoff only. Turing never writes the user's base branch; the checked-out-worktree writer `applyApprovedGoalToBase` is quarantined and unreachable because it can overwrite ignored files. New completions bind to immutable evidence from the read-only `content-verified-v1` verifier; old ancestry-only completion proofs remain historical and immutable. The verifier compares Goal-changed paths at the first destination-history commit containing the source, refuses LFS-filtered paths, fails closed above 10,000 paths, and does not turn a mismatch into success through Policy B.
 
 ## Lifecycle
 
@@ -27,7 +29,7 @@ Work happens in cycles (authoring, execution, remediation, review, verification)
 1. **Final review and acceptance.** An independent final review, then explicit user acceptance. Completion evaluation then reports `final_apply_required` until delivery is recorded.
 2. **Manual handoff** (`manualHandoff.ts`). An immutable record binds the exact source and base commits and trees, the evidence, the review, a bounded diff and read-only inspection commands. Turing never writes the user's base branch. The old checked-out-worktree writer, `applyApprovedGoalToBase` in `finalApply.ts`, is quarantined and unreachable because it can overwrite ignored files.
 3. **The user integrates** the result with their own Git operation.
-4. **External-integration attestation** (`externalIntegration.ts`). The user confirms the integration, and Turing observes that the source and the expected base are ancestors of the exact destination commit. This proves ancestry at an observed time only. Content preservation is not proven (`contentPreservation: not_proven`): a `git merge -s ours` passes the ancestry check while discarding the work.
+4. **External-integration attestation** (`externalIntegration.ts`). The user confirms the integration, and Turing observes that the source and the expected base are ancestors of the exact destination commit. The separately versioned content verifier checks changed paths for new completion evidence; ancestry-only records remain `not_proven`, and a `git merge -s ours` cannot pass the content check.
 5. **Completion** (`externalCompletionDecision.ts`, `externalCompletion.ts`). For a definition with the version-2 policy (`external_user_attested_v2`), a read-only preflight, then a recorded user decision, then a terminal transition that writes an immutable proof. Definitions with the legacy version-1 policy keep their original rules.
 6. **Corrections** (migration 028). An attestation can later be disputed, withdrawn or superseded through an append-only ledger. A correction changes the completed Goal's standing (`uncontested`, `disputed`, `withdrawn`, `superseded`, `reconciliation_required`), never its completion, proof or `completed_at`.
 
@@ -39,8 +41,10 @@ Work happens in cycles (authoring, execution, remediation, review, verification)
   - `POST /api/goals/:goalId/completion`
   - `POST /api/goals/:goalId/attestation-corrections/:approvalId/decision`
   - `POST /api/goals/:goalId/handoffs/:handoffId/external-integration/attestations/:attestationId/corrections`
-- **Local trust.** Loopback callers are trusted. A same-user local process is not distinguished from the desktop UI; the owner accepted this for V1 (O1). See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
-- **Phone.** It shows Goal state and completion standing read-only. It has no completion, correction or handoff control.
+- **Final-acceptance decision.** `POST /api/goal-approvals/:approvalId/decision` has one conditional exception. The handler reads the stored `goal_approvals` row (a mutable row) before app-level body validation and writes, and refuses a paired remote caller only when `row.gate === 'final_acceptance' && row.status === 'pending'` with 403 `desktop_required`. Local callers stay allowed, an unknown remote id stays the ordinary 404, and every other gate stays allowed; an already-decided row keeps its ordinary idempotent 200 or 409 `already_decided`. `final_apply` is deliberately not guarded: `applyApprovedGoalToBase` stays quarantined and unreachable, no Turing API writes the user's base, and the external-integration attestation itself remains desktop-only.
+- **Caller-aware projection.** Both `/api/approvals/unified` and `/api/dashboard` thread the same request identity predicate through the approval projection. A remote caller still receives a pending `final_acceptance` row in the pending list, but with `decidable: false` and `desktopOnly: true`; a local caller sees it as decidable. The row is never dropped from the pending list.
+- **Local trust.** Loopback callers are trusted. A same-user local process is not distinguished from the desktop UI; the owner conditionally accepted this residual for V1 on 2026-10-13 (O1), with live Tailscale identity-header/Host behaviour verification as its condition. O2, a verified process boundary, may be post-V1. See [GOAL_TRUSTED_CALLER_BOUNDARY.md](GOAL_TRUSTED_CALLER_BOUNDARY.md).
+- **Phone.** It shows Goal state and completion standing read-only. A pending final-acceptance approval stays visible in its pending list with an explanatory desktop note and no decision buttons. It has no completion, correction or handoff control.
 - **Approvals.** All Goal approvals use the one approval system (`goal_approvals`). Model output never decides a Goal transition.
 
 ## Where the code is

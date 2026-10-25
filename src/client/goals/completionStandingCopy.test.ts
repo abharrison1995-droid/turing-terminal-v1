@@ -70,13 +70,16 @@ const allStrings = (value: PhoneStandingView): string[] =>
 
 /** Strips the negations the copy is allowed to use, so the banned-claims scan sees only positive wording. */
 const withoutNegations = (text: string) =>
-  text.replace(/not proven|could not be verified|not attested|not confirmed/gi, '');
+  text
+    .replace(/not proven|could not be verified|not verified|not attested|not confirmed/gi, '')
+    .replace(/not a successful-delivery claim|must never be treated as successful delivery/gi, '');
 
 const BANNED =
   /\b(success\w*|succeeded|verified|confirmed|proven|preserved|safe\w*|prevent\w*|blocked|block|unable|cannot call|enforc\w*|only on|phone|mobile|desktop|api)\b/i;
 
 const REPRESENTATIVE_STANDINGS: Array<GoalCompletionStanding | undefined> = [
   TRUSTED,
+  standing('v2', 'uncontested', claimWith('content_mismatch_disclosed', 'mismatch')),
   standing('v2', 'disputed', claimWith('disputed_by_user')),
   standing('v2', 'withdrawn', claimWith('withdrawn_by_user')),
   standing('v2', 'superseded', claimWith('superseded_by_user')),
@@ -96,18 +99,34 @@ const ROWS: Array<{
   expected: PhoneStandingView;
 }> = [
   {
+    name: 'content mismatch',
+    standing: standing('v2', 'uncontested', claimWith('content_mismatch_disclosed', 'mismatch')),
+    expected: {
+      state: 'mismatch',
+      heading: 'A content mismatch was disclosed. This is not a successful-delivery claim.',
+      detail: null,
+      qualifier: 'A content mismatch was explicitly disclosed. This is not a successful-delivery claim.',
+      contentPreservation: 'Content mismatch disclosed. This is not a successful-delivery claim.',
+      tone: 'danger',
+      icon: 'invalid',
+      nextLabel: 'Content mismatch disclosed',
+      nextSummary:
+        'This completion is recorded under Policy B and must never be treated as successful delivery.',
+    },
+  },
+  {
     name: 'trusted',
     standing: TRUSTED,
     expected: {
       state: 'trusted',
-      heading: 'Completed on a recorded decision. Turing has not proven content preservation.',
+      heading: 'Historical completion on a recorded decision. Content was not verified.',
       detail: null,
       qualifier: null,
       contentPreservation: 'Content preservation: not proven.',
       tone: 'done',
       icon: 'done',
       nextLabel: 'Completed',
-      nextSummary: 'The completion is uncontested. Turing has not proven content preservation.',
+      nextSummary: 'This historical completion records Git ancestry only; changed content was not checked.',
     },
   },
   {
@@ -310,7 +329,7 @@ describe('phone standing copy matches the desktop copy (U2)', () => {
     expect(view('completed', value)?.qualifier).toBe(qualifierCopy(qualifier));
   });
 
-  it.each(['not_proven', 'not_applicable', 'mystery_value'])(
+  it.each(['mismatch', 'not_proven', 'not_applicable', 'mystery_value'])(
     'the content-preservation value %s equals contentPreservationCopy',
     (value) => {
       const claim = claimWith(

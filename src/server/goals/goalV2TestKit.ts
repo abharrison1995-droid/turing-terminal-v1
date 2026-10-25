@@ -458,6 +458,12 @@ export function completionProofForDecision(
     source: action.source,
     destination: action.destination,
     gitProof: { ...action.proof, observedAt },
+    ...(action.contentVerificationDigest === undefined
+      ? {}
+      : {
+          contentVerificationDigest: action.contentVerificationDigest,
+          contentVerificationStatus: action.contentVerificationStatus,
+        }),
     decision: {
       approvalId: approval.id,
       actionDigest: action.actionDigest,

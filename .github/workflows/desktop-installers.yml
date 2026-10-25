@@ -3,7 +3,7 @@ name: Desktop installers
 on:
   workflow_dispatch:
   push:
-    tags: [v1.0.0-rc2]
+    tags: [v1.0.0-rc3]
 
 permissions:
   contents: read
@@ -52,10 +52,10 @@ jobs:
         run: npm run desktop:release
       - uses: actions/upload-artifact@v4
         with:
-          name: turing-terminal-linux-rc2
+          name: turing-terminal-linux-rc3
           path: |
-            dist/release/1.0.0-rc2/*.deb
-            dist/release/1.0.0-rc2/*.AppImage
+            dist/release/1.0.0-rc3/*.deb
+            dist/release/1.0.0-rc3/*.AppImage
           if-no-files-found: error
           retention-days: 1
 
@@ -85,8 +85,8 @@ jobs:
         run: npm run desktop:release
       - uses: actions/upload-artifact@v4
         with:
-          name: turing-terminal-windows-rc2
-          path: dist/release/1.0.0-rc2/*.exe
+          name: turing-terminal-windows-rc3
+          path: dist/release/1.0.0-rc3/*.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -103,17 +103,17 @@ jobs:
           node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          name: turing-terminal-linux-rc2
-          path: dist/release/1.0.0-rc2/staging/linux
+          name: turing-terminal-linux-rc3
+          path: dist/release/1.0.0-rc3/staging/linux
       - uses: actions/download-artifact@v4
         with:
-          name: turing-terminal-windows-rc2
-          path: dist/release/1.0.0-rc2/staging/windows
+          name: turing-terminal-windows-rc3
+          path: dist/release/1.0.0-rc3/staging/windows
       - run: node scripts/merge-release.mjs
       - uses: actions/upload-artifact@v4
         with:
-          name: Turing-Terminal-1.0.0-rc2
-          path: dist/release/1.0.0-rc2
+          name: Turing-Terminal-1.0.0-rc3
+          path: dist/release/1.0.0-rc3
           if-no-files-found: error
           retention-days: 7
       # Remove duplicate installers only after the combined bundle uploads successfully.
@@ -127,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           artifact_ids="$(gh api --paginate "repos/$GH_REPO/actions/runs/$RUN_ID/artifacts" \
-            --jq '.artifacts[] | select(.name == "turing-terminal-linux-rc2" or .name == "turing-terminal-windows-rc2") | .id')"
+            --jq '.artifacts[] | select(.name == "turing-terminal-linux-rc3" or .name == "turing-terminal-windows-rc3") | .id')"
           for artifact_id in $artifact_ids; do
             gh api --method DELETE "repos/$GH_REPO/actions/artifacts/$artifact_id"
           done

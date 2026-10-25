@@ -561,6 +561,7 @@ export function snapshotOf(target: Target, approvalId: string | null): Snapshot 
 export const TABLES_A_COMPLETION_CHANGES = new Set([
   'goals',
   'goal_events',
+  'goal_content_verifications',
   'goal_external_completion_proofs',
   'goal_runtime',
 ]);

@@ -14,6 +14,11 @@ import {
   parseAttestationCorrectionApprovalDetail,
 } from './attestationCorrectionDetail.js';
 import { parseExternalCompletionAction } from './externalCompletionProof.js';
+import { opportunityApprovalDetailSchema } from '../../shared/opportunityContract.js';
+import {
+  recordOpportunityAdmissionProof,
+  reproveOpportunityAdmissionApproval,
+} from '../opportunityEvidence.js';
 
 const EXTERNAL_COMPLETION_ACTION = 'complete_goal_external_integration_v2';
 
@@ -30,7 +35,8 @@ export type GoalApprovalErrorCode =
   | 'invalid_attestation_correction_action_digest'
   | 'invalid_external_completion_action_digest'
   | 'completion_decision_requires_dedicated_service'
-  | 'correction_decision_requires_dedicated_service';
+  | 'correction_decision_requires_dedicated_service'
+  | 'invalid_opportunity_admission';
 
 export class GoalApprovalError extends Error {
   constructor(
@@ -119,6 +125,35 @@ export function isDedicatedCompletionApproval(approval: DedicatedApprovalSubject
     approval.externalCompletionActionDigest !== undefined ||
     approval.detail.action === EXTERNAL_COMPLETION_ACTION
   );
+}
+
+/**
+ * True only for a stored row that is a pending final-acceptance gate. The desktop-only caller boundary reads the stored
+ * `goal_approvals` row (which is mutable) and applies this exact conjunction before body validation; the projection uses
+ * the same shape to keep the row visible but read-only for a remote caller.
+ */
+export function isPendingFinalAcceptanceRow(row: { gate: string; status: string }): boolean {
+  return row.gate === 'final_acceptance' && row.status === 'pending';
+}
+
+/** Exact opportunity admissions are desktop-only; static first-use decisions retain their existing remote policy. */
+export function isPendingOpportunityAdmissionRow(row: {
+  gate: string;
+  status: string;
+  detail_json: string;
+}): boolean {
+  if (row.gate !== 'pool_route_first_use' || row.status !== 'pending') return false;
+  try {
+    const detail = JSON.parse(row.detail_json) as unknown;
+    return (
+      !!detail &&
+      typeof detail === 'object' &&
+      !Array.isArray(detail) &&
+      (detail as Record<string, unknown>).admissionKind === 'opportunity'
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function pendingGoalApprovals(db: Db, goalId: string): GoalApproval[] {
@@ -220,6 +255,19 @@ export function requestGoalApproval(
       'invalid_attestation_correction_action_digest',
       'An attestation correction digest must match its versioned high-risk user approval detail.',
     );
+  if (
+    input.detail?.admissionKind !== undefined &&
+    (input.gate !== 'pool_route_first_use' ||
+      input.detail.admissionKind !== 'opportunity' ||
+      input.risk !== 'medium' ||
+      input.requestedBy !== 'user' ||
+      !opportunityApprovalDetailSchema.safeParse(input.detail).success ||
+      JSON.stringify(input.detail).length > 4_000)
+  )
+    throw new GoalApprovalError(
+      'invalid_opportunity_admission',
+      'An opportunity admission must use its exact, bounded user-approval binding.',
+    );
   const now = input.now ?? new Date().toISOString();
   return db.transaction(() => {
     if (!db.prepare('SELECT 1 FROM goals WHERE id = ?').get(input.goalId))
@@ -317,9 +365,60 @@ export function decideGoalApproval(
       if (row.status === input.decision) return { approval: toApproval(row), changed: false };
       throw new GoalApprovalError('already_decided', `The approval was already ${row.status}.`);
     }
+    if (input.decision === 'approved' && row.gate === 'pool_route_first_use') {
+      let detail: unknown;
+      try {
+        detail = JSON.parse(row.detail_json);
+      } catch {
+        detail = null;
+      }
+      if (
+        detail &&
+        typeof detail === 'object' &&
+        !Array.isArray(detail) &&
+        (detail as Record<string, unknown>).admissionKind === 'opportunity'
+      ) {
+        try {
+          reproveOpportunityAdmissionApproval(db, {
+            goalId: input.goalId,
+            approvalId: row.id,
+            detailJson: row.detail_json,
+            now,
+          });
+        } catch {
+          throw new GoalApprovalError(
+            'invalid_opportunity_admission',
+            'The opportunity evidence or its active definition changed; request a fresh admission.',
+          );
+        }
+      }
+    }
     db.prepare(
       `UPDATE goal_approvals SET status = ?, decided_by = ?, decision_note = ?, responded_at = ? WHERE id = ? AND status = 'pending'`,
     ).run(input.decision, input.decidedBy, input.note ?? null, now, row.id);
+    if (input.decision === 'approved' && row.gate === 'pool_route_first_use') {
+      let detail: unknown;
+      try {
+        detail = JSON.parse(row.detail_json);
+      } catch {
+        detail = null;
+      }
+      if (
+        detail &&
+        typeof detail === 'object' &&
+        !Array.isArray(detail) &&
+        (detail as Record<string, unknown>).admissionKind === 'opportunity'
+      ) {
+        try {
+          recordOpportunityAdmissionProof(db, { approvalId: row.id, goalId: input.goalId, acceptedAt: now });
+        } catch {
+          throw new GoalApprovalError(
+            'invalid_opportunity_admission',
+            'The approved admission proof could not be preserved for its exact definition.',
+          );
+        }
+      }
+    }
     writeGoalEvent(
       db,
       input.goalId,

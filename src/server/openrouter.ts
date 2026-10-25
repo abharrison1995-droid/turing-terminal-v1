@@ -1,6 +1,7 @@
 import type { ModelOption, ProviderSpendTelemetry } from '../shared/types.js';
 import { DEFAULT_JEV_MODEL } from '../shared/decisions.js';
 import { classifyModelIdentity, OPENROUTER_REASONING_EFFORTS } from '../shared/modelSettings.js';
+import { buildModelPricingEvidence } from '../shared/opportunityCost.js';
 import { redactSecrets } from './security.js';
 import type { UsageObservation } from './usageEvents.js';
 
@@ -85,6 +86,9 @@ const price = (value: unknown): number | null => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 export function parseOpenRouterModels(
   payload: unknown,
   observedAt = new Date().toISOString(),
@@ -100,9 +104,34 @@ export function parseOpenRouterModels(
       ? model.supported_parameters.filter((item): item is string => typeof item === 'string')
       : [];
     const pricing = (model.pricing ?? {}) as Record<string, unknown>;
-    const overrides = Array.isArray(pricing.overrides)
-      ? (pricing.overrides as Array<Record<string, unknown>>)
-      : [];
+    const rawOverrides = pricing.overrides;
+    const rawOverrideRows = Array.isArray(rawOverrides) ? rawOverrides : [];
+    const overrides = rawOverrideRows.filter(isRecord);
+    const pricingBaseEvidence = {
+      ...(Object.prototype.hasOwnProperty.call(pricing, 'prompt') ? { prompt: pricing.prompt } : {}),
+      ...(Object.prototype.hasOwnProperty.call(pricing, 'completion')
+        ? { completion: pricing.completion }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(pricing, 'request') ? { request: pricing.request } : {}),
+      ...(Object.prototype.hasOwnProperty.call(pricing, 'input_cache_read')
+        ? { cacheRead: pricing.input_cache_read }
+        : {}),
+    };
+    const pricingOverrideEvidence =
+      rawOverrides === undefined
+        ? undefined
+        : Array.isArray(rawOverrides)
+          ? rawOverrideRows.map((item) =>
+              isRecord(item)
+                ? {
+                    ...item,
+                    ...(Object.prototype.hasOwnProperty.call(item, 'input_cache_read')
+                      ? { cacheRead: item.input_cache_read }
+                      : {}),
+                  }
+                : item,
+            )
+          : rawOverrides;
     const maxOf = (field: string) => {
       const values = [price(pricing[field]), ...overrides.map((item) => price(item[field]))].filter(
         (value): value is number => value !== null,
@@ -157,6 +186,7 @@ export function parseOpenRouterModels(
           cacheReadUsdPerToken: price(pricing.input_cache_read),
           maxPromptUsdPerToken: maxOf('prompt'),
           maxCompletionUsdPerToken: maxOf('completion'),
+          pricingEvidence: buildModelPricingEvidence(pricingBaseEvidence, pricingOverrideEvidence),
           source: CATALOG_SOURCE,
           observedAt,
         },
@@ -166,16 +196,24 @@ export function parseOpenRouterModels(
   });
 }
 
-/** Public catalog; no credential and no generation. */
-export async function fetchOpenRouterCatalog(fetchImpl: FetchLike = fetch): Promise<ModelOption[]> {
+/** Public catalog result with a finite outcome for observation provenance; no credential and no generation. */
+export async function fetchOpenRouterCatalogDetailed(
+  fetchImpl: FetchLike = fetch,
+): Promise<{ models: ModelOption[]; outcome: 'success' | 'empty' | 'failed' }> {
   let response: Response;
   try {
     response = await fetchImpl(CATALOG_SOURCE, { signal: AbortSignal.timeout(20_000) });
   } catch {
-    return [];
+    return { models: [], outcome: 'failed' };
   }
-  if (!response.ok) return [];
-  return parseOpenRouterModels(await response.json().catch(() => null));
+  if (!response.ok) return { models: [], outcome: 'failed' };
+  const models = parseOpenRouterModels(await response.json().catch(() => null));
+  return { models, outcome: models.length ? 'success' : 'empty' };
+}
+
+/** Compatibility wrapper for existing catalog callers. */
+export async function fetchOpenRouterCatalog(fetchImpl: FetchLike = fetch): Promise<ModelOption[]> {
+  return (await fetchOpenRouterCatalogDetailed(fetchImpl)).models;
 }
 
 /** Adapter metadata used only when the live catalog does not list the Jev decision model. */
@@ -388,6 +426,12 @@ export interface MeterHandle {
  * `complete`/`fail` reconcile or release it.
  */
 export interface MeteringHooks {
+  /** Optional MOP-only estimator selected from a persisted Goal route admission. */
+  estimateReservationUsd?: (
+    model: ModelOption | undefined,
+    inputTokens: number,
+    maxOutputTokens: number | null,
+  ) => number | null;
   begin(args: {
     estimateUsd: number | null;
     estimatedInputTokens: number;
@@ -480,8 +524,11 @@ export async function runOpenRouterAgent(args: {
       ...(maxPrice ? { provider: { max_price: maxPrice } } : {}),
     };
     const estimatedInputTokens = estimateTokensConservatively(JSON.stringify({ messages, tools }));
+    const estimateUsd = args.metering.estimateReservationUsd
+      ? args.metering.estimateReservationUsd(args.model, estimatedInputTokens, maxOutput)
+      : estimateReservationUsd(args.model, estimatedInputTokens, maxOutput);
     const handle = await args.metering.begin({
-      estimateUsd: estimateReservationUsd(args.model, estimatedInputTokens, maxOutput),
+      estimateUsd,
       estimatedInputTokens,
       estimatedOutputTokens: maxOutput,
       label: `OpenRouter turn ${turn}`,

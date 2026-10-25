@@ -237,9 +237,19 @@ function preflight(
       freshTree: tree,
       objectFormat: 'sha1',
     },
+    contentVerification: {
+      verifier: 'content-verified-v1',
+      verifierVersion: 2,
+      status: 'verified',
+      verificationDigest: 'c'.repeat(64),
+      changedPathCount: 1,
+      mismatchCount: 0,
+      mismatchPathDigest: 'd'.repeat(64),
+      comparisonCommit: source,
+    },
     actionFields: null,
     proofLimitations: {
-      contentPreservation: 'not_proven',
+      contentPreservation: 'verified',
       goalCompletion: 'not_completed_by_preflight',
       destinationPolicy: 'exact_attested_tip',
     },
@@ -356,15 +366,14 @@ describe('desktop completion review (read-only)', () => {
     expect(section.getByText(handoffDigest)).toBeTruthy();
     expect(section.getByText('handoff-v2')).toBeTruthy();
     expect(section.getByText(ATTESTATION)).toBeTruthy();
-    // The attested and the current destination commit are both the source commit in this fixture.
-    expect(section.getAllByText(source)).toHaveLength(2);
+    // The attested, comparison and current destination commits are the same in this fixture.
+    expect(section.getAllByText(source)).toHaveLength(3);
     expect(section.getAllByText(tree)).toHaveLength(2);
     expect(section.getByText('refs/heads/main')).toBeTruthy();
-    expect(
-      section.getByText(
-        'Content preservation: not proven. Turing observed Git history at the time shown; it did not check that your changes are in the destination files.',
-      ),
-    ).toBeTruthy();
+    expect(section.getByText(COMPLETION_COPY.limitation)).toBeTruthy();
+    expect(section.getByText(COMPLETION_COPY.limitationPointInTime)).toBeTruthy();
+    expect(section.getByText('content-verified-v1 v2')).toBeTruthy();
+    expect(section.getByText('1')).toBeTruthy();
     expect(section.getByText('Uncontested')).toBeTruthy();
     expect(section.getByText('No blockers in this review.')).toBeTruthy();
     const buttons = section.queryAllByRole('button');
@@ -395,7 +404,7 @@ describe('desktop completion review (read-only)', () => {
     expect(section.queryByText(/attestation_disputed/)).toBeNull();
   });
 
-  it('a completed Goal is never headed as success and always shows the content-preservation line', async () => {
+  it('a historical completed Goal says content was not verified and shows the content-preservation line', async () => {
     serveHandoff({
       status: completionStatus('completed', {
         completion: {
@@ -414,13 +423,13 @@ describe('desktop completion review (read-only)', () => {
     await openHandoffTab(user);
     const section = await completionSection();
     expect(
-      await section.findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
-      ),
+      await section.findByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     expect(section.getByText('Content preservation: not proven.')).toBeTruthy();
     const text = (await screen.findByRole('region', { name: 'Completion review' })).textContent ?? '';
-    expect(text).not.toMatch(/success|successfully|all done|\bdone\b|verified|preserved/i);
+    expect(text.replace(/not verified/gi, '')).not.toMatch(
+      /success|successfully|all done|\bdone\b|verified|preserved/i,
+    );
     expect(text).not.toMatch(/unqualifiedSuccessAllowed|contentPreservation|not_proven/);
     expect(screen.queryByRole('heading', { name: /^Goal completed/ })).toBeNull();
     expect(calls.some((call) => call.path === '/api/goals/goal-1/completion-preflight')).toBe(false);
@@ -446,7 +455,7 @@ describe('desktop completion review (read-only)', () => {
     expect(region.textContent).not.toContain(qualifier);
   });
 
-  it('contested, legacy and invalid Goals each render their own copy, and only a completed Goal says Completed on a recorded decision. Turing has not proven content preservation.', async () => {
+  it('contested, legacy and invalid Goals each render their own copy, and only a completed Goal says Historical completion on a recorded decision. Content was not verified.', async () => {
     serveHandoff({ status: completionStatus('legacy', { qualifier: 'legacy_not_v2_attested' }) });
     const user = userEvent.setup();
     render(<GoalsPage />);
@@ -456,7 +465,7 @@ describe('desktop completion review (read-only)', () => {
       await section.findByText('Completed before external attestation existed. Not attested.'),
     ).toBeTruthy();
     expect(
-      section.queryByText('Completed on a recorded decision. Turing has not proven content preservation.'),
+      section.queryByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeNull();
     cleanup();
 
@@ -467,7 +476,7 @@ describe('desktop completion review (read-only)', () => {
     section = await completionSection();
     expect(await section.findByText('Completion records could not be verified.')).toBeTruthy();
     expect(
-      section.queryByText('Completed on a recorded decision. Turing has not proven content preservation.'),
+      section.queryByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeNull();
     expect(section.queryByText(/Completed before external attestation/)).toBeNull();
   });
@@ -634,9 +643,7 @@ describe('desktop completion controls', () => {
     expect(complete).toHaveProperty('disabled', false);
     await user.click(complete);
     expect(
-      await section.findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
-      ),
+      await section.findByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     section = await completionSection();
     expect(section.getByText('Content preservation: not proven.')).toBeTruthy();
@@ -1020,7 +1027,7 @@ describe('completion recovery after an ambiguous write (D.4E)', () => {
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
     expect(await section.findByText('The Goal was completed. This is the saved result.')).toBeTruthy();
     expect(
-      section.getByText('Completed on a recorded decision. Turing has not proven content preservation.'),
+      section.getByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     expect(section.queryByRole('button', { name: 'Complete Goal' })).toBeNull();
     expect(completionWrites()).toHaveLength(1);
@@ -1410,9 +1417,7 @@ describe('completion panel accessibility (D.4F.1)', () => {
     await user.click(section.getByRole('checkbox'));
     await user.click(section.getByRole('button', { name: 'Complete Goal' }));
     expect(
-      await section.findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
-      ),
+      await section.findByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     expect(document.activeElement).toBe(section.getByRole('heading', { name: 'Completion review' }));
   });
@@ -1424,9 +1429,7 @@ describe('completion panel accessibility (D.4F.1)', () => {
     await openHandoffTab(user);
     const section = await completionSection();
     expect(
-      await section.findByText(
-        'Completed on a recorded decision. Turing has not proven content preservation.',
-      ),
+      await section.findByText('Historical completion on a recorded decision. Content was not verified.'),
     ).toBeTruthy();
     expect(screen.getByRole('region', { name: 'Completion review' }).contains(document.activeElement)).toBe(
       false,
@@ -1434,12 +1437,7 @@ describe('completion panel accessibility (D.4F.1)', () => {
   });
 
   it.each([
-    [
-      'completed',
-      'none',
-      'Completed on a recorded decision. Turing has not proven content preservation.',
-      true,
-    ],
+    ['completed', 'none', 'Historical completion on a recorded decision. Content was not verified.', true],
     ['contested', 'disputed_by_user', 'Completed earlier; later contested.', true],
     ['contested', 'superseded_by_user', 'Completed earlier; later contested.', true],
     [
@@ -1473,7 +1471,10 @@ describe('completion panel accessibility (D.4F.1)', () => {
       if (sentence !== null) expect(description).toContain(sentence);
       if (carriesNotProven) expect(description).toContain('Content preservation: not proven.');
       else expect(description).not.toMatch(/not proven/);
-      if (state !== 'invalid') expect(heading).not.toMatch(/\b(succeeded|successfully|verified|safe)\b/i);
+      if (state !== 'invalid')
+        expect(heading.replace(/not verified/gi, '')).not.toMatch(
+          /\b(succeeded|successfully|verified|safe)\b/i,
+        );
     },
   );
 

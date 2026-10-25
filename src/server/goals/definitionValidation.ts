@@ -9,6 +9,7 @@ import {
   type VerificationSpec,
 } from '../../shared/goals.js';
 import { isMeteredLane } from '../../shared/billing.js';
+import { OPPORTUNITY_POOL_MEMBERS_CAP, opportunityBindingSchema } from '../../shared/opportunityContract.js';
 import type { BillingMode, StageKind } from '../../shared/types.js';
 import { isSafeProjectCommand } from '../commandPolicy.js';
 
@@ -89,6 +90,7 @@ export const routeMemberSchema = z.strictObject({
   configuration: modelConfiguration,
   identityKind: z.enum(['pinned', 'floating', 'unknown']).optional(),
   freshnessClass: z.enum(['stable-subscription', 'opportunity']),
+  opportunity: opportunityBindingSchema.optional(),
 });
 
 const availability = z.enum(['live-catalog', 'fresh-validation', 'live-catalog-or-fresh-validation']);
@@ -694,12 +696,6 @@ export function validateGoalDefinition(input: unknown): DefinitionValidation {
     if (!KEY.test(pool.id)) error('pool.id_invalid', `${at}.id`, 'Invalid pool id.');
     if (poolIds.has(pool.id)) error('pool.duplicate_id', `${at}.id`, `Pool id "${pool.id}" is not unique.`);
     else poolIds.set(pool.id, index);
-    if (pool.admission !== 'static')
-      error(
-        'pool.opportunity_unsupported',
-        `${at}.admission`,
-        'Opportunity admission is not available until the Model Opportunity Layer exists.',
-      );
     if (pool.autoRevalidate !== false)
       error(
         'pool.auto_revalidate_unsupported',
@@ -707,10 +703,42 @@ export function validateGoalDefinition(input: unknown): DefinitionValidation {
         'Automatic revalidation could spend allowance silently and is not supported.',
       );
     if (pool.members.length === 0) error('pool.empty', `${at}.members`, 'A pool needs at least one member.');
+    if (pool.admission === 'opportunity' && pool.members.length > OPPORTUNITY_POOL_MEMBERS_CAP)
+      error(
+        'opportunity.pool_too_large',
+        `${at}.members`,
+        `An opportunity pool can have at most ${OPPORTUNITY_POOL_MEMBERS_CAP} members.`,
+      );
     const seen = new Set<string>();
     pool.members.forEach((poolMember, mIndex) => {
       const mAt = `${at}.members[${mIndex}]`;
       checkMember(poolMember, mAt);
+      if (pool.admission === 'opportunity') {
+        if (!poolMember.opportunity)
+          error(
+            'opportunity.binding_required',
+            `${mAt}.opportunity`,
+            'An opportunity pool member needs an observation binding.',
+          );
+        if (poolMember.freshnessClass !== 'opportunity')
+          error(
+            'opportunity.freshness_class_required',
+            `${mAt}.freshnessClass`,
+            'An opportunity member must use opportunity freshness.',
+          );
+        if (poolMember.identityKind === 'unknown')
+          error(
+            'opportunity.identity_unknown',
+            `${mAt}.identityKind`,
+            'An opportunity member needs a known route identity.',
+          );
+      } else if (poolMember.opportunity) {
+        error(
+          'opportunity.binding_on_static_pool',
+          `${mAt}.opportunity`,
+          'Static pool members cannot carry opportunity evidence.',
+        );
+      }
       if (
         pool.laneClass === 'subscription' &&
         poolMember.configuration.billingLane &&
@@ -750,6 +778,12 @@ export function validateGoalDefinition(input: unknown): DefinitionValidation {
         error('route.unknown_pool', `${at}.poolId`, `Unknown pool "${roleRoute.poolId}".`);
     } else {
       checkMember(roleRoute.member, `${at}.member`);
+      if (roleRoute.member.opportunity)
+        error(
+          'opportunity.binding_on_pinned_route',
+          `${at}.member.opportunity`,
+          'Pinned routes cannot carry pool admission evidence.',
+        );
       if (
         role === 'final_reviewer' &&
         routing.independence.finalReview !== 'none' &&

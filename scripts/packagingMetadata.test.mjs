@@ -12,14 +12,14 @@ describe('desktop release metadata', () => {
     const cargo = readFileSync(`${root}/src-tauri/Cargo.toml`, 'utf8').match(
       /^version\s*=\s*"([^"]+)"/m,
     )?.[1];
-    expect([packageJson.version, tauri.version, cargo]).toEqual(['1.0.0-rc2', '1.0.0-rc2', '1.0.0-rc2']);
+    expect([packageJson.version, tauri.version, cargo]).toEqual(['1.0.0-rc3', '1.0.0-rc3', '1.0.0-rc3']);
   });
 
   it('uses the required installer names and includes native icon assets', () => {
-    expect(releaseArtifactNames('1.0.0-rc2')).toEqual({
-      windows: 'Turing-Terminal-Setup-x64-1.0.0-rc2.exe',
-      deb: 'turing-terminal_1.0.0-rc2_amd64.deb',
-      appimage: 'Turing-Terminal-x86_64-1.0.0-rc2.AppImage',
+    expect(releaseArtifactNames('1.0.0-rc3')).toEqual({
+      windows: 'Turing-Terminal-Setup-x64-1.0.0-rc3.exe',
+      deb: 'turing-terminal_1.0.0-rc3_amd64.deb',
+      appimage: 'Turing-Terminal-x86_64-1.0.0-rc3.AppImage',
     });
     for (const icon of ['32x32.png', '128x128.png', '128x128@2x.png', 'icon.ico']) {
       expect(existsSync(`${root}/src-tauri/icons/${icon}`)).toBe(true);

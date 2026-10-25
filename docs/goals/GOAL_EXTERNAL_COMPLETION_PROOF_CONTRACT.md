@@ -2,6 +2,8 @@
 
 ## Status
 
+**Current status (2026-10-24):** Version-2 external completion is active on the development branch. New completion preflight performs a read-only content observation and requires a verified `content-verified-v1` evidence digest; the atomic completion transaction persists that evidence with the proof and terminal transition. Migration 033 adds the binding without rewriting migration-027 proof rows. Existing ancestry-only records remain `not_proven`, immutable and historical. The proof's `contentPreservation: not_proven` field describes the legacy ancestry subproof; the separately surfaced completion standing reports verified content only when its evidence digest validates. The stage notes below preserve their original chronology and are superseded where they describe pre-activation behavior. See [V1_READINESS.md](../V1_READINESS.md) for release qualification.
+
 Stage 7C.2B.5D.1 adds versioned policy and immutable proof infrastructure. Stage 7C.2B.5D.1a adds fail-closed validation of approved definition content and approval lineage before completion evaluation and terminal proof acceptance. Neither stage activates version-2 Goal completion. No production service can create the version-2 completion approval or proof, no endpoint or desktop action exists, and no Goal can become completed through this contract. The document describes the implemented boundary plus the records reserved for a later stage.
 
 The D.3.0B reconciliation (CCv2r1) records the version-2 completion decisions D1-D5 in the section below. It is a documentation change only: version-2 completion remains inactive and this document makes no activation or release claim. The identifiers named as reserved in this section are specified here and are not yet implemented. Stage 7C.2B.5D.3E adds the internal version-2 completion service described in the D.3E section below; the statements in this Status section describe the state before D.3E.
@@ -35,7 +37,7 @@ The evaluator now validates the full current definition approval lineage before 
 
 The regression fixture drops the immutability trigger only in its disposable test database, removes both v2 discriminator fields, and leaves the approved hash, version, approval, and integration head unchanged. It proves the modified JSON parses as legacy and hashes differently from the stored approved digest. The corrected path rejects evaluation, proof validation, `completeGoal()`, direct `transitionGoal(..., 'completed')`, and supervisor-driven completion. Additional tests cover a single missing discriminator, unsupported version, a corrupted v2 ancestor, legacy v1 content/hash mismatch, approval/hash mismatch, malformed JSON, and stale proof after successful legacy evaluation. Existing valid legacy completion remains covered.
 
-This remediation does not change migration 027, action/proof identities or digests, legacy approval records, completion activation, endpoints, UI, Git behavior, or `DisabledGoalExecutor`. It creates no proof or completion authority.
+Historical Stage 7C.2B.5D.1a remediation did not change migration 027 or activate completion. Later work added migration 033 and activated the content-verified completion path; the earlier stage statement is not current status.
 
 ## Future action identity
 
@@ -71,9 +73,9 @@ Controlled migration tests exercise a synthetic row only with the proof-authorit
 
 ## Current completion and recovery boundary
 
-The policy projection can report `external_user_attested_v2`, but always reports `v2CompletionActivated: false` and blockers for inactive completion and missing correction authority. `readExternalCompletionProof()` is read-only: it returns not-found, valid, or invalid; it never repairs or inserts data. No production row can currently be validly created through Turing.
+The policy projection reports version-2 completion capability from production composition. `readExternalCompletionProof()` remains read-only: it returns not-found, valid, or invalid; it never repairs or inserts data. The completion decision path performs fresh content observation, binds its digest to the user decision, and persists evidence, proof, event and terminal state atomically.
 
-The selected future completion stage must freshly verify repository/ref ancestry, correction standing and current Goal authority, then commit the completion approval, immutable proof, event, and terminal transition atomically in SQLite. Recovery must inspect persisted authority and remain observation-only; it must never infer completion from a proof row without the matching committed terminal event/state. External Git observation and SQLite cannot form one transaction, so the proof will remain point-in-time evidence and cannot prove content preservation or prevent later ref movement.
+The completion path freshly verifies repository/ref ancestry, content preservation, correction standing and current Goal authority, then commits the user decision, immutable content evidence and proof, event, and terminal transition atomically in SQLite. Recovery inspects persisted authority and never infers completion from a proof row without the matching committed terminal event/state. External Git observation and SQLite cannot form one transaction, so evidence remains point-in-time and does not prevent later ref movement.
 
 ## CCv2r1 decisions D1-D5 (D.3.0B)
 
@@ -97,7 +99,7 @@ These decisions reconcile the version-2 completion contract (CCv2r1) before D.3 
 - Completion API, desktop completion control, or automatic supervisor completion.
 - Windows production qualification.
 
-The rejected checked-out-worktree writer remains quarantined, production uses `DisabledGoalExecutor`, and V1 is not release-ready. Stage 7C.2B.5D.2 is a reviewed candidate for correction authority; D.3 and later stages remain separate gates.
+The rejected checked-out-worktree writer remains quarantined, production uses the enabled deterministic Goal composition, and V1 release qualification remains open. The statement above describes the earlier stage checkpoint.
 
 ## D.3D user completion decision
 
@@ -112,6 +114,6 @@ Stage 7C.2B.5D.3E adds `completeGoalFromExternalDecision` in `src/server/goals/e
 - **`external_completion_not_activated`.** The legacy evaluator still reports this code for every version-2 Goal, and the legacy transition path refuses version-2 completion with the same code. It means that the Goal cannot be completed through the legacy path. It does not mean that version-2 completion is unavailable through the service.
 - **Legacy v1 is unchanged.** The evaluator and the legacy completion path have no D.3E change. `transitionGoal` now notifies observers through `notifyGoalTransition` with the same behaviour.
 - **No v2 downgrade.** A Goal whose approved policy is version 2 cannot complete through the legacy v1 path. Its completion rests on the decided version-2 action and the immutable proof, not on legacy `applied_externally` or apply-operation evidence.
-- **`contentPreservation` is `not_proven`.** Every version-2 proof records `contentPreservation: 'not_proven'`, and the proof schema accepts only that literal. Ancestry alone is not content preservation. Ancestry shows that the source and base commits are in the destination history. A `git merge -s ours` result passes both ancestry checks when the accepted files are absent.
-- **Authenticated `user`.** `user` means authenticated application control (loopback or Tailscale login plus paired device), not a verified person. The completed Goal records that a user confirmed the decision, and the proof records that content preservation was not proven.
-- **Outstanding.** The final whole-path D.3E review is pending. No HTTP route, UI, or Windows qualification exists.
+- **Legacy ancestry limitation.** Migration-027 version-2 proofs record `contentPreservation: 'not_proven'` and remain unchanged. New completions also bind a separate content-verification digest; a `git merge -s ours` cannot satisfy that verifier when accepted files are absent.
+- **Authenticated `user`.** `user` means authenticated application control (loopback or Tailscale login plus paired device), not a verified person. The completed Goal records the user decision and the content-verification evidence identity.
+- **Release qualification.** HTTP routes and desktop UI are implemented. Windows, live-provider and full release qualification remain open as recorded in [V1_READINESS.md](../V1_READINESS.md).

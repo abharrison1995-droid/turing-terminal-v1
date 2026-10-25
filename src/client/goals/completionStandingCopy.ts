@@ -19,7 +19,14 @@ export const STANDING_READ_ONLY_NOTE =
   'This view only shows the saved standing. It has no control to complete a Goal or to correct a completion.';
 
 export type PhoneStandingState =
-  'trusted' | 'contested' | 'legacy' | 'invalid' | 'unreadable' | 'not_recorded' | 'unrecognised';
+  | 'trusted'
+  | 'contested'
+  | 'mismatch'
+  | 'legacy'
+  | 'invalid'
+  | 'unreadable'
+  | 'not_recorded'
+  | 'unrecognised';
 
 export type PhoneStandingTone = 'done' | 'attention' | 'danger' | 'neutral';
 
@@ -40,6 +47,8 @@ export interface PhoneStandingView {
 }
 
 const CONTENT_NOT_PROVEN = 'Content preservation: not proven.';
+const CONTENT_VERIFIED = 'Content preservation verified at the observed merge.';
+const CONTENT_MISMATCH = 'Content mismatch disclosed. This is not a successful-delivery claim.';
 const CONTENT_NOT_APPLICABLE = 'Content preservation: not applicable.';
 const CONTENT_UNRECOGNISED = 'Content preservation: unrecognised value. Treat it as not proven.';
 
@@ -50,6 +59,8 @@ const QUALIFIER_COPY: Record<string, string | null> = {
   superseded_by_user: 'The attestation this completion relies on was replaced by another.',
   replacement_failed: 'The replacement attestation did not restore this completion.',
   proof_unverified: 'The stored completion proof could not be checked.',
+  content_mismatch_disclosed:
+    'A content mismatch was explicitly disclosed. This is not a successful-delivery claim.',
   legacy_not_v2_attested: 'This completion was recorded before external attestation existed.',
   not_completed: 'No completion is recorded for this Goal.',
 };
@@ -63,8 +74,11 @@ const CONTESTED_STANDINGS: readonly string[] = [
   'reconciliation_required',
 ];
 
-const TRUSTED_HEADING = 'Completed on a recorded decision. Turing has not proven content preservation.';
+const TRUSTED_VERIFIED_HEADING =
+  'Completed on a recorded decision. Changed content matched at the observed merge.';
+const TRUSTED_HISTORICAL_HEADING = 'Historical completion on a recorded decision. Content was not verified.';
 const CONTESTED_HEADING = 'Completed earlier; later contested.';
+const MISMATCH_HEADING = 'A content mismatch was disclosed. This is not a successful-delivery claim.';
 const LEGACY_HEADING = 'Completed before external attestation existed. Not attested.';
 const INVALID_HEADING = 'Completion records could not be verified.';
 const UNREADABLE_HEADING = 'Standing could not be read';
@@ -81,6 +95,9 @@ const UNRECOGNISED_DETAIL =
 const CONTESTED_NEXT_LABEL = 'Completion contested';
 const CONTESTED_NEXT_SUMMARY =
   'This completion was later contested. See the completion standing for what was recorded.';
+const MISMATCH_NEXT_LABEL = 'Content mismatch disclosed';
+const MISMATCH_NEXT_SUMMARY =
+  'This completion is recorded under Policy B and must never be treated as successful delivery.';
 const LEGACY_NEXT_LABEL = 'Completed before attestation existed';
 const LEGACY_NEXT_SUMMARY =
   'This completion is not attested. See the completion standing for what was recorded.';
@@ -96,6 +113,8 @@ function qualifierLine(value: unknown): string | null {
 }
 
 function preservationLine(value: unknown): string {
+  if (value === 'verified') return CONTENT_VERIFIED;
+  if (value === 'mismatch') return CONTENT_MISMATCH;
   if (value === 'not_proven') return CONTENT_NOT_PROVEN;
   if (value === 'not_applicable') return CONTENT_NOT_APPLICABLE;
   return CONTENT_UNRECOGNISED;
@@ -137,17 +156,22 @@ const UNRECOGNISED: PhoneStandingView = {
   nextSummary: UNRECOGNISED_DETAIL,
 };
 
-const TRUSTED: PhoneStandingView = {
-  state: 'trusted',
-  heading: TRUSTED_HEADING,
-  detail: null,
-  qualifier: null,
-  contentPreservation: CONTENT_NOT_PROVEN,
-  tone: 'done',
-  icon: 'done',
-  nextLabel: 'Completed',
-  nextSummary: 'The completion is uncontested. Turing has not proven content preservation.',
-};
+function trustedView(contentPreservation: 'verified' | 'not_proven'): PhoneStandingView {
+  const verified = contentPreservation === 'verified';
+  return {
+    state: 'trusted',
+    heading: verified ? TRUSTED_VERIFIED_HEADING : TRUSTED_HISTORICAL_HEADING,
+    detail: null,
+    qualifier: null,
+    contentPreservation: preservationLine(contentPreservation),
+    tone: 'done',
+    icon: 'done',
+    nextLabel: 'Completed',
+    nextSummary: verified
+      ? 'The completion is uncontested. Changed content matched at the observed merge.'
+      : 'This historical completion records Git ancestry only; changed content was not checked.',
+  };
+}
 
 const INVALID: PhoneStandingView = {
   state: 'invalid',
@@ -160,6 +184,18 @@ const INVALID: PhoneStandingView = {
   nextLabel: 'Completion could not be verified',
   nextSummary:
     'The saved completion records could not be checked. Treat this Goal as not confirmed complete.',
+};
+
+const MISMATCH: PhoneStandingView = {
+  state: 'mismatch',
+  heading: MISMATCH_HEADING,
+  detail: null,
+  qualifier: 'A content mismatch was explicitly disclosed. This is not a successful-delivery claim.',
+  contentPreservation: preservationLine('mismatch'),
+  tone: 'danger',
+  icon: 'invalid',
+  nextLabel: MISMATCH_NEXT_LABEL,
+  nextSummary: MISMATCH_NEXT_SUMMARY,
 };
 
 /** Classifies a saved standing. The input is untrusted, so every field is checked before it is read. */
@@ -196,13 +232,21 @@ function classify(raw: unknown): PhoneStandingView {
   }
   if (kind === 'invalid' && standing === 'invalid_unverified') return INVALID;
   if (kind === 'v2' && standing === 'uncontested') {
+    if (
+      claim.contentPreservation === 'mismatch' &&
+      claim.unqualifiedSuccessAllowed === false &&
+      claim.trustedForDownstream === false &&
+      claim.qualifier === 'content_mismatch_disclosed'
+    )
+      return MISMATCH;
     // The one trusted case. Every signal must agree; any disagreement fails closed.
+    if (claim.contentPreservation !== 'verified' && claim.contentPreservation !== 'not_proven')
+      return UNRECOGNISED;
     const trusted =
       claim.unqualifiedSuccessAllowed === true &&
       claim.trustedForDownstream === true &&
-      claim.qualifier === 'none' &&
-      claim.contentPreservation === 'not_proven';
-    return trusted ? TRUSTED : UNRECOGNISED;
+      claim.qualifier === 'none';
+    return trusted ? trustedView(claim.contentPreservation) : UNRECOGNISED;
   }
   return UNRECOGNISED;
 }
@@ -235,7 +279,7 @@ const fromPhone = (view: PhoneStandingView): CompletedListStandingView => ({
 
 /**
  * The compact list's label for one completed row, from that row's brief. Only a trusted brief whose every signal agrees
- * reads Completed, and its detail keeps the content-not-proven statement. A missing, unreadable or unrecognised brief
+ * reads Completed, and its detail preserves the evidence level. A missing, unreadable or unrecognised brief
  * fails closed. The wording is the phone's own for each state, so the list and the phone cannot disagree.
  */
 export function completedListStandingView(
@@ -243,12 +287,17 @@ export function completedListStandingView(
 ): CompletedListStandingView {
   if (!brief || brief.state !== 'ready') return fromPhone(UNREADABLE);
   if (brief.trusted) {
-    const agrees =
-      brief.standing === 'uncontested' &&
-      brief.qualifier === 'none' &&
-      brief.contentPreservation === 'not_proven';
-    return fromPhone(agrees ? TRUSTED : UNRECOGNISED);
+    if (brief.contentPreservation !== 'verified' && brief.contentPreservation !== 'not_proven')
+      return fromPhone(UNRECOGNISED);
+    const agrees = brief.standing === 'uncontested' && brief.qualifier === 'none';
+    return fromPhone(agrees ? trustedView(brief.contentPreservation) : UNRECOGNISED);
   }
+  if (
+    brief.standing === 'uncontested' &&
+    brief.contentPreservation === 'mismatch' &&
+    brief.qualifier === 'content_mismatch_disclosed'
+  )
+    return fromPhone(MISMATCH);
   if (CONTESTED_STANDINGS.includes(brief.standing)) {
     return {
       label: CONTESTED_NEXT_LABEL,

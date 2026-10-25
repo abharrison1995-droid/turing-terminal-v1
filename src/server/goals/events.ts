@@ -135,6 +135,7 @@ export interface GoalEventPayloads {
     approvalId: string;
     actionDigest: string;
     preflightDigest: string;
+    contentVerificationDigest?: string;
     attestationId: string;
     observedCommit: string;
     observedTree: string;

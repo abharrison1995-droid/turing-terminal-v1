@@ -43,13 +43,14 @@ export const COMPLETION_CLAIM_QUALIFIERS = [
   'superseded_by_user',
   'replacement_failed',
   'proof_unverified',
+  'content_mismatch_disclosed',
   'legacy_not_v2_attested',
   'not_completed',
 ] as const;
 
 export type CompletionClaimQualifier = (typeof COMPLETION_CLAIM_QUALIFIERS)[number];
 
-export type CompletionContentPreservation = 'not_proven' | 'not_applicable';
+export type CompletionContentPreservation = 'verified' | 'mismatch' | 'not_proven' | 'not_applicable';
 
 /** The claim a consumer may make about a completed Goal. Derived in one place by `classifyCompletionStanding`. */
 export interface GoalCompletionClaim {
@@ -70,6 +71,8 @@ export type CompletionStandingFacts =
   | {
       kind: 'v2';
       standing: 'uncontested' | 'disputed' | 'withdrawn' | 'superseded' | 'reconciliation_required';
+      contentVerified?: boolean;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
     }
   | { kind: 'legacy'; standing: 'historical_legacy' }
   | { kind: 'invalid'; standing: 'invalid_unverified' };
@@ -102,12 +105,24 @@ export function classifyCompletionStanding(facts: CompletionStandingFacts): Goal
       contentPreservation: 'not_applicable',
     };
   }
-  const trusted = facts.kind === 'v2' && facts.standing === 'uncontested';
+  const mismatch = facts.kind === 'v2' && facts.contentVerificationStatus === 'content_not_preserved';
+  const trusted = facts.kind === 'v2' && facts.standing === 'uncontested' && !mismatch;
   return {
     unqualifiedSuccessAllowed: trusted,
     trustedForDownstream: trusted,
-    qualifier: trusted ? 'none' : QUALIFIER_BY_STANDING[facts.standing],
-    contentPreservation: facts.kind === 'v2' ? 'not_proven' : 'not_applicable',
+    qualifier: trusted
+      ? 'none'
+      : mismatch && facts.standing === 'uncontested'
+        ? 'content_mismatch_disclosed'
+        : QUALIFIER_BY_STANDING[facts.standing],
+    contentPreservation:
+      facts.kind !== 'v2'
+        ? 'not_applicable'
+        : mismatch
+          ? 'mismatch'
+          : facts.contentVerified === true || facts.contentVerificationStatus === 'verified'
+            ? 'verified'
+            : 'not_proven',
   };
 }
 
@@ -122,19 +137,17 @@ export function completionStandingTrustedForDownstream(model: { claim: GoalCompl
 }
 
 /**
- * Content verification. Always false at V1: no production path proves that a completed Goal's content is correct. Neither
- * Boolean ever proves it either. A version-2 proof records `contentPreservation: 'not_proven'`, and a user's accepted
- * completion is a recorded decision, not a content check. Nothing may read this as content correctness. The function
- * gives one place to change if a content-verification path is ever added, and the invariant tests assert it is false.
+ * Content verification is true only when the immutable completion proof names a valid `content-verified-v1` record. The
+ * downstream decision Booleans alone never prove content correctness.
  */
-export function completionStandingIsContentVerified(_model: { claim: GoalCompletionClaim }): false {
-  return false;
+export function completionStandingIsContentVerified(model: { claim: GoalCompletionClaim }): boolean {
+  return model.claim.contentPreservation === 'verified';
 }
 
 /**
  * True only for an uncontested recorded decision on a proof: both Booleans true, the `none` qualifier, and
- * `contentPreservation` `not_proven`. This is the rule the client applies in completionStandingCopy.ts. It is NOT content
- * verification; `completionStandingIsContentVerified` is the function for that question, and it is always false.
+ * either a verified content record or an ancestry-only historical record. The preservation field separately states which
+ * evidence is present.
  */
 export function completionStandingHasProofBoundDecision(model: { claim: GoalCompletionClaim }): boolean {
   const { claim } = model;
@@ -142,7 +155,7 @@ export function completionStandingHasProofBoundDecision(model: { claim: GoalComp
     claim.unqualifiedSuccessAllowed &&
     claim.trustedForDownstream &&
     claim.qualifier === 'none' &&
-    claim.contentPreservation === 'not_proven'
+    (claim.contentPreservation === 'verified' || claim.contentPreservation === 'not_proven')
   );
 }
 
@@ -201,6 +214,8 @@ export type ProofIntegrity =
       approvalId: string;
       actionDigest: string;
       observedAt: string;
+      contentVerificationDigest?: string;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
       chainAtProof: { sequence: 0; digest: string; standing: 'active_uncontested' };
     }
   | { state: 'invalid'; reason: string }
@@ -437,6 +452,12 @@ function versionTwoStanding(db: Db, goal: GoalRow, proofId: string): GoalComplet
     approvalId: proof.decision.approvalId,
     actionDigest: proof.decision.actionDigest,
     observedAt: proof.gitProof.observedAt,
+    ...(proof.contentVerificationDigest === undefined
+      ? {}
+      : { contentVerificationDigest: proof.contentVerificationDigest }),
+    ...(proof.contentVerificationStatus === undefined
+      ? {}
+      : { contentVerificationStatus: proof.contentVerificationStatus }),
     chainAtProof: { sequence: 0, digest: proof.correctionChain.digest, standing: 'active_uncontested' },
   };
   const emptyChain = computeEmptyCorrectionChainIdentity({
@@ -573,11 +594,27 @@ function v2Standing(
     goalId: goal.id,
     status: statusOf(goal),
     standing,
-    claim: classifyCompletionStanding({ kind: 'v2', standing }),
+    claim: classifyCompletionStanding({
+      kind: 'v2',
+      standing,
+      contentVerified: proof.contentVerificationDigest !== undefined,
+      ...(proof.contentVerificationStatus === undefined
+        ? {}
+        : { contentVerificationStatus: proof.contentVerificationStatus }),
+    }),
     proof,
     correction,
     classification: {
-      trust: standing === 'uncontested' ? 'trusted' : 'qualified',
+      trust: classifyCompletionStanding({
+        kind: 'v2',
+        standing,
+        contentVerified: proof.contentVerificationDigest !== undefined,
+        ...(proof.contentVerificationStatus === undefined
+          ? {}
+          : { contentVerificationStatus: proof.contentVerificationStatus }),
+      }).trustedForDownstream
+        ? 'trusted'
+        : 'qualified',
       reconciliation: standing === 'reconciliation_required' ? 'required' : 'none',
       reasons,
     },

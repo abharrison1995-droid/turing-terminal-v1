@@ -10,7 +10,7 @@ import { discoverProviders, invalidateProviderCache, peekProviderCache } from '.
 import {
   fetchAccountCredits,
   fetchKeyTelemetry,
-  fetchOpenRouterCatalog,
+  fetchOpenRouterCatalogDetailed,
   jevAdapterMetadata,
 } from './openrouter.js';
 import { SecretStore, secretRef } from './secretStore.js';
@@ -111,7 +111,12 @@ const openRouterCaps: ProviderCapabilities = {
   decisions: true,
 };
 
-let openRouterCatalog: { models: ModelOption[]; expires: number; checkedAt: string } | null = null;
+let openRouterCatalog: {
+  models: ModelOption[];
+  expires: number;
+  checkedAt: string;
+  outcome: 'success' | 'empty' | 'failed';
+} | null = null;
 
 export function invalidateOpenRouterCatalog(): void {
   openRouterCatalog = null;
@@ -135,7 +140,7 @@ export async function openRouterProviderStatus(
   const profiles = openRouterProfiles(db);
   const store = SecretStore.forDatabase(db);
   const withKey = profiles.filter((profile) => store.has(secretRef(profile.id, 'inference')));
-  const checkedAt = new Date().toISOString();
+  let checkedAt = new Date().toISOString();
   if (!profiles.length)
     return {
       id: 'openrouter',
@@ -151,11 +156,18 @@ export async function openRouterProviderStatus(
       capabilities: openRouterCaps,
       models: [],
       catalogSource: 'none',
+      catalogOutcome: 'empty',
     };
   // `network: false` never fetches: only a catalog already held in memory is used.
   if (options.network !== false && (!openRouterCatalog || Date.now() > openRouterCatalog.expires)) {
-    const models = await fetchOpenRouterCatalog(options.fetchImpl);
-    openRouterCatalog = { models, expires: Date.now() + (models.length ? 10 * 60_000 : 60_000), checkedAt };
+    const { models, outcome } = await fetchOpenRouterCatalogDetailed(options.fetchImpl);
+    checkedAt = new Date().toISOString();
+    openRouterCatalog = {
+      models,
+      outcome,
+      expires: Date.now() + (models.length ? 10 * 60_000 : 60_000),
+      checkedAt,
+    };
   }
   const models = [...(openRouterCatalog?.models ?? [])];
   if (models.length && !models.some((model) => model.family === 'decision'))
@@ -175,6 +187,7 @@ export async function openRouterProviderStatus(
     checkedAt: openRouterCatalog?.checkedAt ?? checkedAt,
     capabilities: openRouterCaps,
     models,
+    catalogOutcome: openRouterCatalog?.outcome ?? 'empty',
   };
 }
 

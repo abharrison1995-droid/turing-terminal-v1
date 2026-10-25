@@ -1,6 +1,8 @@
 # Install Turing Terminal on Windows
 
-Turing Terminal 1.0.0-rc2 is a release candidate. Download the Windows x64 installer `Turing-Terminal-Setup-x64-1.0.0-rc2.exe` from the repository's matching GitHub Actions build artifact. Downloading artifacts requires signing in to GitHub.
+Turing Terminal 1.0.0-rc3 is a release candidate. Download the Windows x64 installer `Turing-Terminal-Setup-x64-1.0.0-rc3.exe` from the repository's matching GitHub Actions build artifact. Downloading artifacts requires signing in to GitHub.
+
+No RC3 has been cut: the `v1.0.0-rc3` tag does not exist and no RC3 installer build has run yet, so the file name above describes the package an RC3 build will produce.
 
 1. Double-click the installer and follow the prompts. It installs for the current Windows user and adds **Turing Terminal** to the Start Menu.
 2. Windows may show **Unknown Publisher** or a SmartScreen warning because this release candidate is unsigned. Check that the file came from the project's GitHub Actions artifact, then choose the Windows option to continue if you trust that source. Do not turn off SmartScreen globally.

@@ -15,6 +15,7 @@ import {
   loadAuthoritySet,
   loadPriorResolutions,
   loadStoredEnvironment,
+  isOpportunityResolutionForRoute,
   persistRoleResolution,
   previewGoalRoutes,
   resolveRolesForCycle,
@@ -25,6 +26,36 @@ import { NOW, hoursAgo } from './routingKit.js';
 import type { RoutingEnvironment } from './routing.js';
 
 afterEach(cleanupTestDatabases);
+
+describe('opportunity reservation route binding', () => {
+  const configuration = {
+    backendId: 'openrouter',
+    providerId: 'openrouter',
+    billingLane: 'openrouter-metered' as const,
+    modelId: 'acme/model',
+    connectionProfileId: 'profile-1',
+    variantId: 'fast',
+    reasoning: 'low',
+    nativeSettings: { maxOutputTokens: 4_000 },
+  };
+
+  it('uses the opportunity estimator only for the exact persisted admitted route', () => {
+    const resolution = {
+      selected: { configuration },
+      approval: { admissionKind: 'opportunity' as const },
+    } as Pick<RoleResolution, 'selected' | 'approval'>;
+    expect(isOpportunityResolutionForRoute({ implementer: resolution }, configuration)).toBe(true);
+    expect(
+      isOpportunityResolutionForRoute(
+        { implementer: resolution },
+        { ...configuration, modelId: 'other/model' },
+      ),
+    ).toBe(false);
+    expect(
+      isOpportunityResolutionForRoute({ implementer: { ...resolution, approval: {} } }, configuration),
+    ).toBe(false);
+  });
+});
 
 const XS = ['x1', 'x2', 'x3', 'x4', 'x5', 'x6', 'x7', 'x8'];
 const MODELS = [

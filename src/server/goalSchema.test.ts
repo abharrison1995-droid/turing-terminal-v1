@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openDatabase, type Db } from './db.js';
 import { decideGoalApproval, requestGoalApproval } from './goals/approvals.js';
+import { buildContentVerificationRecord } from './goals/contentVerification.js';
 import { readExternalCompletionProof } from './goals/externalCompletionProof.js';
 
 // Each upgrade test replays every migration into a fresh database; that is I/O-bound and slow when the whole suite
@@ -302,6 +303,85 @@ function insertExternalCompletionProof(db: Db, row: Record<string, string | numb
   statement.run(...Object.values(row));
 }
 
+function contentVerificationRow(
+  goalId = '20000000-0000-4000-8000-000000000001',
+  suffix = '1',
+  overrides: Record<string, unknown> = {},
+  baseSourceCommit = 'b'.repeat(40),
+): Record<string, string | number> {
+  const id = (part: string) => `70000000-0000-4000-8000-${part.padStart(12, '0')}`;
+  const baseInput = {
+    schemaVersion: 1,
+    kind: 'turing_goal_content_verification',
+    goalId,
+    verifier: 'content-verified-v1',
+    verifierVersion: 2,
+    status: 'verified',
+    changedPathCount: 1,
+    mismatchCount: 0,
+    mismatchPathDigest: 'a'.repeat(64),
+    repository: { objectFormat: 'sha1' },
+    source: { commit: baseSourceCommit },
+    destination: {
+      ref: 'refs/heads/main',
+      expectedBaseCommit: 'c'.repeat(40),
+      tipCommit: 'd'.repeat(40),
+      comparisonCommit: 'e'.repeat(40),
+    },
+    verificationId: id(suffix),
+    observedAt: NOW,
+  };
+  const base = buildContentVerificationRecord(baseInput);
+  if (!base) throw new Error('invalid content verification fixture');
+  const record =
+    buildContentVerificationRecord({ ...baseInput, ...overrides }) ??
+    ({ ...base, ...overrides } as typeof base);
+  return {
+    id: record.verificationId,
+    goal_id: record.goalId,
+    schema_version: record.schemaVersion,
+    kind: record.kind,
+    verifier: record.verifier,
+    verifier_version: record.verifierVersion,
+    status: record.status,
+    changed_path_count: record.changedPathCount,
+    mismatch_count: record.mismatchCount,
+    mismatch_path_digest: record.mismatchPathDigest,
+    verification_digest: record.verificationDigest,
+    object_format: record.repository.objectFormat,
+    expected_base_commit: record.destination.expectedBaseCommit,
+    accepted_source_commit: record.source.commit,
+    destination_ref: record.destination.ref,
+    destination_tip_commit: record.destination.tipCommit,
+    comparison_commit: record.destination.comparisonCommit,
+    observed_at: record.observedAt,
+    record_digest: record.recordDigest,
+    payload_json: JSON.stringify(record),
+  };
+}
+
+function insertContentVerification(db: Db, row: Record<string, string | number>): void {
+  const columns = Object.keys(row);
+  db.prepare(
+    `INSERT INTO goal_content_verifications (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+  ).run(...Object.values(row));
+}
+
+function replaceContentVerification(db: Db, row: Record<string, string | number>): void {
+  const columns = Object.keys(row);
+  db.prepare(
+    `INSERT OR REPLACE INTO goal_content_verifications (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+  ).run(...Object.values(row));
+}
+
+function payloadOf(row: Record<string, string | number>): Record<string, unknown> {
+  return JSON.parse(row.payload_json as string) as Record<string, unknown>;
+}
+
+function rewritePayload(row: Record<string, string | number>, payload: Record<string, unknown>): void {
+  row.payload_json = JSON.stringify(payload);
+}
+
 const GOAL_TABLES = [
   'goals',
   'goal_definition_versions',
@@ -346,7 +426,7 @@ describe('migration 015_goal_core', () => {
 
     const db = openDatabase(root);
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db
         .prepare("SELECT status, goal_cycle_id, goal_run_purpose, goal_base_commit FROM runs WHERE id = 'r1'")
@@ -371,7 +451,7 @@ describe('migration 015_goal_core', () => {
     const root = tempRoot();
     openDatabase(root).close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     db.close();
   });
 });
@@ -775,7 +855,7 @@ describe('migration 016_goal_integration_op_audit', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db.prepare('SELECT id, status, recovery_json, approval_id FROM goal_integration_ops ORDER BY id').all(),
     ).toEqual([
@@ -996,7 +1076,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>
     ).map((row) => row.name);
     for (const table of TABLES_017) expect(names).toContain(table);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1004,7 +1084,7 @@ describe('migration 017_goal_evidence_reviews', () => {
   it('upgrades an exact RC2 database through 015 and 016 to 017', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     for (const table of TABLES_017)
       expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT status FROM runs WHERE id = 'r1'").get()).toEqual({ status: 'completed' });
@@ -1030,7 +1110,7 @@ describe('migration 017_goal_evidence_reviews', () => {
       .run(SHA, NOW);
     raw.close();
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare("SELECT status FROM goal_integration_ops WHERE id = 'op'").get()).toEqual({
       status: 'planned',
     });
@@ -1474,7 +1554,7 @@ describe('migration 018_goal_stage2_integrity', () => {
       'trg_goal_observation_run_finding_has_run',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1482,11 +1562,11 @@ describe('migration 018_goal_stage2_integrity', () => {
   it('upgrades an exact RC2 database through 019 and an existing 017 database', () => {
     const root = rc2Directory('015');
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
     const again = openDatabase(root);
-    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     again.close();
   });
 
@@ -1773,7 +1853,7 @@ describe('migration 019_goal_finding_decision_authority', () => {
       'trg_goal_finding_approval_pointer',
     ])
       expect(triggers).toContain(name);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.pragma('foreign_key_check')).toEqual([]);
     db.close();
   });
@@ -1782,11 +1862,11 @@ describe('migration 019_goal_finding_decision_authority', () => {
     for (const through of ['015', '019']) {
       const root = rc2Directory(through);
       const db = openDatabase(root);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.close();
       const again = openDatabase(root);
-      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+      expect(again.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
       again.close();
     }
   });
@@ -1985,7 +2065,7 @@ describe('migration 022_goal_review_run_identity', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare('SELECT id, cycle_id, run_id, status FROM goal_reviews ORDER BY id').all()).toEqual([
       { id: 'legacy-1', cycle_id: null, run_id: null, status: 'pending' },
       { id: 'legacy-2', cycle_id: null, run_id: null, status: 'pending' },
@@ -2021,7 +2101,7 @@ describe('migration 023_goal_final_apply_authority', () => {
     raw.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare("SELECT intent_digest FROM goal_approvals WHERE id = 'legacy-final'").get()).toEqual({
       intent_digest: null,
     });
@@ -2265,6 +2345,10 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
         { name: '026_goal_external_integration_attestations.sql' },
         { name: '027_goal_external_completion_proofs.sql' },
         { name: '028_goal_attestation_corrections.sql' },
+        { name: '029_goal_content_verifications.sql' },
+        { name: '032_goal_content_verification_insert_guard.sql' },
+        { name: '033_goal_completion_content_verification.sql' },
+        { name: '034_model_opportunity_observations.sql' },
       ],
     );
     expect(
@@ -2496,7 +2580,7 @@ describe('migration 025_goal_result_handoffs and migration 026 external integrat
     historical.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(db.prepare('SELECT * FROM goal_external_integration_attestations').all()).toEqual(
       attestationBefore,
     );
@@ -2797,7 +2881,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
     historical.close();
 
     const db = openDatabase(root);
-    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
     expect(
       db
         .prepare(
@@ -2862,6 +2946,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
 
   it('rejects proof insertion without the exact approved v2 completion action', () => {
     const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     project(db, 'p');
     seedGoalWithDefinition(db, 'g', 'p');
     expect(() => insertExternalCompletionProof(db, externalCompletionProofRow())).toThrow(
@@ -2874,6 +2959,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
   it('binds payload columns, bounds object IDs, and makes persisted proofs immutable', () => {
     const db = fresh();
     db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     db.pragma('foreign_keys = OFF');
     const valid = externalCompletionProofRow();
     insertExternalCompletionProof(db, valid);
@@ -2948,6 +3034,7 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
   it('read-validates stored proof payloads and returns no record across an unknown Goal scope', () => {
     const db = fresh();
     db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
     db.pragma('foreign_keys = OFF');
     const malformed = externalCompletionProofRow();
     malformed.payload_json = JSON.stringify({
@@ -2964,6 +3051,461 @@ describe('migration 027 immutable external-completion proof infrastructure', () 
       state: 'not_found',
     });
     expect(readExternalCompletionProof(db, 'g', 'missing-proof')).toEqual({ state: 'not_found' });
+    db.close();
+  });
+});
+
+describe('migration 029 content-verified integration evidence', () => {
+  it('creates the additive v2 table with immutable append-only triggers', () => {
+    const db = fresh();
+    const table = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'goal_content_verifications'")
+      .get() as { sql: string } | undefined;
+    expect(table?.sql).toContain("verifier = 'content-verified-v1'");
+    expect(table?.sql).toContain('verifier_version = 2');
+    expect(table?.sql).toContain('changed_path_count BETWEEN 0 AND 10000');
+    expect(table?.sql).toContain("status IN ('verified', 'content_not_preserved')");
+    for (const trigger of [
+      'trg_goal_content_verification_immutable',
+      'trg_goal_content_verification_no_delete',
+    ])
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger),
+      ).toBeTruthy();
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it('upgrades an exact 028 database without rewriting a legacy v1 completion proof', () => {
+    const root = rc2Directory('029');
+    const historical = new Database(join(root, 'turing.sqlite'));
+    historical.pragma('foreign_keys = ON');
+    expect(historical.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 28 });
+    project(historical, 'pc');
+    seedGoalWithDefinition(historical, 'g', 'pc');
+    historical.pragma('foreign_keys = OFF');
+    historical.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    insertExternalCompletionProof(historical, externalCompletionProofRow('g', '1'));
+    const before = historical
+      .prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ?')
+      .all('g');
+    historical.close();
+
+    const db = openDatabase(root);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get()).toEqual({ n: 32 });
+    expect(db.prepare('SELECT * FROM goal_external_completion_proofs WHERE goal_id = ?').all('g')).toEqual(
+      (before as Array<Record<string, unknown>>).map((row) => ({
+        ...row,
+        content_verification_digest: null,
+        content_verification_status: null,
+      })),
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({ n: 0 });
+    expect(() =>
+      db
+        .prepare('UPDATE goal_external_completion_proofs SET verifier_version = 2 WHERE goal_id = ?')
+        .run('g'),
+    ).toThrow(/external completion proofs are immutable/);
+    db.close();
+  });
+
+  it('binds every payload field, enforces status/path-count consistency, object widths and bounds', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, '20000000-0000-4000-8000-000000000001', 'p');
+
+    function rowWithUniqueEvidence(
+      suffix: string,
+      overrides: Record<string, unknown> = {},
+    ): Record<string, string | number> {
+      return contentVerificationRow(
+        '20000000-0000-4000-8000-000000000001',
+        suffix,
+        {
+          ...overrides,
+        },
+        suffix.padStart(40, '0'),
+      );
+    }
+
+    const valid = contentVerificationRow();
+    insertContentVerification(db, valid);
+    expect(() =>
+      db
+        .prepare('UPDATE goal_content_verifications SET status = ? WHERE id = ?')
+        .run('content_not_preserved', valid.id),
+    ).toThrow(/content verifications are immutable/);
+    expect(() => db.prepare('DELETE FROM goal_content_verifications WHERE id = ?').run(valid.id)).toThrow(
+      /content verifications cannot be deleted/,
+    );
+
+    const invalidJson = rowWithUniqueEvidence('2');
+    invalidJson.payload_json = '{';
+    expect(() => insertContentVerification(db, invalidJson)).toThrow(/json_valid/);
+
+    const payloadMismatch = rowWithUniqueEvidence('3');
+    payloadMismatch.record_digest = 'f'.repeat(64);
+    expect(() => insertContentVerification(db, payloadMismatch)).toThrow(/CHECK constraint failed/);
+
+    const verifiedWithMismatch = rowWithUniqueEvidence('4', {
+      status: 'verified',
+      mismatchCount: 1,
+      mismatchPathDigest: 'f'.repeat(64),
+    });
+    expect(() => insertContentVerification(db, verifiedWithMismatch)).toThrow(/CHECK constraint failed/);
+
+    const mismatchWithoutCount = rowWithUniqueEvidence('5', {
+      status: 'content_not_preserved',
+      mismatchCount: 0,
+    });
+    expect(() => insertContentVerification(db, mismatchWithoutCount)).toThrow(/CHECK constraint failed/);
+
+    const mismatchBeyondChanged = rowWithUniqueEvidence('6', {
+      status: 'content_not_preserved',
+      changedPathCount: 1,
+      mismatchCount: 2,
+    });
+    expect(() => insertContentVerification(db, mismatchBeyondChanged)).toThrow(/CHECK constraint failed/);
+
+    const overCap = rowWithUniqueEvidence('7');
+    const overCapPayload = payloadOf(overCap);
+    overCap.status = 'content_not_preserved';
+    overCap.changed_path_count = 10_001;
+    overCap.mismatch_count = 10_001;
+    overCapPayload.status = 'content_not_preserved';
+    overCapPayload.changedPathCount = 10_001;
+    overCapPayload.mismatchCount = 10_001;
+    rewritePayload(overCap, overCapPayload);
+    expect(() => insertContentVerification(db, overCap)).toThrow(/CHECK constraint failed/);
+
+    const extraPayloadField = rowWithUniqueEvidence('8');
+    rewritePayload(extraPayloadField, {
+      ...payloadOf(extraPayloadField),
+      unexpectedAuthority: 'not bound to a column',
+    });
+    expect(() => insertContentVerification(db, extraPayloadField)).toThrow(
+      /content verification payload shape is invalid/,
+    );
+
+    const wrongObjectFormat = rowWithUniqueEvidence('9');
+    const wrongFormatPayload = payloadOf(wrongObjectFormat);
+    wrongFormatPayload.repository = { objectFormat: 'sha256' };
+    wrongObjectFormat.object_format = 'sha256';
+    rewritePayload(wrongObjectFormat, wrongFormatPayload);
+    expect(() => insertContentVerification(db, wrongObjectFormat)).toThrow(/CHECK constraint failed/);
+
+    const sha1WithSha256Ids = rowWithUniqueEvidence('a');
+    const sha1Payload = payloadOf(sha1WithSha256Ids);
+    const sha256Id = 'a'.repeat(64);
+    sha1Payload.source = { commit: sha256Id };
+    sha1Payload.destination = {
+      ref: 'refs/heads/main',
+      expectedBaseCommit: sha256Id,
+      tipCommit: sha256Id,
+      comparisonCommit: sha256Id,
+    };
+    sha1WithSha256Ids.accepted_source_commit = sha256Id;
+    sha1WithSha256Ids.expected_base_commit = sha256Id;
+    sha1WithSha256Ids.destination_tip_commit = sha256Id;
+    sha1WithSha256Ids.comparison_commit = sha256Id;
+    rewritePayload(sha1WithSha256Ids, sha1Payload);
+    expect(() => insertContentVerification(db, sha1WithSha256Ids)).toThrow(/CHECK constraint failed/);
+
+    const sha256WithSha1Ids = rowWithUniqueEvidence('b');
+    const sha256Payload = payloadOf(sha256WithSha1Ids);
+    sha256Payload.repository = { objectFormat: 'sha256' };
+    sha256WithSha1Ids.object_format = 'sha256';
+    rewritePayload(sha256WithSha1Ids, sha256Payload);
+    expect(() => insertContentVerification(db, sha256WithSha1Ids)).toThrow(/CHECK constraint failed/);
+
+    const oversized = rowWithUniqueEvidence('c');
+    oversized.payload_json = `${oversized.payload_json}${' '.repeat(70_000)}`;
+    expect(() => insertContentVerification(db, oversized)).toThrow(/CHECK constraint failed/);
+
+    const sameEvidence = contentVerificationRow('20000000-0000-4000-8000-000000000001', 'd');
+    expect(() => insertContentVerification(db, sameEvidence)).toThrow(
+      /content verification identity already exists/,
+    );
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({ n: 1 });
+    db.close();
+  });
+
+  it('accepts a SHA-256 evidence row only with 64-character object IDs', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, '20000000-0000-4000-8000-000000000001', 'p');
+    const sha256 = 'a'.repeat(64);
+    const row = contentVerificationRow('20000000-0000-4000-8000-000000000001', 'e', {
+      repository: { objectFormat: 'sha256' },
+      source: { commit: sha256 },
+      destination: {
+        ref: 'refs/heads/main',
+        expectedBaseCommit: sha256,
+        tipCommit: sha256,
+        comparisonCommit: sha256,
+      },
+    });
+    insertContentVerification(db, row);
+    expect(
+      db
+        .prepare('SELECT object_format, length(comparison_commit) AS width FROM goal_content_verifications')
+        .get(),
+    ).toEqual({ object_format: 'sha256', width: 64 });
+    db.close();
+  });
+
+  it('keeps verifier version 2 rows out of both v1 evidence tables', () => {
+    const db = fresh();
+    db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+    db.exec('DROP TRIGGER trg_goal_external_completion_content_verification_authority;');
+    db.pragma('foreign_keys = OFF');
+
+    const v2Version = externalCompletionProofRow('g', '1');
+    const v2VersionPayload = payloadOf(v2Version) as {
+      gitProof: { verifierVersion: number };
+    };
+    v2Version.verifier_version = 2;
+    v2VersionPayload.gitProof.verifierVersion = 2;
+    rewritePayload(v2Version, v2VersionPayload as unknown as Record<string, unknown>);
+    expect(() => insertExternalCompletionProof(db, v2Version)).toThrow(/CHECK constraint failed/);
+
+    const v2Content = externalCompletionProofRow('g', '2');
+    const v2ContentPayload = payloadOf(v2Content) as {
+      proofLimitations: { contentPreservation: string };
+    };
+    v2ContentPayload.proofLimitations.contentPreservation = 'verified';
+    rewritePayload(v2Content, v2ContentPayload as unknown as Record<string, unknown>);
+    expect(() => insertExternalCompletionProof(db, v2Content)).toThrow(/CHECK constraint failed/);
+
+    const v2AttestationPayload = {
+      schemaVersion: 1,
+      kind: 'turing_goal_external_integration_attestation',
+      attestationId: '70000000-0000-4000-8000-0000000000f1',
+      goalId: 'g',
+      approvalId: '70000000-0000-4000-8000-0000000000f2',
+      handoff: { id: '70000000-0000-4000-8000-0000000000f3', digest: 'a'.repeat(64) },
+      completionContractVersion: 2,
+      definition: {
+        version: 1,
+        hash: 'a'.repeat(64),
+        approvalId: '70000000-0000-4000-8000-0000000000f4',
+      },
+      review: {
+        finalReviewId: '70000000-0000-4000-8000-0000000000f5',
+        acceptanceApprovalId: '70000000-0000-4000-8000-0000000000f6',
+      },
+      repository: { projectId: 'p', identity: 'a'.repeat(64), scope: '', objectFormat: 'sha1' },
+      source: { ref: 'refs/heads/turing/goal/g', commit: 'b'.repeat(40), tree: 'b'.repeat(40) },
+      destination: {
+        ref: 'refs/heads/main',
+        expectedBaseCommit: 'b'.repeat(40),
+        expectedBaseTree: 'b'.repeat(40),
+        observedCommit: 'b'.repeat(40),
+        observedTree: 'b'.repeat(40),
+      },
+      proof: {
+        mode: 'source_history_observed',
+        sourceAncestor: true,
+        baseAncestor: true,
+        verifierVersion: 2,
+        evidenceDigest: 'a'.repeat(64),
+      },
+      decision: { value: 'confirm_external_integration', decidedBy: 'user', decidedAt: NOW },
+      observedAt: NOW,
+      actionDigest: 'a'.repeat(64),
+      recordDigest: 'a'.repeat(64),
+    };
+    db.exec('DROP TRIGGER trg_goal_external_attestation_insert_authority;');
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO goal_external_integration_attestations (
+            id, goal_id, schema_version, kind, approval_id, handoff_id, handoff_digest,
+            completion_contract_version, definition_version, definition_hash, definition_approval_id,
+            final_review_id, acceptance_approval_id, repository_project_id, repository_identity,
+            repository_scope, object_format, source_ref, source_commit, source_tree, destination_ref,
+            expected_base_commit, expected_base_tree, observed_destination_commit, observed_destination_tree,
+            proof_mode, verifier_version, evidence_digest, action_digest, record_digest, observed_at,
+            decided_at, payload_json
+          ) VALUES (
+            '70000000-0000-4000-8000-0000000000f1', 'g', 1, 'turing_goal_external_integration_attestation',
+            '70000000-0000-4000-8000-0000000000f2', '70000000-0000-4000-8000-0000000000f3',
+            '${'a'.repeat(64)}', 2, 1, '${'a'.repeat(64)}', '70000000-0000-4000-8000-0000000000f4',
+            '70000000-0000-4000-8000-0000000000f5', '70000000-0000-4000-8000-0000000000f6', 'p',
+            '${'a'.repeat(64)}', '', 'sha1', 'refs/heads/turing/goal/g', '${'b'.repeat(40)}', '${'b'.repeat(40)}',
+            'refs/heads/main', '${'b'.repeat(40)}', '${'b'.repeat(40)}', '${'b'.repeat(40)}', '${'b'.repeat(40)}',
+            'source_history_observed', 2, '${'a'.repeat(64)}', '${'a'.repeat(64)}', '${'a'.repeat(64)}', ?, ?, ?
+          )`,
+        )
+        .run(NOW, NOW, JSON.stringify(v2AttestationPayload)),
+    ).toThrow(/CHECK constraint failed/);
+    db.close();
+  });
+});
+
+describe('migration 032 content verification insert guard', () => {
+  it('rejects duplicate INSERT and INSERT OR REPLACE at both identities while recursive triggers are OFF', () => {
+    const db = fresh();
+    project(db, 'p');
+    seedGoalWithDefinition(db, '20000000-0000-4000-8000-000000000001', 'p');
+    db.pragma('recursive_triggers = OFF');
+    expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
+
+    const valid = contentVerificationRow();
+    insertContentVerification(db, valid);
+    const original = db
+      .prepare('SELECT * FROM goal_content_verifications WHERE id = ?')
+      .get(valid.id) as Record<string, unknown>;
+    expect(original.payload_json).toBe(valid.payload_json);
+    expect(
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?")
+        .get('trg_goal_content_verification_insert_guard'),
+    ).toBeTruthy();
+
+    // An ordinary duplicate INSERT is rejected by the guard, before the UNIQUE constraint is reached.
+    expect(() => insertContentVerification(db, valid)).toThrow(
+      /content verification identity already exists/,
+    );
+
+    // Duplicate id with altered evidence: REPLACE would otherwise silently remove the old row.
+    const duplicateId = contentVerificationRow('20000000-0000-4000-8000-000000000001', '1', {
+      status: 'content_not_preserved',
+      mismatchCount: 1,
+    });
+    expect(duplicateId.id).toBe(valid.id);
+    expect(duplicateId.verification_digest).not.toBe(valid.verification_digest);
+    expect(() => replaceContentVerification(db, duplicateId)).toThrow(
+      /content verification identity already exists/,
+    );
+
+    // Duplicate (goal_id, verification_digest) with a different id and payload.
+    const duplicateDigest = contentVerificationRow('20000000-0000-4000-8000-000000000001', '2', {
+      observedAt: '2026-01-02T00:00:00.000Z',
+    });
+    expect(duplicateDigest.id).not.toBe(valid.id);
+    expect(duplicateDigest.verification_digest).toBe(valid.verification_digest);
+    expect(duplicateDigest.payload_json).not.toBe(valid.payload_json);
+    expect(() => replaceContentVerification(db, duplicateDigest)).toThrow(
+      /content verification identity already exists/,
+    );
+
+    expect(db.prepare('SELECT * FROM goal_content_verifications WHERE id = ?').get(valid.id)).toEqual(
+      original,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_content_verifications').get()).toEqual({
+      n: 1,
+    });
+    expect(db.pragma('recursive_triggers', { simple: true })).toBe(0);
+    db.close();
+  });
+});
+
+describe('migration 033 completion content-verification authority', () => {
+  it('rejects a new proof without content evidence and one whose digest differs from the approved action', () => {
+    const db = fresh();
+    const projectId = '10000000-0000-4000-8000-000000000121';
+    const goalId = '20000000-0000-4000-8000-000000000121';
+    project(db, projectId);
+    seedGoalWithDefinition(db, goalId, projectId);
+    db.exec('DROP TRIGGER trg_goal_external_completion_proof_insert_authority;');
+
+    const missingEvidence = externalCompletionProofRow(goalId, '121');
+    expect(() => insertExternalCompletionProof(db, missingEvidence)).toThrow(
+      /external completion requires matching content verification evidence/,
+    );
+
+    const proofRow = externalCompletionProofRow(goalId, '122');
+    const proof = JSON.parse(proofRow.payload_json as string) as {
+      goalId: string;
+      definition: unknown;
+      evaluation: {
+        finalReviewId: string;
+        finalAcceptanceApprovalId: string;
+        verificationEvidenceDigest: string;
+        milestoneIdentityDigest: string;
+        findingIdentityDigest: string;
+      };
+      handoff: unknown;
+      attestation: unknown;
+      repository: { objectFormat: 'sha1' | 'sha256' };
+      source: { commit: string };
+      destination: {
+        ref: string;
+        recordedBaseCommit: string;
+        observedCommit: string;
+      };
+      gitProof: { observedAt: string; [key: string]: unknown };
+      proofLimitations: unknown;
+      userReviewedPreflightDigest: string;
+      correctionChain: unknown;
+      decision: { approvalId: string; actionDigest: string };
+      contentVerificationDigest?: string;
+      contentVerificationStatus?: 'verified' | 'content_not_preserved';
+    };
+    const evidence = contentVerificationRow(goalId, '121', {
+      repository: { objectFormat: proof.repository.objectFormat },
+      source: { commit: proof.source.commit },
+      destination: {
+        ref: proof.destination.ref,
+        expectedBaseCommit: proof.destination.recordedBaseCommit,
+        tipCommit: proof.destination.observedCommit,
+        comparisonCommit: SHA,
+      },
+    });
+    insertContentVerification(db, evidence);
+
+    const wrongActionDigest = 'f'.repeat(64);
+    const { observedAt: _observedAt, ...proofForAction } = proof.gitProof;
+    void _observedAt;
+    const actionDetail = {
+      schemaVersion: 1,
+      action: 'complete_goal_external_integration_v2',
+      completionContractVersion: 2,
+      goalId,
+      definition: proof.definition,
+      integrationMode: 'external_user_attested',
+      handoff: proof.handoff,
+      attestation: proof.attestation,
+      review: {
+        finalReviewId: proof.evaluation.finalReviewId,
+        acceptanceApprovalId: proof.evaluation.finalAcceptanceApprovalId,
+      },
+      verificationEvidenceDigest: proof.evaluation.verificationEvidenceDigest,
+      contentVerificationDigest: wrongActionDigest,
+      contentVerificationStatus: 'verified',
+      contentOutcomeAcknowledged: true,
+      milestoneIdentityDigest: proof.evaluation.milestoneIdentityDigest,
+      findingIdentityDigest: proof.evaluation.findingIdentityDigest,
+      repository: proof.repository,
+      source: proof.source,
+      destination: proof.destination,
+      proof: proofForAction,
+      proofLimitations: proof.proofLimitations,
+      userReviewedPreflightDigest: proof.userReviewedPreflightDigest,
+      correctionChain: proof.correctionChain,
+      actionDigest: proof.decision.actionDigest,
+    };
+    db.prepare(
+      `INSERT INTO goal_approvals (
+         id, goal_id, gate, risk, reason, requested_by, detail_json, status, created_at,
+         external_completion_action_digest
+       ) VALUES (?, ?, 'user_confirmation', 'high', 'test', 'user', ?, 'pending', ?, ?)`,
+    ).run(proof.decision.approvalId, goalId, JSON.stringify(actionDetail), NOW, proof.decision.actionDigest);
+
+    const mismatchedEvidenceProof = {
+      ...proofRow,
+      content_verification_digest: evidence.verification_digest,
+      content_verification_status: 'verified',
+    };
+    proof.contentVerificationDigest = evidence.verification_digest;
+    proof.contentVerificationStatus = 'verified';
+    mismatchedEvidenceProof.payload_json = JSON.stringify(proof);
+    expect(() => insertExternalCompletionProof(db, mismatchedEvidenceProof)).toThrow(
+      /external completion requires matching content verification evidence/,
+    );
+    expect(db.prepare('SELECT COUNT(*) AS n FROM goal_external_completion_proofs').get()).toEqual({ n: 0 });
     db.close();
   });
 });

@@ -44,7 +44,7 @@ import {
 } from './qualificationKit';
 
 const IN_PROGRESS = 'A write for this review is still in progress. Reading the saved state…';
-const COMPLETED_HEADING = 'Completed on a recorded decision. Turing has not proven content preservation.';
+const COMPLETED_HEADING = 'Completed on a recorded decision. Changed content matched at the observed merge.';
 
 /** A promise that the test settles by hand. Nothing here waits on time. */
 function deferred<T>() {

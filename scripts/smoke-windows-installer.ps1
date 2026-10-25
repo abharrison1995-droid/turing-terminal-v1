@@ -28,7 +28,7 @@ try {
     foreach ($port in $candidatePorts) {
       try {
         $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/api/health" -TimeoutSec 1
-        if ($health.service -eq 'turing-terminal' -and $health.version -eq '1.0.0-rc2' -and $health.localOnly -eq $true) {
+        if ($health.service -eq 'turing-terminal' -and $health.version -eq '1.0.0-rc3' -and $health.localOnly -eq $true) {
           $ready = $true
           $masterPort = $port
           break

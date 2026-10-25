@@ -32,11 +32,7 @@ Turing Terminal is a local-first AI development orchestration control plane. The
 
 ## Release state and scope
 
-See [docs/V1_READINESS.md](docs/V1_READINESS.md). In short:
-
-- The Goal Engine is merged, but production constructs `DisabledGoalExecutor` (`src/server/index.ts`). Goals persist, recover and accept user authoring runs, but cannot start child, proposal or review runs.
-- The Model Opportunity Layer is V1 scope and not started.
-- Physical-device and live-provider acceptance are incomplete.
+See [docs/V1_READINESS.md](docs/V1_READINESS.md) for the current implementation, validation, physical-device, live-provider and release status. Do not copy transient status into this file.
 
 ## Validation gate
 

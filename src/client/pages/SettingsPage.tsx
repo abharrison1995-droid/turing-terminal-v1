@@ -24,6 +24,7 @@ import { humanize } from './shared/runStatus';
 import { formatDate } from './shared/format';
 import { stageLabels } from './shared/stageMeta';
 import { ProviderSetup } from './settings/ProviderSetup';
+import { ModelOpportunityBoard } from './settings/ModelOpportunityBoard';
 import type { SettingsIntent } from './shared/settingsIntent';
 
 export function SettingsPage({
@@ -188,6 +189,7 @@ export function SettingsPage({
             openSignal={intent?.target === 'providers' ? intentSignal : undefined}
           />
         </section>
+        <ModelOpportunityBoard onNotice={onNotice} onChanged={onChanged} />
         <section className="surface-panel settings-section">
           <SettingsCard
             id="machine-identity"

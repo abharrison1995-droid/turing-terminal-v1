@@ -346,6 +346,48 @@ describe('phone Goal cockpit', () => {
     },
   );
 
+  it('keeps a remote pending final_acceptance row in the pending list with the desktop note and no buttons', async () => {
+    setCompact(true);
+    const goal = detail({
+      status: 'needs_user',
+      reasonCode: 'gate_pending',
+      needsUser: true,
+      nextAction: { kind: 'final_acceptance', approvalId: 'ga-1' },
+    });
+    serve(
+      detailRoutes(goal, {
+        '/api/approvals/unified': () => ({
+          approvals: [
+            goalApproval({
+              id: 'ga-1',
+              gate: 'final_acceptance',
+              title: 'final_acceptance',
+              reason: 'Accept the result',
+              decidable: false,
+              desktopOnly: true,
+            }),
+          ],
+          total: 1,
+          limit: 20,
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<GoalsPage />);
+    await user.click(await screen.findByRole('button', { name: /Ship the importer/ }));
+
+    const section = await screen.findByLabelText('Approvals for this Goal');
+    const row = section.querySelector('[data-approval-id="ga-1"]') as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('Final acceptance');
+    expect(row.textContent).toContain(
+      'Final acceptance is decided on the Turing Terminal desktop app. This approval stays in the pending list until it is decided there.',
+    );
+    expect(row.querySelector('[data-approval-desktop-only="true"]')).not.toBeNull();
+    expect(within(row).queryByRole('button')).toBeNull();
+    expect(posts()).toEqual([]);
+  });
+
   it('fails closed when the exact Goal approval is absent from the unified inbox', async () => {
     setCompact(true);
     const goal = detail({

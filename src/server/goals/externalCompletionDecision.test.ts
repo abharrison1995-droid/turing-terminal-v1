@@ -213,6 +213,7 @@ function expectOnlyApprovalChange(attested: Attested, before: Captured): void {
 async function rebuiltAction(attested: Attested, report: ExternalCompletionPreflightReport) {
   const action = buildExternalCompletionAction({
     ...report.actionFields!,
+    contentOutcomeAcknowledged: true,
     userReviewedPreflightDigest: report.digest,
   });
   expect(action).not.toBeNull();
@@ -234,7 +235,11 @@ async function seedCompletion(
       allowRecordedDecision: true,
     },
   );
-  const body = { ...report.actionFields!, userReviewedPreflightDigest: options.digest ?? report.digest };
+  const body = {
+    ...report.actionFields!,
+    contentOutcomeAcknowledged: true,
+    userReviewedPreflightDigest: options.digest ?? report.digest,
+  };
   const action = buildExternalCompletionAction(body);
   if (action === null) throw new Error('seedCompletion: action body is not valid');
   const approval = requestGoalApproval(db, {
@@ -792,6 +797,7 @@ describe('external completion decision: authority and copies', () => {
 
       const conflicting = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'f'.repeat(64),
       })!;
       const conflict = requestGoalApproval(db, {
@@ -956,6 +962,7 @@ describe('external completion decision: reuse, corruption and inert checks', () 
         ...fields,
         attestation: { ...fields.attestation, id: foreign },
         correctionChain: { ...fields.correctionChain, attestationId: foreign },
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'e'.repeat(64),
       })!;
       const other = requestGoalApproval(db, {
@@ -1226,6 +1233,7 @@ describe('external completion decision: concurrent identical and conflicting req
       );
       const conflicting = buildExternalCompletionAction({
         ...report.actionFields!,
+        contentOutcomeAcknowledged: true,
         userReviewedPreflightDigest: 'f'.repeat(64),
       })!;
       const conflict = requestGoalApproval(db, {
@@ -1514,6 +1522,7 @@ describe('external completion decision: class 5 history and decision_corrupt sta
           ...fields,
           attestation: { ...fields.attestation, id: foreign },
           correctionChain: { ...fields.correctionChain, attestationId: foreign },
+          contentOutcomeAcknowledged: true,
           userReviewedPreflightDigest: 'e'.repeat(64),
         })!;
         const row = requestGoalApproval(db, {

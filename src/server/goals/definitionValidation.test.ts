@@ -28,6 +28,23 @@ describe('validateGoalDefinition', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('accepts a bounded opportunity pool with explicit observation bindings', () => {
+    const definition = validDefinition();
+    const pool = definition.routing.pools[0]!;
+    pool.admission = 'opportunity';
+    for (const member of pool.members) {
+      member.freshnessClass = 'opportunity';
+      member.opportunity = {
+        schemaVersion: 1,
+        opportunityDigest: 'a'.repeat(64),
+        observationIds: ['00000000-0000-4000-8000-000000000001'],
+      };
+    }
+    const result = validateGoalDefinition(definition);
+    expect(result.errors).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
   it('never throws on malformed input and reports schema issues with a path', () => {
     for (const input of [null, undefined, 42, 'x', [], {}, { contract: 1 }]) {
       const result = validateGoalDefinition(input);
@@ -257,12 +274,6 @@ describe('validateGoalDefinition', () => {
       'route.unknown_pool',
       'routing.roles.routine_reviewer.poolId',
       (d) => (d.routing.roles.routine_reviewer = { kind: 'pool', poolId: 'ghost' }),
-    ],
-    [
-      'opportunity pool before the Opportunity Layer',
-      'pool.opportunity_unsupported',
-      'routing.pools[0].admission',
-      (d) => (d.routing.pools[0]!.admission = 'opportunity'),
     ],
     [
       'automatic revalidation',

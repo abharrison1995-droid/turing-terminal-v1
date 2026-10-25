@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from './db.js';
+import { buildModelPricingEvidence } from '../shared/opportunityCost.js';
 import {
   budgetStatus,
   reconcileReservation,
@@ -16,6 +18,9 @@ import { SecretStore, secretRef } from './secretStore.js';
 import { createUsageEvent, reconcileUsageEvent } from './usageEvents.js';
 import { aggregateUsage, exportRows, loadUsageEvents, queryUsageAnalytics, toCsv } from './usageAnalytics.js';
 import { safeChildEnvironment } from './security.js';
+import type { ModelConfiguration } from '../shared/types.js';
+import { approveDefinition, createGoalDraft } from './goals/definitions.js';
+import { seedProject, validDefinition } from './goals/testKit.js';
 
 let root = '';
 let db: ReturnType<typeof openDatabase>;
@@ -43,6 +48,72 @@ const base: ReservationRequest = {
 };
 
 describe('transactional metered budget reservation', () => {
+  it('exposes the conservative estimator only for the exact persisted opportunity route', () => {
+    const configuration: ModelConfiguration = {
+      backendId: 'openrouter',
+      providerId: 'openrouter',
+      billingLane: 'openrouter-metered',
+      modelId: 'acme/model',
+      connectionProfileId: 'profile-1',
+      variantId: 'fast',
+      reasoning: 'low',
+      nativeSettings: { maxOutputTokens: 4_000 },
+    };
+    const runId = seedOpportunityMeteringRun(configuration);
+    const options = {
+      usageRunId: runId,
+      reservationScopeId: runId,
+      stageId: null,
+      billingMode: 'subscriptions-plus-decision-budget' as const,
+      perRunUsd: 1,
+      unknownCostPolicy: 'block' as const,
+      workload: 'generative' as const,
+      connectionProfileId: null,
+      role: 'implementer',
+      modelId: 'acme/model',
+      modelDisplayName: null,
+      reasoning: null,
+      contextStrategy: null,
+      decisionEngine: null,
+      decisionType: null,
+    };
+    const legacy = createMeteringHooks(db, options);
+    const mismatch = createMeteringHooks(db, {
+      ...options,
+      configuration: { ...configuration, modelId: 'acme/other-model' },
+    });
+    const opportunity = createMeteringHooks(db, { ...options, configuration });
+    expect(legacy.estimateReservationUsd).toBeUndefined();
+    expect(mismatch.estimateReservationUsd).toBeUndefined();
+
+    const pricingEvidence = buildModelPricingEvidence(
+      { prompt: 0.000001, completion: 0.000002, request: 0.0001, cacheRead: 0.000003 },
+      [],
+    );
+    expect(
+      opportunity.estimateReservationUsd?.(
+        {
+          id: 'acme/model',
+          name: 'Model',
+          providerId: 'acme',
+          pricing: {
+            promptUsdPerToken: 0.000001,
+            completionUsdPerToken: 0.000002,
+            requestUsd: 0.0001,
+            cacheReadUsdPerToken: 0.000003,
+            maxPromptUsdPerToken: 0.000001,
+            maxCompletionUsdPerToken: 0.000002,
+            pricingEvidence,
+            source: 'test',
+            observedAt: '2026-10-24T00:00:00.000Z',
+          },
+        },
+        1_000,
+        500,
+      ),
+    ).toBeCloseTo(1_100 * 0.000003 + 500 * 0.000002 + 0.0001);
+  });
+
   it('lets parallel requests reserve only what fits under the hard cap', async () => {
     const outcomes = await Promise.all(
       Array.from({ length: 3 }, () => Promise.resolve().then(() => reserveMetered(db, { ...base }))),
@@ -147,6 +218,84 @@ describe('transactional metered budget reservation', () => {
     ).rejects.toThrow('Subscriptions Only');
   });
 });
+
+function seedOpportunityMeteringRun(configuration: ModelConfiguration): string {
+  const projectId = seedProject(db, 'Opportunity metering');
+  const { goalId } = createGoalDraft(db, {
+    projectId,
+    title: 'Opportunity route',
+    definition: validDefinition(),
+  });
+  approveDefinition(db, { goalId, version: 1, actor: 'user' });
+  const machineId = (
+    db.prepare("SELECT value FROM settings WHERE key = 'local_machine_id'").get() as { value: string }
+  ).value;
+  const workflowId = (db.prepare('SELECT id FROM workflows LIMIT 1').get() as { id: string }).id;
+  const approvalId = randomUUID();
+  const observationId = '00000000-0000-4000-8000-000000000001';
+  const identityHash = 'a'.repeat(64);
+  const memberConfigHash = 'b'.repeat(64);
+  const routeResolution = {
+    schema: 1,
+    definitionVersion: 1,
+    definitionHash: 'd'.repeat(64),
+    role: 'implementer',
+    routeKind: 'pool',
+    poolId: 'opportunity-pool',
+    selection: 'ordered',
+    selectedIndex: 0,
+    selected: { configuration, identityHash, memberConfigHash, identityKind: 'pinned' },
+    evaluatedMembers: [
+      {
+        memberIndex: 0,
+        identityHash,
+        memberConfigHash,
+        configuration,
+        identityKind: 'pinned',
+        technicallyEligible: true,
+        eligible: true,
+        readiness: { ok: true },
+        billing: { ok: true },
+        liveCatalog: { available: true, catalogSource: 'live', modelStatus: 'current' },
+        validation: { available: false, profiles: [] },
+        firstUse: { state: 'approved', approvalId },
+        independence: null,
+        reasons: [],
+      },
+    ],
+    validationRecordIds: [],
+    catalog: {
+      backendId: 'openrouter',
+      source: 'live',
+      refreshedAt: '2026-10-24T00:00:00.000Z',
+      modelStatus: 'current',
+    },
+    approval: {
+      state: 'approved',
+      approvalId,
+      poolId: 'opportunity-pool',
+      memberIdentityHash: identityHash,
+      admissionKind: 'opportunity',
+      opportunityDigest: 'c'.repeat(64),
+      observationIds: [observationId],
+    },
+    independence: null,
+  };
+  const cycleId = randomUUID();
+  db.prepare(
+    `INSERT INTO goal_cycles
+      (id, goal_id, definition_version, sequence, kind, trigger_code, status, route_resolution_json, created_at)
+     VALUES (?, ?, 1, 1, 'execution', 'test', 'planned', ?, '2026-10-24T00:00:00.000Z')`,
+  ).run(cycleId, goalId, JSON.stringify({ schema: 1, roles: { implementer: routeResolution } }));
+  const runId = randomUUID();
+  db.prepare(
+    `INSERT INTO runs
+      (id, machine_id, project_id, workflow_id, workflow_snapshot_json, prompt, profile, permission_mode, status,
+       created_at, goal_cycle_id, goal_run_purpose)
+     VALUES (?, ?, ?, ?, '{}', 'test', 'economy', 'normal', 'running', '2026-10-24T00:00:00.000Z', ?, 'execution')`,
+  ).run(runId, machineId, projectId, workflowId, cycleId);
+  return runId;
+}
 
 describe('canonical usage events', () => {
   const init = {

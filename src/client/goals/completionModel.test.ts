@@ -20,6 +20,7 @@ import {
   correctionStandingCopy,
   initialCompletionState,
   isUsablePreflight,
+  limitationCopy,
   preflightReasonCopy,
   qualifierCopy,
   reduceCompletion,
@@ -61,9 +62,19 @@ function report(
       freshTree: 'b'.repeat(40),
       objectFormat: 'sha1',
     },
+    contentVerification: {
+      verifier: 'content-verified-v1',
+      verifierVersion: 2,
+      status: 'verified',
+      verificationDigest: DIGEST_A,
+      changedPathCount: 1,
+      mismatchCount: 0,
+      mismatchPathDigest: DIGEST_B,
+      comparisonCommit: 'a'.repeat(40),
+    },
     actionFields: null,
     proofLimitations: {
-      contentPreservation: 'not_proven',
+      contentPreservation: 'verified',
       goalCompletion: 'not_completed_by_preflight',
       destinationPolicy: 'exact_attested_tip',
     },
@@ -77,12 +88,13 @@ function report(
 function statusFor(
   state: GoalExternalCompletionStatus['state'],
   qualifier: GoalCompletionStandingClaim['qualifier'] = 'none',
+  contentPreservation: GoalCompletionStandingClaim['contentPreservation'] = 'not_proven',
 ): GoalExternalCompletionStatus {
   const claim: GoalCompletionStandingClaim = {
     unqualifiedSuccessAllowed: true,
     trustedForDownstream: false,
     qualifier,
-    contentPreservation: 'not_proven',
+    contentPreservation,
   };
   return {
     goalId: 'goal-1',
@@ -418,16 +430,16 @@ describe('copy', () => {
     );
   });
 
-  it('a completed Goal is never headed as success and always carries the content-preservation line', () => {
+  it('a historical completed Goal says content was not checked and carries that evidence level', () => {
     const completed = standingPresentation(statusFor('completed'));
-    expect(completed.heading).toBe(
-      'Completed on a recorded decision. Turing has not proven content preservation.',
-    );
+    expect(completed.heading).toBe('Historical completion on a recorded decision. Content was not verified.');
     expect(completed.contentPreservation).toBe('Content preservation: not proven.');
     const text = [completed.heading, completed.qualifier ?? '', completed.contentPreservation ?? ''].join(
       ' ',
     );
-    expect(text).not.toMatch(/success|successfully|all done|\bdone\b|verified|preserved/i);
+    expect(text.replace(/not verified/gi, '')).not.toMatch(
+      /success|successfully|all done|\bdone\b|verified|preserved/i,
+    );
     expect(text).not.toMatch(/unqualifiedSuccessAllowed|contentPreservation|not_proven/);
   });
 
@@ -446,7 +458,7 @@ describe('copy', () => {
     expect(invalid.heading).not.toMatch(/Completed/);
   });
 
-  it('the copy constants never say success or verified about the completion', () => {
+  it('completion guidance distinguishes the point-in-time verifier from a lasting guarantee', () => {
     const strings: string[] = [
       COMPLETION_COPY.intro,
       COMPLETION_COPY.limitation,
@@ -455,7 +467,21 @@ describe('copy', () => {
       COMPLETION_COPY.recordedNotCompleted,
       COMPLETION_COPY.reviewAvailable,
     ];
-    for (const text of strings) expect(text).not.toMatch(/success|successfully|verified|all done/i);
+    expect(strings).toContain(
+      'Reviewing completion checks the saved attestation, merge history and changed file contents. Reviewing does not complete the Goal.',
+    );
+    expect(strings).toContain(
+      'Content preservation verified at the observed merge. The check compares changed paths at the first merge containing the accepted source commit. It cannot guarantee later commits keep them unchanged.',
+    );
+  });
+
+  it('a content mismatch is disclosed as Policy B and never as successful delivery', () => {
+    expect(limitationCopy('content_not_preserved')).toBe(
+      'The content check found a mismatch at the observed merge. A disclosed Policy B record can be saved, but it will not count as successful delivery.',
+    );
+    expect(contentPreservationCopy('mismatch')).toBe(
+      'Content mismatch disclosed. This is not a successful-delivery claim.',
+    );
   });
 });
 
@@ -1089,11 +1115,21 @@ describe('completion read refusals (D.4F.2)', () => {
 });
 
 describe('completion attribution copy (D.4F.2)', () => {
-  it('a completed heading names a recorded decision, never the user, and says content is not proven', () => {
+  it('a historical completion heading states that content was not verified and never attributes the result to the user', () => {
     const heading = standingPresentation(statusFor('completed')).heading;
-    expect(heading).toBe('Completed on a recorded decision. Turing has not proven content preservation.');
-    expect(heading).toContain('has not proven content preservation');
+    expect(heading).toBe('Historical completion on a recorded decision. Content was not verified.');
+    expect(heading).toContain('Content was not verified');
     expect(heading).not.toMatch(/\b(your|you)\b/i);
+  });
+
+  it('a disclosed mismatch has its own non-delivery standing', () => {
+    expect(
+      standingPresentation(statusFor('content_mismatch', 'content_mismatch_disclosed', 'mismatch')),
+    ).toMatchObject({
+      heading: 'A content mismatch was disclosed. This is not a successful-delivery claim.',
+      qualifier: 'A content mismatch was explicitly disclosed. This is not a successful-delivery claim.',
+      contentPreservation: 'Content mismatch disclosed. This is not a successful-delivery claim.',
+    });
   });
 
   it('no qualifier sentence speaks to the user', () => {

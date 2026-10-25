@@ -175,7 +175,7 @@ describe('completion standing reader: R1 a real version-2 completion with no cor
           unqualifiedSuccessAllowed: true,
           trustedForDownstream: true,
           qualifier: 'none',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         proof: {
           state: 'valid',
@@ -185,6 +185,8 @@ describe('completion standing reader: R1 a real version-2 completion with no cor
           attestationRecordDigest: recordDigest,
           approvalId: completion.approvalId,
           actionDigest: completion.actionDigest,
+          contentVerificationDigest: completion.contentVerificationDigest,
+          contentVerificationStatus: 'verified',
           observedAt: completion.observedAt,
           chainAtProof: {
             sequence: 0,
@@ -644,7 +646,7 @@ describe('completion standing reader: A a correction after completion never read
           unqualifiedSuccessAllowed: false,
           trustedForDownstream: false,
           qualifier: 'disputed_by_user',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         proof: before.proof,
         correction: {
@@ -693,7 +695,7 @@ describe('completion standing reader: A a correction after completion never read
           unqualifiedSuccessAllowed: false,
           trustedForDownstream: false,
           qualifier: 'withdrawn_by_user',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         proof: before.proof,
         correction: {
@@ -770,7 +772,7 @@ describe('completion standing reader: A a correction after completion never read
           unqualifiedSuccessAllowed: false,
           trustedForDownstream: false,
           qualifier: 'superseded_by_user',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         proof: {
           state: 'valid',
@@ -780,6 +782,8 @@ describe('completion standing reader: A a correction after completion never read
           attestationRecordDigest: decided.attestation.recordDigest,
           approvalId: completion.approvalId,
           actionDigest: completion.actionDigest,
+          contentVerificationDigest: completion.contentVerificationDigest,
+          contentVerificationStatus: 'verified',
           observedAt: completion.observedAt,
           chainAtProof: {
             sequence: 0,
@@ -844,7 +848,7 @@ describe('completion standing reader: A a correction after completion never read
           unqualifiedSuccessAllowed: false,
           trustedForDownstream: false,
           qualifier: 'replacement_failed',
-          contentPreservation: 'not_proven',
+          contentPreservation: 'verified',
         },
         proof: v2Of(db, goalId).proof,
         correction: {

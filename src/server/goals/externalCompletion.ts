@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Db } from '../db.js';
 import { activeWorkBlocker } from './activeWork.js';
+import { ContentVerificationError, persistContentVerification } from './contentVerification.js';
 import {
   listExternalCompletionDecisions,
   observeReviewedPreflight,
@@ -34,7 +35,8 @@ import { notifyGoalTransition } from './stateMachine.js';
  * one immediate transaction. Git runs only before that transaction; the transaction itself never runs Git.
  *
  * `user` means an authenticated app control, not a verified person. The completed Goal records that a user confirmed the
- * decision, and the proof records that content preservation was not proven.
+ * decision. The reviewed content comparison is repeated during completion, persisted as immutable evidence and bound to
+ * both the approved action and the terminal proof.
  */
 
 const CODE_DETAIL = /^[a-z0-9_]{1,100}$/;
@@ -63,6 +65,7 @@ export const EXTERNAL_COMPLETION_ERROR_CODES = [
   'decision_conflict',
   'proof_invalid',
   'proof_action_mismatch',
+  'content_verification_required',
   'goal_work_in_flight',
 ] as const;
 
@@ -70,7 +73,8 @@ export type ExternalCompletionErrorCode = (typeof EXTERNAL_COMPLETION_ERROR_CODE
 
 const MESSAGES: Record<ExternalCompletionErrorCode, string> = {
   completion_input_invalid: 'The external completion input is invalid.',
-  acknowledgement_required: 'The external completion requires acknowledging that content is not proven.',
+  acknowledgement_required:
+    'The external completion requires acknowledging that content preservation was checked at one observed merge.',
   completion_internal_state: 'The external completion cannot run in the current internal state.',
   completion_busy: 'Too many completion requests are waiting for this Goal. Try again shortly.',
   decision_not_found: 'No approved completion decision matches this attestation and reviewed preflight.',
@@ -91,6 +95,8 @@ const MESSAGES: Record<ExternalCompletionErrorCode, string> = {
   decision_conflict: 'A different completion decision already exists for this attestation.',
   proof_invalid: 'The completion proof is invalid.',
   proof_action_mismatch: 'The completion proof does not match the decided action.',
+  content_verification_required:
+    'The approved content verification is missing or does not match the destination.',
   goal_work_in_flight: 'The Goal has work in flight, so it cannot be completed.',
 };
 
@@ -198,10 +204,18 @@ async function completeLocked(db: Db, input: CompletionInput): Promise<ExternalC
   if (blocker !== null) throw new ExternalCompletionError('preflight_refused', blocker);
 
   const reviewed = await observeReviewedPreflight(db, input.goalId, input.attestationId);
-  const { report, identity, observation, postGitIdentity } = reviewed;
+  const { report, identity, observation, postGitIdentity, contentVerificationInput } = reviewed;
+  const contentVerificationSummary = report.contentVerification;
   if (report.outcome !== 'ready')
     throw new ExternalCompletionError('preflight_refused', report.reasons[0]?.code ?? null);
-  if (identity === null || observation === null || postGitIdentity === null || report.actionFields === null)
+  if (
+    identity === null ||
+    observation === null ||
+    postGitIdentity === null ||
+    report.actionFields === null ||
+    contentVerificationSummary === null ||
+    contentVerificationInput === null
+  )
     throw new ExternalCompletionError('preflight_refused', 'preflight_internal_invalid');
 
   // The fresh observation must be the exact tip the user decided on (D1), and the reviewed digest must still be the one
@@ -219,6 +233,7 @@ async function completeLocked(db: Db, input: CompletionInput): Promise<ExternalC
     throw new ExternalCompletionError('reviewed_preflight_changed', null);
   const rebuilt = buildExternalCompletionAction({
     ...report.actionFields,
+    contentOutcomeAcknowledged: action.contentOutcomeAcknowledged,
     userReviewedPreflightDigest: report.digest,
   });
   if (rebuilt === null || rebuilt.actionDigest !== action.actionDigest)
@@ -228,16 +243,37 @@ async function completeLocked(db: Db, input: CompletionInput): Promise<ExternalC
   const now = new Date().toISOString();
   if (new Date(now).toISOString() !== now)
     throw new ExternalCompletionError('completion_internal_state', 'clock_not_canonical');
-  const proof = proofForDecision(decision, observation.observedAt);
 
   // The identity the transaction compares is the one captured after Git. The preflight proved it equal to the pre-Git
   // identity; that equality is asserted here as well, so the value is genuinely post-Git.
   const drift = firstDifference(identity, postGitIdentity);
   if (drift !== null) throw new ExternalCompletionError('authority_changed_during_completion', drift);
 
+  const proof = proofForDecision(decision, observation.observedAt);
+
   const progress = { written: false };
   try {
     db.transaction(() => {
+      // Keep the evidence insert in the same transaction as the proof and terminal state. A failed or busy completion
+      // must not leave an orphaned verification row, and the terminal proof trigger can read it before proof insertion.
+      let persistedContentVerification: ReturnType<typeof persistContentVerification>;
+      try {
+        persistedContentVerification = persistContentVerification(db, contentVerificationInput);
+      } catch (error) {
+        if (error instanceof ContentVerificationError)
+          throw new ExternalCompletionError('completion_persistence_failed', error.code);
+        throw error;
+      }
+      if (
+        persistedContentVerification.record.status !== contentVerificationSummary.status ||
+        persistedContentVerification.record.status !== action.contentVerificationStatus ||
+        action.contentOutcomeAcknowledged !== true ||
+        persistedContentVerification.record.verificationDigest !==
+          contentVerificationSummary.verificationDigest ||
+        action.contentVerificationDigest !== contentVerificationSummary.verificationDigest
+      )
+        throw new ExternalCompletionError('content_verification_required', null);
+
       consumeExternalCompletionDecision(db, decision, proof, postGitIdentity, now);
       progress.written = true;
     }).immediate();
@@ -291,6 +327,8 @@ function proofForDecision(
   observedAt: string,
 ): ExternalCompletionProofV1 {
   const { action, approval } = decision;
+  if (!action.contentVerificationDigest)
+    throw new ExternalCompletionError('content_verification_required', null);
   const proof = buildExternalCompletionProof({
     schemaVersion: 1,
     kind: 'turing_goal_external_completion_proof',
@@ -312,6 +350,8 @@ function proofForDecision(
     source: action.source,
     destination: action.destination,
     gitProof: { ...action.proof, observedAt },
+    contentVerificationDigest: action.contentVerificationDigest,
+    contentVerificationStatus: action.contentVerificationStatus,
     decision: {
       approvalId: approval.id,
       actionDigest: action.actionDigest,
