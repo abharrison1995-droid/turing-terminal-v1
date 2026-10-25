@@ -1,0 +1,38 @@
+{
+  "conclusion": "success",
+  "createdAt": "2026-10-25T20:10:14Z",
+  "databaseId": 40229492053,
+  "headSha": "6e5119f7e59220f8a825cefecf9b28b578e8bbb0",
+  "jobs": [
+    {
+      "databaseId": 121277954767,
+      "name": "linux",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-25T20:10:18Z",
+      "completedAt": "2026-10-25T20:43:42Z",
+      "url": "https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053/job/121277954767"
+    },
+    {
+      "databaseId": 121277954952,
+      "name": "windows",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-25T20:10:18Z",
+      "completedAt": "2026-10-25T20:20:29Z",
+      "url": "https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053/job/121277954952"
+    },
+    {
+      "databaseId": 121285876168,
+      "name": "release-bundle",
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": "2026-10-25T20:43:44Z",
+      "completedAt": "2026-10-25T20:44:08Z",
+      "url": "https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053/job/121285876168"
+    }
+  ],
+  "status": "completed",
+  "updatedAt": "2026-10-25T20:44:09Z",
+  "url": "https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053"
+}

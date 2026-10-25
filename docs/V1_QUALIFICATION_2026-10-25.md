@@ -23,13 +23,33 @@ The [OpenCode Go record](LIVE_PROVIDER_VALIDATION.md#opencode-go-current-master-
 
 ## Installer qualification
 
-`gh workflow run desktop-installers.yml --ref master` started [run 40229492053](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053) on `6e5119f7e59220f8a825cefecf9b28b578e8bbb0`. This invokes native hosted Linux/Windows builds and smoke checks; it does not create a tag or GitHub Release. Windows completed successfully; Linux remains in progress. RC2 artifacts are not evidence for this commit.
+`gh workflow run desktop-installers.yml --ref master` started [run 40229492053](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40229492053) on `6e5119f7e59220f8a825cefecf9b28b578e8bbb0`. This invokes native hosted Linux/Windows builds and smoke checks; it does not create a tag or GitHub Release. All three jobs completed successfully: Linux `121277954767`, Windows `121277954952` and combined bundle (see [GitHub run metadata](qualification/2026-10-25-installer-run.json)). RC2 artifacts are not evidence for this commit.
 
 Windows intermediate artifact `12612589329` (`turing-terminal-windows-rc3`) was downloaded from this exact run. `7z l -slt` and `7z x` successfully inspected/extracted the actual NSIS installer. Its [persistent inventory](qualification/2026-10-25-windows-package.json) confirms RC3 app/server, all 32 migrations including 033/034, frontend index, server entry, bundled `node.exe` and only `win32-x64.node`. No developer packages or symlinks were found. All 32 packaged migrations match source after CRLF-to-LF normalization (Windows checkout line endings differ from Linux). The existing scanner, repointed without changing its rules to the extracted resource tree, passed recognized-pattern checks.
 
-`Turing-Terminal-Setup-x64-1.0.0-rc3.exe`: 34,043,378 bytes; independently computed SHA-256 `7581d6317a4d1605d276c3092848c637e95df94265920f3bb6a366edf23803e8`. A local copy is retained at `artifacts/qualification-2026-10-25/` (Git-ignored). Hosted Windows install/startup/PWA/uninstall smoke passed; physical Windows acceptance remains pending. Intermediate artifacts expire after one day or are deleted after successful combined upload; the final combined artifact will have seven-day retention.
+`Turing-Terminal-Setup-x64-1.0.0-rc3.exe`: 34,043,378 bytes; independently computed SHA-256 `7581d6317a4d1605d276c3092848c637e95df94265920f3bb6a366edf23803e8`. A local copy is retained at `artifacts/qualification-2026-10-25/` (Git-ignored). Hosted Windows install/startup/PWA/uninstall smoke passed; physical Windows acceptance remains pending. Intermediate artifacts expire after one day or are deleted after successful combined upload; the final combined artifact has seven-day retention.
 
-Static inspection confirms staging builds frontend/server, includes migrations and production dependencies, prunes SQLite prebuilds to the target platform, bundles Node, and invokes the package security scan. The workflow combines exactly three versioned installer formats and generates SHA-256 sums. The Windows installer remains unsigned. A real artifact is required before claiming its contents or checksums verified.
+Static inspection confirms staging builds frontend/server, includes migrations and production dependencies, prunes SQLite prebuilds to the target platform, bundles Node, and invokes the package security scan. The workflow combines exactly three versioned installer formats and generates SHA-256 sums. The Windows installer remains unsigned. The actual artifacts described below were verified; this static review alone would not establish their contents.
+
+### Combined RC3 artifact
+
+Artifact `12613251995`, `Turing-Terminal-1.0.0-rc3`, was downloaded from the successful run. GitHub reports archive digest `sha256:efd7cd84fbb3b9d4a94d8f37310d3cefb4e819f227dcabba7d241953e235c109` and expiry **2026-11-01 20:43:57 UTC**. `sha256sum -c SHA256SUMS.txt` independently returned OK for all three installers; the Windows hash also matched the earlier intermediate download. [Installer checksums](qualification/2026-10-25-SHA256SUMS.txt) are committed; full local files and the original manifest/notes are retained under Git-ignored `artifacts/qualification-2026-10-25/`.
+
+| Installer    |       Bytes | SHA-256                                                            |
+| ------------ | ----------: | ------------------------------------------------------------------ |
+| AppImage     | 136,980,984 | `2113e5b1d004b0f817cb1abe57ffc79e6f583ad40fbe19ec81036f7e4acb6bc0` |
+| DEB          |  66,378,296 | `c6a0e8e45af063ba0433b2cf21f3fe9f8a0664332c22270b1febe76dfd9d94f2` |
+| Windows NSIS |  34,043,378 | `7581d6317a4d1605d276c3092848c637e95df94265920f3bb6a366edf23803e8` |
+
+`dpkg-deb --info/--extract` and AppImage `--appimage-extract` inspected the real Linux payloads without installing or launching the desktop shell. The DEB declares version RC3, architecture amd64, GTK 3 and WebKitGTK 4.1 dependencies. [Linux inventories](qualification/2026-10-25-linux-packages.json) confirm frontend/server RC3, bundled Node, target SQLite prebuild, all 32 migrations byte-for-byte matching source, no developer packages and no resource symlinks. Of 8,721 resource files per format, 8,719 matched by SHA-256. The bundled Node and SQLite native module differ where AppImage bundling adjusts ELF loader paths; their executable `.text` sections were independently extracted with `objcopy` and matched by SHA-256. The inventory records both dynamic-loader paths and code-section hashes. Both extracted resource trees passed the same recognized-pattern scanner; this does not constitute exhaustive binary/credential analysis.
+
+The bundled release notes were frozen at build commit `6e5119f`, before this qualification follow-up; use the canonical readiness tracker for newer results. No artifact was rewritten, tagged or published as a GitHub Release. A later release commit must pass its own required gates.
+
+## Actual DEB Master recovery
+
+The Node executable and compiled production Master extracted from the checksummed DEB were launched twice on loopback port 45192 with a fresh disposable data directory and no provider stages. [Persistent recovery evidence](qualification/2026-10-25-deb-master-recovery.json) records run `94ed99f0-cb67-4806-97c1-3b1924ab05b2`: queued before first startup, recovered to approval, approved/completed, and still completed after the second launch. Exactly one recovery, approval request/decision, stage start/completion and run completion remained; no usage or broker operations occurred. Health identified RC3 and loopback-only service.
+
+This is actual packaged-Master process evidence for ordinary queued-run recovery. The fixture seeds the queued-before-start window rather than forcing an OS crash. The installed desktop-shell lifecycle and Goal resume remain unqualified; the existing user Master and occupied port were not touched.
 
 ## Fresh desktop resources and bundled Master restart
 
