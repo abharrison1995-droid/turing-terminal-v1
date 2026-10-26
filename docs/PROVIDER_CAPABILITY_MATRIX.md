@@ -49,6 +49,8 @@ Official provider documentation was last reviewed on **2026-10-01** (CLI backend
 
 OpenCode documents that use of Claude Pro/Max credentials through OpenCode plugins is prohibited; Turing does not configure that route. ClinePass and Cline usage billing are separate Cline provider IDs and billing lanes; Turing does not automatically switch between them. Subscription Only blocks the Cline usage-billing lane. OpenCode Go and OpenCode metered/Console routes are also separate. Turing cannot inspect or disable provider-side OpenCode overflow billing, so Run Preview reports that status as unverifiable. Connection health relies on CLI/authentication/catalog checks where available and does not send a generation prompt. At run start, available model metadata is snapshotted with the stage for historical display; unavailable models are not migrated automatically.
 
+“Supported” above describes implemented adapter capability, not release qualification. Current live evidence and explicitly unvalidated providers are recorded in [V1_READINESS.md](V1_READINESS.md) and [LIVE_PROVIDER_VALIDATION.md](LIVE_PROVIDER_VALIDATION.md); catalogue discovery alone does not prove live access or account-side billing.
+
 ## Official sources
 
 - OpenAI Codex CLI ChatGPT sign-in and authentication status: [Authentication](https://learn.chatgpt.com/docs/auth) — verified 2026-10-01.

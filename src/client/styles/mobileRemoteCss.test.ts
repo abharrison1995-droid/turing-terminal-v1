@@ -189,30 +189,23 @@ describe('mobile-remote.css is wired last in the cascade (UI5 section 2)', () =>
   });
 });
 
-describe('Home: blockers ahead of the Recent list on compact (item 1; matrix M5)', () => {
-  it('[RED] mobile-remote.css gives .launch-blockers an explicit compact order below .home-tasks', () => {
-    expect(
-      compactHomeOrders([ui5Path]).has('launch-blockers'),
-      'mobile-remote.css orders launch-blockers',
-    ).toBe(true);
-
-    const effective = compactHomeOrders([mobilePath, ui5Path]);
-    const blockers = effective.get('launch-blockers');
-    const recent = effective.get('home-tasks');
-    expect(blockers, 'launch-blockers order').toBeDefined();
-    expect(recent, 'home-tasks order').toBeDefined();
-    expect(blockers!).toBeLessThan(recent!);
+describe('Home keeps content in normal flow on phones', () => {
+  it('the composer cannot dock over approvals or setup actions', () => {
+    const composer = bodiesFor(read(mobilePath), '.home-column > .composer').join('\n');
+    expect(composer).toMatch(/position:\s*relative/);
+    expect(composer).not.toMatch(/position:\s*(?:fixed|sticky)|bottom:/);
   });
-
-  it('[RED] on compact, .launch-blockers sets a scroll margin so the sticky composer does not hide it', () => {
-    expect(bodiesNaming(uiCss(), 'launch-blockers').join('\n')).toMatch(/scroll-margin(?:-bottom)?\s*:/);
+  it('shared home children use natural reading order without CSS reordering', () => {
+    const home = read(join(here, 'home.css'));
+    const reordered = rulesIn(home).filter(
+      (rule) =>
+        rule.selectors.some((selector) => selector.startsWith('.home-column >')) &&
+        /\border\s*:/.test(rule.body),
+    );
+    expect(reordered).toEqual([]);
   });
-
-  it('[GUARD] the compact Home children hold unique order values (mobile.css, and mobile-remote.css when present)', () => {
-    const orders = compactHomeOrders([mobilePath, ...(existsSync(ui5Path) ? [ui5Path] : [])]);
-
-    expect(orders.size).toBeGreaterThan(0);
-    expect(new Set(orders.values()).size).toBe(orders.size);
+  it('compact rules never visually reorder shared home children', () => {
+    expect(compactHomeOrders([mobilePath, ui5Path]).size).toBe(0);
   });
 });
 
@@ -314,7 +307,7 @@ describe('safe-area insets (item 7; matrix M10)', () => {
     ['topbar', 'topbar', ['left', 'right']],
     ['page content', 'page-content', ['left', 'right']],
     ['drawer (.sidebar)', 'sidebar', ['left', 'right']],
-    ['composer', 'composer', []],
+    ['home-column', 'home-column', []],
     ['palette', 'palette', []],
   ])('[RED] mobile-remote.css declares a safe-area env() on the %s', (_label, className, sides) => {
     const bodies = bodiesNaming(uiCss(), className).join('\n');

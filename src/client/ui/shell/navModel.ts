@@ -17,7 +17,7 @@ export interface NavItem {
 }
 
 /**
- * The seven Workspace destinations, in sidebar order. Ids, labels and order are fixed by UI0_SPEC section 14 (D-5);
+ * The seven supported destinations. The shell groups projects/goals/history above recent tasks and configuration below;
  * the composer ('command') is not a Workspace item and is reached through "New task".
  */
 export const NAV_ITEMS: readonly NavItem[] = [

@@ -12,8 +12,8 @@ import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../..');
-/** The theme colour as it stood when UI.5 started. It must not change in this phase. */
-const UI5_THEME_COLOUR = '#08080a';
+/** theme-color must match the dark canvas token (current palette parity). */
+const INITIAL_THEME_COLOUR = '#0b0b0c';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 const html = () => read(join(repoRoot, 'index.html'));
@@ -42,10 +42,10 @@ describe('the viewport meta exposes safe-area insets (UI5 section 2, item 7; mat
     expect(viewportDirectives()).toEqual(expect.arrayContaining(['width=device-width', 'initial-scale=1.0']));
   });
 
-  it('[GUARD] theme-color is unchanged and still equals the dark canvas token', () => {
+  it('[GUARD] theme-color equals the dark canvas', () => {
     const themeColour = /<meta\s+name="theme-color"\s+content="([^"]+)"/.exec(html())?.[1]?.toLowerCase();
 
-    expect(themeColour).toBe(UI5_THEME_COLOUR);
+    expect(themeColour).toBe(INITIAL_THEME_COLOUR);
     expect(themeColour).toBe(canvasToken());
   });
 

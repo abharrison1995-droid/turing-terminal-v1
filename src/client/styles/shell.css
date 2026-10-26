@@ -1,7 +1,7 @@
 .app-shell {
   display: flex;
   min-height: 100vh;
-  background: var(--canvas-gradient);
+  background: var(--canvas);
 }
 @supports (height: 100dvh) {
   .app-shell {
@@ -24,27 +24,29 @@
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  margin-bottom: var(--s-3);
-  padding: var(--s-1) var(--s-2);
+  min-height: var(--h-control-lg);
+  margin-bottom: var(--s-4);
+  padding: var(--s-2) var(--s-2) var(--s-3);
   color: var(--ink);
   background: transparent;
   border: 0;
+  border-bottom: 1px solid var(--line);
   border-radius: var(--r-md);
   text-align: left;
   cursor: pointer;
 }
 .brand-mark {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   place-items: center;
-  color: var(--accent-ink);
-  background: var(--surface-3);
+  color: var(--ink);
+  background: transparent;
   border-radius: var(--r-sm);
 }
 .brand-mark svg.lucide {
-  width: 14px;
-  height: 14px;
+  width: 20px;
+  height: 20px;
   color: inherit;
   stroke-width: 2;
 }
@@ -54,10 +56,12 @@
   image-rendering: pixelated;
 }
 .brand-name {
-  font-family: var(--font-display);
+  font-family: var(--font-brand);
   font-size: var(--fs-display-brand);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
+  font-weight: var(--fw-bold);
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 .new-task-button {
   display: flex;
@@ -66,7 +70,7 @@
   gap: var(--s-2);
   padding: 0 var(--s-3);
   color: var(--ink);
-  background: var(--surface);
+  background: var(--selected);
   border: 0;
   border-radius: var(--r-md);
   font-size: var(--fs-control);
@@ -82,7 +86,7 @@
   stroke-width: 2;
 }
 .nav-label {
-  margin: var(--s-4) var(--s-3) var(--s-1);
+  margin: var(--s-6) var(--s-3) var(--s-2);
   color: var(--ink-3);
   font-size: var(--fs-meta);
   font-weight: var(--fw-medium);
@@ -121,8 +125,8 @@
     color var(--dur) var(--ease);
 }
 .task-link {
-  min-height: 44px;
-  padding: var(--s-1) var(--s-3);
+  min-height: 52px;
+  padding: var(--s-2) var(--s-3);
 }
 .nav-link {
   min-height: var(--h-control);
@@ -139,17 +143,6 @@
 .nav-link-active {
   color: var(--ink);
   background: var(--selected);
-}
-/* The active destination is marked by a 2px accent bar at its leading edge, not by a fill change alone. */
-.nav-link-active::before {
-  content: '';
-  position: absolute;
-  top: 8px;
-  bottom: 8px;
-  left: 0;
-  width: 2px;
-  background: var(--accent);
-  border-radius: 2px;
 }
 .task-link-active:hover,
 .nav-link-active:hover {
@@ -179,9 +172,8 @@
 }
 .primary-nav {
   display: grid;
-  gap: 1px;
+  gap: 2px;
   padding-top: var(--s-2);
-  border-top: 1px solid var(--line);
 }
 .nav-count {
   display: grid;
@@ -210,7 +202,7 @@
   gap: var(--s-2);
   margin-top: var(--s-2);
   padding: var(--s-3) var(--s-2) var(--s-1);
-  border-top: 1px solid var(--line);
+  border-top: 0;
 }
 .machine-rail-copy {
   display: flex;
@@ -228,7 +220,6 @@
 }
 .machine-rail-copy small {
   color: var(--ink-3);
-  font-family: var(--font-mono);
   font-size: var(--fs-micro);
 }
 .mobile-scrim,
@@ -258,14 +249,13 @@
   justify-content: space-between;
   gap: var(--s-3);
   padding: 0 var(--page-pad);
-  background: var(--topbar-bg);
-  backdrop-filter: blur(10px);
+  background: var(--canvas);
 }
 .topbar-title {
   min-width: 0;
   flex: 1;
   overflow: hidden;
-  font-size: var(--fs-section);
+  font-size: var(--fs-control);
   font-weight: var(--fw-semibold);
   line-height: var(--lh-section);
   text-overflow: ellipsis;
@@ -301,7 +291,7 @@
 .page-content {
   width: min(var(--page-max), 100%);
   margin: 0 auto;
-  padding: var(--s-4) var(--page-pad) var(--s-12);
+  padding: var(--s-6) var(--page-pad) var(--s-12);
 }
 .page-heading {
   display: flex;
@@ -312,7 +302,7 @@
 }
 .page-heading h1 {
   font-family: var(--font-display);
-  font-size: var(--fs-display-title);
+  font-size: var(--fs-title);
   line-height: var(--lh-title);
   letter-spacing: -0.02em;
 }
@@ -355,7 +345,7 @@
   color: var(--red);
 }
 .error-state h1 {
-  font-size: var(--fs-section);
+  font-size: var(--fs-control);
   line-height: var(--lh-section);
 }
 .error-state p {
@@ -374,4 +364,28 @@
 }
 .machine-rail-unavailable .presence-dot {
   background: var(--red);
+}
+
+.workspace-nav {
+  margin-top: var(--s-3);
+  padding-bottom: var(--s-1);
+  border-bottom: 0;
+}
+.tools-nav {
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--hairline);
+}
+.tools-nav .nav-link {
+  min-height: 34px;
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.tools-nav .nav-link-active {
+  color: var(--ink);
+}
+.task-link-copy strong {
+  font-weight: var(--fw-regular);
+}
+.task-link-copy small {
+  font-size: var(--fs-micro);
 }

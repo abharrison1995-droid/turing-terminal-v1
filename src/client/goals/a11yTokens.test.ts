@@ -120,20 +120,6 @@ function contrast(foreground: Colour, background: Colour): number {
   return (lighter! + 0.05) / (darker! + 0.05);
 }
 
-/** Hue in degrees (0 to 360) of an opaque colour. */
-function hueOf(colour: Colour): number {
-  const [r, g, b] = [colour.red, colour.green, colour.blue].map((channel) => channel / 255);
-  const max = Math.max(r!, g!, b!);
-  const min = Math.min(r!, g!, b!);
-  const delta = max - min;
-  if (delta === 0) return 0;
-  let hue: number;
-  if (max === r) hue = 60 * (((g! - b!) / delta) % 6);
-  else if (max === g) hue = 60 * ((b! - r!) / delta + 2);
-  else hue = 60 * ((r! - g!) / delta + 4);
-  return (hue + 360) % 360;
-}
-
 const SURFACES = [
   'canvas-top',
   'canvas-bottom',
@@ -239,8 +225,8 @@ describe('non-text contrast (T3)', () => {
     },
   );
 
-  it('--accent meets 3:1 on every surface and composite except the accepted pressed selected row', () => {
-    expect(shortfalls(colourToken('accent'), 3, ['selected+pressed'])).toEqual([]);
+  it('--accent meets 3:1 on every surface and composite', () => {
+    expect(shortfalls(colourToken('accent'), 3)).toEqual([]);
   });
 });
 
@@ -268,11 +254,14 @@ describe('mascot tokens (T4)', () => {
   // The outline is decorative (supplement section 13.2, item 1) and is deliberately not held to 3:1.
 });
 
-describe('failure red is distinct from accent ink (T2)', () => {
-  it('--red and --accent-ink are different colours, at least 12 degrees of hue apart', () => {
-    expect(tokenValue('red')).not.toEqual(tokenValue('accent-ink'));
-    const gap = Math.abs(hueOf(colourToken('red')) - hueOf(colourToken('accent-ink')));
-    expect(Math.min(gap, 360 - gap)).toBeGreaterThanOrEqual(12);
+describe('neutral actions versus failure', () => {
+  it('primary actions are neutral while failure has a distinct red signal', () => {
+    const primary = colourToken('accent-fill');
+    const failure = colourToken('red');
+    expect(primary.red).toBe(primary.green);
+    expect(primary.green).toBe(primary.blue);
+    expect(failure.red - failure.green).toBeGreaterThan(30);
+    expect(contrast(failure, colourToken('red-wash'))).toBeGreaterThanOrEqual(4.5);
   });
 });
 

@@ -63,7 +63,6 @@ export function DevicePairingPage({ onPaired }: { onPaired: () => void }) {
         <span className="pairing-mark">
           <Smartphone size={22} />
         </span>
-        <p className="eyebrow">TURING TERMINAL · DEVICE PAIRING</p>
         <h1>Connect this device</h1>
         <p className="pairing-description">
           Open this page through the desktop’s Tailscale Serve address. Scan its short-lived QR or enter the

@@ -178,7 +178,7 @@
   border-color: var(--line);
 }
 .stage-row-blocked {
-  border-left: 3px solid var(--red);
+  border-color: var(--red-line);
 }
 .stage-row-disabled {
   background: transparent;
@@ -494,6 +494,15 @@
   border-radius: var(--r-lg);
   box-shadow: var(--elev-float);
 }
+.workflow-save-bar-idle {
+  position: static;
+  padding-inline: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  box-shadow: none;
+}
 .save-status {
   display: inline-flex;
   align-items: center;
@@ -697,7 +706,7 @@
   gap: var(--s-2);
   padding: var(--s-3);
   background: var(--surface);
-  border-left: 3px solid var(--line);
+  border-left: 1px solid var(--line);
   border-radius: var(--r-md);
 }
 .prerequisite-met {

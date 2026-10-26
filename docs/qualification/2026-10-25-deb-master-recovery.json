@@ -1,0 +1,57 @@
+{
+  "commit": "6e5119f7e59220f8a825cefecf9b28b578e8bbb0",
+  "kind": "Actual DEB-extracted bundled runtime and compiled production Master on Linux; no desktop-shell launch or system install",
+  "installerSha256": "c6a0e8e45af063ba0433b2cf21f3fe9f8a0664332c22270b1febe76dfd9d94f2",
+  "runId": "94ed99f0-cb67-4806-97c1-3b1924ab05b2",
+  "startedAt": "2026-10-25T20:45:07.031Z",
+  "finishedAt": "2026-10-25T20:45:08.040Z",
+  "before": {
+    "status": "queued"
+  },
+  "health": {
+    "ok": true,
+    "service": "turing-terminal",
+    "version": "1.0.0-rc3",
+    "localOnly": true
+  },
+  "afterFirstStart": "waiting_for_approval",
+  "afterApproval": "completed",
+  "afterRestart": "completed",
+  "events": [
+    {
+      "type": "approval_decided",
+      "count": 1
+    },
+    {
+      "type": "approval_requested",
+      "count": 1
+    },
+    {
+      "type": "run_completed",
+      "count": 1
+    },
+    {
+      "type": "run_queued",
+      "count": 1
+    },
+    {
+      "type": "run_recovered_after_restart",
+      "count": 1
+    },
+    {
+      "type": "stage_completed",
+      "count": 1
+    },
+    {
+      "type": "stage_started",
+      "count": 1
+    },
+    {
+      "type": "working_copy_ready",
+      "count": 1
+    }
+  ],
+  "usageRows": 0,
+  "brokerOperations": 0,
+  "limits": "Queued-before-start window seeded with production queueRun, not an OS crash; no Goal resume or GUI lifecycle; isolated data/port"
+}

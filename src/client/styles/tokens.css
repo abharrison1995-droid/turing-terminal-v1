@@ -1,13 +1,4 @@
-/* ─────────────────────────────────────────────────────────────
-   Design tokens. Every colour, size, radius, shadow and duration
-   used by the app is defined here; components reference tokens only.
-   Dark theme only (UI.1b, docs/history/ui/UI1B_SCOPE.md section 2). There is
-   no light palette and no theme switch: colour-scheme is dark.
-   Surfaces step: canvas → nav → raised surface → secondary surface.
-   Warm crimson is the product accent (primary action, selection
-   marks, identity). Status colour is reserved: red = failed,
-   green = completed, amber = assistance required.
-   ───────────────────────────────────────────────────────────── */
+/* Shared interface tokens. Black-metal record-sleeve identity on a dark-only canvas. */
 :root {
   color-scheme: dark;
   /* Overlay stacking (UI.9b). Every z-index in styles/*.css uses one of these. Menus sit under the topbar, and the
@@ -22,18 +13,17 @@
   --z-palette: 70;
   --z-dialog: 80;
 
-  /* Type. Linux Libertine is the body face; UnifrakturCook is the
-     display face and is used only on the five fixed titles that
-     fonts.css and typography.test.ts allow. Only 400 and 700 ship. */
-  --font-sans: 'Linux Libertine', Georgia, 'Times New Roman', serif;
-  --font-display: 'UnifrakturCook', 'Linux Libertine', Georgia, serif;
+  /* Native sans for interface text; mono only for identifiers and code. Brand blackletter is isolated below. */
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: var(--font-sans);
+  --font-brand: 'UnifrakturCook', ui-serif, Georgia, serif;
   --font-mono:
     'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
-  --fs-display-title: 30px; /* fixed page and panel titles only */
-  --fs-display-brand: 22px; /* brand wordmark only */
+  --fs-display-title: 40px; /* fixed home introduction title */
+  --fs-display-brand: 24px; /* fixed brand wordmark */
   --fs-title: 24px; /* page title */
-  --fs-section: 17px; /* section heading */
-  --fs-body: 15px; /* body (Libertine x-height is about 0.43 em) */
+  --fs-section: 16px; /* section heading */
+  --fs-body: 15px; /* readable interface text */
   --fs-control: 14px; /* controls */
   --fs-meta: 13px; /* metadata */
   --fs-micro: 12px; /* floor: badges, counters and chart ticks */
@@ -45,77 +35,86 @@
   --lh-control: 20px;
   --lh-meta: 18px;
   --fw-regular: 400;
-  --fw-medium: 400;
-  --fw-semibold: 700;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
 
   /* Surfaces */
-  --canvas-top: #050506;
-  --canvas-bottom: #16161a;
-  --canvas-gradient: linear-gradient(180deg, var(--canvas-top) 0%, var(--canvas-bottom) 100%);
-  --canvas: #08080a;
-  --nav: #0b0b0e;
-  --surface: #131317;
-  --surface-2: #1a1a1f;
-  --surface-3: #222228;
-  --selected: #2b2b33;
-  --hover: rgb(255 255 255 / 6%);
-  --pressed: rgb(255 255 255 / 10%);
+  --canvas-top: #0b0b0c;
+  --canvas-bottom: #0b0b0c;
+  --canvas-gradient: var(--canvas);
+  --canvas: #0b0b0c;
+  --nav: #070708;
+  --surface: #111113;
+  --surface-2: #171719;
+  --surface-3: #202023;
+  --selected: #29292c;
+  --hover: rgb(255 255 255 / 4%);
+  --pressed: rgb(255 255 255 / 7%);
   --scrim: rgb(0 0 0 / 60%);
-  --selection: #5c1f2a;
-  --field: #1a1a1f;
-  --field-hover: #222228;
-  --topbar-bg: rgb(19 19 23 / 90%);
-  --badge-bg: #26262e;
+  --selection: #333336;
+  --field: #111113;
+  --field-hover: #202023;
+  --topbar-bg: #0b0b0c;
+  --badge-bg: #202023;
   --qr-paper: #ffffff;
   --scroll-thumb: rgb(255 255 255 / 18%);
   --scroll-thumb-hover: rgb(255 255 255 / 30%);
-  --red-wash-hover: #3a1a16;
+  --red-wash-hover: #3a201e;
 
   /* Text */
-  --ink: #ecebe8;
-  --ink-2: #c9c8c6;
-  --ink-3: #b0afb5;
-  --accent-ink: #f78e98;
-  --ink-disabled: #7c7b83; /* documented exemption from the 4.5:1 rule */
-  --on-accent: #ffffff;
-  --on-accent-line: rgb(255 255 255 / 45%);
+  --ink: #ede9e1;
+  --ink-2: #cbc6bd;
+  --ink-3: #aaa59c;
+  --accent-ink: #ede9e1;
+  --ink-disabled: #808080; /* documented exemption from the 4.5:1 rule */
+  --on-accent: #0b0b0c;
+  --on-accent-line: rgb(0 0 0 / 35%);
 
   /* Lines */
-  --hairline: rgb(255 255 255 / 8%);
-  --line: rgb(255 255 255 / 14%);
-  --control-line: #8b8b92;
-  --focus-halo: rgb(225 77 96 / 22%);
+  --hairline: rgb(255 255 255 / 7%);
+  --line: rgb(255 255 255 / 13%);
+  --control-line: #919191;
+  --focus-halo: rgb(160 190 230 / 16%);
 
-  /* Accent (scarce, crimson) */
-  --accent: #e14d60;
-  --accent-fill: #a81c2c;
-  --accent-fill-hover: #961827;
-  --accent-fill-pressed: #831422;
-  --accent-wash: #2c1015;
-  --focus-ring: #ff8f99;
+  /* Neutral bone primary actions; status colours carry meaning. */
+  --accent: #ede9e1;
+  --accent-fill: #ededed;
+  --accent-fill-hover: #dedede;
+  --accent-fill-pressed: #cccccc;
+  --accent-wash: #202023;
+  --focus-ring: #c9d8ff;
+
+  /* Brand (oxblood) — identity only, never status/error/approval/online. */
+  --brand: #6e1f24;
 
   /* Status: text colour on the dark surfaces, and a wash behind it */
-  --green: #52c98a;
-  --green-wash: #0e2a1b;
-  --green-line: #245c40;
-  --amber: #e3ad3f;
-  --amber-wash: #2b2108;
-  --amber-line: #6e5220;
-  --red: #ff8b7a;
-  --red-wash: #2e1411;
-  --red-line: #7d3a30;
-  --info: #77b0f1;
-  --info-wash: #0e2236;
-  --icon: #c9c8c6;
+  --green: #94dfb2;
+  --green-wash: #182b22;
+  --green-line: #375b47;
+  --amber: #f0ca7a;
+  --amber-wash: #30291b;
+  --amber-line: #6b5734;
+  --red: #ffa99f;
+  --red-wash: #34211f;
+  --red-line: #79504a;
+  --info: #a9cbf7;
+  --info-wash: #212c3a;
+  --icon: #b8b8b8;
+  /* Standalone icon background: public/turing.svg cannot read CSS variables, so this documents its tile. */
+  --standalone-icon-bg: #202020;
+  --icon-bg: #202020;
+  --icon-background: #202020;
+  --turing-icon-bg: #202020;
 
   /* Diff and chart series */
-  --diff-add-ink: #8fe3ae;
-  --diff-add-bg: #0f2b1b;
-  --diff-del-ink: #ffa79b;
-  --diff-del-bg: #331411;
-  --chart-1: #5b9cf0;
-  --chart-2: #3fbf8a;
-  --chart-3: #e8924f;
+  --diff-add-ink: #a0e5ba;
+  --diff-add-bg: #182b22;
+  --diff-del-ink: #ffb7ae;
+  --diff-del-bg: #34211f;
+  --chart-1: #a9cbf7;
+  --chart-2: #94dfb2;
+  --chart-3: #f0ca7a;
 
   /* Mascot (token layer only; the component arrives in UI.6).
      Values equal docs/ui supplement section 13.2 (hex form, so the standalone icon can use them). */
@@ -135,24 +134,24 @@
   --s-10: 40px;
   --s-12: 48px;
   --page-pad: var(--s-8);
-  --page-max: 1280px;
+  --page-max: 1200px;
 
   /* Geometry */
-  --r-sm: 6px;
-  --r-md: 8px;
-  --r-lg: 12px;
-  --r-xl: 16px;
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --r-xl: 12px;
   --r-pill: 999px;
   --h-control: 36px;
   --h-control-sm: 28px;
   --h-control-lg: 40px;
   --h-touch: 44px;
-  --nav-width: 264px;
-  --topbar-h: 52px;
+  --nav-width: 248px;
+  --topbar-h: 56px;
 
   /* Elevation: one level, for floating UI only. On dark surfaces a
      black shadow barely shows, so the edge is an inner light border. */
-  --elev-float: inset 0 0 0 1px rgb(255 255 255 / 8%), 0 8px 24px rgb(0 0 0 / 60%);
+  --elev-float: 0 12px 40px rgb(0 0 0 / 35%);
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0, 0, 1);

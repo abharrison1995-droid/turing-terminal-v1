@@ -1,0 +1,354 @@
+{
+  "checked_at": "2026-10-26T17:37:42.163778+00:00",
+  "run": 40365124282,
+  "dispatch": "gh workflow run desktop-installers.yml --ref codex/ui-overhaul-2026-10-25",
+  "event": "workflow_dispatch",
+  "commit": "091b8b75f95cda6bc7c1a9db5eb874605f05746c",
+  "ui_source": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "conclusion": "success",
+  "test_files": 232,
+  "tests": 4120,
+  "test_seconds": 1363.7,
+  "audit_vulnerabilities": 0,
+  "jobs": [
+    {
+      "id": 121720638681,
+      "name": "linux",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 40365124282,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Install Tauri and smoke-test dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run npm ci",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Validate application and production dependencies",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Build Linux installers",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Smoke-test installed DEB and portable AppImage",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Collect Linux packages",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 11
+        },
+        {
+          "name": "Run actions/upload-artifact@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 12
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 22
+        },
+        {
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25
+        }
+      ]
+    },
+    {
+      "id": 121720639034,
+      "name": "windows",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 40365124282,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run dtolnay/rust-toolchain@stable",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run Swatinem/rust-cache@v2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Install JavaScript dependencies without native source builds",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Build Windows NSIS installer",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Smoke-test quiet install, startup, PWA route, and uninstall",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Collect Windows installer",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 9
+        },
+        {
+          "name": "Run actions/upload-artifact@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 10
+        },
+        {
+          "name": "Post Run Swatinem/rust-cache@v2",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 18
+        },
+        {
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 19
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 21
+        }
+      ]
+    },
+    {
+      "id": 121736622009,
+      "name": "release-bundle",
+      "status": "completed",
+      "conclusion": "success",
+      "run_id": 40365124282,
+      "logs_url": null,
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2
+        },
+        {
+          "name": "Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3
+        },
+        {
+          "name": "Run actions/download-artifact@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4
+        },
+        {
+          "name": "Run actions/download-artifact@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5
+        },
+        {
+          "name": "Run node scripts/merge-release.mjs",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6
+        },
+        {
+          "name": "Run actions/upload-artifact@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7
+        },
+        {
+          "name": "Remove intermediate installer artifacts",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 8
+        },
+        {
+          "name": "Post Run actions/setup-node@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 15
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 16
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 17
+        }
+      ]
+    }
+  ],
+  "artifact": {
+    "id": 12670689044,
+    "name": "Turing-Terminal-1.0.0-rc3",
+    "size_in_bytes": 236371961,
+    "url": "https://api.github.com/repos/abharrison1995-droid/turing-terminal-v1/actions/artifacts/12670689044",
+    "archive_download_url": "https://api.github.com/repos/abharrison1995-droid/turing-terminal-v1/actions/artifacts/12670689044/zip",
+    "expired": false,
+    "created_at": "2026-10-26T17:33:25Z",
+    "expires_at": "2026-11-02T17:33:16Z",
+    "updated_at": "2026-10-26T17:33:25Z",
+    "digest": "sha256:aa25df3e5cc3bfbd4774d407d5fc29ea6397eed1bd70a11a9ec7be61709bd462",
+    "workflow_run": {
+      "id": 40365124282,
+      "repository_id": 1400425927,
+      "head_repository_id": 1400425927,
+      "head_branch": "codex/ui-overhaul-2026-10-25",
+      "head_sha": "091b8b75f95cda6bc7c1a9db5eb874605f05746c"
+    }
+  },
+  "decoded_log_sha256": {
+    "linux-job.log": "b73071a475abe37225815b2eb7e34850306da97f16413ee104fdd0832465a72d",
+    "windows-job.log": "48db3f1dd8b110d023688f03d6b7e535a5514a70f7180b45aed76906e839ff51",
+    "release-bundle-job.log": "9b54848ac7284a00eb58786d2edc76ff16bd2464b1a4a3ffbaeb0db598fa39fa"
+  },
+  "commands": {
+    "linux": [
+      "npm ci",
+      "npm run format:check",
+      "npm run lint",
+      "npm run typecheck",
+      "npm test",
+      "npm run build",
+      "npm audit --omit=dev",
+      "npm run desktop:build:linux",
+      "bash scripts/smoke-linux-packages.sh <actual-DEB> <actual-AppImage>",
+      "npm run desktop:release"
+    ],
+    "windows": [
+      "npm ci --ignore-scripts",
+      "npm run desktop:build:windows",
+      "./scripts/smoke-windows-installer.ps1 <actual-NSIS-exe>",
+      "npm run desktop:release"
+    ],
+    "bundle": ["node scripts/merge-release.mjs"],
+    "local": [
+      "Verify downloaded ZIP SHA-256 against GitHub artifact digest",
+      "Verify all three installer SHA-256 values against actual combined manifest",
+      "7z x <actual-NSIS-exe>",
+      "dpkg-deb --extract <actual-DEB> <disposable-directory>",
+      "<actual-AppImage> --appimage-extract",
+      "node <copied-original-scan-package.mjs> against each actual resource tree",
+      "Compare actual frontend and migration bytes to approved source; record Windows CRLF differences",
+      "objcopy --dump-section .text=<output> <actual-ELF>; readelf --dynamic <actual-ELF>"
+    ]
+  },
+  "local_commands_passed": true,
+  "billing": "Native workflow installs no provider credentials and makes no AI provider calls. Separate Gemini reviews are recorded independently.",
+  "provenance": "GitHub completed job metadata and complete decoded primary logs; actual downloaded native binaries independently extracted and verified.",
+  "local_artifacts": "Ignored artifacts/black-metal-2026-10-26/approval/native-ci/",
+  "bundled_notes": "RELEASE_NOTES.md was frozen at build commit 091b8b7 before the later draft UI wording correction. No actual artifact was rewritten.",
+  "physical_acceptance": false,
+  "installed_crash_or_goal_recovery_qualified": false,
+  "tags_or_releases_created": false
+}

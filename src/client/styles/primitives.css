@@ -38,7 +38,7 @@
 .secondary-button {
   color: var(--ink);
   background: var(--surface);
-  border-color: var(--line);
+  border-color: var(--control-line);
 }
 .secondary-button:hover:not(:disabled) {
   background: var(--surface-3);

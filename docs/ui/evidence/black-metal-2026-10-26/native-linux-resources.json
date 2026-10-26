@@ -1,0 +1,23 @@
+{
+  "run": 40365124282,
+  "commit": "091b8b75f95cda6bc7c1a9db5eb874605f05746c",
+  "resource_files": 8721,
+  "exact_matches": 8719,
+  "differing_native_files": [
+    {
+      "path": "app/node_modules/better-sqlite3/prebuilds/linux-x64.node",
+      "text_section_sha256": "99ca7b7c8e59e0237c53ee8690a185759860aecc44d2907579108b5dc7887ff6",
+      "text_sections_match": true,
+      "deb_loader_paths": [],
+      "appimage_loader_paths": ["0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]"]
+    },
+    {
+      "path": "runtime/node",
+      "text_section_sha256": "e3c1155831567cbfcbaf51306bc37fe020a34e1fec8803729b16b1558073e2b9",
+      "text_sections_match": true,
+      "deb_loader_paths": [],
+      "appimage_loader_paths": ["0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]"]
+    }
+  ],
+  "provenance": "Actual extracted DEB/AppImage resources compared by SHA-256; differing ELF .text sections independently dumped and hashed, loader paths inspected."
+}

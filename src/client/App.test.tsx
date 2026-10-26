@@ -81,7 +81,7 @@ describe('Turing Terminal shell', () => {
     const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByRole('heading', { name: 'What should the agents do?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'What should we work on?' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Projects' }));
     expect(screen.getByRole('heading', { name: 'Projects' })).toBeTruthy();
     expect(screen.getByRole('button', { name: /Add project/ })).toBeTruthy();
@@ -94,7 +94,7 @@ describe('Turing Terminal shell', () => {
       vi.fn(async () => new Response(JSON.stringify({ goals: [], total: 0, limit: 50 }), { status: 200 })),
     );
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(
       within(screen.getByRole('complementary', { name: 'Primary navigation' })).getByRole('button', {
         name: 'Grand Projects',
@@ -152,7 +152,7 @@ describe('Turing Terminal shell', () => {
       }),
     );
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     expect(await screen.findByLabelText('2 pending approvals')).toBeTruthy();
     expect(screen.getAllByLabelText('2 Goal approvals pending')).toHaveLength(1);
     expect(await screen.findAllByText('Goal gate')).toHaveLength(2);
@@ -167,7 +167,7 @@ describe('Turing Terminal shell', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: 'Connect this device' })).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'What should the agents do?' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'What should we work on?' })).toBeNull();
     await user.type(screen.getByLabelText('Pairing code'), '0123456789abcdef');
     await user.click(screen.getByRole('button', { name: 'Request approval' }));
     expect(await screen.findByText(/Waiting for desktop approval/)).toBeTruthy();
@@ -263,7 +263,7 @@ describe('Turing Terminal shell', () => {
   it('saves a second master profile without saving any authentication token', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(
       within(screen.getByRole('complementary', { name: 'Primary navigation' })).getByRole('button', {
         name: 'Machines',

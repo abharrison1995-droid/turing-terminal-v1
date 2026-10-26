@@ -1,0 +1,52 @@
+{
+  "run_id": 40311144321,
+  "job_id": 121532342485,
+  "url": "https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40311144321",
+  "head_commit": "81d934f994a81157a57e51047ea3581f27b1ca55",
+  "base_commit": "6e5119f7e59220f8a825cefecf9b28b578e8bbb0",
+  "checkout_commit": "d8296390dece4659b564e637e1cc91ec054294fe",
+  "application_test_source": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "conclusion": "success",
+  "commands": [
+    {
+      "command": "npm ci",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm run format:check",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm run lint",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm run typecheck",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm test",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm run build",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm audit --omit=dev",
+      "conclusion": "success"
+    },
+    {
+      "command": "npm run docs:links",
+      "conclusion": "success"
+    }
+  ],
+  "test_files": 232,
+  "tests": 4120,
+  "test_seconds": 1174.41,
+  "markdown_files_checked": 95,
+  "production_audit_vulnerabilities": 0,
+  "decoded_log_path": "artifacts/black-metal-2026-10-26/approval/ci-40311144321.log",
+  "decoded_log_sha256": "74d13a340fa0b184984b6ae6cf9f6d96e9f70b5e4a1204c827af4456bf0c263d",
+  "provenance": "GitHub connector run/job metadata and completed decoded job log; fetched on 2026-10-26. PR synthetic merge over unchanged master; not native/physical/live-provider evidence."
+}

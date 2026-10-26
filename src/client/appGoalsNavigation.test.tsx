@@ -112,7 +112,7 @@ async function openDirtyEditor(strict = false) {
       <App />
     ),
   );
-  await screen.findByRole('heading', { name: 'What should the agents do?' });
+  await screen.findByRole('heading', { name: 'What should we work on?' });
   await user.click(nav().getByRole('button', { name: 'Grand Projects' }));
   await openGoal(user);
   await screen.findByLabelText('Next action');
@@ -183,7 +183,7 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(nav().getByRole('button', { name: 'Grand Projects' }));
     await user.click(await screen.findByRole('button', { name: /New Grand Project/ }));
     await user.type(await screen.findByLabelText('Title'), 'half typed');
@@ -204,7 +204,7 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(nav().getByRole('button', { name: 'Grand Projects' }));
     await user.click(await screen.findByRole('button', { name: /New Grand Project/ }));
     await user.click(nav().getByRole('button', { name: 'Projects' }));
@@ -221,7 +221,7 @@ describe('Grand Projects unsaved-work navigation guard (7B.2B.1)', () => {
     });
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(nav().getByRole('button', { name: 'Grand Projects' }));
     await user.click(await screen.findByRole('button', { name: /New Grand Project/ }));
     await user.click(await screen.findByRole('button', { name: 'Open Projects' }));

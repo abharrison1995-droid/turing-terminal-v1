@@ -1,0 +1,15 @@
+{
+  "job_id": "59459a1ce34243b598c59fad6072c44a",
+  "model": "opencode-go/beam-free",
+  "mode": "read_only",
+  "status": "succeeded",
+  "session_ids": ["ses_e87f9b11fffeQ6L113kU6NaqWd"],
+  "reported_cost_equivalent": 0,
+  "executed_tests": false,
+  "changed_files": [],
+  "findings": [
+    "Stale CI-pending status after run40311144321 succeeded.",
+    "Contradictory current retention claim for former isolated SIGTERM/full-suite raw logs."
+  ],
+  "supervisor_disposition": "Verified against primary GitHub job logs and current filesystem; applied precise status/provenance corrections. Retained fixture-only scope and native/live/physical/isolation/recovery blockers."
+}

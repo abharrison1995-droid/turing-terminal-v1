@@ -1,69 +1,52 @@
 /* ───────────── Home / New task ───────────── */
 .command-page {
-  padding-top: var(--s-4);
+  padding-top: var(--s-6);
 }
 .home-column {
   display: flex;
-  width: min(760px, 100%);
+  width: min(800px, 100%);
   flex-direction: column;
-  gap: var(--s-4);
+  gap: var(--s-5);
   margin: 0 auto;
 }
-/* The DOM leads with the intro so the h1 is the first heading. These orders keep the desktop visual order. */
-.home-column > .approval-inbox {
-  order: 0;
-}
-.home-column > .glance {
-  order: 1;
-}
+/* The same task-first reading order holds on desktop and phone. */
 .home-column > .home-intro {
-  order: 2;
-}
-.home-column > .run-preview-panel {
-  order: 3;
-}
-.home-column > .launch-blockers {
-  order: 4;
-}
-.home-column > .composer {
-  order: 5;
-}
-.home-column > .composer-hint {
-  order: 6;
-}
-.home-column > .safeguards {
-  order: 7;
-}
-.home-column > .home-status {
-  order: 8;
-}
-.home-column > .home-providers {
-  order: 9;
-}
-.home-column > .home-tasks {
-  order: 10;
+  padding: var(--s-4) 0 var(--s-3);
+  text-align: left;
 }
 .home-intro {
-  padding: clamp(var(--s-2), 5vh, var(--s-12)) 0 var(--s-1);
-  text-align: center;
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
 }
+
+.home-intro::before {
+  content: '';
+  display: block;
+  width: 32px;
+  height: 2px;
+  margin-bottom: var(--s-3);
+  background: var(--brand);
+}
+
 .home-intro h1 {
-  font-family: var(--font-display);
+  font-family: var(--font-brand);
   font-size: var(--fs-display-title);
-  line-height: var(--lh-title);
-  letter-spacing: -0.02em;
+  font-weight: var(--fw-bold);
+  line-height: 1.18;
+  letter-spacing: 0.01em;
   text-wrap: balance;
 }
 .home-intro p {
-  margin-top: var(--s-1);
+  margin-top: var(--s-3);
   color: var(--ink-3);
+  font-size: var(--fs-control);
 }
 
 /* At a glance: what is it doing, does it need me, did it fail */
 .glance {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-start;
   gap: var(--s-2);
 }
 .glance-item {
@@ -72,14 +55,12 @@
   align-items: center;
   gap: var(--s-2);
   padding: 0 var(--s-3);
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--hairline);
-  border-radius: var(--r-pill);
-  font-size: var(--fs-control);
-  font-weight: var(--fw-medium);
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-md);
+  font-size: var(--fs-meta);
   cursor: pointer;
-  transition: background-color var(--dur) var(--ease);
 }
 .glance-item:hover {
   background: var(--field-hover);
@@ -99,21 +80,18 @@
 
 /* Composer: the primary command surface */
 .composer {
-  padding: var(--s-4) var(--s-4) var(--s-3);
-  background: var(--surface);
+  padding: var(--s-5);
+  background: var(--surface-2);
   border: 1px solid var(--line);
   border-radius: var(--r-xl);
-  transition:
-    border-color var(--dur) var(--ease),
-    outline-color var(--dur) var(--ease);
+  transition: border-color var(--dur) var(--ease);
 }
 .composer:hover {
   border-color: var(--control-line);
 }
 .composer:focus-within {
-  border-color: var(--accent-fill);
-  outline: 3px solid var(--focus-halo);
-  outline-offset: 0;
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-halo);
 }
 .composer textarea {
   display: block;
@@ -126,12 +104,12 @@
   border: 0;
   outline: 0;
   font-size: var(--fs-input);
-  line-height: 24px;
-  resize: none;
+  line-height: 26px;
+  resize: vertical;
 }
 .composer textarea::placeholder {
   color: var(--ink-3);
-  opacity: 0.85;
+  opacity: 1;
 }
 .composer-agents {
   display: flex;
@@ -362,7 +340,7 @@ button.agent-chip:hover {
 /* Activity: lightweight rows, not a wall of cards */
 .home-tasks {
   display: grid;
-  gap: var(--s-5);
+  gap: var(--s-6);
   margin-top: var(--s-2);
 }
 .active-runs-block {
@@ -397,8 +375,8 @@ button.agent-chip:hover {
   white-space: nowrap;
 }
 .attention-block .run-list-row {
-  background: var(--surface);
-  border: 1px solid var(--amber-line);
+  background: transparent;
+  border: 0;
 }
 .attention-block .run-list-row + .run-list-row::before {
   display: none;
@@ -415,8 +393,8 @@ button.agent-chip:hover {
   flex-direction: column;
   gap: var(--s-3);
   padding: var(--s-4);
-  background: var(--amber-wash);
-  border-color: var(--amber-line);
+  background: var(--surface);
+  border-color: var(--line);
 }
 .approval-inbox-head > div {
   display: flex;
@@ -445,7 +423,7 @@ button.agent-chip:hover {
 .approval-items {
   display: grid;
   width: 100%;
-  border-top: 1px solid var(--amber-line);
+  border-top: 1px solid var(--hairline);
 }
 .approval-item {
   display: flex;
@@ -843,4 +821,29 @@ button.agent-chip:hover {
 }
 .options-agents .text-button {
   justify-self: start;
+}
+
+.workspace-details {
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--hairline);
+  color: var(--ink-3);
+  font-size: var(--fs-meta);
+}
+.workspace-details > summary {
+  min-height: var(--h-control);
+  padding: var(--s-2) 0;
+  cursor: pointer;
+}
+.workspace-details-body {
+  display: grid;
+  gap: var(--s-4);
+  padding: var(--s-3) 0;
+}
+.workspace-details .home-status,
+.workspace-details .home-providers > summary {
+  justify-content: flex-start;
+}
+.workspace-details .safeguards {
+  background: transparent;
+  padding: 0;
 }

@@ -1,0 +1,2 @@
+7d7586bba2a06c592dffa71ba334cdd8fc1a5ee9abaecf3733c989cf675bfb41  turing-terminal_1.0.0-rc3_amd64.deb
+0c826ca44eefeefe3598a55eae8f2c8a0ccaf0a1b7eb0f7f72c68e55be423f55  Turing-Terminal-x86_64-1.0.0-rc3.AppImage

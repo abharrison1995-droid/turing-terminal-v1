@@ -20,7 +20,7 @@
 }
 
 .goal-row-attention {
-  box-shadow: inset 3px 0 0 var(--amber);
+  border-color: var(--amber-line);
 }
 
 .goal-row-main,

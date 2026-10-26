@@ -47,7 +47,7 @@ vi.mock('../../pages/DevicePairingPage', async () => {
 
 import App from '../../App';
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 const PALETTE = 'Command palette';
 
 const snapshot = (): DashboardSnapshot =>

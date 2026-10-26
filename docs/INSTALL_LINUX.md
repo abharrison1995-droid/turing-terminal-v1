@@ -2,7 +2,7 @@
 
 Turing Terminal 1.0.0-rc3 is a release candidate. The packaged desktop app targets x86_64 Ubuntu, Debian, and Linux Mint.
 
-No RC3 has been cut: the `v1.0.0-rc3` tag does not exist and no RC3 installer build has run yet, so the file names below describe the packages an RC3 build will produce.
+The `v1.0.0-rc3` tag and GitHub Release do not exist. A manual installer qualification build is tracked in [V1_READINESS.md](V1_READINESS.md); use only the exact checksummed artifacts recorded there.
 
 ## Ubuntu, Debian, or Linux Mint (`.deb`)
 

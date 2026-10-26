@@ -36,7 +36,7 @@ async function open(page: Page, size: Size, scenario: ProviderScenario = 'mixed'
 }
 
 async function goTo(page: Page, label: string) {
-  const nav = page.getByRole('navigation', { name: 'Workspace' });
+  const nav = page.getByRole('complementary', { name: 'Primary navigation' });
   if (!(await nav.first().isVisible())) await page.getByRole('button', { name: 'Open navigation' }).click();
   await nav.getByRole('button', { name: new RegExp(`^${label}`) }).click();
   await expect(page.locator('.topbar-title')).toHaveText(label);
@@ -155,7 +155,7 @@ for (const size of ['desktop', 'phone'] as const) {
       await expect(page.locator('.save-status-dirty')).toBeVisible();
       await page.screenshot({ path: `${OUT}workflows-unsaved-${size}.png`, fullPage: size === 'phone' });
 
-      const nav = page.getByRole('navigation', { name: 'Workspace' });
+      const nav = page.getByRole('complementary', { name: 'Primary navigation' });
       if (!(await nav.first().isVisible()))
         await page.getByRole('button', { name: 'Open navigation' }).click();
       await nav.getByRole('button', { name: /^Projects/ }).click();

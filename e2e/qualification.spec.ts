@@ -214,7 +214,7 @@ async function expectTopbar(page: Page, label: string) {
 
 /** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as mascot.spec.ts). */
 async function goTo(page: Page, label: string) {
-  const nav = page.getByRole('navigation', { name: 'Workspace' });
+  const nav = page.getByRole('complementary', { name: 'Primary navigation' });
   if (!(await nav.first().isVisible())) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
   }

@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-10-26T00:57:53Z",
+  "run": 40250764420,
+  "artifactId": 12621136079,
+  "commit": "cb7eb2dc8e67a64b1b7af58c209c7c0d1c3d992b",
+  "implementationCommit": "f1ca311d6868125f134c2ba4d845fc63410eda76",
+  "provenance": "Actual GitHub Actions Windows NSIS installer, ZIP digest verified, 7z extraction on Linux; hosted Windows job passed install/startup/PWA/uninstall; no physical Windows claim",
+  "installerSha256": "de21ddf2cd49d0fc4d9a93289e354db262cb853c14c66f28e06b29bdedf3219e",
+  "archiveSha256": "cac70a66309c9d0220df5125c0c1d5704a0be422fb1930d300345d703a0eb1ad",
+  "payloadFiles": 8721,
+  "sqlitePrebuilds": ["win32-x64.node"],
+  "scanner": "Packaging scan passed: no local state, private key, or recognized credential patterns found.",
+  "frontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+  "checks": {
+    "windowsNodePresent": true,
+    "onlyWindowsSqlitePrebuild": true,
+    "darkUiPresent": true,
+    "newTaskHeadingPresent": true,
+    "appearancePreferenceAbsent": true,
+    "manifest": true
+  },
+  "localProviderCalls": 0
+}

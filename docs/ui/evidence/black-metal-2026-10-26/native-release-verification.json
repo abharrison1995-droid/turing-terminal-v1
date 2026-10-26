@@ -1,0 +1,28 @@
+{
+  "run": 40365124282,
+  "artifact_id": 12670689044,
+  "commit": "091b8b75f95cda6bc7c1a9db5eb874605f05746c",
+  "ui_source": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "conclusion": "success",
+  "archive_sha256": "aa25df3e5cc3bfbd4774d407d5fc29ea6397eed1bd70a11a9ec7be61709bd462",
+  "expires_at": "2026-11-02T17:33:16Z",
+  "artifacts": [
+    {
+      "name": "Turing-Terminal-x86_64-1.0.0-rc3.AppImage",
+      "bytes": 136980984,
+      "sha256": "2507a154207d492ba4b96de95aa7fd07647d5159cf798c3ad056d98fed40af7a"
+    },
+    {
+      "name": "turing-terminal_1.0.0-rc3_amd64.deb",
+      "bytes": 66377528,
+      "sha256": "018c082d70a3fa155809fa64a80c2425bc8cd8dcc5dc337f3ee9e650e05568c9"
+    },
+    {
+      "name": "Turing-Terminal-Setup-x64-1.0.0-rc3.exe",
+      "bytes": 34044123,
+      "sha256": "c1d1c7d4e8cb218800e0c2704d74f0f361b71d9e6550ba015cf3f98c3c6b07b5"
+    }
+  ],
+  "windows_matches_separately_inspected_payload": true,
+  "provenance": "Actual combined GitHub Actions artifact; downloaded ZIP digest and all installer hashes independently verified. No tag or release publication."
+}

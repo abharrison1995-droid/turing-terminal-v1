@@ -22,13 +22,8 @@
    wrap their long values (Tailscale login, origin, machine id) rather than overflowing the card. */
 .settings-grid {
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--s-4);
-}
-
-@media (min-width: 1100px) {
-  .settings-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+  max-width: 900px;
+  gap: 0;
 }
 
 /* Desktop padding only. At 680px and below mobile.css sets the compact section padding (--s-4), which must not be
@@ -439,4 +434,13 @@
   display: grid;
   gap: var(--s-3);
   margin-top: var(--s-3);
+}
+
+/* Settings read as one directory of controls, rather than competing cards. */
+.settings-grid > .surface-panel {
+  padding: var(--s-5) 0;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  border-radius: 0;
 }

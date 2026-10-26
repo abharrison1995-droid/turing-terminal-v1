@@ -1,0 +1,33 @@
+{
+  "started_at": "2026-10-26T17:15:45.780780+00:00",
+  "finished_at": "2026-10-26T17:17:26.772405+00:00",
+  "route": "agy/gemini-3.8-flash",
+  "model": "gemini-3.8-flash-high",
+  "effort": "high",
+  "mode": "plan",
+  "sandbox": true,
+  "attempts": 1,
+  "fallback": null,
+  "exit_code": 0,
+  "files_unchanged": true,
+  "input_sha256": {
+    "audit-native.py": "5762009d2f8c423b4ff7052e577f5b14e5e489b9ed4be00b0ac57d321b693c07",
+    "CONTEXT.md": "c4af71ae97e3e30457967a9040c9d7a8dc717841e17930e59863e7b6bbb282d9",
+    "receipt.json": "675aea7f2f9948e743d39b402f13d50846a8f78f4e8474e14f7cc8c537e1a9d2",
+    "reference/push-handler.js": "19acac128f65c73a208dcd45d01325abb7f7c7d93e5dbf9f7d5711ec63a82c5d",
+    "reference/turing.svg": "12d156ed86451c846edd9c398660518d9d1117f1424c851c354cdadf642140d2",
+    "reference/index.html": "91a60818d994eddfaf16a56f4733ebef7946cf6bb3b84509e3af60f8047a59cb",
+    "reference/sw.js": "9102fddc8e96d8576cb79ff4b0e0c14e3161a674e11171c6feee088588018f1c",
+    "windows/push-handler.js": "c0150b96ae9e3a52a1892721c0b624c620f20a97988beef59acf8c7d77251fd9",
+    "windows/turing.svg": "dd1a843a78964abac6576a0629f75ce239558298e55b057f7d932a0bc1916585",
+    "windows/index.html": "449e589361e40b9eec3fd32bba54949bd10aaf4e540fd6147263e33b2ae4fbb8",
+    "windows/sw.js": "cd81822244e2c0d806e08b531d6bf8342755f3ef9987d711cb28e28d0456adec"
+  },
+  "stdout_sha256": "3578ba6b7d8bf412e506a9c4f3008c5be76d5648471aa193db40d3a9be4185e5",
+  "cost": "Not reported; configured Google AI Pro subscription route, no PAYG fallback requested",
+  "provenance": "Independent read-only review of disposable package comparison packet; no executed tests or physical checks by reviewer",
+  "conversation_id": "f2c6964f-9b0e-4e51-8728-6271a3e13dfc",
+  "actual_model_labels": ["Gemini 3.8 Flash (High)"],
+  "verdict": "OK",
+  "supervisor_disposition": "Reviewed and accepted: strict raw equality remains false; observed platform differences are checked narrowly against actual bytes, precache URL multiplicities, null flags, and identical worker executable body. No application test or threshold was changed."
+}

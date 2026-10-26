@@ -54,17 +54,14 @@ function rulesIn(css: string): Rule[] {
   }));
 }
 
-/** The five fixed-title selectors allowed to use the display face (scope section 3). */
-const DISPLAY_SELECTORS = [
-  '.brand-name',
-  '.page-heading h1',
-  '.home-intro h1',
-  '.pairing-panel h1',
-  '.desktop-startup-card h1',
-];
+/** Fixed headings that still use the native display face. */
+const DISPLAY_SELECTORS = ['.page-heading h1', '.pairing-panel h1', '.desktop-startup-card h1'];
+
+/** Fixed selectors allowed to use the licensed brand face. */
+const BRAND_SELECTORS = ['.brand-name', '.home-intro h1'];
 
 describe('the display face is confined to fixed titles (T6)', () => {
-  it('font-family uses --font-display on exactly the five allow-listed selectors', () => {
+  it('font-family uses --font-display on exactly the native display selectors', () => {
     const selectors = cssFiles.flatMap((path) =>
       rulesIn(read(path))
         .filter((rule) => /font(?:-family)?\s*:[^;]*var\(\s*--font-display\s*\)/.test(rule.body))
@@ -73,10 +70,19 @@ describe('the display face is confined to fixed titles (T6)', () => {
     expect([...new Set(selectors)].sort()).toEqual([...DISPLAY_SELECTORS].sort());
   });
 
-  it('no bare heading element, and no wildcard, receives the display face', () => {
+  it('font-family uses --font-brand on exactly the brand selectors', () => {
+    const selectors = cssFiles.flatMap((path) =>
+      rulesIn(read(path))
+        .filter((rule) => /font(?:-family)?\s*:[^;]*var\(\s*--font-brand\s*\)/.test(rule.body))
+        .flatMap((rule) => rule.selectors),
+    );
+    expect([...new Set(selectors)].sort()).toEqual([...BRAND_SELECTORS].sort());
+  });
+
+  it('no bare heading element, and no wildcard, receives the display or brand face', () => {
     const bare = cssFiles.flatMap((path) =>
       rulesIn(read(path))
-        .filter((rule) => /font(?:-family)?\s*:[^;]*--font-display/.test(rule.body))
+        .filter((rule) => /font(?:-family)?\s*:[^;]*--(?:font-display|font-brand)/.test(rule.body))
         .flatMap((rule) => rule.selectors)
         .filter((selector) => /^(?:h[1-6]|\*|body|:where\(h[1-6]\))$/.test(selector)),
     );
@@ -102,12 +108,12 @@ describe('type scale, floors and font stacks (T7)', () => {
     ['--fs-control', '14px'],
     ['--fs-meta', '13px'],
     ['--fs-micro', '12px'],
-    ['--fs-section', '17px'],
+    ['--fs-section', '16px'],
     ['--fs-title', '24px'],
-    ['--fs-display-brand', '22px'],
-    ['--fs-display-title', '30px'],
-    ['--fw-medium', '400'],
-    ['--fw-semibold', '700'],
+    ['--fs-display-brand', '24px'],
+    ['--fs-display-title', '40px'],
+    ['--fw-medium', '500'],
+    ['--fw-semibold', '600'],
   ])('%s is %s', (name, value) => {
     expect(token(name.slice(2))).toBe(value);
   });
@@ -129,13 +135,19 @@ describe('type scale, floors and font stacks (T7)', () => {
     expect(small).toEqual([]);
   });
 
-  it('--font-sans starts with Linux Libertine and holds no Geist face', () => {
-    expect(token('font-sans')).toBe("'Linux Libertine', Georgia, 'Times New Roman', serif");
+  it('interface text uses the native sans stack without a network font', () => {
+    expect(token('font-sans')).toBe(
+      "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    );
     expect(token('font-sans')).not.toMatch(/Geist/);
   });
 
-  it('--font-display is UnifrakturCook with Libertine and serif fallbacks', () => {
-    expect(token('font-display')).toBe("'UnifrakturCook', 'Linux Libertine', Georgia, serif");
+  it('headings share the interface face', () => {
+    expect(token('font-display')).toBe('var(--font-sans)');
+  });
+
+  it('the brand face is the licensed blackletter font', () => {
+    expect(token('font-brand')).toContain('UnifrakturCook');
   });
 
   it('--font-mono is unchanged (Geist Mono stays)', () => {
@@ -155,7 +167,7 @@ describe('type scale, floors and font stacks (T7)', () => {
     expect(main).toMatch(/import\s+'@fontsource-variable\/geist-mono';/);
   });
 
-  it('body keeps font-synthesis: none, so only the shipped 400 and 700 weights are used', () => {
+  it('body keeps font-synthesis: none, to avoid synthetic faces', () => {
     expect(stripComments(read(join(clientRoot, 'styles', 'base.css')))).toMatch(
       /body\s*\{[^}]*font-synthesis:\s*none/,
     );

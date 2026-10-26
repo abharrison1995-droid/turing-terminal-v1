@@ -16,9 +16,7 @@ html {
 body {
   min-height: 100vh;
   background: var(--canvas-gradient);
-  font-feature-settings:
-    'ss01' off,
-    'tnum' on;
+  font-feature-settings: 'tnum' on;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -92,7 +90,7 @@ svg.lucide {
   height: 16px;
   flex-shrink: 0;
   color: var(--icon);
-  stroke-width: 1.6;
+  stroke-width: 1.75;
 }
 ::selection {
   color: var(--ink);

@@ -1,0 +1,60 @@
+{
+  "source_commit": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "baseline": "3c5012942cc336c8cd99e23650bc3638d4e93e69",
+  "jobs": [
+    {
+      "id": "5d797b520f9e4a4892c326f023846af6",
+      "model": "opencode-go/beam-free",
+      "role": "implementer",
+      "status": "succeeded",
+      "base_commit": "3c5012942cc336c8cd99e23650bc3638d4e93e69",
+      "session_ids": ["ses_e887abe23ffeHqOPQt7XkZmVu5"],
+      "started_at": 1793006582.6048565,
+      "finished_at": 1793006728.718353,
+      "reported_cost_equivalent": 0,
+      "complete": true,
+      "error": null
+    },
+    {
+      "id": "82eeffa04234411abc1f3d1596ea5a60",
+      "model": "opencode-go/beam-free",
+      "role": "implementer",
+      "status": "succeeded",
+      "base_commit": "ffebea7e95a16930d88f4d20307ca1179ece3ba6",
+      "session_ids": ["ses_e88766a25ffeqT57UaTjtGw5Z8"],
+      "started_at": 1793006866.5777342,
+      "finished_at": 1793006944.953072,
+      "reported_cost_equivalent": 0,
+      "complete": true,
+      "error": null
+    },
+    {
+      "id": "731d3c4d45134c6ab05bcddff6b678a2",
+      "model": "opencode-go/iceman-contributor-free",
+      "role": "reviewer",
+      "status": "failed",
+      "base_commit": "3c5012942cc336c8cd99e23650bc3638d4e93e69",
+      "session_ids": ["ses_e8877fde9ffewM4VriNKAW87wc"],
+      "started_at": 1793006763.365326,
+      "finished_at": 1793006878.7131224,
+      "reported_cost_equivalent": 0,
+      "complete": true,
+      "error": "provider_error"
+    },
+    {
+      "id": "784558e9e9da4f18bb8744fec0e7f401",
+      "model": "opencode-go/beam-free",
+      "role": "reviewer",
+      "status": "succeeded",
+      "base_commit": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+      "session_ids": ["ses_e88739008ffeIhgVt8pqf5tY6G"],
+      "started_at": 1793007053.5540648,
+      "finished_at": 1793007147.3188539,
+      "reported_cost_equivalent": 0,
+      "complete": true,
+      "error": null
+    }
+  ],
+  "pricing_provenance": "Bridge-observed cost-equivalent; exact free Go routes selected. Not an invoice or authoritative allowance.",
+  "provider_review_failure": "Iceman Contributor Free returned upstream HTTP503 endpoint unavailable; no verdict."
+}

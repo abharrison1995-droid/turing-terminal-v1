@@ -1,0 +1,27 @@
+{
+  "run": 40250764420,
+  "artifactId": 12621149192,
+  "commit": "cb7eb2dc8e67a64b1b7af58c209c7c0d1c3d992b",
+  "conclusion": "success",
+  "archiveSha256": "1fc196b1fa3e153d888be3b40ff247fd2f136eaae72bf1db7edc0d762ac768a2",
+  "expiresAt": "2026-11-02T01:12:33Z",
+  "provenance": "Actual combined GitHub Actions artifact; ZIP digest and all three installer hashes verified; Windows installer matches separately extracted/scanned payload",
+  "artifacts": [
+    {
+      "name": "Turing-Terminal-x86_64-1.0.0-rc3.AppImage",
+      "sha256": "c7890569997dcb048f7f2f1ec39e89aba63b2b169c8739d029656955d1635b7c",
+      "bytes": 136980984
+    },
+    {
+      "name": "turing-terminal_1.0.0-rc3_amd64.deb",
+      "sha256": "490321a0a9cf459eaaf61dff495717a872c9622b37c8ce8e42a6563bb10c8649",
+      "bytes": 66380010
+    },
+    {
+      "name": "Turing-Terminal-Setup-x64-1.0.0-rc3.exe",
+      "sha256": "de21ddf2cd49d0fc4d9a93289e354db262cb853c14c66f28e06b29bdedf3219e",
+      "bytes": 34034594
+    }
+  ],
+  "windowsMatchesPreviouslyInspectedPayload": true
+}

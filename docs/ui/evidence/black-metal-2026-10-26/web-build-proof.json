@@ -1,0 +1,14 @@
+{
+  "source_commit": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "checked_utc": "2026-10-26T10:11:01.618933+00:00",
+  "scope": "actual npm run build web output; not a native installer or installed-device qualification",
+  "theme_color": "#0b0b0c",
+  "background_color": "#0b0b0c",
+  "html_theme_matches": true,
+  "blackletter_and_canvas_in_built_css": true,
+  "bundled_font_unchanged_sha256": "ea002fa9c65f1a612af100e00d87ab65f16381f450020ec3d021f3dbf79a6dcd",
+  "dist_files": 19,
+  "dist_bytes": 2620694,
+  "manifest_sha256": "f6eada84ca5291da5d16e922b5f827b6f983b6cc5dd47928a39766a087393b17",
+  "inventory_sha256": "bd769bea89d225e75f803823013b5c00e147acd8f4a3a76f68519eeeed450188"
+}

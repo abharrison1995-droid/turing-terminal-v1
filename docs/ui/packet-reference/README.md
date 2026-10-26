@@ -1,5 +1,7 @@
 # Turing Terminal UI handoff
 
+**Historical visual packet.** The owner's 2026-10-25 native task workspace direction supersedes this packet's gradient, crimson and serif/blackletter interface. Current design is in [DESIGN.md](../../../DESIGN.md); see [overhaul evidence](../UI_OVERHAUL_2026-10-25.md). The mascot assets remain provenance/reference material. The wording below records the earlier handoff, not current UI instructions.
+
 ## Start here
 
 This package collects the UI concepts and mascot sheets created in the design conversation. It is a visual handoff, not an implementation or a claim that every depicted workflow or status is live.
