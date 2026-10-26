@@ -28,6 +28,8 @@ Layout:
 
 The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; a manual installer qualification build is recorded in the tracker. No RC3 tag or GitHub Release exists. Release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
 
+The current shared UI direction and branch validation are in [DESIGN.md](../DESIGN.md) and [native task workspace overhaul evidence](ui/UI_OVERHAUL_2026-10-25.md). They supersede the older dark-only visual packet; the qualification installers from merged master do not contain this follow-up UI.
+
 ## Goal Engine
 
 Start with [goals/GOAL_ENGINE.md](goals/GOAL_ENGINE.md): what the Goal Engine is, what runs in production, and where the code is. The contracts below define the authority boundaries the code enforces today.

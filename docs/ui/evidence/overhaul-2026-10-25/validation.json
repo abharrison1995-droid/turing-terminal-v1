@@ -1,0 +1,78 @@
+{
+  "implementationCommit": "f1ca311d6868125f134c2ba4d845fc63410eda76",
+  "implementationTree": "6efb2b4d869c495bcff8ac3a96404b383fd29441",
+  "softwareGate": [
+    {
+      "command": "npm ci",
+      "started": "2026-10-26T00:15:19.837375+00:00",
+      "finished": "2026-10-26T00:15:47.908606+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run format:check",
+      "started": "2026-10-26T00:15:47.909230+00:00",
+      "finished": "2026-10-26T00:16:33.686089+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run lint",
+      "started": "2026-10-26T00:16:33.862496+00:00",
+      "finished": "2026-10-26T00:17:00.030411+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run typecheck",
+      "started": "2026-10-26T00:17:00.030876+00:00",
+      "finished": "2026-10-26T00:17:27.896157+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm test",
+      "started": "2026-10-26T00:17:27.896587+00:00",
+      "finished": "2026-10-26T00:40:51.853105+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run build",
+      "started": "2026-10-26T00:40:51.853418+00:00",
+      "finished": "2026-10-26T00:41:05.597312+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm audit --omit=dev",
+      "started": "2026-10-26T00:41:05.597572+00:00",
+      "finished": "2026-10-26T00:41:06.078628+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run docs:links",
+      "started": "2026-10-26T00:41:06.078969+00:00",
+      "finished": "2026-10-26T00:41:06.206561+00:00",
+      "exitCode": 0
+    },
+    {
+      "command": "npm run typecheck:e2e",
+      "started": "2026-10-26T00:41:06.206805+00:00",
+      "finished": "2026-10-26T00:41:08.015455+00:00",
+      "exitCode": 0
+    }
+  ],
+  "fullTests": {
+    "files": 232,
+    "tests": 4118,
+    "durationSeconds": 1403.25
+  },
+  "browser": {
+    "command": "npx playwright test -c e2e/playwright.config.ts e2e/overhaul.spec.ts",
+    "tests": 3,
+    "durationSeconds": 58.8,
+    "captures": 20,
+    "viewports": ["1440x900", "390x844"],
+    "appearance": "dark only",
+    "provenance": "Real React client, invented API fixtures, Chromium; not physical/live-provider evidence"
+  },
+  "auditVulnerabilities": 0,
+  "documentationFiles": 94,
+  "buildLimit": "One non-failing large-chunk warning; historical unused font assets retained",
+  "uiFrontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4"
+}

@@ -2,7 +2,9 @@
 
 Evidence for UI stages. UI approval is for development only; none of this marks V1 release-ready.
 
-Only the UI.7 qualification captures (`evidence/ui7/`) and the latest UI.9 set (`evidence/ui9/`) are still in the tree. The earlier stage captures (UI.1b to UI.6) cited below were removed on 2026-10-20; they remain in Git history, for example at commit `5316527`.
+**Current design/evidence:** the owner's 2026-10-25 replacement direction is a native task workspace with dark appearance only. See [DESIGN.md](../../DESIGN.md) and [overhaul evidence](UI_OVERHAUL_2026-10-25.md). This supersedes the dark-only crimson, serif/blackletter design and docked Home composer described in the stage records below. It is branch evidence until merged; release status remains in [V1_READINESS.md](../V1_READINESS.md).
+
+The current representative captures are in `evidence/overhaul-2026-10-25/`. Prior UI.7 qualification captures (`evidence/ui7/`) and the UI.9 set (`evidence/ui9/`) remain as historical evidence. Earlier stage captures (UI.1b to UI.6) cited below were removed on 2026-10-20; they remain in Git history, for example at commit `5316527`.
 
 ## UI.1b: dark tokens, fonts, CSS primitive layer, PWA meta
 

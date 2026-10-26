@@ -1,0 +1,23 @@
+{
+  "checkedAt": "2026-10-26T00:19:33Z",
+  "provenance": "Final dark-only UI; locally built DEB extracted; actual bundled Node and compiled Master; fresh disposable data, unused loopback port; GET-only smoke; no native GUI, physical device or provider claim",
+  "version": "1.0.0-rc3",
+  "glibc": "glibc 2.39",
+  "bundledNode": "v22.23.1",
+  "sqlitePrebuilds": ["linux-x64.node"],
+  "payloadFiles": 8721,
+  "scanner": "Packaging scan passed: no local state, private key, or recognized credential patterns found.",
+  "checks": {
+    "health": true,
+    "manifest": true,
+    "darkOnlyMetadata": true,
+    "servedAssetsMatchPackage": true,
+    "appearancePreferenceAbsent": true,
+    "newTaskHeadingPresent": true
+  },
+  "frontendJsSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+  "mutations": 0,
+  "providerCalls": 0,
+  "debSha256": "7d7586bba2a06c592dffa71ba334cdd8fc1a5ee9abaecf3733c989cf675bfb41",
+  "implementationCommit": "f1ca311d6868125f134c2ba4d845fc63410eda76"
+}

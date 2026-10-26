@@ -1,0 +1,31 @@
+{
+  "checkedAt": "2026-10-26T00:26:53Z",
+  "implementationCommit": "f1ca311d6868125f134c2ba4d845fc63410eda76",
+  "provenance": "Final locally built AppImage extracted; actual bundled Node/SQLite/compiled Master, disposable data, unused loopback port, GET-only smoke; no desktop GUI or physical device claim",
+  "appimageSha256": "0c826ca44eefeefe3598a55eae8f2c8a0ccaf0a1b7eb0f7f72c68e55be423f55",
+  "payloadFiles": 8721,
+  "frontendJsSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+  "scanner": "Packaging scan passed: no local state, private key, or recognized credential patterns found.",
+  "bundledNode": "v22.23.1",
+  "elfNote": "linuxdeploy adds RUNPATH to ELF payloads, so Node/SQLite hashes differ from the prepared inputs; actual extracted runtime smoke is required rather than byte equality",
+  "elfPayloads": {
+    "runtime/node": {
+      "sha256": "ff9e10fae07050d2c8d2f6aa68ab4b5c75ae69f1b68264719229b01edc77177e",
+      "runpath": ["0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]"]
+    },
+    "app/node_modules/better-sqlite3/prebuilds/linux-x64.node": {
+      "sha256": "26841e1e16fdd1676ef102cd4316d82003928ee74c438cc8fb8e97f84df2ca98",
+      "runpath": ["0x000000000000001d (RUNPATH)            Library runpath: [$ORIGIN]"]
+    }
+  },
+  "checks": {
+    "frontendMatchesActualDeb": true,
+    "compiledMasterMatchesPreparedSource": true,
+    "actualBundledRuntimeAndSqliteStartup": true,
+    "health": true,
+    "manifest": true,
+    "servedAssetsMatchPackage": true
+  },
+  "mutations": 0,
+  "providerCalls": 0
+}
