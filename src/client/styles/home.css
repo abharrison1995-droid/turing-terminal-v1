@@ -31,6 +31,7 @@
 .home-intro h1 {
   font-family: var(--font-brand);
   font-size: var(--fs-display-title);
+  font-weight: var(--fw-bold);
   line-height: 1.18;
   letter-spacing: 0.01em;
   text-wrap: balance;

@@ -113,9 +113,17 @@ for (const [device, viewport] of Object.entries({
             .evaluate((node) => getComputedStyle(node).fontSize);
           expect(introSize).toBe((page.viewportSize()?.width ?? 1440) <= 680 ? '32px' : '40px');
           const nativeTaskText = await page
-            .locator('.topbar-title')
+            .locator('.task-link-copy strong')
+            .first()
             .evaluate((node) => getComputedStyle(node).fontFamily);
           expect(nativeTaskText).not.toContain('UnifrakturCook');
+          const brandBounds = await page.locator('.brand-name').boundingBox();
+          const sidebarBounds = await page.locator('.sidebar').boundingBox();
+          if (brandBounds && sidebarBounds) {
+            expect(brandBounds.x + brandBounds.width).toBeLessThanOrEqual(
+              sidebarBounds.x + sidebarBounds.width + 1,
+            );
+          }
           const composerBeforeSetup = await page.evaluate(() => {
             const composer = document.querySelector('.composer');
             const setup = document.querySelector('.launch-blockers');

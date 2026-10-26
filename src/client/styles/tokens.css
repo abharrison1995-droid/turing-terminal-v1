@@ -66,7 +66,7 @@
   --ink: #ede9e1;
   --ink-2: #cbc6bd;
   --ink-3: #aaa59c;
-  --accent-ink: #0b0b0c;
+  --accent-ink: #ede9e1;
   --ink-disabled: #808080; /* documented exemption from the 4.5:1 rule */
   --on-accent: #0b0b0c;
   --on-accent-line: rgb(0 0 0 / 35%);
@@ -74,22 +74,19 @@
   /* Lines */
   --hairline: rgb(255 255 255 / 7%);
   --line: rgb(255 255 255 / 13%);
-  --control-line: #7a7a7f;
+  --control-line: #919191;
   --focus-halo: rgb(160 190 230 / 16%);
 
   /* Neutral bone primary actions; status colours carry meaning. */
   --accent: #ede9e1;
-  --accent-fill: #f2efe8;
-  --accent-fill-hover: #ded9d0;
-  --accent-fill-pressed: #cbc6bd;
+  --accent-fill: #ededed;
+  --accent-fill-hover: #dedede;
+  --accent-fill-pressed: #cccccc;
   --accent-wash: #202023;
   --focus-ring: #c9d8ff;
 
   /* Brand (oxblood) — identity only, never status/error/approval/online. */
   --brand: #6e1f24;
-  --oxblood: #6e1f24;
-  --brand-wash: #2a1416;
-  --brand-line: #4a1a1e;
 
   /* Status: text colour on the dark surfaces, and a wash behind it */
   --green: #94dfb2;
@@ -104,6 +101,11 @@
   --info: #a9cbf7;
   --info-wash: #212c3a;
   --icon: #b8b8b8;
+  /* Standalone icon background: public/turing.svg cannot read CSS variables, so this documents its tile. */
+  --standalone-icon-bg: #202020;
+  --icon-bg: #202020;
+  --icon-background: #202020;
+  --turing-icon-bg: #202020;
 
   /* Diff and chart series */
   --diff-add-ink: #a0e5ba;
