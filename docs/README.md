@@ -1,6 +1,6 @@
 # Documentation index
 
-[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins. It is canonical for release state, including the state of work a proposal describes. Release state checked 2026-10-25.
+[V1_READINESS.md](V1_READINESS.md) is the release tracker. When another document disagrees with it about release state, it wins. It is canonical for release state, including the state of work a proposal describes. Release state checked 2026-10-26.
 
 Layout:
 
@@ -28,7 +28,7 @@ Layout:
 
 The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; a manual installer qualification build is recorded in the tracker. No RC3 tag or GitHub Release exists. Release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
 
-The shared UI direction is in [DESIGN.md](../DESIGN.md). The [black-metal refinement candidate](ui/BLACK_METAL_2026-10-26.md) follows the owner’s 2026-10-26 request while retaining the simplified task flow; its source and qualification are separate from the prior [native workspace evidence](ui/UI_OVERHAUL_2026-10-25.md). Both supersede the older visual packet. Existing master and UI installer evidence does not qualify this new refinement.
+The shared UI direction is in [DESIGN.md](../DESIGN.md). The [approved black-metal refinement](ui/BLACK_METAL_2026-10-26.md) follows the owner’s 2026-10-26 request while retaining the simplified task flow; its source and qualification are separate from the prior [native workspace evidence](ui/UI_OVERHAUL_2026-10-25.md). Both supersede the older visual packet. Existing master and UI installer evidence does not qualify this new refinement.
 
 ## Goal Engine
 

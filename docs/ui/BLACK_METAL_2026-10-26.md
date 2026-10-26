@@ -1,6 +1,6 @@
 # Black metal refinement — 2026-10-26
 
-Reviewed and software-qualified candidate in an isolated checkout. It is not integrated into the owner's checkout, PR #16 or master, and is not release-ready. [V1_READINESS.md](../V1_READINESS.md) remains the release-status authority.
+Reviewed and software-qualified refinement, approved by the owner on 2026-10-26. The active UI checkout was fast-forwarded to reviewed commit `83be3029f4fe8bfce6842d62ed400c0d99ead2c8`; PR #16 is being updated. It remains unmerged into master and is not release-ready. [V1_READINESS.md](../V1_READINESS.md) remains the release-status authority.
 
 ## Direction and scope
 
@@ -16,7 +16,7 @@ The owner requested a less generic black-metal identity while keeping the cleare
 
 Baseline is PR #16 head `3c5012942cc336c8cd99e23650bc3638d4e93e69`. Its CI [40256780744](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40256780744) succeeded; PR #16 is still open. Remote master was rechecked with `git ls-remote origin refs/heads/master` and remains PR #15 merge `6e5119f7e59220f8a825cefecf9b28b578e8bbb0`.
 
-The implementation is retained on `codex/black-metal-ui-reviewed-2026-10-26`:
+The implementation was qualified on `codex/black-metal-ui-reviewed-2026-10-26` and is now applied to `codex/ui-overhaul-2026-10-25`:
 
 | Unit                            | Commit / job                                                                              | Outcome                                                                                                                                                                     |
 | ------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -25,11 +25,11 @@ The implementation is retained on `codex/black-metal-ui-reviewed-2026-10-26`:
 | Distinct free review attempt    | Iceman Contributor Free `731d3c4d45134c6ab05bcddff6b678a2`                                | Failed with upstream HTTP 503, endpoint unavailable; no review verdict.                                                                                                     |
 | Final separate free review      | Beam Free `784558e9e9da4f18bb8744fec0e7f401`                                              | Completed: no actionable findings; no writes or executed tests.                                                                                                             |
 
-The refreshed Go catalogue lists both selected exact routes at zero price. All four jobs reported cost-equivalent $0; this is local bridge/catalogue provenance, not an invoice or authoritative account allowance. No paid fallback was used. The supervisor inspected actual diffs and renders and executed validation; worker suggestions are not test evidence. The owner's original checkout remains at `3c50129` with its eight pre-existing untracked `.codex-*` directories preserved.
+The refreshed Go catalogue lists both selected exact routes at zero price. All four jobs reported cost-equivalent $0; this is local bridge/catalogue provenance, not an invoice or authoritative account allowance. No paid fallback was used. The supervisor inspected actual diffs and renders and executed validation; worker suggestions are not test evidence. The owner approved applying the reviewed revision and updating PR #16. `git merge --ff-only 83be302` applied the three reviewed commits to the active UI branch; the eight pre-existing untracked `.codex-*` directories remain preserved and unstaged.
 
 ## Validation
 
-Application/test source is `371ce1fc9c5a6cb936bf48e43e20bd690548e3da`; subsequent evidence edits are documentation/PNG only. Logs and exact UTC command receipts are retained under ignored `artifacts/black-metal-2026-10-26/validation/` in the retained review checkout.
+Application/test source is `371ce1fc9c5a6cb936bf48e43e20bd690548e3da`; subsequent evidence edits are documentation/PNG only. Exact UTC command summaries, review provenance, representative PNGs and web-build checksums are committed under `docs/ui/evidence/black-metal-2026-10-26/`. At approval, the isolated checkout was no longer present at its recorded path, so its ignored raw logs, full capture matrix and web output are not available there. The committed validation receipt records the observed outcomes; it is not a replacement raw log.
 
 - Initial targeted validation found 5 failures (175 passed): dark accent foreground on dark surfaces, low-contrast field border, warm fill conflicting with the neutral-action guard and the unchanged standalone icon's background token. These were corrected by the free implementer; tests and contrast thresholds were not weakened.
 - Final targeted validation: `npx vitest run src/client/styles src/client/goals/a11yTokens.test.ts src/client/ui/shell/brandSkull.test.tsx src/client/pwaViewport.test.ts` passed 13 files / 180 tests, 2.13 seconds, at 09:29:50 UTC.
@@ -39,7 +39,7 @@ Application/test source is `371ce1fc9c5a6cb936bf48e43e20bd690548e3da`; subsequen
 - The real React client used invented API fixtures, frozen time and Chromium: 1440×900 desktop and 390×844 phone, 10 surfaces each (Home, Projects, Goals, Runs, Workflows, Usage, Machines, Settings, task thread and Goal detail). Desktop recorded 90 fixture requests, phone 82; neither made mutation requests, and there were no unmapped requests or page errors. The system-light/dark/reload test retained dark appearance without mutation requests. Checks include one main heading, document/main overflow, 44px visible phone controls, static blackletter scope, dynamic task text staying sans and wordmark bounds.
 - The supervisor inspected the initial renders and the final 20-surface contact sheets plus full Home/phone/thread/dense Settings renders. Source review confirmed the UI-only boundary. Browser fixtures do not establish physical phone, installed desktop, provider or billing capability.
 
-Representative [desktop Home](evidence/black-metal-2026-10-26/desktop-dark-home.png), [phone Home](evidence/black-metal-2026-10-26/phone-dark-home.png) and [phone thread](evidence/black-metal-2026-10-26/phone-dark-thread.png) are retained with [SHA-256 checksums](evidence/black-metal-2026-10-26/SHA256SUMS). Remaining captures and request ledgers are ignored local evidence; prior neutral captures are preserved.
+Representative [desktop Home](evidence/black-metal-2026-10-26/desktop-dark-home.png), [phone Home](evidence/black-metal-2026-10-26/phone-dark-home.png) and [phone thread](evidence/black-metal-2026-10-26/phone-dark-thread.png) are retained with [SHA-256 checksums](evidence/black-metal-2026-10-26/SHA256SUMS). The other captures and request ledgers were ignored evidence in the original isolated checkout and are unavailable at its former path. The three committed PNGs and their checksums were retained; prior neutral evidence is preserved.
 
 ## Production web build
 
@@ -47,4 +47,4 @@ The actual `npm run build` output passed a separate inspection at 10:11:01 UTC: 
 
 ## Remaining qualification
 
-Acceptance/integration into the active UI branch is pending. This candidate has no new CI run or native installer build. The existing live-provider, physical Windows/Linux and iPhone/Tailscale, two-master isolation and installed recovery/Goal-resume gates remain open in the readiness tracker. No merge, tag, release publication or version bump was performed.
+Owner acceptance and integration into the active UI branch are complete. Updated PR #16 CI and native installer qualification for this revision are pending. The existing live-provider, physical Windows/Linux and iPhone/Tailscale, two-master isolation and installed recovery/Goal-resume gates remain open in the readiness tracker. No merge into master, tag, release publication or version bump was performed.
