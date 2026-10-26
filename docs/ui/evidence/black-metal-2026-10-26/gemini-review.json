@@ -1,0 +1,38 @@
+{
+  "started_at": "2026-10-26T17:03:23.783346+00:00",
+  "finished_at": "2026-10-26T17:04:35.480539+00:00",
+  "route": "agy/gemini-3.8-flash",
+  "cli_model": "gemini-3.8-flash-high",
+  "effort": "high",
+  "mode": "plan",
+  "sandbox": true,
+  "fallback": null,
+  "attempts": 1,
+  "exit_code": 0,
+  "fixture_files_unchanged": true,
+  "input_sha256": {
+    "AGENTS.md": "2da55e7894361429282d7c0a73a1c08265bc1b86ce259656b7fddd9c56c56193",
+    "LATEST_CI.md": "caf8f965c06f70ee68a5579aba3837a71b6853705eb0efd0d446f2fafb7dd80d",
+    "docs/V1_READINESS.md": "b08820b0237265f4a50d696f7c27b0320eea4119ee98206e09de5ed2a6047d15",
+    "docs/ui/BLACK_METAL_2026-10-26.md": "bd3c3867b08e851373d2fe3f97a2e6fe6c44daa475aae5f6a2c8ceecad61ce18",
+    ".github/workflows/desktop-installers.yml": "5591c96a1f7076eb4317595357834da2ef584609a7b7d649b7f116f94ed1a741"
+  },
+  "stdout_sha256": "0140c80244b2c0b2e5bb65be7894ed4fc59775a1b02e4b2c8504aca53ed96c90",
+  "cost": "Not reported by agy; installed mod identifies this as Google AI Pro subscription route, not per-token billing. Remaining allowance not queried.",
+  "conversation_id": "1dd542d2-fdbc-4397-9238-6650bd84dfb2",
+  "actual_model_labels": ["Gemini 3.8 Flash (High)"],
+  "output_verdict": "OK",
+  "supervisor_disposition": "Usable via direct agy CLI with exact model and effort; no fallback. Corrected first-smoke --disable-slash-commands combination after CLI warned it affects plan mode. Native installer blocker clarification will be reconciled with current native build results. Not a Turing live-provider qualification.",
+  "implementation_role": "Sol remains supervisor; Gemini was used for bounded read-only evidence review, not UI implementation.",
+  "subscription_provenance": "User-confirmed configured Google AI Pro/Antigravity route; opencode-go-mod 0.11.2 README and hooks/gemini.ts; no API route or fallback was requested. Authoritative invoice/remaining allowance unavailable.",
+  "initial_smoke": {
+    "exit_code": 0,
+    "elapsed_seconds": 18.13,
+    "cli_warning": "--mode plan has no effect while slash command expansion is disabled.",
+    "disposition": "Repeated meaningful review without --disable-slash-commands; actual Plan mode confirmed in the second run log."
+  },
+  "executed_commands": [
+    "agy models",
+    "agy --print <bounded-review-prompt> --model gemini-3.8-flash-high --effort high --mode plan --sandbox --print-timeout 3m --log-file <ignored-local-log>"
+  ]
+}

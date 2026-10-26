@@ -28,7 +28,7 @@ Layout:
 
 The current release-candidate notes are [RELEASE_NOTES_1.0.0-rc3.md](RELEASE_NOTES_1.0.0-rc3.md), prepared for RC3; a manual installer qualification build is recorded in the tracker. No RC3 tag or GitHub Release exists. Release state remains in [V1_READINESS.md](V1_READINESS.md). [RELEASE_NOTES_1.0.0-rc2.md](RELEASE_NOTES_1.0.0-rc2.md) is the historical prior release record. collect-release.mjs and merge-release.mjs read `RELEASE_NOTES_<version>.md`.
 
-The shared UI direction is in [DESIGN.md](../DESIGN.md). The [approved black-metal refinement](ui/BLACK_METAL_2026-10-26.md) follows the owner’s 2026-10-26 request while retaining the simplified task flow; its source and qualification are separate from the prior [native workspace evidence](ui/UI_OVERHAUL_2026-10-25.md). Both supersede the older visual packet. Existing master and UI installer evidence does not qualify this new refinement.
+The shared UI direction is in [DESIGN.md](../DESIGN.md). The [approved black-metal refinement](ui/BLACK_METAL_2026-10-26.md) follows the owner’s 2026-10-26 request while retaining the simplified task flow; its source and qualification are separate from the prior [native workspace evidence](ui/UI_OVERHAUL_2026-10-25.md). Both supersede the older visual packet. The refinement passed [current-branch native installer qualification](ui/BLACK_METAL_2026-10-26.md#native-installer-qualification) on `091b8b7`; earlier master/neutral-UI artifacts qualify only their earlier source. Physical acceptance and exact integrated-release builds remain separate gates.
 
 ## Goal Engine
 

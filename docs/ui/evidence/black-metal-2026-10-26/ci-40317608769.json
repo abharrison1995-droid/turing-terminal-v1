@@ -1,0 +1,15 @@
+{
+  "run": 40317608769,
+  "job": 121554026262,
+  "head": "091b8b75f95cda6bc7c1a9db5eb874605f05746c",
+  "synthetic_checkout": "5263217ad268e507607639dc1a0e5ca8237963e3",
+  "ui_source": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "conclusion": "success",
+  "test_files": 232,
+  "tests": 4120,
+  "test_seconds": 1523.93,
+  "all_eight_gates_passed": true,
+  "audit_vulnerabilities": 0,
+  "provenance": "GitHub completed job steps and complete decoded hosted log, independently fetched by supervisor",
+  "log_sha256": "60e3a548ccc5c829bbee92fc914a11b647d5c98ad79abc1978a3fa7fbdc80760"
+}
