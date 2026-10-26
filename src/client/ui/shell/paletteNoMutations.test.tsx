@@ -53,7 +53,7 @@ vi.mock('../../api', async (importActual) => ({
 import { api } from '../../api';
 import App from '../../App';
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 
 /** Every mock API member that changes state. The palette may call none of them. */
 const MUTATING_API = [

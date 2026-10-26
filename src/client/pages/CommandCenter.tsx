@@ -239,8 +239,8 @@ export function CommandCenter({
     <main className="page-content command-page">
       <div className={`home-column ${snapshot.runs.length > 0 ? 'home-has-activity' : ''}`}>
         <div className="home-intro">
-          <h1>What should the agents do?</h1>
-          <p>Your task stays on this machine and follows its saved workflow.</p>
+          <h1>What should we work on?</h1>
+          <p>Start a task. Your desktop takes it from here.</p>
         </div>
         {pendingApprovalCounts(snapshot).total > 0 && (
           <UnifiedApprovals
@@ -249,49 +249,9 @@ export function CommandCenter({
             onDecided={onRefresh}
           />
         )}
-        {(runningRuns.length > 0 || waitingRuns.length > 0 || recentFailed.length > 0) && (
-          <div className="glance" role="group" aria-label="Runs at a glance">
-            {waitingRuns.length > 0 && (
-              <button
-                type="button"
-                className="glance-item glance-attention"
-                onClick={() => onStart(waitingRuns[0].id)}
-              >
-                <LockKeyhole size={14} aria-hidden="true" />
-                <strong>{waitingRuns.length}</strong> needs you
-              </button>
-            )}
-            {runningRuns.length > 0 && (
-              <button
-                type="button"
-                className="glance-item glance-running"
-                onClick={() => onStart(runningRuns[0].id)}
-              >
-                <Activity size={14} aria-hidden="true" />
-                <strong>{runningRuns.length}</strong> running
-              </button>
-            )}
-            {recentFailed.length > 0 && (
-              <button
-                type="button"
-                className="glance-item glance-failed"
-                onClick={() => onStart(recentFailed[0].id)}
-              >
-                <AlertTriangle size={14} aria-hidden="true" />
-                <strong>{recentFailed.length}</strong> failed
-              </button>
-            )}
-          </div>
-        )}
-        {preview && <RunPreviewPanel preview={preview} />}
-        <LaunchBlockers
-          missingCount={missingAssignments.length}
-          projectMissing={!selectedProject}
-          onNavigate={onNavigate}
-        />
         <form className="composer" onSubmit={makePreview} aria-label="Start a workflow">
           <label className="sr-only" htmlFor="task-input">
-            What should the agents do?
+            What should we work on?
           </label>
           <textarea
             id="task-input"
@@ -310,23 +270,6 @@ export function CommandCenter({
               }
             }}
           />
-          {agentStages.length > 0 && (
-            <div className="composer-agents" role="group" aria-label="Agents in this workflow">
-              {agentStages.slice(0, 5).map(({ stage, config, ready }) => (
-                <button
-                  type="button"
-                  key={stage.id}
-                  className={`agent-chip ${ready ? '' : 'agent-chip-missing'}`}
-                  title="Edit in Workflow Studio"
-                  onClick={() => onNavigate('workflows')}
-                >
-                  <b>{stage.label}</b>
-                  <code>{ready ? (config.modelDisplayName ?? config.modelId) : 'Choose model'}</code>
-                </button>
-              ))}
-              {agentStages.length > 5 && <span className="agent-chip">+{agentStages.length - 5} more</span>}
-            </div>
-          )}
           <div className="composer-bar">
             <label className="pill-select">
               <FileCode2 size={15} aria-hidden="true" />
@@ -572,42 +515,46 @@ export function CommandCenter({
           </p>
         )}
 
-        {selectedWorkflow && (
-          <Safeguards
-            billingMode={
-              selectedWorkflow.billingMode ??
-              (selectedWorkflow.subscriptionOnly ? 'subscriptions-only' : 'custom')
-            }
-            lockProviders={selectedWorkflow.lockProviders}
-            permissionMode={selectedWorkflow.permissionMode}
-          />
+        {preview && <RunPreviewPanel preview={preview} />}
+        <LaunchBlockers
+          missingCount={missingAssignments.length}
+          projectMissing={!selectedProject}
+          onNavigate={onNavigate}
+        />
+        {(runningRuns.length > 0 || waitingRuns.length > 0 || recentFailed.length > 0) && (
+          <div className="glance" role="group" aria-label="Runs at a glance">
+            {waitingRuns.length > 0 && (
+              <button
+                type="button"
+                className="glance-item glance-attention"
+                onClick={() => onStart(waitingRuns[0].id)}
+              >
+                <LockKeyhole size={14} aria-hidden="true" />
+                <strong>{waitingRuns.length}</strong> needs you
+              </button>
+            )}
+            {runningRuns.length > 0 && (
+              <button
+                type="button"
+                className="glance-item glance-running"
+                onClick={() => onStart(runningRuns[0].id)}
+              >
+                <Activity size={14} aria-hidden="true" />
+                <strong>{runningRuns.length}</strong> running
+              </button>
+            )}
+            {recentFailed.length > 0 && (
+              <button
+                type="button"
+                className="glance-item glance-failed"
+                onClick={() => onStart(recentFailed[0].id)}
+              >
+                <AlertTriangle size={14} aria-hidden="true" />
+                <strong>{recentFailed.length}</strong> failed
+              </button>
+            )}
+          </div>
         )}
-        <div className="home-status" aria-label="Workspace status">
-          <span>
-            <span className="presence-dot" /> {snapshot.machine.name} · online
-          </span>
-          <span>
-            {snapshot.projects.length} {snapshot.projects.length === 1 ? 'project' : 'projects'}
-          </span>
-          <span>{pending.length} active</span>
-          <span>
-            {snapshot.usage.events} events today · {snapshot.usage.provenance}
-          </span>
-          <button type="button" className="text-button" onClick={() => onNavigate('machines')}>
-            Machines
-          </button>
-          <button type="button" className="text-button" onClick={() => onNavigate('usage')}>
-            Usage
-          </button>
-        </div>
-        <details className="home-providers">
-          <summary>
-            Provider health · {snapshot.providers.filter((provider) => provider.detected).length} of{' '}
-            {snapshot.providers.length} local CLIs detected
-          </summary>
-          <ProviderHealth providers={snapshot.providers} onNavigate={() => onNavigate('settings')} />
-        </details>
-
         <div className="home-tasks">
           <RunGroup title="Needs you" tone="attention" runs={waitingRuns} onSelect={onStart} />
           <RunGroup title="Running" runs={runningRuns} onSelect={onStart} />
@@ -622,6 +569,46 @@ export function CommandCenter({
             }
           />
         </div>
+        <details className="workspace-details">
+          <summary>Workflow and workspace details</summary>
+          <div className="workspace-details-body">
+            {selectedWorkflow && (
+              <Safeguards
+                billingMode={
+                  selectedWorkflow.billingMode ??
+                  (selectedWorkflow.subscriptionOnly ? 'subscriptions-only' : 'custom')
+                }
+                lockProviders={selectedWorkflow.lockProviders}
+                permissionMode={selectedWorkflow.permissionMode}
+              />
+            )}
+            <div className="home-status" aria-label="Workspace status">
+              <span>
+                <span className="presence-dot" /> {snapshot.machine.name} · online
+              </span>
+              <span>
+                {snapshot.projects.length} {snapshot.projects.length === 1 ? 'project' : 'projects'}
+              </span>
+              <span>{pending.length} active</span>
+              <span>
+                {snapshot.usage.events} events today · {snapshot.usage.provenance}
+              </span>
+              <button type="button" className="text-button" onClick={() => onNavigate('machines')}>
+                Machines
+              </button>
+              <button type="button" className="text-button" onClick={() => onNavigate('usage')}>
+                Usage
+              </button>
+            </div>
+            <details className="home-providers">
+              <summary>
+                Provider health · {snapshot.providers.filter((provider) => provider.detected).length} of{' '}
+                {snapshot.providers.length} local CLIs detected
+              </summary>
+              <ProviderHealth providers={snapshot.providers} onNavigate={() => onNavigate('settings')} />
+            </details>
+          </div>
+        </details>
       </div>
     </main>
   );

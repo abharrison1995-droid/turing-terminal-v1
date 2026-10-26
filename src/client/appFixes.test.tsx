@@ -143,7 +143,7 @@ describe('desktop Master restart from settings', () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(
-      await within(screen.getByRole('navigation', { name: 'Workspace' })).findByRole('button', {
+      await within(screen.getByRole('complementary', { name: 'Primary navigation' })).findByRole('button', {
         name: 'Settings',
       }),
     );

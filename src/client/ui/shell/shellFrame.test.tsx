@@ -30,7 +30,7 @@ vi.mock('../../api', async (importActual) => ({
 
 import App from '../../App';
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 
 const snapshot = (overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot =>
   ({
@@ -57,7 +57,7 @@ const snapshot = (overrides: Partial<DashboardSnapshot> = {}): DashboardSnapshot
     ...overrides,
   }) as unknown as DashboardSnapshot;
 
-const workspaceNav = () => within(screen.getByRole('navigation', { name: 'Workspace' }));
+const workspaceNav = () => within(screen.getByRole('complementary', { name: 'Primary navigation' }));
 const railText = () => document.querySelector('.machine-rail')?.textContent ?? '';
 const mainArea = () => document.querySelector('.app-main');
 

@@ -61,31 +61,20 @@ describe('the palette stylesheet is wired in (section 1)', () => {
   });
 });
 
-describe('active nav bar and brand tile (matrix S6)', () => {
+describe('neutral navigation and brand', () => {
   const shellRules = () => rulesIn(read(shellPath));
-
-  it('.nav-link-active::before is a 2px bar in --accent', () => {
-    const bar = ruleFor(shellRules(), '.nav-link-active::before');
-    expect(bar, 'a .nav-link-active::before rule').toBeDefined();
-    expect(bar!.body).toMatch(/width\s*:\s*2px\b/);
-    expect(bar!.body).toMatch(/background(?:-color)?\s*:\s*var\(--accent\)/);
+  it('selection has a tonal background and is not a decorative accent rail', () => {
+    const active = ruleFor(shellRules(), '.nav-link-active');
+    expect(active?.body).toMatch(/background:\s*var\(--selected\)/);
+    expect(ruleFor(shellRules(), '.nav-link-active::before')).toBeUndefined();
   });
-
-  it('the brand tile is --surface-3 with an --accent-ink icon, not a crimson fill', () => {
+  it('the brand mark uses interface ink without a filled tile', () => {
     const brand = ruleFor(shellRules(), '.brand-mark');
-    expect(brand).toBeDefined();
-    expect(brand!.body).toMatch(/background(?:-color)?\s*:\s*var\(--surface-3\)/);
-    expect(brand!.body).toMatch(/color\s*:\s*var\(--accent-ink\)/);
-    expect(brand!.body).not.toMatch(/var\(--accent\)/);
+    expect(brand?.body).toMatch(/background:\s*transparent/);
+    expect(brand?.body).toMatch(/color:\s*var\(--ink\)/);
   });
-
-  it('--accent is used by the shell and palette only on the active bar', () => {
-    const users = [shellPath, palettePath]
-      .filter((path) => existsSync(path))
-      .flatMap((path) => rulesIn(read(path)))
-      .filter((rule) => /var\(--accent\)/.test(rule.body))
-      .flatMap((rule) => rule.selectors);
-    expect(users).toEqual(['.nav-link-active::before']);
+  it('the shell does not use the accent for decoration', () => {
+    expect(read(shellPath)).not.toMatch(/var\(--accent\)/);
   });
 });
 

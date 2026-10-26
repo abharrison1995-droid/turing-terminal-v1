@@ -65,8 +65,7 @@
   display: block;
   color: var(--ink-3);
   font-size: var(--fs-micro);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 .goal-needs-you {
   display: inline-flex;
@@ -313,7 +312,7 @@
 }
 .goal-evidence-stale {
   background: var(--amber-wash);
-  border-left: 3px dashed var(--amber);
+  border-left: 1px dashed var(--amber);
 }
 .goal-fresh {
   font-size: var(--fs-meta);

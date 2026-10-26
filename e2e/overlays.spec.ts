@@ -174,7 +174,7 @@ async function openHome(page: Page) {
 
 /** Opens a Workspace destination: the drawer on the phone, the sidebar elsewhere (as qualification.spec.ts). */
 async function goTo(page: Page, label: string) {
-  const nav = page.getByRole('navigation', { name: 'Workspace' });
+  const nav = page.getByRole('complementary', { name: 'Primary navigation' });
   if (!(await nav.first().isVisible())) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
   }
@@ -1019,7 +1019,7 @@ for (const viewport of PHONE_NAMES) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
     const drawer = drawerLocator(page);
     await assertOverlay(page, VIEWPORTS[viewport], 'Navigation drawer', route, drawer);
-    const first = page.getByRole('navigation', { name: 'Workspace' }).getByRole('button').first();
+    const first = page.getByRole('complementary', { name: 'Primary navigation' }).getByRole('button').first();
     await expect(first).toBeVisible();
     const firstGeo = await settledGeo(page, first, 'Drawer first item');
     expectInViewport('Drawer first item', route, firstGeo, VIEWPORTS[viewport]);
@@ -1046,7 +1046,7 @@ for (const viewport of PHONE_NAMES) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
     const drawer = drawerLocator(page);
     const drawerGeo = await assertOverlay(page, VIEWPORTS[viewport], 'Navigation drawer', route, drawer);
-    const first = page.getByRole('navigation', { name: 'Workspace' }).getByRole('button').first();
+    const first = page.getByRole('complementary', { name: 'Primary navigation' }).getByRole('button').first();
     const hit = await hitAtCentre(first);
     expect
       .soft(

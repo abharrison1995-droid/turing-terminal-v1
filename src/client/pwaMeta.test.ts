@@ -37,7 +37,7 @@ describe('PWA meta colours follow the dark canvas (T9)', () => {
     expect(themeColour).toBe(canvasToken());
   });
 
-  it('index.html declares a dark colour-scheme', () => {
+  it('index.html declares dark appearance', () => {
     expect(read(join(repoRoot, 'index.html'))).toMatch(/<meta\s+name="color-scheme"\s+content="dark"\s*\/?>/);
   });
 

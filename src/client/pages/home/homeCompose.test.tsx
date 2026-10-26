@@ -30,7 +30,7 @@ vi.mock('../../api', async (importActual) => ({
   },
 }));
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 const REVIEW = 'Review run preview';
 const TASK = 'Fix the parser';
 

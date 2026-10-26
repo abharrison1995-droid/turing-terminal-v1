@@ -65,7 +65,7 @@ async function goTo(page: Page, viewport: ViewportName, label: string) {
   if (viewport === PHONE) await page.getByRole('button', { name: 'Open navigation' }).click();
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   await page
-    .getByRole('navigation', { name: 'Workspace' })
+    .getByRole('complementary', { name: 'Primary navigation' })
     .getByRole('button', { name: new RegExp(`^${escaped}`) })
     .click();
 }

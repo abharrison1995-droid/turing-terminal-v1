@@ -158,16 +158,11 @@ describe('compact targets (S2)', () => {
 });
 
 describe('layout breakpoints (S3)', () => {
-  it('[RED] at 1100px and up, .settings-grid declares two or more tracks', () => {
-    const wide = mediaBlocks(uiCss())
-      .filter((block) => /min-width\s*:\s*1100px/.test(block.query))
-      .flatMap((block) => rulesIn(block.body));
-    const twoTracks = wide.some((rule) => {
-      const columns = columnsOf(rule.body);
-      return rule.selectors.includes('.settings-grid') && columns !== null && trackCount(columns) >= 2;
-    });
-
-    expect(twoTracks).toBe(true);
+  it('settings stay in one bounded reading column at desktop widths', () => {
+    const settings = rulesIn(uiCss()).filter((rule) => rule.selectors.includes('.settings-grid'));
+    expect(settings.length).toBeGreaterThan(0);
+    expect(settings.every((rule) => /grid-template-columns:\s*minmax\(0, 1fr\)/.test(rule.body))).toBe(true);
+    expect(settings.some((rule) => /max-width:\s*900px/.test(rule.body))).toBe(true);
   });
 
   it('[RED] below 1100px, .settings-grid declares a single track in a base or max-width rule', () => {

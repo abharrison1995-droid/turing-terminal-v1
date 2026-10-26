@@ -63,7 +63,7 @@ async function goTo(page: Page, viewport: ViewportName, label: string) {
   if (viewport === PHONE) await page.getByRole('button', { name: 'Open navigation' }).click();
   const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   await page
-    .getByRole('navigation', { name: 'Workspace' })
+    .getByRole('complementary', { name: 'Primary navigation' })
     .getByRole('button', { name: new RegExp(`^${escaped}`) })
     .click();
 }
@@ -116,7 +116,7 @@ test('navigation drawer opens on the phone shell', async ({ page }) => {
   const menu = page.getByRole('button', { name: 'Open navigation' });
   await menu.click();
   await expect(menu).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('navigation', { name: 'Workspace' })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Primary navigation' })).toBeVisible();
   expect(api.unmapped).toEqual([]);
   await capture(page, `drawer-${PHONE}`);
 });

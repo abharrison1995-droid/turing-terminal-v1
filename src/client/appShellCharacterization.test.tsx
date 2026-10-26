@@ -55,10 +55,10 @@ import App from './App';
 import { resetWorkflowDraftStore } from './pages/workflows/draftStore';
 
 const WORKSPACE_NAV = [
-  'Workflows',
   'Projects',
   'Grand Projects',
   'Runs & history',
+  'Workflows',
   'Usage',
   'Machines',
   'Settings',
@@ -136,13 +136,13 @@ function stubNarrowViewport(narrow: boolean) {
   }));
 }
 
-const workspaceNav = () => within(screen.getByRole('navigation', { name: 'Workspace' }));
+const workspaceNav = () => within(screen.getByRole('complementary', { name: 'Primary navigation' }));
 const sidebar = () => within(screen.getByRole('complementary', { name: 'Primary navigation' }));
 const topbarTitle = () => document.querySelector('.topbar-title')?.textContent;
 const currentWorkspaceItems = () =>
   workspaceNav()
     .getAllByRole('button')
-    .filter((button) => button.getAttribute('aria-current') === 'page')
+    .filter((button) => button.closest('.primary-nav') && button.getAttribute('aria-current') === 'page')
     .map((button) => button.textContent?.trim());
 
 afterEach(() => {
@@ -161,10 +161,11 @@ beforeEach(() => {
 describe('App shell navigation', () => {
   it('lists the Workspace destinations in order, with no Reviews, Overview or Home entry', async () => {
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
 
     const names = workspaceNav()
       .getAllByRole('button')
+      .filter((button) => button.closest('.primary-nav'))
       .map((button) => button.textContent?.trim());
     expect(names).toEqual([...WORKSPACE_NAV]);
     for (const removed of ['Reviews', 'Overview', 'Home']) {
@@ -176,7 +177,7 @@ describe('App shell navigation', () => {
 
   it('starts on the command page with no nav item marked current and the New task title', async () => {
     render(<App />);
-    expect(await screen.findByRole('heading', { name: 'What should the agents do?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'What should we work on?' })).toBeTruthy();
     expect(currentWorkspaceItems()).toEqual([]);
     expect(
       sidebar()
@@ -203,41 +204,41 @@ describe('App shell navigation', () => {
       });
       const user = userEvent.setup();
       render(<App />);
-      await screen.findByRole('heading', { name: 'What should the agents do?' });
+      await screen.findByRole('heading', { name: 'What should we work on?' });
 
       await user.click(workspaceNav().getByRole('button', { name: label }));
 
       expect(await screen.findByRole('heading', { level: 1, name: heading })).toBeTruthy();
       expect(currentWorkspaceItems()).toEqual([label]);
       expect(topbarTitle()).toBe(label);
-      expect(screen.queryByRole('heading', { name: 'What should the agents do?' })).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'What should we work on?' })).toBeNull();
     },
   );
 
   it('New task and the brand button both return to the command page heading', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
 
     await user.click(workspaceNav().getByRole('button', { name: 'Projects' }));
     expect(await screen.findByRole('heading', { name: 'Projects' })).toBeTruthy();
 
     await user.click(sidebar().getByRole('button', { name: 'New task' }));
-    expect(await screen.findByRole('heading', { name: 'What should the agents do?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'What should we work on?' })).toBeTruthy();
     expect(currentWorkspaceItems()).toEqual([]);
     expect(topbarTitle()).toBe('New task');
 
     await user.click(workspaceNav().getByRole('button', { name: 'Usage' }));
     expect(await screen.findByRole('heading', { name: 'Usage' })).toBeTruthy();
     await user.click(sidebar().getByRole('button', { name: 'Turing Terminal home' }));
-    expect(await screen.findByRole('heading', { name: 'What should the agents do?' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'What should we work on?' })).toBeTruthy();
     expect(topbarTitle()).toBe('New task');
   });
 
   it('the notifications bell opens Runs & history and marks that nav item current', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
 
     await user.click(screen.getByRole('button', { name: 'Notifications' }));
 
@@ -259,7 +260,7 @@ describe('App shell deep links', () => {
     expect(await screen.findByRole('heading', { name: 'Grand Projects' })).toBeTruthy();
     expect(currentWorkspaceItems()).toEqual(['Grand Projects']);
     expect(topbarTitle()).toBe('Grand Projects');
-    expect(screen.queryByRole('heading', { name: 'What should the agents do?' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'What should we work on?' })).toBeNull();
     await waitFor(() => expect(window.location.search).toBe('?pairRequest=pair-token'));
   });
 });
@@ -274,7 +275,7 @@ describe('Workflow Studio defaults', () => {
     dashboard.mockResolvedValue(snapshot({ workflows: [WORKFLOW] }));
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(workspaceNav().getByRole('button', { name: 'Workflows' }));
     expect(await screen.findByRole('heading', { name: 'Workflow Studio' })).toBeTruthy();
   };
@@ -315,7 +316,7 @@ describe('Workflow editor, unsaved drafts and the Settings handoff', () => {
     dashboard.mockResolvedValue(snapshot({ workflows: [WORKFLOW] }));
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('heading', { name: 'What should the agents do?' });
+    await screen.findByRole('heading', { name: 'What should we work on?' });
     await user.click(workspaceNav().getByRole('button', { name: 'Workflows' }));
     await screen.findByRole('heading', { name: 'Workflow Studio' });
     return user;

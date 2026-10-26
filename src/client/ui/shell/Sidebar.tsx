@@ -1,11 +1,10 @@
-import { Plus } from 'lucide-react';
+import { Plus, SquareTerminal } from 'lucide-react';
 import type { RunSummary } from '../../../shared/types';
 import { APP_VERSION } from '../../../shared/version';
 import type { Page } from '../../pages/shared/types';
 import { StatusIcon } from '../../pages/shared/parts';
 import { humanStatus, shortTask } from '../../pages/shared/runStatus';
 import { NAV_ITEMS, NAV_PANEL_ID } from './navModel';
-import { BrandSkull } from './BrandSkull';
 
 /** What the machine rail reports: the real refresh state, never a fixed "Online". */
 export type MasterConnection = 'online' | 'unavailable' | 'connecting';
@@ -56,13 +55,34 @@ export function Sidebar({
         aria-label="Turing Terminal home"
       >
         <span className="brand-mark">
-          <BrandSkull />
+          <SquareTerminal size={20} aria-hidden="true" />
         </span>
         <span className="brand-name">Turing Terminal</span>
       </button>
       <button className="new-task-button" onClick={() => onNavigate('command', () => onSelectRun(null))}>
         <Plus size={16} /> New task
       </button>
+      <nav className="primary-nav workspace-nav" aria-label="Workspace">
+        {NAV_ITEMS.filter(({ id }) => ['runs', 'goals', 'projects'].includes(id)).map(
+          ({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
+              onClick={() => onNavigate(id, id === 'runs' ? () => onSelectRun(null) : undefined)}
+              aria-current={page === id ? 'page' : undefined}
+            >
+              <Icon size={16} /> <span>{label}</span>
+              {id === 'runs' && activeRunCount > 0 && <span className="nav-count">{activeRunCount}</span>}
+              {id === 'runs' && pendingApprovalCount > 0 && (
+                <span className="nav-alert-dot" aria-label={`${pendingApprovalCount} approvals pending`} />
+              )}
+              {id === 'goals' && goalApprovalCount > 0 && (
+                <span className="nav-alert-dot" aria-label={`${goalApprovalCount} Goal approvals pending`} />
+              )}
+            </button>
+          ),
+        )}
+      </nav>
       <p className="nav-label">Recent</p>
       <nav className="task-nav" aria-label="Tasks">
         {railTasks.length === 0 ? (
@@ -88,24 +108,19 @@ export function Sidebar({
           ))
         )}
       </nav>
-      <nav className="primary-nav" aria-label="Workspace">
-        {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
-            onClick={() => onNavigate(id, id === 'runs' ? () => onSelectRun(null) : undefined)}
-            aria-current={page === id ? 'page' : undefined}
-          >
-            <Icon size={16} /> <span>{label}</span>
-            {id === 'runs' && activeRunCount > 0 && <span className="nav-count">{activeRunCount}</span>}
-            {id === 'runs' && pendingApprovalCount > 0 && (
-              <span className="nav-alert-dot" aria-label={`${pendingApprovalCount} approvals pending`} />
-            )}
-            {id === 'goals' && goalApprovalCount > 0 && (
-              <span className="nav-alert-dot" aria-label={`${goalApprovalCount} Goal approvals pending`} />
-            )}
-          </button>
-        ))}
+      <nav className="primary-nav tools-nav" aria-label="Tools">
+        {NAV_ITEMS.filter(({ id }) => !['runs', 'goals', 'projects'].includes(id)).map(
+          ({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              className={`nav-link ${page === id ? 'nav-link-active' : ''}`}
+              onClick={() => onNavigate(id)}
+              aria-current={page === id ? 'page' : undefined}
+            >
+              <Icon size={16} /> <span>{label}</span>
+            </button>
+          ),
+        )}
       </nav>
       <div className={`machine-rail ${connection === 'unavailable' ? 'machine-rail-unavailable' : ''}`}>
         <span className="presence-dot" />

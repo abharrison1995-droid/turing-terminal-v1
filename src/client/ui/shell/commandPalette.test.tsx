@@ -51,7 +51,7 @@ vi.mock('../../api', async (importActual) => ({
 
 import App from '../../App';
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 const GUARD = 'Discard unsaved Grand Project changes?';
 const WORKSPACE = [
   'Workflows',

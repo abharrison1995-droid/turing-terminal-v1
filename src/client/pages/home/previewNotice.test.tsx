@@ -25,7 +25,7 @@ vi.mock('../../api', async (importActual) => ({
   },
 }));
 
-const HOME = 'What should the agents do?';
+const HOME = 'What should we work on?';
 const TASK = 'Fix the parser';
 
 const PROJECT = {

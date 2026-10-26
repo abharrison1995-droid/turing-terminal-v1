@@ -6,27 +6,9 @@
    computed declarations and are not verified on a notched device. */
 
 @media (max-width: 680px) {
-  /* Home (item 1): blockers sit above the Recent list, and both sit above the docked composer. Orders are unique. */
-  .home-column > .launch-blockers {
-    order: 2;
-    scroll-margin-bottom: calc(var(--s-12) * 5);
-  }
-  .home-column > .home-tasks {
-    order: 3;
-  }
-  .home-column > .home-intro {
-    order: 4;
-  }
-  .home-column > .run-preview-panel {
-    order: 5;
-  }
-  /* The docked composer is the last flex item. A bottom cushion keeps it clear of the bottom edge and the home indicator
-     at the end of the scroll, so the row above it is never pressed against it. The window is the scroll container. */
+  /* Home uses the same DOM/visual order at every size. */
   .home-column {
-    padding-bottom: var(--s-4);
-  }
-  .home-column > .composer {
-    bottom: calc(var(--s-2) + env(safe-area-inset-bottom));
+    padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom));
   }
 
   /* Safe area (item 7): the topbar, page content and drawer clear the notch and the rounded corners. */

@@ -78,7 +78,7 @@ async function ready(page: Page) {
 
 /** Opens a Workspace destination. The drawer is the navigation on the phone; the sidebar is used on desktop. */
 async function goTo(page: Page, label: string) {
-  const nav = page.getByRole('navigation', { name: 'Workspace' });
+  const nav = page.getByRole('complementary', { name: 'Primary navigation' });
   if (!(await nav.first().isVisible())) {
     await page.getByRole('button', { name: 'Open navigation' }).click();
   }

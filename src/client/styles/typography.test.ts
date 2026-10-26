@@ -102,12 +102,12 @@ describe('type scale, floors and font stacks (T7)', () => {
     ['--fs-control', '14px'],
     ['--fs-meta', '13px'],
     ['--fs-micro', '12px'],
-    ['--fs-section', '17px'],
+    ['--fs-section', '16px'],
     ['--fs-title', '24px'],
-    ['--fs-display-brand', '22px'],
-    ['--fs-display-title', '30px'],
-    ['--fw-medium', '400'],
-    ['--fw-semibold', '700'],
+    ['--fs-display-brand', '15px'],
+    ['--fs-display-title', '32px'],
+    ['--fw-medium', '500'],
+    ['--fw-semibold', '600'],
   ])('%s is %s', (name, value) => {
     expect(token(name.slice(2))).toBe(value);
   });
@@ -129,13 +129,15 @@ describe('type scale, floors and font stacks (T7)', () => {
     expect(small).toEqual([]);
   });
 
-  it('--font-sans starts with Linux Libertine and holds no Geist face', () => {
-    expect(token('font-sans')).toBe("'Linux Libertine', Georgia, 'Times New Roman', serif");
+  it('interface text uses the native sans stack without a network font', () => {
+    expect(token('font-sans')).toBe(
+      "ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    );
     expect(token('font-sans')).not.toMatch(/Geist/);
   });
 
-  it('--font-display is UnifrakturCook with Libertine and serif fallbacks', () => {
-    expect(token('font-display')).toBe("'UnifrakturCook', 'Linux Libertine', Georgia, serif");
+  it('headings share the interface face', () => {
+    expect(token('font-display')).toBe('var(--font-sans)');
   });
 
   it('--font-mono is unchanged (Geist Mono stays)', () => {
@@ -155,7 +157,7 @@ describe('type scale, floors and font stacks (T7)', () => {
     expect(main).toMatch(/import\s+'@fontsource-variable\/geist-mono';/);
   });
 
-  it('body keeps font-synthesis: none, so only the shipped 400 and 700 weights are used', () => {
+  it('body keeps font-synthesis: none, to avoid synthetic faces', () => {
     expect(stripComments(read(join(clientRoot, 'styles', 'base.css')))).toMatch(
       /body\s*\{[^}]*font-synthesis:\s*none/,
     );

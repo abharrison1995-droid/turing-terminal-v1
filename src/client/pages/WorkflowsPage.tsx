@@ -556,7 +556,11 @@ export function WorkflowsPage({
         </aside>
       </div>
 
-      <div className="workflow-save-bar" role="region" aria-label="Save workflow">
+      <div
+        className={`workflow-save-bar ${!dirty && (save.phase === 'idle' || save.phase === 'saved') ? 'workflow-save-bar-idle' : ''}`}
+        role="region"
+        aria-label="Save workflow"
+      >
         <p
           className={`save-status save-status-${save.phase === 'error' ? 'error' : dirty ? 'dirty' : 'clean'}`}
           role={save.phase === 'error' ? 'alert' : 'status'}

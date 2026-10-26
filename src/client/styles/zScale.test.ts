@@ -118,7 +118,7 @@ describe('mobile and overlay rules (UI9 UI.9b, R4 to R6)', () => {
     expect(tooltip.some((rule) => /(?:^|[\s;])left\s*:\s*clamp\(/.test(rule.body))).toBe(true);
   });
 
-  it('[RED] the compact composer in mobile.css has a max-height in dvh and overflow-y: auto in the same rule', () => {
+  it('the compact home composer stays in document flow instead of covering content', () => {
     const composer = rulesIn(read('mobile.css')).filter((rule) =>
       rule.selectors.some((selector) => /(?:^|[\s>])\.composer$/.test(selector)),
     );
@@ -126,7 +126,8 @@ describe('mobile and overlay rules (UI9 UI.9b, R4 to R6)', () => {
     expect(composer.length).toBeGreaterThan(0);
     expect(
       composer.some(
-        (rule) => /max-height\s*:[^;]*dvh/.test(rule.body) && /overflow-y\s*:\s*auto\s*;/.test(rule.body),
+        (rule) =>
+          /position\s*:\s*relative/.test(rule.body) && !/position\s*:\s*(?:fixed|sticky)/.test(rule.body),
       ),
     ).toBe(true);
   });
