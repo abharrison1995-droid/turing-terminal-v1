@@ -33,10 +33,9 @@ describe('BrandSkull', () => {
     vi.useRealTimers();
   });
 
-  it('the current sidebar uses a restrained terminal icon with an adjacent product name', () => {
+  it('the current sidebar uses the static brand skull with an adjacent product name', () => {
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'Sidebar.tsx'), 'utf8');
-    expect(source).toContain('<SquareTerminal');
-    expect(source).not.toMatch(/import\s*\{[^}]*\bCommand\b[^}]*\}\s*from\s*'lucide-react'/);
+    expect(source).toContain('<BrandSkull');
     expect(source).toContain('Turing Terminal</span>');
   });
 });

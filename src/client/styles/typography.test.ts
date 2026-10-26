@@ -54,17 +54,14 @@ function rulesIn(css: string): Rule[] {
   }));
 }
 
-/** The five fixed-title selectors allowed to use the display face (scope section 3). */
-const DISPLAY_SELECTORS = [
-  '.brand-name',
-  '.page-heading h1',
-  '.home-intro h1',
-  '.pairing-panel h1',
-  '.desktop-startup-card h1',
-];
+/** Fixed headings that still use the native display face. */
+const DISPLAY_SELECTORS = ['.page-heading h1', '.pairing-panel h1', '.desktop-startup-card h1'];
+
+/** Fixed selectors allowed to use the licensed brand face. */
+const BRAND_SELECTORS = ['.brand-name', '.home-intro h1'];
 
 describe('the display face is confined to fixed titles (T6)', () => {
-  it('font-family uses --font-display on exactly the five allow-listed selectors', () => {
+  it('font-family uses --font-display on exactly the native display selectors', () => {
     const selectors = cssFiles.flatMap((path) =>
       rulesIn(read(path))
         .filter((rule) => /font(?:-family)?\s*:[^;]*var\(\s*--font-display\s*\)/.test(rule.body))
@@ -73,10 +70,19 @@ describe('the display face is confined to fixed titles (T6)', () => {
     expect([...new Set(selectors)].sort()).toEqual([...DISPLAY_SELECTORS].sort());
   });
 
-  it('no bare heading element, and no wildcard, receives the display face', () => {
+  it('font-family uses --font-brand on exactly the brand selectors', () => {
+    const selectors = cssFiles.flatMap((path) =>
+      rulesIn(read(path))
+        .filter((rule) => /font(?:-family)?\s*:[^;]*var\(\s*--font-brand\s*\)/.test(rule.body))
+        .flatMap((rule) => rule.selectors),
+    );
+    expect([...new Set(selectors)].sort()).toEqual([...BRAND_SELECTORS].sort());
+  });
+
+  it('no bare heading element, and no wildcard, receives the display or brand face', () => {
     const bare = cssFiles.flatMap((path) =>
       rulesIn(read(path))
-        .filter((rule) => /font(?:-family)?\s*:[^;]*--font-display/.test(rule.body))
+        .filter((rule) => /font(?:-family)?\s*:[^;]*--(?:font-display|font-brand)/.test(rule.body))
         .flatMap((rule) => rule.selectors)
         .filter((selector) => /^(?:h[1-6]|\*|body|:where\(h[1-6]\))$/.test(selector)),
     );
@@ -104,8 +110,8 @@ describe('type scale, floors and font stacks (T7)', () => {
     ['--fs-micro', '12px'],
     ['--fs-section', '16px'],
     ['--fs-title', '24px'],
-    ['--fs-display-brand', '15px'],
-    ['--fs-display-title', '32px'],
+    ['--fs-display-brand', '24px'],
+    ['--fs-display-title', '40px'],
     ['--fw-medium', '500'],
     ['--fw-semibold', '600'],
   ])('%s is %s', (name, value) => {
@@ -138,6 +144,10 @@ describe('type scale, floors and font stacks (T7)', () => {
 
   it('headings share the interface face', () => {
     expect(token('font-display')).toBe('var(--font-sans)');
+  });
+
+  it('the brand face is the licensed blackletter font', () => {
+    expect(token('font-brand')).toContain('UnifrakturCook');
   });
 
   it('--font-mono is unchanged (Geist Mono stays)', () => {

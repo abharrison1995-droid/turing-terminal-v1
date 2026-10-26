@@ -14,11 +14,25 @@
   padding: var(--s-4) 0 var(--s-3);
   text-align: left;
 }
+.home-intro {
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.home-intro::before {
+  content: '';
+  display: block;
+  width: 32px;
+  height: 2px;
+  margin-bottom: var(--s-3);
+  background: var(--brand);
+}
+
 .home-intro h1 {
-  font-family: var(--font-display);
+  font-family: var(--font-brand);
   font-size: var(--fs-display-title);
-  line-height: var(--lh-title);
-  letter-spacing: -0.02em;
+  line-height: 1.18;
+  letter-spacing: 0.01em;
   text-wrap: balance;
 }
 .home-intro p {
@@ -75,7 +89,8 @@
   border-color: var(--control-line);
 }
 .composer:focus-within {
-  border-color: var(--control-line);
+  border-color: var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-halo);
 }
 .composer textarea {
   display: block;

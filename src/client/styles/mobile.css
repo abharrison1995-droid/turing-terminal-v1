@@ -243,8 +243,8 @@
     padding: var(--s-4) 0 var(--s-2);
   }
   .home-intro h1 {
-    font-size: var(--fs-title);
-    line-height: var(--lh-title);
+    font-size: 32px;
+    line-height: 1.18;
   }
   .home-column > .composer {
     position: relative;

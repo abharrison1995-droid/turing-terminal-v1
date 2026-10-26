@@ -25,11 +25,12 @@
   align-items: center;
   gap: var(--s-2);
   min-height: var(--h-control-lg);
-  margin-bottom: var(--s-3);
-  padding: var(--s-1) var(--s-2);
+  margin-bottom: var(--s-4);
+  padding: var(--s-2) var(--s-2) var(--s-3);
   color: var(--ink);
   background: transparent;
   border: 0;
+  border-bottom: 1px solid var(--line);
   border-radius: var(--r-md);
   text-align: left;
   cursor: pointer;
@@ -55,10 +56,12 @@
   image-rendering: pixelated;
 }
 .brand-name {
-  font-family: var(--font-display);
+  font-family: var(--font-brand);
   font-size: var(--fs-display-brand);
-  font-weight: var(--fw-semibold);
-  letter-spacing: -0.01em;
+  font-weight: var(--fw-bold);
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
 }
 .new-task-button {
   display: flex;

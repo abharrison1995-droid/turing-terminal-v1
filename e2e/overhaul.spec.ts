@@ -1,11 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 import { installFixtures } from './fixtures/mockApi';
 import { mobileRoutes } from './fixtures/mobile';
 
 // Real React UI, invented fixtures, no Master/provider/device claims. Two batched visual rounds at most.
-const out = fileURLToPath(new URL('../artifacts/ui-overhaul-2026-10-25/', import.meta.url));
+const defaultOut = fileURLToPath(new URL('../artifacts/ui-overhaul-2026-10-25/', import.meta.url));
+const out = process.env.TURING_UI_EVIDENCE_DIR
+  ? resolve(process.env.TURING_UI_EVIDENCE_DIR) + '/'
+  : defaultOut;
 mkdirSync(out, { recursive: true });
 const routes = {
   ...mobileRoutes,
@@ -95,6 +99,23 @@ for (const [device, viewport] of Object.entries({
             await page.locator('.composer').evaluate((node) => getComputedStyle(node).position),
           ).not.toMatch(/fixed|sticky/);
           await expect(page.getByRole('heading', { name: 'What should we work on?' })).toBeVisible();
+          await page.evaluate(() => document.fonts.ready);
+          const brandFont = await page
+            .locator('.brand-name')
+            .evaluate((node) => getComputedStyle(node).fontFamily);
+          expect(brandFont).toContain('UnifrakturCook');
+          const introFont = await page
+            .locator('.home-intro h1')
+            .evaluate((node) => getComputedStyle(node).fontFamily);
+          expect(introFont).toContain('UnifrakturCook');
+          const introSize = await page
+            .locator('.home-intro h1')
+            .evaluate((node) => getComputedStyle(node).fontSize);
+          expect(introSize).toBe((page.viewportSize()?.width ?? 1440) <= 680 ? '32px' : '40px');
+          const nativeTaskText = await page
+            .locator('.topbar-title')
+            .evaluate((node) => getComputedStyle(node).fontFamily);
+          expect(nativeTaskText).not.toContain('UnifrakturCook');
           const composerBeforeSetup = await page.evaluate(() => {
             const composer = document.querySelector('.composer');
             const setup = document.querySelector('.launch-blockers');
@@ -134,16 +155,16 @@ test('dark appearance stays dark under a light system preference and across relo
   await expect(page.locator('#task-input')).toBeVisible();
   const canvas = () =>
     page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--canvas').trim());
-  expect(await canvas()).toBe('#181818');
+  expect(await canvas()).toBe('#0b0b0c');
   await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute('content', 'dark');
-  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#181818');
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#0b0b0c');
   await navigate(page, 'Settings');
   await expect(page.getByLabel('Theme', { exact: true })).toHaveCount(0);
   await page.emulateMedia({ colorScheme: 'dark' });
-  expect(await canvas()).toBe('#181818');
+  expect(await canvas()).toBe('#0b0b0c');
   await page.reload();
   await expect(page.locator('#task-input')).toBeVisible();
-  expect(await canvas()).toBe('#181818');
+  expect(await canvas()).toBe('#0b0b0c');
   expect(api.calls.filter((call) => /^(POST|PUT|PATCH|DELETE) /.test(call))).toEqual([]);
   expect(api.unmapped).toEqual([]);
 });

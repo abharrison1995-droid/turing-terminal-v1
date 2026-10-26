@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../..');
 /** The theme colour as it stood when UI.5 started. It must not change in this phase. */
-const INITIAL_THEME_COLOUR = '#181818';
+const INITIAL_THEME_COLOUR = '#0b0b0c';
 
 const read = (path: string) => readFileSync(path, 'utf8');
 const html = () => read(join(repoRoot, 'index.html'));

@@ -1,8 +1,9 @@
-import { Plus, SquareTerminal } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import type { RunSummary } from '../../../shared/types';
 import { APP_VERSION } from '../../../shared/version';
 import type { Page } from '../../pages/shared/types';
 import { StatusIcon } from '../../pages/shared/parts';
+import { BrandSkull } from './BrandSkull';
 import { humanStatus, shortTask } from '../../pages/shared/runStatus';
 import { NAV_ITEMS, NAV_PANEL_ID } from './navModel';
 
@@ -55,7 +56,7 @@ export function Sidebar({
         aria-label="Turing Terminal home"
       >
         <span className="brand-mark">
-          <SquareTerminal size={20} aria-hidden="true" />
+          <BrandSkull />
         </span>
         <span className="brand-name">Turing Terminal</span>
       </button>
