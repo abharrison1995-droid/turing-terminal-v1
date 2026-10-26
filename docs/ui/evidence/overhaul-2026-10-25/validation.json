@@ -74,5 +74,53 @@
   "auditVulnerabilities": 0,
   "documentationFiles": 94,
   "buildLimit": "One non-failing large-chunk warning; historical unused font assets retained",
-  "uiFrontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4"
+  "uiFrontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+  "githubCi": {
+    "run": 40250749045,
+    "job": 121341884912,
+    "conclusion": "success",
+    "prHead": "cb7eb2dc8e67a64b1b7af58c209c7c0d1c3d992b",
+    "checkout": "d0c472a20d8164cdf2e896ce5c60ec44bb36c603",
+    "checkoutKind": "GitHub PR synthetic merge over master 6e5119f",
+    "testFiles": 232,
+    "tests": 4118,
+    "durationSeconds": 704.3
+  },
+  "nativeInstallerCi": {
+    "run": 40250764420,
+    "conclusion": "success",
+    "commit": "cb7eb2dc8e67a64b1b7af58c209c7c0d1c3d992b",
+    "combinedArtifact": 12621149192,
+    "linuxFullTests": {
+      "files": 232,
+      "tests": 4118,
+      "durationSeconds": 1247.43
+    },
+    "windows": "NSIS build/install/startup/PWA/uninstall smoke passed",
+    "linux": "Ubuntu22.04 DEB/AppImage build and installed/portable Master/PWA smoke passed",
+    "physicalAcceptance": false
+  },
+  "independentReviews": [
+    {
+      "job": "fd70c65d536c41c2a7d722f5e5e00217",
+      "model": "opencode-go/beam-free",
+      "status": "succeeded",
+      "disposition": "Redundant tools-nav logic removed; unreachable guard allegation rejected after source inspection",
+      "reportedCostEquivalent": 0
+    },
+    {
+      "job": "324070e464964314929f425821f0ddd9",
+      "model": "opencode-go/beam-free",
+      "status": "timed_out",
+      "timeoutSeconds": 120,
+      "reportedCostEquivalent": 0
+    },
+    {
+      "job": "94549351ce054a759c8defdc94eba10d",
+      "model": "opencode-go/beam-free",
+      "status": "succeeded",
+      "disposition": "No actionable defects in final reviewed source; no writes or tests",
+      "reportedCostEquivalent": 0
+    }
+  ]
 }

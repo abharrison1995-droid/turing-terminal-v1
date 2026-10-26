@@ -1,0 +1,39 @@
+{
+  "checkedAt": "2026-10-26T01:53:14Z",
+  "run": 40250764420,
+  "commit": "cb7eb2dc8e67a64b1b7af58c209c7c0d1c3d992b",
+  "provenance": "Actual Ubuntu 22.04 GitHub Actions packages extracted/scanned locally; hosted job passed installed DEB and portable AppImage Master/PWA smoke; no physical-device or native visual acceptance claim",
+  "payloads": [
+    {
+      "kind": "deb",
+      "artifact": "turing-terminal_1.0.0-rc3_amd64.deb",
+      "sha256": "490321a0a9cf459eaaf61dff495717a872c9622b37c8ce8e42a6563bb10c8649",
+      "payloadFiles": 8721,
+      "scanner": "Packaging scan passed: no local state, private key, or recognized credential patterns found.",
+      "bundledNode": "v22.23.3",
+      "sqlitePrebuilds": ["linux-x64.node"],
+      "frontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+      "checks": {
+        "frontendMatchesLocalAndWindows": true,
+        "darkManifest": true,
+        "onlyLinuxSqlitePrebuild": true
+      }
+    },
+    {
+      "kind": "appimage",
+      "artifact": "Turing-Terminal-x86_64-1.0.0-rc3.AppImage",
+      "sha256": "c7890569997dcb048f7f2f1ec39e89aba63b2b169c8739d029656955d1635b7c",
+      "payloadFiles": 8721,
+      "scanner": "Packaging scan passed: no local state, private key, or recognized credential patterns found.",
+      "bundledNode": "v22.23.3",
+      "sqlitePrebuilds": ["linux-x64.node"],
+      "frontendSha256": "108ed2147947a7170392bcdb253d91a7e9ba5ba50e6e44161309745cb6f3d7a4",
+      "checks": {
+        "frontendMatchesLocalAndWindows": true,
+        "darkManifest": true,
+        "onlyLinuxSqlitePrebuild": true
+      }
+    }
+  ],
+  "localProviderCalls": 0
+}
