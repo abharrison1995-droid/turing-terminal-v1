@@ -1,0 +1,43 @@
+{
+  "applied_commit": "83be3029f4fe8bfce6842d62ed400c0d99ead2c8",
+  "approval_documentation_head": "81d934f994a81157a57e51047ea3581f27b1ca55",
+  "application_test_source": "371ce1fc9c5a6cb936bf48e43e20bd690548e3da",
+  "checked_utc": "2026-10-26T10:58:33.599078+00:00",
+  "build_command": "npm run build",
+  "build_passed": true,
+  "all_19_web_files_match_approved_inventory": true,
+  "browser_tests": 3,
+  "browser_captures": 20,
+  "browser_seconds": 13.6,
+  "fixture_only": true,
+  "screenshots": [
+    {
+      "file": "desktop-dark-home.png",
+      "approved_sha256": "deb468dd8b13ae2b0bfcc788308c33b72d2d5bb2fbe980bf152129f7279f0b7a",
+      "recreated_sha256": "deb468dd8b13ae2b0bfcc788308c33b72d2d5bb2fbe980bf152129f7279f0b7a",
+      "identical": true
+    },
+    {
+      "file": "phone-dark-home.png",
+      "approved_sha256": "0132eca320612e308dea8acdfbd70c3bec7fa590e9356d7b48a74b30ba45458d",
+      "recreated_sha256": "0132eca320612e308dea8acdfbd70c3bec7fa590e9356d7b48a74b30ba45458d",
+      "identical": true
+    },
+    {
+      "file": "phone-dark-thread.png",
+      "approved_sha256": "8f2b80c22920706373eee6c69be0eb7ef555133324702a3085277f59c1c1a010",
+      "recreated_sha256": "8f2b80c22920706373eee6c69be0eb7ef555133324702a3085277f59c1c1a010",
+      "identical": true
+    }
+  ],
+  "desktop": {
+    "requests": 90,
+    "unmapped": 0,
+    "page_errors": 0
+  },
+  "phone": {
+    "requests": 82,
+    "unmapped": 0,
+    "page_errors": 0
+  }
+}
