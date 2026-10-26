@@ -1,13 +1,50 @@
 # Black metal refinement — 2026-10-26
 
-Pending supervisor qualification; not release evidence.
+Reviewed and software-qualified candidate in an isolated checkout. It is not integrated into the owner's checkout, PR #16 or master, and is not release-ready. [V1_READINESS.md](../V1_READINESS.md) remains the release-status authority.
 
-## Source/evidence note
+## Direction and scope
 
-- Direction: underground black-metal record sleeve translated into a precise working instrument. Ink-black canvas, ash/bone lettering, iron-grey edges, sparse oxblood brand accent. No wallpaper, fake distress, runes, illustrations, neon, gradients, red-everywhere, page-load choreography or mystical copy.
-- Tokens own all colour literals in `src/client/styles/tokens.css`: canvas `#0b0b0c`, nav `#070708`, surface `#111113`, surface-2 `#171719`, surface-3 `#202023`, selected `#29292c`; ash `#ede9e1`, secondary `#cbc6bd`, muted `#aaa59c`; oxblood brand `#6e1f24` (`--brand`) is identity-only.
-- Licensed UnifrakturCook is limited to `--font-brand` on `.brand-name` (24px, 700) and the fixed `.home-intro h1` (40px desktop / 32px phone, line-height 1.18). `--font-display` remains native sans for other fixed headings. No network fonts.
-- Static `BrandSkull` restored in the sidebar beside the wordmark, decorative and `aria-hidden`, no timers.
-- Geometry: 4/6/8/12px radii; composer 12px. PWA/index theme metadata matches canvas.
-- Existing 20-surface fixture harness and browser assertions are the only evidence; fixtures are browser-only, not physical/live/install evidence.
-- No server, shared, migration, provider, credential, package, version or icon-asset changes. V1_READINESS.md and prior evidence images/checksums are untouched.
+The owner requested a less generic black-metal identity while keeping the clearer task flow. The supervisor chose inked record-sleeve lettering and etched instrument-panel restraint: ink-black canvas, ash text, iron-grey edges and a single sparse oxblood detail. Starting tasks, following progress and handling approvals remain the primary flows. Navigation, DOM reading order, billing/route disclosures and desktop/phone authority are preserved.
+
+- Canvas `#0b0b0c`, navigation `#070708`, surfaces `#111113` / `#171719` / `#202023`, ash foreground `#ede9e1`, secondary `#cbc6bd`, muted `#aaa59c`. All interface colour literals remain in `src/client/styles/tokens.css`.
+- Licensed, bundled UnifrakturCook is limited to the fixed wordmark (24px) and fixed Home introduction (40px desktop / 32px phone), both 700 weight. Other headings, controls, user-supplied task text and reading text stay native sans. Code/identifiers retain Geist Mono. No font binaries, licences, dependencies or version change.
+- The existing static decorative BrandSkull returns beside the wordmark. Activity mascots still accompany textual states. A short oxblood engraving detail uses its own brand token, separate from semantic status and danger colours.
+- Shared geometry is 4/6/8/12px; PWA/index metadata matches the canvas. The phone Home composer stays in normal flow, with existing safe-area and touch rules. Fields, focus, hover/pressed states and overlays retain standard affordances.
+- No server, shared engine, migrations, provider routes, credentials, permission logic or packaged icon assets change. Existing master/neutral-UI installers qualify only their earlier source, not this refinement.
+
+## Source and delegation provenance
+
+Baseline is PR #16 head `3c5012942cc336c8cd99e23650bc3638d4e93e69`. Its CI [40256780744](https://github.com/abharrison1995-droid/turing-terminal-v1/actions/runs/40256780744) succeeded; PR #16 is still open. Remote master was rechecked with `git ls-remote origin refs/heads/master` and remains PR #15 merge `6e5119f7e59220f8a825cefecf9b28b578e8bbb0`.
+
+The implementation is retained on `codex/black-metal-ui-reviewed-2026-10-26`:
+
+| Unit                            | Commit / job                                                                              | Outcome                                                                                                                                                                     |
+| ------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Initial free implementation     | `ffebea7e95a16930d88f4d20307ca1179ece3ba6` / Beam Free `5d797b520f9e4a4892c326f023846af6` | Implemented the supervisor's pinned design contract in a detached sandbox.                                                                                                  |
+| Supervisor-directed corrections | `371ce1fc9c5a6cb936bf48e43e20bd690548e3da` / Beam Free `82eeffa04234411abc1f3d1596ea5a60` | Corrected accent foreground and field-border contrast; retained grayscale action fills and unchanged accessibility thresholds; strengthened dynamic task typography checks. |
+| Distinct free review attempt    | Iceman Contributor Free `731d3c4d45134c6ab05bcddff6b678a2`                                | Failed with upstream HTTP 503, endpoint unavailable; no review verdict.                                                                                                     |
+| Final separate free review      | Beam Free `784558e9e9da4f18bb8744fec0e7f401`                                              | Completed: no actionable findings; no writes or executed tests.                                                                                                             |
+
+The refreshed Go catalogue lists both selected exact routes at zero price. All four jobs reported cost-equivalent $0; this is local bridge/catalogue provenance, not an invoice or authoritative account allowance. No paid fallback was used. The supervisor inspected actual diffs and renders and executed validation; worker suggestions are not test evidence. The owner's original checkout remains at `3c50129` with its eight pre-existing untracked `.codex-*` directories preserved.
+
+## Validation
+
+Application/test source is `371ce1fc9c5a6cb936bf48e43e20bd690548e3da`; subsequent evidence edits are documentation/PNG only. Logs and exact UTC command receipts are retained under ignored `artifacts/black-metal-2026-10-26/validation/` in the retained review checkout.
+
+- Initial targeted validation found 5 failures (175 passed): dark accent foreground on dark surfaces, low-contrast field border, warm fill conflicting with the neutral-action guard and the unchanged standalone icon's background token. These were corrected by the free implementer; tests and contrast thresholds were not weakened.
+- Final targeted validation: `npx vitest run src/client/styles src/client/goals/a11yTokens.test.ts src/client/ui/shell/brandSkull.test.tsx src/client/pwaViewport.test.ts` passed 13 files / 180 tests, 2.13 seconds, at 09:29:50 UTC.
+- All eight AGENTS.md commands passed against the reviewed source; the gate started at 09:30:52 UTC: `npm ci`, `npm run format:check`, `npm run lint`, `npm run typecheck`, `npm test`, `npm run build`, `npm audit --omit=dev`, `npm run docs:links`; additional `npm run typecheck:e2e`. Full suite: **232 files / 4,120 tests passed**, 1,238.95 seconds (09:48:51–10:09:30 UTC). Production audit: zero vulnerabilities; documentation links: 95 Markdown files. Build retains one non-failing chunk-size warning. Final formatting and e2e typecheck results are recorded in the [command receipt](evidence/black-metal-2026-10-26/validation.json).
+- The first full-suite attempt ended with outer exit 143 (SIGTERM) before any test summary; it is incomplete, not a pass or a recorded assertion failure. Its log is preserved as `validation/test-incomplete-SIGTERM.log`. A detached runner restarted `npm test` at 09:48:51 UTC and completed the suite, build, audit and links. Its format check then identified a documentation table needing reformatting after full commit IDs were inserted; the document was formatted and the final checks rerun. The initial dependency install, format, lint and typecheck results remain separately recorded.
+- Final browser acceptance: `TURING_UI_EVIDENCE_DIR=<review-checkout>/artifacts/black-metal-2026-10-26/final npx playwright test -c artifacts/black-metal-2026-10-26/playwright-review.config.ts overhaul.spec.ts` passed 3 tests in 14.2 seconds. The ignored review config imports `e2e/playwright.config.ts` and changes only absolute paths and port 4187 because 4173 was already occupied; the existing process was preserved.
+- The real React client used invented API fixtures, frozen time and Chromium: 1440×900 desktop and 390×844 phone, 10 surfaces each (Home, Projects, Goals, Runs, Workflows, Usage, Machines, Settings, task thread and Goal detail). Desktop recorded 90 fixture requests, phone 82; neither made mutation requests, and there were no unmapped requests or page errors. The system-light/dark/reload test retained dark appearance without mutation requests. Checks include one main heading, document/main overflow, 44px visible phone controls, static blackletter scope, dynamic task text staying sans and wordmark bounds.
+- The supervisor inspected the initial renders and the final 20-surface contact sheets plus full Home/phone/thread/dense Settings renders. Source review confirmed the UI-only boundary. Browser fixtures do not establish physical phone, installed desktop, provider or billing capability.
+
+Representative [desktop Home](evidence/black-metal-2026-10-26/desktop-dark-home.png), [phone Home](evidence/black-metal-2026-10-26/phone-dark-home.png) and [phone thread](evidence/black-metal-2026-10-26/phone-dark-thread.png) are retained with [SHA-256 checksums](evidence/black-metal-2026-10-26/SHA256SUMS). Remaining captures and request ledgers are ignored local evidence; prior neutral captures are preserved.
+
+## Production web build
+
+The actual `npm run build` output passed a separate inspection at 10:11:01 UTC: generated HTML and manifest use `#0b0b0c`; bundled CSS contains the brand face and canvas; the emitted UnifrakturCook binary matches its licensed source SHA-256. There are 19 files / 2,620,694 bytes in `dist/`. See [build proof](evidence/black-metal-2026-10-26/web-build-proof.json) and [actual web-output checksums](evidence/black-metal-2026-10-26/web-dist-SHA256SUMS). These are web assets, not installer checksums or installed-device evidence. PWA precache reports 19 entries / 2,541.04 KiB. The [delegation receipt](evidence/black-metal-2026-10-26/delegation-receipt.json) records exact models, sessions and reported costs.
+
+## Remaining qualification
+
+Acceptance/integration into the active UI branch is pending. This candidate has no new CI run or native installer build. The existing live-provider, physical Windows/Linux and iPhone/Tailscale, two-master isolation and installed recovery/Goal-resume gates remain open in the readiness tracker. No merge, tag, release publication or version bump was performed.

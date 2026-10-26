@@ -2,9 +2,9 @@
 
 Evidence for UI stages. UI approval is for development only; none of this marks V1 release-ready.
 
-**Current design/evidence:** the owner's 2026-10-25 replacement direction is a native task workspace with dark appearance only. See [DESIGN.md](../../DESIGN.md) and [overhaul evidence](UI_OVERHAUL_2026-10-25.md). This supersedes the dark-only crimson, serif/blackletter design and docked Home composer described in the stage records below. It is branch evidence until merged; release status remains in [V1_READINESS.md](../V1_READINESS.md).
+**Current direction:** the owner requested a black-metal refinement on 2026-10-26, preserving the simplified dark-only task workspace. See [DESIGN.md](../../DESIGN.md) and the [refinement candidate and supervisor evidence](BLACK_METAL_2026-10-26.md). This is isolated branch evidence until accepted and integrated. Release status remains in [V1_READINESS.md](../V1_READINESS.md).
 
-The current representative captures are in `evidence/overhaul-2026-10-25/`. Prior UI.7 qualification captures (`evidence/ui7/`) and the UI.9 set (`evidence/ui9/`) remain as historical evidence. Earlier stage captures (UI.1b to UI.6) cited below were removed on 2026-10-20; they remain in Git history, for example at commit `5316527`.
+Representative refinement captures are in `evidence/black-metal-2026-10-26/`. The preceding neutral [workspace overhaul evidence](UI_OVERHAUL_2026-10-25.md) and captures in `evidence/overhaul-2026-10-25/` attest that earlier source, including its installers. Earlier crimson/serif/docked-composer stage records below remain historical; the new refinement does not restore those layouts or font rules. Prior UI.7 and UI.9 captures remain historical. Removed UI.1b–UI.6 captures remain in Git history, for example at `5316527`.
 
 ## UI.1b: dark tokens, fonts, CSS primitive layer, PWA meta
 
